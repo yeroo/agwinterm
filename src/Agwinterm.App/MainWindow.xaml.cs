@@ -86,6 +86,12 @@ public sealed partial class MainWindow : Window, ISessionHost
             timer.Start();
         }
 
+        // Custom title bar: extend content into the caption; the title-bar grid is the drag region.
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
+        SidebarToggle.Click += (_, _) => { ToggleSidebar(); GridCanvas.Focus(FocusState.Programmatic); };
+        AttentionBell.Click += (_, _) => { GoToNextAttention(); };
+
         NewWorkspaceButton.Click += (_, _) => { CreateWorkspace(Guid.NewGuid().ToString(), null); GridCanvas.Focus(FocusState.Programmatic); };
         NewSessionButton.Click += (_, _) => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true);
         FlagButton.Click += (_, _) => ToggleCollapseAll();
@@ -182,12 +188,12 @@ public sealed partial class MainWindow : Window, ISessionHost
 
         session.OutputReceived += () => DispatcherQueue.TryEnqueue(async () =>
         {
-            if (ReferenceEquals(_activeRef, ses)) { await DecodeNewImagesAsync(); GridCanvas.Invalidate(); }
+            if (ReferenceEquals(_activeRef, ses)) { await DecodeNewImagesAsync(); GridCanvas.Invalidate(); UpdateChrome(); }
         });
         session.StatusChanged += () => DispatcherQueue.TryEnqueue(() =>
         {
             RebuildSidebar();
-            if (ReferenceEquals(_activeRef, ses)) UpdateTitle();
+            if (ReferenceEquals(_activeRef, ses)) UpdateTitle(); else UpdateChrome();
         });
 
         lock (_workspaces) { ws.Sessions.Add(ses); ws.Expanded = true; }
@@ -455,6 +461,55 @@ public sealed partial class MainWindow : Window, ISessionHost
             _ => "",
         };
         Title = glyph + "agwinterm";
+        UpdateChrome();
+    }
+
+    private bool _sidebarVisible = true;
+
+    private void ToggleSidebar()
+    {
+        _sidebarVisible = !_sidebarVisible;
+        Sidebar.Visibility = _sidebarVisible ? Visibility.Visible : Visibility.Collapsed;
+        SidebarColumn.Width = _sidebarVisible ? new GridLength(200) : new GridLength(0);
+        GridCanvas.Invalidate();
+    }
+
+    private void GoToNextAttention()
+    {
+        var all = AllSessions();
+        var attention = all.Where(s => s.S.Status != AgentStatus.Idle).ToList();
+        if (attention.Count == 0) return;
+        int start = _activeRef is null ? -1 : attention.IndexOf(_activeRef);
+        SetActive(attention[(start + 1) % attention.Count]);
+    }
+
+    /// <summary>Update the title-bar title/subtitle (cwd) and the 3-state attention bell.</summary>
+    private void UpdateChrome()
+    {
+        TitleText.Text = _activeRef?.Name ?? "agwinterm";
+        SubtitleText.Text = _activeRef is not null ? PrettyCwd(_activeRef.S.Emulator.Cwd) : "";
+
+        var all = AllSessions();
+        bool blocked = all.Any(s => s.S.Status == AgentStatus.Blocked);
+        bool attention = all.Any(s => s.S.Status != AgentStatus.Idle);
+        BellIcon.Opacity = attention ? 1.0 : 0.5;
+        BellIcon.Foreground = new SolidColorBrush(
+            blocked ? WinColor.FromArgb(255, 240, 160, 40)
+                    : attention ? Colors.White : WinColor.FromArgb(255, 138, 145, 153));
+        ToolTipService.SetToolTip(AttentionBell,
+            attention ? "Show sessions that need attention" : "No sessions need attention");
+    }
+
+    private static string PrettyCwd(string cwd)
+    {
+        if (string.IsNullOrEmpty(cwd)) return "";
+        try
+        {
+            if (cwd.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+                return new Uri(cwd).LocalPath;
+        }
+        catch { }
+        return cwd;
     }
 
     // ---- Input ----

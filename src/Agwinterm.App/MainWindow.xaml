@@ -5,37 +5,73 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:canvas="using:Microsoft.Graphics.Canvas.UI.Xaml">
     <Grid Background="Black">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="200" />
-            <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="40" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
 
-        <Grid Grid.Column="0" x:Name="Sidebar" Background="#0F1113">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
-                <StackPanel x:Name="SidebarPanel" Spacing="1" Margin="2" />
-            </ScrollViewer>
-            <!-- Sidebar footer (agterm's bottom bar): new workspace, new session, flagged toggle -->
-            <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="2" Padding="6,4" Background="#0B0D0F">
-                <Button x:Name="NewWorkspaceButton" IsTabStop="False"
-                        ToolTipService.ToolTip="New Workspace">
-                    <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE8F4;" FontSize="14" />
-                </Button>
-                <Button x:Name="NewSessionButton" IsTabStop="False"
-                        ToolTipService.ToolTip="New Session">
-                    <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE710;" FontSize="14" />
-                </Button>
-                <Button x:Name="FlagButton" IsTabStop="False"
-                        ToolTipService.ToolTip="Show flagged sessions">
-                    <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE7C1;" FontSize="14" />
+        <!-- Custom title bar (content extended into the caption) -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="#0B0D0F" Padding="6,0,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="140" />
+            </Grid.ColumnDefinitions>
+
+            <Button Grid.Column="0" x:Name="SidebarToggle" IsTabStop="False"
+                    Background="Transparent" BorderThickness="0" Padding="8,4"
+                    ToolTipService.ToolTip="Toggle Sidebar" VerticalAlignment="Center">
+                <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE700;" FontSize="15" />
+            </Button>
+
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0,0,0">
+                <TextBlock x:Name="TitleText" Text="agwinterm" Foreground="White" FontSize="13" />
+                <TextBlock x:Name="SubtitleText" Text="" Foreground="#8A9199" FontSize="11"
+                           TextTrimming="CharacterEllipsis" MaxWidth="420" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button x:Name="AttentionBell" IsTabStop="False"
+                        Background="Transparent" BorderThickness="0" Padding="8,4"
+                        ToolTipService.ToolTip="No sessions need attention">
+                    <FontIcon x:Name="BellIcon" FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets"
+                              Glyph="&#xEA8F;" FontSize="15" Foreground="#8A9199" />
                 </Button>
             </StackPanel>
         </Grid>
 
-        <canvas:CanvasControl Grid.Column="1" x:Name="GridCanvas" Draw="OnDraw"
-                              ClearColor="Black" IsTabStop="True" />
+        <!-- Content: sidebar + terminal -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="SidebarColumn" Width="200" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Grid Grid.Column="0" x:Name="Sidebar" Background="#0F1113">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="SidebarPanel" Spacing="1" Margin="2" />
+                </ScrollViewer>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="2" Padding="6,4" Background="#0B0D0F">
+                    <Button x:Name="NewWorkspaceButton" IsTabStop="False" ToolTipService.ToolTip="New Workspace">
+                        <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE8F4;" FontSize="14" />
+                    </Button>
+                    <Button x:Name="NewSessionButton" IsTabStop="False" ToolTipService.ToolTip="New Session">
+                        <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE710;" FontSize="14" />
+                    </Button>
+                    <Button x:Name="FlagButton" IsTabStop="False" ToolTipService.ToolTip="Collapse / expand all">
+                        <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE7C1;" FontSize="14" />
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <canvas:CanvasControl Grid.Column="1" x:Name="GridCanvas" Draw="OnDraw"
+                                  ClearColor="Black" IsTabStop="True" />
+        </Grid>
     </Grid>
 </Window>
