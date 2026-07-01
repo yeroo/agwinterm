@@ -42,6 +42,7 @@ public sealed partial class MainWindow : Window, ISessionHost
 
     private readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock (_workspaces)
     private Ses? _activeRef;
+    private object? _editing; // Ses or Workspace currently being renamed inline
     private TerminalSession? _session;   // mirrors the active session (rendering/input use this)
     private bool _started;
     private ControlServer? _control;
@@ -89,6 +90,16 @@ public sealed partial class MainWindow : Window, ISessionHost
         // Custom title bar: extend content into the caption; the title-bar grid is the drag region.
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
+        // Make the native caption buttons (min/max/close) visible on the dark bar.
+        var tb = AppWindow.TitleBar;
+        tb.ButtonBackgroundColor = Colors.Transparent;
+        tb.ButtonInactiveBackgroundColor = Colors.Transparent;
+        tb.ButtonForegroundColor = Colors.White;
+        tb.ButtonInactiveForegroundColor = WinColor.FromArgb(255, 138, 145, 153);
+        tb.ButtonHoverForegroundColor = Colors.White;
+        tb.ButtonHoverBackgroundColor = WinColor.FromArgb(48, 255, 255, 255);
+        tb.ButtonPressedForegroundColor = Colors.White;
+        tb.ButtonPressedBackgroundColor = WinColor.FromArgb(80, 255, 255, 255);
         SidebarToggle.Click += (_, _) => { ToggleSidebar(); GridCanvas.Focus(FocusState.Programmatic); };
         AttentionBell.Click += (_, _) => { GoToNextAttention(); };
 
@@ -291,8 +302,26 @@ public sealed partial class MainWindow : Window, ISessionHost
         }
     }
 
-    private Button BuildWorkspaceRow(Workspace ws)
+    private FrameworkElement BuildRenameBox(string name, Action<string> commit)
     {
+        var tb = new TextBox { Text = name, Margin = new Thickness(2), FontSize = 13, MinWidth = 120 };
+        tb.Loaded += (_, _) => { tb.Focus(FocusState.Programmatic); tb.SelectAll(); };
+        tb.KeyDown += (s, e) =>
+        {
+            if (e.Key == VirtualKey.Enter) { commit(tb.Text); e.Handled = true; }
+            else if (e.Key == VirtualKey.Escape) { _editing = null; RebuildSidebar(); GridCanvas.Focus(FocusState.Programmatic); e.Handled = true; }
+        };
+        tb.LostFocus += (_, _) => { if (_editing is not null) commit(tb.Text); };
+        return tb;
+    }
+
+    private void StartRename(object item) { _editing = item; RebuildSidebar(); }
+
+    private FrameworkElement BuildWorkspaceRow(Workspace ws)
+    {
+        if (ReferenceEquals(_editing, ws))
+            return BuildRenameBox(ws.Name, n => { if (!string.IsNullOrWhiteSpace(n)) ws.Name = n.Trim(); _editing = null; RebuildSidebar(); UpdateChrome(); GridCanvas.Focus(FocusState.Programmatic); });
+
         int count;
         lock (_workspaces) count = ws.Sessions.Count;
         var tri = new TextBlock { Text = ws.Expanded ? "▾" : "▸", Foreground = new SolidColorBrush(Colors.Gray), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
@@ -313,16 +342,19 @@ public sealed partial class MainWindow : Window, ISessionHost
             Padding = new Thickness(6, 4, 6, 4),
         };
         btn.Click += (_, _) => { lock (_workspaces) ws.Expanded = !ws.Expanded; RebuildSidebar(); };
+        btn.DoubleTapped += (_, _) => StartRename(ws);
         btn.ContextFlyout = WorkspaceMenu(ws);
         return btn;
     }
 
-    private Button BuildSessionRow(Ses ses)
+    private FrameworkElement BuildSessionRow(Ses ses)
     {
+        if (ReferenceEquals(_editing, ses))
+            return BuildRenameBox(ses.Name, n => { if (!string.IsNullOrWhiteSpace(n)) ses.Name = n.Trim(); _editing = null; RebuildSidebar(); UpdateChrome(); GridCanvas.Focus(FocusState.Programmatic); });
+
         bool active = ReferenceEquals(ses, _activeRef);
-        // Status glyph shows on sessions you are NOT looking at (agterm rule); hidden on active.
-        var dot = new Ellipse { Width = 9, Height = 9, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
-        dot.Fill = (!active && ses.S.Status != AgentStatus.Idle) ? new SolidColorBrush(StatusColor(ses.S.Status)) : new SolidColorBrush(Colors.Transparent);
+        // Persistent status dot: dim grey when idle, colored for active/blocked/completed.
+        var dot = new Ellipse { Width = 9, Height = 9, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0), Fill = new SolidColorBrush(StatusColor(ses.S.Status)) };
         var name = new TextBlock { Text = ses.Name, Foreground = new SolidColorBrush(Colors.White), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(18, 0, 0, 0) };
         row.Children.Add(dot); row.Children.Add(name);
@@ -339,6 +371,7 @@ public sealed partial class MainWindow : Window, ISessionHost
             Background = active ? new SolidColorBrush(WinColor.FromArgb(255, 38, 44, 52)) : new SolidColorBrush(Colors.Transparent),
         };
         btn.Click += (_, _) => SetActive(ses);
+        btn.DoubleTapped += (_, _) => StartRename(ses);
         btn.ContextFlyout = SessionMenu(ses);
         return btn;
     }
@@ -348,10 +381,13 @@ public sealed partial class MainWindow : Window, ISessionHost
         var m = new MenuFlyout();
         var newSes = new MenuFlyoutItem { Text = "New Session" };
         newSes.Click += (_, _) => CreateSession(Guid.NewGuid().ToString(), null, null, ws, true);
+        var rename = new MenuFlyoutItem { Text = "Rename" };
+        rename.Click += (_, _) => StartRename(ws);
         var del = new MenuFlyoutItem { Text = "Delete Workspace" };
         del.Click += (_, _) => DeleteWorkspace(ws);
         lock (_workspaces) del.IsEnabled = _workspaces.Count > 1;
         m.Items.Add(newSes);
+        m.Items.Add(rename);
         m.Items.Add(del);
         return m;
     }
@@ -359,6 +395,26 @@ public sealed partial class MainWindow : Window, ISessionHost
     private MenuFlyout SessionMenu(Ses ses)
     {
         var m = new MenuFlyout();
+        var rename = new MenuFlyoutItem { Text = "Rename" };
+        rename.Click += (_, _) => StartRename(ses);
+        m.Items.Add(rename);
+
+        // Move to ▸ [other workspaces]
+        Workspace[] others;
+        lock (_workspaces) others = _workspaces.Where(w => !ReferenceEquals(w, ses.Ws)).ToArray();
+        if (others.Length > 0)
+        {
+            var move = new MenuFlyoutSubItem { Text = "Move to" };
+            foreach (var w in others)
+            {
+                var it = new MenuFlyoutItem { Text = w.Name };
+                var target = w;
+                it.Click += (_, _) => MoveSession(ses, target);
+                move.Items.Add(it);
+            }
+            m.Items.Add(move);
+        }
+
         if (ses.S.Status != AgentStatus.Idle)
         {
             var clear = new MenuFlyoutItem { Text = "Clear Status" };
@@ -369,6 +425,18 @@ public sealed partial class MainWindow : Window, ISessionHost
         close.Click += (_, _) => CloseSessionInternal(ses);
         m.Items.Add(close);
         return m;
+    }
+
+    private void MoveSession(Ses ses, Workspace target)
+    {
+        lock (_workspaces)
+        {
+            ses.Ws.Sessions.Remove(ses);
+            ses.Ws = target;
+            target.Sessions.Add(ses);
+            target.Expanded = true;
+        }
+        RebuildSidebar();
     }
 
     private void DeleteWorkspace(Workspace ws)
