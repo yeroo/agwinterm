@@ -25,6 +25,10 @@ public sealed class TerminalConfig
     /// Off by default: the hook can override a customized prompt (e.g. oh-my-posh). Opt in for live cwd.</summary>
     public bool ShellIntegration { get; set; } = false;
 
+    /// <summary>Re-run each pane's foreground command on restart (agterm's opt-in restore-on-restart).
+    /// Off by default; honors restore-denylist.conf. Best-effort (Windows foreground-command capture).</summary>
+    public bool RestoreCommands { get; set; } = false;
+
     /// <summary>Default config file contents (also used to seed the file on first run).</summary>
     public const string DefaultText =
         """
@@ -46,6 +50,10 @@ public sealed class TerminalConfig
         # directory so it persists/restores accurately. Off by default because the hook can
         # override a customized prompt (e.g. oh-my-posh). Set true to opt in to live-cwd tracking.
         shell-integration = false
+
+        # Restore running commands: on restart, re-run each pane's foreground command (agterm's
+        # opt-in restore-on-restart). Off by default. Edit restore-denylist.conf to exclude commands.
+        restore-commands = false
         """;
 
     public static TerminalConfig Parse(string text)
@@ -69,6 +77,7 @@ public sealed class TerminalConfig
                 case "cursor-blink-ms": if (int.TryParse(val, out var ms) && ms > 0) cfg.CursorBlinkMs = ms; break;
                 case "theme": if (val.Length > 0) cfg.Theme = val; break;
                 case "shell-integration": cfg.ShellIntegration = ParseBool(val, cfg.ShellIntegration); break;
+                case "restore-commands": cfg.RestoreCommands = ParseBool(val, cfg.RestoreCommands); break;
             }
         }
         return cfg;

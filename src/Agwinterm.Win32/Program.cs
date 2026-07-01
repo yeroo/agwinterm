@@ -863,7 +863,7 @@ internal static class Program
                 }
 
             case WM_DESTROY:
-                SaveState(); // persist the tree before tearing down sessions
+                SaveState(captureCommands: true); // persist the tree (+ foreground commands) before tearing down sessions
                 foreach (var s in AllSessions()) foreach (var p in s.Panes) { try { p.S.Dispose(); } catch { } }
                 PostQuitMessage(0);
                 return IntPtr.Zero;
@@ -2429,7 +2429,7 @@ internal static class Program
 
     // ---- Persistence: workspace/session tree + selection + sidebar state ----
 
-    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; }
+    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
     private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public int Active { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; } }
     private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
@@ -2452,8 +2452,95 @@ internal static class Program
     private static string StatePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "state.json");
 
-    /// <summary>Snapshot the tree/selection/sidebar to disk atomically. No-op while restoring; ignores IO errors.</summary>
-    private static void SaveState()
+    private static List<Pane> PanesOf(Ses s) { lock (_workspaces) return s.Panes.ToList(); }
+
+    private static string DenylistPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "restore-denylist.conf");
+
+    /// <summary>Exe/process names (no extension) that restore-commands never re-runs. Seeds a starter file.</summary>
+    private static HashSet<string> LoadDenylist()
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "powershell", "pwsh", "cmd", "conhost", "wsl", "ssh", "bash", "oh-my-posh", "git", "windowsterminal" };
+        try
+        {
+            string path = DenylistPath;
+            if (!File.Exists(path))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path,
+                    "# agwinterm restore-denylist: process/exe names (no extension) NOT re-run on restart.\n" +
+                    "# One per line; '#' starts a comment. Defaults cover shells and prompt helpers.\n" +
+                    "powershell\npwsh\ncmd\nconhost\nwsl\nssh\nbash\noh-my-posh\ngit\nWindowsTerminal\n");
+            }
+            foreach (var raw in File.ReadAllLines(path))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0 || line[0] == '#') continue;
+                set.Add(StripExe(line));
+            }
+        }
+        catch { }
+        return set;
+    }
+
+    private static string StripExe(string name)
+    {
+        name = name.Trim().Trim('"');
+        int slash = name.LastIndexOfAny(new[] { '\\', '/' });
+        if (slash >= 0) name = name[(slash + 1)..];
+        if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name = name[..^4];
+        return name;
+    }
+
+    /// <summary>
+    /// Best-effort foreground-command capture: for each shell PID, the command line of its most
+    /// recently started non-denylisted child. One CIM process snapshot for all panes; ~1s at quit.
+    /// </summary>
+    private static Dictionary<int, string> CaptureForegroundCommands(IEnumerable<int> shellPids)
+    {
+        var result = new Dictionary<int, string>();
+        var pids = shellPids.Distinct().ToHashSet();
+        if (pids.Count == 0) return result;
+        var deny = LoadDenylist();
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe",
+                "-NoProfile -NonInteractive -Command \"Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='C';e={if($_.CreationDate){$_.CreationDate.Ticks}else{0}}} | ConvertTo-Json -Compress\"")
+            { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null) return result;
+            string json = proc.StandardOutput.ReadToEnd();
+            if (!proc.WaitForExit(4000)) { try { proc.Kill(); } catch { } return result; }
+            if (string.IsNullOrWhiteSpace(json)) return result;
+
+            using var doc = JsonDocument.Parse(json);
+            var rows = doc.RootElement.ValueKind == JsonValueKind.Array
+                ? doc.RootElement.EnumerateArray().ToList()
+                : new List<JsonElement> { doc.RootElement };
+            var byParent = new Dictionary<int, List<(long created, string cmd)>>();
+            foreach (var e in rows)
+            {
+                if (e.ValueKind != JsonValueKind.Object) continue;
+                int ppid = e.TryGetProperty("ParentProcessId", out var pv) && pv.TryGetInt32(out var pp) ? pp : -1;
+                if (!pids.Contains(ppid)) continue;
+                string name = e.TryGetProperty("Name", out var nv) && nv.ValueKind == JsonValueKind.String ? (nv.GetString() ?? "") : "";
+                string cmd = e.TryGetProperty("CommandLine", out var cv) && cv.ValueKind == JsonValueKind.String ? (cv.GetString() ?? "") : "";
+                long created = e.TryGetProperty("C", out var tv) && tv.ValueKind == JsonValueKind.Number && tv.TryGetInt64(out var t) ? t : 0;
+                if (cmd.Length == 0 || deny.Contains(StripExe(name))) continue;
+                if (!byParent.TryGetValue(ppid, out var list)) byParent[ppid] = list = new();
+                list.Add((created, cmd));
+            }
+            foreach (var (ppid, list) in byParent)
+                result[ppid] = list.OrderByDescending(x => x.created).First().cmd;
+        }
+        catch { }
+        return result;
+    }
+
+    /// <summary>Snapshot the tree/selection/sidebar to disk atomically. No-op while restoring; ignores IO errors.
+    /// <paramref name="captureCommands"/> (quit only) captures each pane's foreground command when restore-commands is on.</summary>
+    private static void SaveState(bool captureCommands = false)
     {
         if (_restoring) return;
         try
@@ -2464,6 +2551,12 @@ internal static class Program
             lock (_workspaces)
                 rows = _workspaces.Select(w => (w.Id, w.Name, w.Expanded, w.Sessions.ToList())).ToList();
             string? activeId = _active?.Id;
+
+            // Foreground-command capture (opt-in, quit only): one process snapshot for all panes.
+            Dictionary<int, string> cmdByPid = (captureCommands && _config.RestoreCommands)
+                ? CaptureForegroundCommands(rows.SelectMany(r => r.sessions).SelectMany(s => PanesOf(s))
+                    .Select(p => p.S.ChildProcessId).Where(id => id is > 0).Select(id => id!.Value))
+                : new Dictionary<int, string>();
 
             var st = new AppState
             {
@@ -2484,7 +2577,8 @@ internal static class Program
                     {
                         string live = PrettyCwd(SafeCwd(p));                       // OSC 7 cwd if the shell reports it
                         string cwd = live.Length > 0 ? live : (p.StartCwd ?? ""); // else the launch dir
-                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio });
+                        string cmd = (p.S.ChildProcessId is int pid && cmdByPid.TryGetValue(pid, out var c)) ? c : "";
+                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd });
                     }
                     wss.Sessions.Add(ss);
                 }
@@ -2597,6 +2691,28 @@ internal static class Program
                     }
                     if (ReferenceEquals(_active, ses)) _session = ses.S;
                     RegridSession(ses);
+
+                    // Opt-in: re-run each pane's captured foreground command once the shell is ready.
+                    if (_config.RestoreCommands)
+                    {
+                        var deny = LoadDenylist();
+                        for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
+                        {
+                            string cmd = pl[i].Command ?? "";
+                            if (cmd.Length == 0) continue;
+                            string lead = StripExe(cmd.TrimStart('"').Split(' ', 2)[0]);
+                            if (deny.Contains(lead)) continue;
+                            var pane = ses.Panes[i];
+                            // Prefix the call operator: a captured command line starts with a quoted exe
+                            // path, which pwsh would otherwise parse as a bare string literal.
+                            string run = "& " + cmd;
+                            _ = Task.Run(async () =>
+                            {
+                                await Task.Delay(2500); // let the shell/profile settle; pwsh buffers stdin until ready
+                                try { pane.S.Write(System.Text.Encoding.UTF8.GetBytes(run + "\r")); } catch { }
+                            });
+                        }
+                    }
                 }
                 lock (_workspaces) ws.Expanded = w.Expanded; // CreateSession forces Expanded=true; restore the saved state
             }

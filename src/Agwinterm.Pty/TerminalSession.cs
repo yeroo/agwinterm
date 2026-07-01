@@ -17,6 +17,9 @@ public sealed class TerminalSession : IDisposable
     public int Cols { get; private set; }
     public int Rows { get; private set; }
 
+    /// <summary>PID of the spawned shell process (null before start), for foreground-command capture.</summary>
+    public int? ChildProcessId => _connection?.Pid;
+
     /// <summary>Raised (on a background thread) after each chunk of output is fed to the emulator.</summary>
     public event Action? OutputReceived;
 
