@@ -162,6 +162,16 @@ public sealed class TerminalSession : IDisposable
         OutputReceived?.Invoke();
     }
 
+    /// <summary>
+    /// Mutate the emulator directly under the render lock, then signal a repaint. Used to place
+    /// images without pushing a large base64 payload through the parser under the lock.
+    /// </summary>
+    public void MutateLocked(Action<TerminalEmulator> mutate)
+    {
+        lock (_sync) mutate(Emulator);
+        OutputReceived?.Invoke();
+    }
+
     /// <summary>Send bytes (e.g. keystrokes) to the child's input.</summary>
     public void Write(ReadOnlySpan<byte> bytes)
     {

@@ -225,6 +225,27 @@ public sealed class TerminalEmulator : IParserPerformer
     /// <summary>Image placements on the grid, in z-order of arrival.</summary>
     public IReadOnlyList<ImagePlacement> Placements => _placements;
 
+    // ---- Direct image API (bypasses the APC/base64 text path) ----
+    // Lets a host deliver already-decoded image bytes without a base64 round-trip through
+    // the parser, so heavy work stays off the render lock. Semantics match a=T/a=p/a=d.
+
+    /// <summary>Remove all image placements (equivalent of Kitty a=d with no id).</summary>
+    public void ClearPlacements() => _placements.Clear();
+
+    /// <summary>True if an image with this id has been transmitted (so it can be re-placed).</summary>
+    public bool HasImage(int id) => _images.ContainsKey(id);
+
+    /// <summary>Register/replace an image's pixel payload by id (equivalent of a=T's transmit).</summary>
+    public void SetImageData(int id, KittyFormat format, int width, int height, byte[] data)
+        => _images[id] = new KittyImage(id, format, width, height, data);
+
+    /// <summary>Place (or re-place) an image at an explicit cell, replacing any placement of the same id.</summary>
+    public void PlaceImage(int id, int row, int col, int cols, int rows)
+    {
+        _placements.RemoveAll(p => p.ImageId == id);
+        _placements.Add(new ImagePlacement(id, row, col, cols, rows));
+    }
+
     public void ApcDispatch(string data)
     {
         if (data.Length == 0 || data[0] != 'G') return; // only Kitty graphics (_G...)

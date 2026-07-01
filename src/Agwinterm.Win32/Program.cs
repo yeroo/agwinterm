@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using Agwinterm.Core;
 using Agwinterm.Pty;
+using SharpGen.Runtime;
 using Vortice.Direct2D1;
 using Vortice.DirectWrite;
 using Vortice.DCommon;
@@ -39,6 +41,8 @@ internal static class Program
 
     private static float _cellW = 8, _cellH = 16;
     private static bool _cursorOn = true;
+    private static readonly StringBuilder _run = new(256);   // reused per text run (no per-cell alloc)
+    private static int _redrawPending;                       // coalesces redraw requests into one paint
 
     // Decoded Kitty images, keyed by the current KittyImage instance so a retransmit
     // (new bytes, same id) re-decodes and the stale texture is pruned/disposed.
@@ -164,7 +168,7 @@ internal static class Program
         _control = new ControlServer(session, "agwinterm");
         _control.Start();
 
-        session.OutputReceived += () => PostMessageW(_hwnd, WM_APP_REDRAW, IntPtr.Zero, IntPtr.Zero);
+        session.OutputReceived += RequestRedraw;
 
         string id = Guid.NewGuid().ToString();
         var env = new Dictionary<string, string>
@@ -181,6 +185,12 @@ internal static class Program
 
     private static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        try { return WindowProcCore(hwnd, msg, wParam, lParam); }
+        catch (Exception ex) { Perf($"wndproc ex msg=0x{msg:X}: {ex.GetType().Name} {ex.Message}"); return DefWindowProcW(hwnd, msg, wParam, lParam); }
+    }
+
+    private static IntPtr WindowProcCore(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
+    {
         switch (msg)
         {
             case WM_PAINT:
@@ -190,6 +200,7 @@ internal static class Program
                 return IntPtr.Zero;
 
             case WM_APP_REDRAW:
+                System.Threading.Interlocked.Exchange(ref _redrawPending, 0);
                 InvalidateRect(hwnd, IntPtr.Zero, false);
                 return IntPtr.Zero;
 
@@ -266,6 +277,13 @@ internal static class Program
         _session?.Write(Encoding.UTF8.GetBytes(s));
     }
 
+    /// <summary>Coalesce many output/decode notifications into a single pending repaint.</summary>
+    private static void RequestRedraw()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _redrawPending, 1) == 0)
+            PostMessageW(_hwnd, WM_APP_REDRAW, IntPtr.Zero, IntPtr.Zero);
+    }
+
     /// <summary>Report a mouse event given raw client pixels packed in lParam (button code already encoded).</summary>
     private static void SendMousePx(int btn, IntPtr lParam, bool press)
         => SendMouse(btn, LoWord(lParam), HiWord(lParam), press);
@@ -325,10 +343,24 @@ internal static class Program
 
     private static Color4 C4(Color c) => new(c.R / 255f, c.G / 255f, c.B / 255f, 1f);
 
+    /// <summary>Effective foreground for a cell: inverse swap, then faint (SGR 2) dimming.</summary>
+    private static Color Dimmed(Cell cell)
+    {
+        Color fg = cell.Attributes.HasFlag(CellAttributes.Inverse) ? cell.Background : cell.Foreground;
+        if (cell.Attributes.HasFlag(CellAttributes.Dim))
+            fg = new Color((byte)(fg.R * 0.6f), (byte)(fg.G * 0.6f), (byte)(fg.B * 0.6f));
+        return fg;
+    }
+
     // ---- Kitty images (Direct2D) ----
 
     private static readonly string? _imgLog = Environment.GetEnvironmentVariable("AGWINTERM_IMGLOG");
     private static void Log(string m) { if (_imgLog is not null) try { File.AppendAllText(_imgLog, m + "\n"); } catch { } }
+
+    private static readonly string? _perfLog = Environment.GetEnvironmentVariable("AGWINTERM_PERF");
+    private static void Perf(string m) { if (_perfLog is not null) try { File.AppendAllText(_perfLog, m + "\n"); } catch { } }
+    private static int _uploadCount;
+    private static double _uploadMs;
 
     /// <summary>
     /// Draw current image placements. Decoding (PNG decompress) happens on a background
@@ -346,9 +378,11 @@ internal static class Program
             if (d.bgra is null || _imageCache.ContainsKey(d.img)) continue;
             try
             {
+                long t0 = Stopwatch.GetTimestamp();
                 var handle = GCHandle.Alloc(d.bgra, GCHandleType.Pinned);
                 try { _imageCache[d.img] = _rt.CreateBitmap(new SizeI(d.w, d.h), handle.AddrOfPinnedObject(), (uint)(d.w * 4), _bmpProps); }
                 finally { handle.Free(); }
+                _uploadCount++; _uploadMs += Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
                 Log($"uploaded id={d.img.Id} {d.w}x{d.h}");
             }
             catch (Exception ex) { Log($"upload FAILED id={d.img.Id}: {ex.GetType().Name} {ex.Message}"); }
@@ -401,7 +435,7 @@ internal static class Program
             Log($"decode FAILED id={img.Id} fmt={img.Format}: {ex.GetType().Name} {ex.Message}");
             _decoded.Enqueue((img, null, 0, 0)); // signal failure so we stop retrying
         }
-        finally { PostMessageW(_hwnd, WM_APP_REDRAW, IntPtr.Zero, IntPtr.Zero); }
+        finally { RequestRedraw(); }
     }
 
     /// <summary>Thread-safe decode (PNG via System.Drawing, or raw RGB/RGBA) to a premultiplied-BGRA buffer.</summary>
@@ -455,11 +489,58 @@ internal static class Program
         return outb;
     }
 
+    /// <summary>Dispose the device-bound render target + textures and rebuild them (after a device/GPU reset).</summary>
+    private static void RecreateTarget()
+    {
+        foreach (var b in _imageCache.Values) { try { b.Dispose(); } catch { } }
+        _imageCache.Clear();
+        _decoding.Clear();
+        while (_decoded.TryDequeue(out _)) { }
+        try { _brush?.Dispose(); } catch { }
+        try { _rt?.Dispose(); } catch { }
+        _brush = null; _rt = null;
+        try { CreateRenderTarget(); } catch (Exception ex) { Perf($"recreate FAILED: {ex.Message}"); }
+        InvalidateRect(_hwnd, IntPtr.Zero, false);
+    }
+
+    // D2DERR_RECREATE_TARGET: the device is lost and every device-bound resource must be rebuilt.
+    private const int D2DERR_RECREATE_TARGET = unchecked((int)0x8899000C);
+
     private static void Render()
     {
         if (_rt is null || _brush is null) return;
-        _rt.BeginDraw();
-        _rt.Clear(C4(Color.DefaultBackground));
+        long tStart = Stopwatch.GetTimestamp();
+        _uploadCount = 0; _uploadMs = 0;
+        try
+        {
+            RenderBody();
+            Result end = _rt.EndDraw(out _, out _);
+            if (end.Failure)
+            {
+                if (end.Code == D2DERR_RECREATE_TARGET) { RecreateTarget(); return; }
+                Perf($"EndDraw fail 0x{end.Code:X8}");
+            }
+        }
+        catch (SharpGenException ex)
+        {
+            // Device loss can surface as an exception from any draw call; rebuild and move on.
+            if (ex.ResultCode.Code == D2DERR_RECREATE_TARGET) { RecreateTarget(); return; }
+            Perf($"render ex {ex.ResultCode.Code:X8}: {ex.Message}");
+            RecreateTarget();
+            return;
+        }
+        catch (Exception ex) { Perf($"render ex: {ex.GetType().Name} {ex.Message}"); RecreateTarget(); return; }
+
+        if (_perfLog is not null)
+            Perf($"frame render={Stopwatch.GetElapsedTime(tStart).TotalMilliseconds:F2}ms uploads={_uploadCount} uploadMs={_uploadMs:F2} t={DateTime.Now:HH:mm:ss.fff}");
+    }
+
+    private static void RenderBody()
+    {
+        var rt = _rt!;
+        var brush = _brush!;
+        rt.BeginDraw();
+        rt.Clear(C4(Color.DefaultBackground));
 
         var session = _session;
         if (session is not null)
@@ -468,36 +549,71 @@ internal static class Program
             {
                 var em = session.Emulator;
                 var screen = em.Screen;
+                int cols = screen.Cols, rows = screen.Rows;
 
-                for (int r = 0; r < screen.Rows; r++)
+                // Text is drawn in runs of same-colour cells rather than one DrawText per
+                // cell: on a full-screen repaint that cuts thousands of shaping/layout calls
+                // (and per-cell string allocations) down to a few dozen — the difference
+                // between a ~20ms frame and a ~3ms one while scrolling.
+                for (int r = 0; r < rows; r++)
                 {
-                    for (int col = 0; col < screen.Cols; col++)
+                    float y = PadY + r * _cellH;
+
+                    // Pass 1: background fills, coalesced across equal-bg spans.
+                    int c = 0;
+                    while (c < cols)
                     {
-                        Cell cell = screen[r, col];
-                        if (cell.Width == 0) continue; // trailing spacer of a wide glyph
-                        float x = PadX + col * _cellW;
-                        float y = PadY + r * _cellH;
-
-                        bool inverse = cell.Attributes.HasFlag(CellAttributes.Inverse);
-                        Color fgc = inverse ? cell.Background : cell.Foreground;
-                        Color bgc = inverse ? cell.Foreground : cell.Background;
-
-                        // Faint (SGR 2): render the foreground dimmer, matching Windows Terminal.
-                        if (cell.Attributes.HasFlag(CellAttributes.Dim))
-                            fgc = new Color((byte)(fgc.R * 0.6f), (byte)(fgc.G * 0.6f), (byte)(fgc.B * 0.6f));
-
-                        float w = cell.Width == 2 ? _cellW * 2 : _cellW;
-
-                        if (bgc != Color.DefaultBackground)
+                        Cell cell = screen[r, c];
+                        Color bg = cell.Attributes.HasFlag(CellAttributes.Inverse) ? cell.Foreground : cell.Background;
+                        if (bg == Color.DefaultBackground) { c++; continue; }
+                        int start = c;
+                        while (c < cols)
                         {
-                            _brush.Color = C4(bgc);
-                            _rt.FillRectangle(new Rect(x, y, w, _cellH), _brush);
+                            Cell cc = screen[r, c];
+                            Color b2 = cc.Attributes.HasFlag(CellAttributes.Inverse) ? cc.Foreground : cc.Background;
+                            if (cc.Width != 0 && b2 != bg) break;
+                            c++;
+                        }
+                        brush.Color = C4(bg);
+                        rt.FillRectangle(new Rect(PadX + start * _cellW, y, (c - start) * _cellW, _cellH), brush);
+                    }
+
+                    // Pass 2: foreground text, coalesced into same-colour runs.
+                    c = 0;
+                    while (c < cols)
+                    {
+                        Cell cell = screen[r, c];
+                        if (cell.Width == 0 || cell.Rune == ' ' || cell.Rune == '\0') { c++; continue; }
+
+                        Color runFg = Dimmed(cell);
+                        if (cell.Width == 2) // draw wide (CJK) glyphs individually; advances differ
+                        {
+                            brush.Color = C4(runFg);
+                            float wx = PadX + c * _cellW;
+                            rt.DrawText(cell.Rune.ToString(), _format, new Rect(wx, y, wx + 2 * _cellW, y + _cellH), brush);
+                            c++;
+                            continue;
                         }
 
-                        if (cell.Rune != ' ' && cell.Rune != '\0')
+                        int start = c;
+                        _run.Clear();
+                        int lastNonBlank = 0;
+                        while (c < cols)
                         {
-                            _brush.Color = C4(fgc);
-                            _rt.DrawText(cell.Rune.ToString(), _format, new Rect(x, y, x + w, y + _cellH), _brush);
+                            Cell cc = screen[r, c];
+                            if (cc.Width == 2 || cc.Width == 0) break; // wide glyph starts a new run
+                            bool blank = cc.Rune == ' ' || cc.Rune == '\0';
+                            if (!blank && Dimmed(cc) != runFg) break;  // colour change ends the run
+                            _run.Append(blank ? ' ' : cc.Rune);
+                            c++;
+                            if (!blank) lastNonBlank = _run.Length;
+                        }
+                        if (lastNonBlank > 0)
+                        {
+                            _run.Length = lastNonBlank; // drop trailing blanks (nothing to shape)
+                            brush.Color = C4(runFg);
+                            float rx = PadX + start * _cellW;
+                            rt.DrawText(_run.ToString(), _format, new Rect(rx, y, rx + _run.Length * _cellW, y + _cellH), brush);
                         }
                     }
                 }
@@ -509,30 +625,28 @@ internal static class Program
                 {
                     float cx = PadX + em.CursorCol * _cellW;
                     float cy = PadY + em.CursorRow * _cellH;
-                    _brush.Color = new Color4(222 / 255f, 222 / 255f, 230 / 255f, 1f);
+                    brush.Color = new Color4(222 / 255f, 222 / 255f, 230 / 255f, 1f);
 
                     if (!_config.CursorBlink || _cursorOn)
                     {
                         switch (_config.CursorStyle)
                         {
                             case CursorStyle.Block:
-                                _rt.FillRectangle(new Rect(cx, cy, _cellW, _cellH), _brush);
+                                rt.FillRectangle(new Rect(cx, cy, _cellW, _cellH), brush);
                                 break;
                             case CursorStyle.Underline:
                                 float uh = MathF.Max(1f, MathF.Round(_cellH * 0.12f));
-                                _rt.FillRectangle(new Rect(cx, cy + _cellH - uh, _cellW, uh), _brush);
+                                rt.FillRectangle(new Rect(cx, cy + _cellH - uh, _cellW, uh), brush);
                                 break;
                             default:
                                 float barW = MathF.Max(1f, MathF.Round(_cellW * 0.14f));
-                                _rt.FillRectangle(new Rect(cx, cy, barW, _cellH), _brush);
+                                rt.FillRectangle(new Rect(cx, cy, barW, _cellH), brush);
                                 break;
                         }
                     }
                 }
             }
         }
-
-        _rt.EndDraw();
     }
 
     // ---- Config (mirrors the WinUI shell) ----

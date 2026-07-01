@@ -199,9 +199,13 @@ public sealed class ControlServer : IDisposable
             return Err("image.frame requires args.images array");
 
         var state = _txState.GetOrCreateValue(s);
-        var sb = new StringBuilder();
-        sb.Append("\x1b_Ga=d\x1b\\"); // clear previous placements
+        // Phase 1 (OFF the render lock): resolve placements and read+own the pixel bytes for any
+        // image whose content changed. The expensive file read stays out of the lock, and we pass
+        // raw PNG bytes straight to the emulator — no base64 encode here and no base64 decode under
+        // the lock (the renderer decodes PNG asynchronously on its own thread).
+        var ops = new List<(int id, int row, int col, int cols, int rows, byte[]? data)>();
         int count = 0, transmits = 0;
+        long readBytes = 0;
         foreach (var img in images.EnumerateArray())
         {
             string? path = GetString(img, "path");
@@ -209,30 +213,42 @@ public sealed class ControlServer : IDisposable
             int row = GetInt(img, "row", 0), col = GetInt(img, "col", 0);
             int cols = GetInt(img, "cols", 0), rows = GetInt(img, "rows", 0), id = GetInt(img, "id", count + 1);
 
-            // Retransmit the pixels only when the file's content changed; otherwise re-place
-            // the already-transmitted image so scrolling/redraw costs nothing (no base64 here,
-            // no re-decode under the render lock, no GPU re-upload).
             long sig = ContentSignature(path);
             bool transmit;
             lock (state) transmit = sig == 0 || !(state.TryGetValue(id, out var prev) && prev == sig);
 
-            sb.Append('\x1b').Append('[').Append(row + 1).Append(';').Append(col + 1).Append('H');
-            sb.Append('\x1b').Append("_G");
-            sb.Append(transmit ? "f=100,a=T,i=" : "a=p,i=").Append(id);
-            if (cols > 0) sb.Append(",c=").Append(cols);
-            if (rows > 0) sb.Append(",r=").Append(rows);
+            byte[]? data = null;
             if (transmit)
             {
-                sb.Append(';').Append(Convert.ToBase64String(File.ReadAllBytes(path)));
-                lock (state) state[id] = sig;
-                transmits++;
+                try { data = File.ReadAllBytes(path); } catch { data = null; }
+                if (data is not null) { lock (state) state[id] = sig; transmits++; readBytes += data.Length; }
             }
-            sb.Append('\x1b').Append('\\');
+            ops.Add((id, row, col, cols, rows, data));
             count++;
         }
-        s.Inject(Encoding.ASCII.GetBytes(sb.ToString()));
+
+        // Phase 2 (BRIEF lock): swap placements and register any new pixels — dictionary/list
+        // updates only, microseconds, so a big image appearing never stalls the paint thread.
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        s.MutateLocked(em =>
+        {
+            em.ClearPlacements();
+            foreach (var op in ops)
+            {
+                if (op.data is not null)
+                    em.SetImageData(op.id, KittyFormat.Png, 0, 0, op.data);
+                else if (!em.HasImage(op.id))
+                    continue; // never transmitted and no cached copy -> nothing to place
+                em.PlaceImage(op.id, op.row, op.col, op.cols, op.rows);
+            }
+        });
+        if (_perfLog is not null)
+            Perf($"frame images={count} transmits={transmits} readKB={readBytes / 1024} lockMs={System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds:F2}");
         return Ok($"frame:{count}/{transmits}");
     }
+
+    private static readonly string? _perfLog = Environment.GetEnvironmentVariable("AGWINTERM_PERF");
+    private static void Perf(string m) { if (_perfLog is not null) try { File.AppendAllText(_perfLog, "[ctl] " + m + "\n"); } catch { } }
 
     /// <summary>Cheap content signature (no full read): last-write time, length, and path.</summary>
     private static long ContentSignature(string path)
