@@ -121,7 +121,10 @@ internal static class Program
     {
         using var run = _dwrite.CreateTextLayout(new string('M', 10), _format, 4096f, 4096f);
         using var one = _dwrite.CreateTextLayout("M", _format, 4096f, 4096f);
-        _cellW = MathF.Round(run.Metrics.Width / 10f);
+        // Use the font's exact advance (do NOT round): text is drawn a run at a time, so the
+        // glyph advance must equal the grid step or long runs (e.g. horizontal box-drawing
+        // borders) drift off the per-column grid and stop meeting the vertical borders.
+        _cellW = run.Metrics.Width / 10f;
         _cellH = MathF.Round(one.Metrics.Height);
         if (_cellW < 1) _cellW = 8;
         if (_cellH < 1) _cellH = 16;
@@ -147,6 +150,9 @@ internal static class Program
             PresentOptions = PresentOptions.None,
         };
         _rt = _d2d.CreateHwndRenderTarget(props, hwndProps);
+        // Grayscale AA (like Windows Terminal): glyphs sit at fractional x on the grid, and
+        // ClearType would fringe vertical strokes (e.g. box-drawing borders) with colour.
+        _rt.TextAntialiasMode = Vortice.Direct2D1.TextAntialiasMode.Grayscale;
         _brush = _rt.CreateSolidColorBrush(new Color4(1f, 1f, 1f, 1f));
     }
 
