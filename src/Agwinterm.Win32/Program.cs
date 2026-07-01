@@ -394,24 +394,12 @@ internal static class Program
     }
 
     /// <summary>
-    /// pwsh launch args. With shell integration on, inject a prompt hook (via -EncodedCommand,
-    /// so no quoting worries) that wraps the existing prompt (e.g. oh-my-posh) to also emit
-    /// OSC 7 with the live working directory — the emulator's OscDispatch(7) then keeps Cwd
-    /// current, so persistence saves the real directory after `cd`.
+    /// pwsh launch args: a plain interactive shell so the user's profile (e.g. oh-my-posh) loads
+    /// normally. Live-cwd tracking (OSC 7) is provided prompt-safely by the shell-integration
+    /// installer (ShellIntegrationInstaller), which appends a guarded, prompt-WRAPPING block to
+    /// $PROFILE — so it composes with oh-my-posh instead of replacing it.
     /// </summary>
-    private static string[] ShellArgs()
-    {
-        if (!_config.ShellIntegration) return new[] { "-NoLogo" };
-        const string hook =
-            "$global:__agwp=$function:prompt;" +
-            "function global:prompt{" +
-              "$p=(Get-Location).ProviderPath;" +
-              "if($p){[Console]::Write([char]27+']7;file://'+$env:COMPUTERNAME+'/'+($p -replace '\\\\','/')+[char]7)};" +
-              "if($global:__agwp){& $global:__agwp}else{\"PS $p> \"}" +
-            "}";
-        string b64 = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(hook));
-        return new[] { "-NoLogo", "-NoExit", "-EncodedCommand", b64 };
-    }
+    private static string[] ShellArgs() => new[] { "-NoLogo" };
 
     private static Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null)
     {
@@ -923,8 +911,17 @@ internal static class Program
             case "increase_font_size": ChangeFontSize(1); break;
             case "decrease_font_size": ChangeFontSize(-1); break;
             case "reset_font_size": ChangeFontSize(0); break;
+            case "install_shell_integration": InstallShellIntegration(); break;
         }
     }
+
+    /// <summary>Install the $PROFILE OSC-7 shell integration off the UI thread, then toast the result.</summary>
+    private static void InstallShellIntegration()
+        => System.Threading.Tasks.Task.Run(() =>
+        {
+            string result = Agwinterm.Pty.ShellIntegrationInstaller.Install();
+            Post(() => ShowToast(result));
+        });
 
     /// <summary>Type a custom command's text + Enter into the active session, as if the user typed it.</summary>
     private static void RunCustomCommand(string text)
@@ -1913,6 +1910,7 @@ internal static class Program
                 A("Quick Terminal", "", () => ShowToast("quick terminal not implemented yet"));
                 A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
                 A("Custom Commands…", "Ctrl+Shift+O", () => TogglePalette(PaletteKind.Custom));
+                A("Install Shell Integration", "", InstallShellIntegration);
                 A("Reload Keymap", "", ReloadKeymap);
                 break;
             }
