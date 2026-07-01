@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Agwinterm.App/Agwinterm.App.csproj">
+      <Platform Project="x64" />
+    </Project>
+    <Project Path="src/Agwinterm.Core/Agwinterm.Core.csproj" />
+    <Project Path="src/Agwinterm.Pty/Agwinterm.Pty.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Agwinterm.Core.Tests/Agwinterm.Core.Tests.csproj" />
+    <Project Path="tests/Agwinterm.Pty.Tests/Agwinterm.Pty.Tests.csproj" />
+  </Folder>
+</Solution>
