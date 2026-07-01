@@ -86,6 +86,7 @@ public sealed class ControlServer : IDisposable
             {
                 case "ping": return Ok("agwinterm");
                 case "install.hooks": return Ok(AgentHooks.Install());
+                case "install.skill": return Ok(AgentSkill.Install());
                 case "tree": return HandleTree();
                 case "session.new": return Ok(_host.NewSession(GetString(args, "name"), GetString(args, "cwd")));
                 case "session.select": return _host.SelectSession(target ?? "active") ? Ok("selected") : Err("session not found");

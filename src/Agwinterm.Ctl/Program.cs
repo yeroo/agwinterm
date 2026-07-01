@@ -55,6 +55,7 @@ switch (area)
     case "ping": cmd = "ping"; break;
     case "tree": cmd = "tree"; break;
     case "install" when sub == "hooks": cmd = "install.hooks"; break;
+    case "install" when sub == "skill": cmd = "install.skill"; break;
     case "session":
         cmd = "session." + sub;
         target = DefaultTarget();
