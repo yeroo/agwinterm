@@ -65,6 +65,25 @@ internal static class Program
     private static int _capPressed;   // HT* of a pressed caption button (for click + pressed paint)
     private static string? _toastText;
 
+    // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
+    private enum PaletteKind { None, Sessions, Actions, Attention }
+    private sealed class PalItem
+    {
+        public required string Label;
+        public string Secondary = "";
+        public string Search = "";
+        public string Hint = "";
+        public AgentStatus? Dot;      // leading status dot (attention/sessions)
+        public Action? Run;           // null = non-actionable placeholder
+    }
+    private static PaletteKind _palette = PaletteKind.None;
+    private static string _palQuery = "";
+    private static int _palSel;
+    private static readonly List<PalItem> _palAll = new();
+    private static readonly List<PalItem> _palItems = new();
+    private static readonly List<(float y0, float y1, int idx)> _palRows = new();
+    private static Rect _palPanel;    // panel bounds (for click-outside-to-close)
+
     // Inline rename (native child EDIT overlaid on the row being renamed).
     private const int EDIT_ID = 101;
     private static IntPtr _editHwnd;
@@ -513,6 +532,11 @@ internal static class Program
             case WM_CHAR:
                 {
                     char c = (char)wParam;
+                    if (_palette != PaletteKind.None)
+                    {
+                        if (c >= 0x20 && c != 0x7f) { _palQuery += c; _palSel = 0; FilterPalette(); RequestRedraw(); }
+                        return IntPtr.Zero;
+                    }
                     if (c >= 0x20 && c != 0x7f) Send(c.ToString());
                     return IntPtr.Zero;
                 }
@@ -520,6 +544,7 @@ internal static class Program
             case WM_LBUTTONDOWN:
                 {
                     int mx = LoWord(lParam), my = HiWord(lParam);
+                    if (_palette != PaletteKind.None) { PaletteClick(mx, my); return IntPtr.Zero; }
                     if (my < (int)TitleBarH) { HitChrome(_titleButtons, mx); return IntPtr.Zero; }
                     if (mx < (int)_sidebarW)
                     {
@@ -608,15 +633,23 @@ internal static class Program
     /// <summary>Returns true if the key was consumed (matches the WinUI key table).</summary>
     private static bool OnKeyDown(int vk)
     {
-        if (_session is null) return false;
         bool ctrl = KeyDown(VK_CONTROL), shift = KeyDown(VK_SHIFT), alt = KeyDown(VK_MENU);
+
+        // While a palette is open it owns the keyboard (nav here, typing via WM_CHAR).
+        if (_palette != PaletteKind.None) return PaletteKeyDown(vk);
+
+        // Palette open/toggle shortcuts (before the terminal Ctrl+letter table eats them).
+        if (ctrl && !alt && !shift && vk == 'P') { TogglePalette(PaletteKind.Sessions); return true; }
+        if (ctrl && shift && vk == 'P') { TogglePalette(PaletteKind.Actions); return true; }
+        if (ctrl && shift && vk == 'I') { TogglePalette(PaletteKind.Attention); return true; } // attention LIST
+
+        if (_session is null) return false;
 
         // agterm session/workspace shortcuts (handled before the terminal key table).
         if (ctrl && vk == VK_TAB) { CycleSession(shift ? -1 : 1); return true; }
         if (ctrl && shift && vk == 'T') { CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true); return true; }
         if (ctrl && shift && vk == 'N') { CreateWorkspace(Guid.NewGuid().ToString(), null); return true; }
         if (ctrl && shift && vk == 'W') { if (_active is not null) CloseSessionInternal(_active); return true; }
-        if (ctrl && shift && vk == 'I') { GoToNextAttention(1); return true; }          // jump to next attention
         if (ctrl && alt && vk == VK_UP) { GoToNextAttention(-1); return true; }          // previous attention
         if (ctrl && alt && vk == VK_DOWN) { GoToNextAttention(1); return true; }         // next attention
         if (!ctrl && !alt && !shift && vk == 0x71 && _active is not null) { StartRename(_active); return true; } // F2 rename
@@ -969,6 +1002,7 @@ internal static class Program
         DrawSidebar(rt, brush);
         DrawTitleBar(rt, brush);
         DrawToast(rt, brush);
+        DrawPalette(rt, brush);
     }
 
     // ---- Sidebar (custom Direct2D outline: workspaces -> sessions) ----
@@ -1274,6 +1308,206 @@ internal static class Program
         int idx = _active is not null ? list.IndexOf(_active) : -1;
         int next = idx < 0 ? (dir > 0 ? 0 : list.Count - 1) : ((idx + dir) % list.Count + list.Count) % list.Count;
         SetActive(list[next]);
+    }
+
+    // ---- Command palette (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention) ----
+
+    private static readonly Color4 PalScrim = new(0f, 0f, 0f, 0.45f);
+    private static readonly Color4 PalBg = new(0.11f, 0.12f, 0.145f, 1f);
+    private static readonly Color4 PalBorder = new(0.30f, 0.34f, 0.42f, 1f);
+    private static readonly Color4 PalSel = new(0.20f, 0.30f, 0.46f, 1f);
+
+    private static void TogglePalette(PaletteKind kind)
+    {
+        if (_palette == kind) { ClosePalette(); return; }
+        _palette = kind; _palQuery = ""; _palSel = 0;
+        BuildPaletteItems();
+        FilterPalette();
+        RequestRedraw();
+    }
+
+    private static void ClosePalette()
+    {
+        _palette = PaletteKind.None;
+        _palAll.Clear(); _palItems.Clear(); _palRows.Clear();
+        RequestRedraw();
+    }
+
+    private static void BuildPaletteItems()
+    {
+        _palAll.Clear();
+        switch (_palette)
+        {
+            case PaletteKind.Sessions:
+            {
+                foreach (var s in AllSessions())
+                {
+                    var sx = s;
+                    string cwd = PrettyCwd(SafeCwd(sx));
+                    _palAll.Add(new PalItem
+                    {
+                        Label = sx.Name,
+                        Secondary = cwd.Length > 0 ? $"{sx.Ws.Name}  ·  {cwd}" : sx.Ws.Name,
+                        Search = $"{sx.Name} {sx.Ws.Name} {cwd}",
+                        Dot = sx.S.Status,
+                        Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
+                    });
+                }
+                break;
+            }
+            case PaletteKind.Actions:
+            {
+                void A(string label, string hint, Action run) => _palAll.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
+                A("New Session", "Ctrl+Shift+T", () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true));
+                A("New Workspace", "Ctrl+Shift+N", () => CreateWorkspace(Guid.NewGuid().ToString(), null));
+                A("Rename Active Session", "F2", () => { if (_active is not null) StartRename(_active); });
+                A("Close Active Session", "Ctrl+Shift+W", () => { if (_active is not null) CloseSessionInternal(_active); });
+                A("Delete Active Workspace", "", () => { if (_active is not null) DeleteWorkspace(_active.Ws); });
+                A("Toggle Sidebar", "", ToggleSidebar);
+                A("Next Session", "Ctrl+Tab", () => CycleSession(1));
+                A("Previous Session", "Ctrl+Shift+Tab", () => CycleSession(-1));
+                A("Next Attention", "Ctrl+Alt+Down", () => GoToNextAttention(1));
+                A("Previous Attention", "Ctrl+Alt+Up", () => GoToNextAttention(-1));
+                A("Split", "", () => ShowToast("split not implemented yet"));
+                A("Scratch Terminal", "", () => ShowToast("scratch not implemented yet"));
+                A("Quick Terminal", "", () => ShowToast("quick terminal not implemented yet"));
+                break;
+            }
+            case PaletteKind.Attention:
+            {
+                var att = AllSessions().Where(s => s.S.Status != AgentStatus.Idle)
+                    .OrderBy(s => s.S.Status == AgentStatus.Blocked ? 0 : s.S.Status == AgentStatus.Active ? 1 : 2)
+                    .ToList();
+                if (att.Count == 0) { _palAll.Add(new PalItem { Label = "No sessions need attention", Run = null }); break; }
+                foreach (var s in att)
+                {
+                    var sx = s;
+                    _palAll.Add(new PalItem
+                    {
+                        Label = sx.Name,
+                        Secondary = $"{sx.Ws.Name}  ·  {sx.S.Status.ToString().ToLowerInvariant()}",
+                        Search = $"{sx.Name} {sx.Ws.Name}",
+                        Dot = sx.S.Status,
+                        Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
+                    });
+                }
+                break;
+            }
+        }
+    }
+
+    private static void FilterPalette()
+    {
+        _palItems.Clear();
+        if (_palQuery.Length == 0) { _palItems.AddRange(_palAll); }
+        else
+        {
+            string q = _palQuery.ToLowerInvariant();
+            _palItems.AddRange(_palAll
+                .Select(it => (it, sc: FuzzyScore(q, it.Search.ToLowerInvariant())))
+                .Where(x => x.sc >= 0)
+                .OrderByDescending(x => x.sc).ThenBy(x => x.it.Label, StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.it));
+        }
+        if (_palSel >= _palItems.Count) _palSel = Math.Max(0, _palItems.Count - 1);
+    }
+
+    /// <summary>Subsequence fuzzy score: -1 = no match; higher = better (contiguity + earliness).</summary>
+    private static int FuzzyScore(string q, string text)
+    {
+        if (q.Length == 0) return 0;
+        int ti = 0, score = 0, streak = 0, first = -1;
+        foreach (char qc in q)
+        {
+            int found = text.IndexOf(qc, ti);
+            if (found < 0) return -1;
+            if (first < 0) first = found;
+            if (found == ti) { streak++; score += 8 + streak * 2; } else { streak = 0; score += 1; }
+            ti = found + 1;
+        }
+        return score + Math.Max(0, 12 - first);
+    }
+
+    private static bool PaletteKeyDown(int vk)
+    {
+        switch (vk)
+        {
+            case VK_ESCAPE: ClosePalette(); return true;
+            case VK_RETURN: RunPaletteSelection(); return true;
+            case VK_UP: if (_palSel > 0) { _palSel--; RequestRedraw(); } return true;
+            case VK_DOWN: if (_palSel < _palItems.Count - 1) { _palSel++; RequestRedraw(); } return true;
+            case VK_BACK: if (_palQuery.Length > 0) { _palQuery = _palQuery[..^1]; _palSel = 0; FilterPalette(); RequestRedraw(); } return true;
+        }
+        return true; // swallow everything else from the terminal; printable arrives via WM_CHAR
+    }
+
+    private static void RunPaletteSelection()
+    {
+        Action? run = (_palSel >= 0 && _palSel < _palItems.Count) ? _palItems[_palSel].Run : null;
+        ClosePalette();
+        run?.Invoke();
+    }
+
+    private static void PaletteClick(int mx, int my)
+    {
+        foreach (var r in _palRows)
+            if (my >= r.y0 && my < r.y1) { _palSel = r.idx; RunPaletteSelection(); return; }
+        bool inPanel = mx >= _palPanel.X && mx < _palPanel.X + _palPanel.Width && my >= _palPanel.Y && my < _palPanel.Y + _palPanel.Height;
+        if (!inPanel) ClosePalette(); // click outside closes; inside (padding/query) is ignored
+    }
+
+    private static void DrawPalette(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        if (_palette == PaletteKind.None) return;
+        _palRows.Clear();
+        int cw = ClientW(), ch = ClientH();
+        brush.Color = PalScrim;
+        rt.FillRectangle(new Rect(0, 0, cw, ch), brush);
+
+        const float queryH = 42f, rowH = 40f;
+        const int maxRows = 12;
+        float pw = MathF.Min(560f, cw - 80f);
+        float px = (cw - pw) / 2f;
+        int shown = Math.Min(_palItems.Count, maxRows);
+        float ph = queryH + Math.Max(1, shown) * rowH + 8f;
+        float py = MathF.Max(TitleBarH + 16f, ch * 0.14f);
+        _palPanel = new Rect(px, py, pw, ph);
+
+        brush.Color = PalBg;
+        rt.FillRoundedRectangle(new RoundedRectangle { Rect = _palPanel, RadiusX = 10f, RadiusY = 10f }, brush);
+        brush.Color = PalBorder;
+        rt.DrawRoundedRectangle(new RoundedRectangle { Rect = _palPanel, RadiusX = 10f, RadiusY = 10f }, brush, 1f);
+
+        // Query line (placeholder when empty) + blinking caret.
+        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", _ => "Attention" };
+        brush.Color = _palQuery.Length > 0 ? ChromeText : ChromeDim;
+        rt.DrawText(_palQuery.Length > 0 ? _palQuery : placeholder, _uiFont, new Rect(px + 16f, py + 9f, pw - 32f, queryH - 10f), brush);
+        if (_cursorOn && _palQuery.Length > 0)
+        {
+            float qx = px + 16f + MeasureText(_palQuery, _uiFont) + 1f;
+            brush.Color = ChromeText;
+            rt.DrawLine(new System.Numerics.Vector2(qx, py + 11f), new System.Numerics.Vector2(qx, py + queryH - 10f), brush, 1.2f);
+        }
+        brush.Color = new Color4(0.22f, 0.24f, 0.28f, 1f);
+        rt.DrawLine(new System.Numerics.Vector2(px + 8f, py + queryH), new System.Numerics.Vector2(px + pw - 8f, py + queryH), brush, 1f);
+
+        int start = _palSel >= maxRows ? _palSel - maxRows + 1 : 0;
+        for (int i = 0; i < shown; i++)
+        {
+            int idx = start + i;
+            if (idx >= _palItems.Count) break;
+            var it = _palItems[idx];
+            float ry = py + queryH + i * rowH;
+            if (idx == _palSel) { brush.Color = PalSel; rt.FillRectangle(new Rect(px + 4f, ry, pw - 8f, rowH), brush); }
+            float tx = px + 16f;
+            if (it.Dot is AgentStatus ds) { brush.Color = StatusDot(ds); rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(px + 16f, ry + rowH / 2f), 4.5f, 4.5f), brush); tx = px + 30f; }
+            bool hasSub = it.Secondary.Length > 0;
+            brush.Color = it.Run is null ? ChromeDim : (idx == _palSel ? new Color4(1f, 1f, 1f, 1f) : ChromeText);
+            rt.DrawText(it.Label, _uiFont, new Rect(tx, ry + (hasSub ? 3f : 0f), pw - (tx - px) - 80f, hasSub ? 20f : rowH), brush);
+            if (hasSub) { brush.Color = ChromeDim; rt.DrawText(it.Secondary, _uiSmall, new Rect(tx, ry + 20f, pw - (tx - px) - 20f, 16f), brush); }
+            if (it.Hint.Length > 0) { brush.Color = ChromeDim; float hw = MeasureText(it.Hint, _uiSmall); rt.DrawText(it.Hint, _uiSmall, new Rect(px + pw - 16f - hw, ry + (rowH - 16f) / 2f, hw + 2f, 16f), brush); }
+            _palRows.Add((ry, ry + rowH, idx));
+        }
     }
 
     // ---- Custom title bar / status bar (frameless chrome) ----
