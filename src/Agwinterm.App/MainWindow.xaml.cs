@@ -43,6 +43,7 @@ public sealed partial class MainWindow : Window, ISessionHost
     private readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock (_workspaces)
     private Ses? _activeRef;
     private object? _editing; // Ses or Workspace currently being renamed inline
+    private bool _termFocused;
     private TerminalSession? _session;   // mirrors the active session (rendering/input use this)
     private bool _started;
     private ControlServer? _control;
@@ -112,7 +113,9 @@ public sealed partial class MainWindow : Window, ISessionHost
         NewSessionButton.Click += (_, _) => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true);
 
         GridCanvas.Loaded += (_, _) => GridCanvas.Focus(FocusState.Programmatic);
-        this.Activated += (_, _) => GridCanvas.Focus(FocusState.Programmatic);
+        this.Activated += (_, e) => { if (e.WindowActivationState != WindowActivationState.Deactivated) FocusTerminal(); };
+        GridCanvas.GotFocus += (_, _) => { _termFocused = true; GridCanvas.Invalidate(); };
+        GridCanvas.LostFocus += (_, _) => { _termFocused = false; GridCanvas.Invalidate(); };
         GridCanvas.CharacterReceived += OnCharacterReceived;
         GridCanvas.KeyDown += OnKeyDown;
         GridCanvas.SizeChanged += OnSizeChanged;
@@ -876,31 +879,40 @@ public sealed partial class MainWindow : Window, ISessionHost
                 }
             }
 
-            bool showCursor = em.CursorVisible && (!_config.CursorBlink || _cursorOn);
-            if (showCursor)
+            if (em.CursorVisible)
             {
                 float cx = PadX + cursorCol * _cellW;
                 float cy = PadY + cursorRow * _cellH;
                 var cur = WinColor.FromArgb(255, 222, 222, 230);
-                switch (_config.CursorStyle)
+
+                if (!_termFocused)
                 {
-                    case CursorStyle.Block:
-                        ds.FillRectangle(cx, cy, _cellW, _cellH, cur);
-                        var under = screen[cursorRow, cursorCol];
-                        if (under.Rune is not ' ' and not '\0')
-                        {
-                            using var gl = new CanvasTextLayout(sender, under.Rune.ToString(), _format, _cellW, _cellH);
-                            ds.DrawTextLayout(gl, cx, cy, ToWin(under.Background));
-                        }
-                        break;
-                    case CursorStyle.Underline:
-                        float uh = MathF.Max(1f, MathF.Round(_cellH * 0.12f));
-                        ds.FillRectangle(cx, cy + _cellH - uh, _cellW, uh, cur);
-                        break;
-                    default:
-                        float barW = MathF.Max(1f, MathF.Round(_cellW * 0.14f));
-                        ds.FillRectangle(cx, cy, barW, _cellH, cur);
-                        break;
+                    // Unfocused: a steady hollow box so a cursor is always visible and the
+                    // focus state is obvious (click the terminal to type).
+                    ds.DrawRectangle(cx + 0.5f, cy + 0.5f, _cellW - 1f, _cellH - 1f, cur, 1f);
+                }
+                else if (!_config.CursorBlink || _cursorOn)
+                {
+                    switch (_config.CursorStyle)
+                    {
+                        case CursorStyle.Block:
+                            ds.FillRectangle(cx, cy, _cellW, _cellH, cur);
+                            var under = screen[cursorRow, cursorCol];
+                            if (under.Rune is not ' ' and not '\0')
+                            {
+                                using var gl = new CanvasTextLayout(sender, under.Rune.ToString(), _format, _cellW, _cellH);
+                                ds.DrawTextLayout(gl, cx, cy, ToWin(under.Background));
+                            }
+                            break;
+                        case CursorStyle.Underline:
+                            float uh = MathF.Max(1f, MathF.Round(_cellH * 0.12f));
+                            ds.FillRectangle(cx, cy + _cellH - uh, _cellW, uh, cur);
+                            break;
+                        default:
+                            float barW = MathF.Max(1f, MathF.Round(_cellW * 0.14f));
+                            ds.FillRectangle(cx, cy, barW, _cellH, cur);
+                            break;
+                    }
                 }
             }
         }
