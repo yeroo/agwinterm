@@ -43,6 +43,10 @@ internal static class Program
     // Decoded Kitty images, keyed by the current KittyImage instance so a retransmit
     // (new bytes, same id) re-decodes and the stale texture is pruned/disposed.
     private static readonly Dictionary<KittyImage, ID2D1Bitmap> _imageCache = new();
+    private static readonly HashSet<KittyImage> _decoding = new();               // decode in flight (UI-thread set)
+    // Background-decoded pixels waiting to be uploaded to a GPU texture on the UI thread.
+    // bgra == null signals a decode failure (so we can drop it from _decoding without retrying forever).
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<(KittyImage img, byte[]? bgra, int w, int h)> _decoded = new();
     private static readonly bool _noImages = Environment.GetEnvironmentVariable("AGWINTERM_NOIMG") == "1";
 
     [STAThread]
@@ -326,38 +330,55 @@ internal static class Program
     private static readonly string? _imgLog = Environment.GetEnvironmentVariable("AGWINTERM_IMGLOG");
     private static void Log(string m) { if (_imgLog is not null) try { File.AppendAllText(_imgLog, m + "\n"); } catch { } }
 
-    /// <summary>Draw current image placements, decoding lazily and pruning stale textures. Called under the session lock.</summary>
+    /// <summary>
+    /// Draw current image placements. Decoding (PNG decompress) happens on a background
+    /// thread so the UI never blocks; only the cheap GPU upload runs here. An image simply
+    /// appears on the next redraw once its pixels are ready. Called under the session lock.
+    /// </summary>
     private static void DrawImages(TerminalEmulator em)
     {
         if (_rt is null) return;
-        Log($"DrawImages: placements={em.Placements.Count} images={em.Images.Count}");
 
-        // Prune textures whose image was retransmitted or deleted (bounds memory during scroll).
+        // 1) Upload any pixels decoded on background threads (cheap; UI thread only).
+        while (_decoded.TryDequeue(out var d))
+        {
+            _decoding.Remove(d.img);
+            if (d.bgra is null || _imageCache.ContainsKey(d.img)) continue;
+            try
+            {
+                var handle = GCHandle.Alloc(d.bgra, GCHandleType.Pinned);
+                try { _imageCache[d.img] = _rt.CreateBitmap(new SizeI(d.w, d.h), handle.AddrOfPinnedObject(), (uint)(d.w * 4), _bmpProps); }
+                finally { handle.Free(); }
+                Log($"uploaded id={d.img.Id} {d.w}x{d.h}");
+            }
+            catch (Exception ex) { Log($"upload FAILED id={d.img.Id}: {ex.GetType().Name} {ex.Message}"); }
+        }
+
+        // 2) Prune textures whose image was retransmitted or deleted (bounds memory during scroll).
         if (_imageCache.Count > 0)
         {
-            foreach (var stale in _imageCache.Keys.Where(k => !em.Images.Values.Contains(k)).ToList())
+            var live = new HashSet<KittyImage>(em.Images.Values);
+            foreach (var stale in _imageCache.Keys.Where(k => !live.Contains(k)).ToList())
             {
                 _imageCache[stale].Dispose();
                 _imageCache.Remove(stale);
             }
         }
 
+        // 3) Draw what's ready; kick off background decodes for what isn't.
         foreach (var p in em.Placements)
         {
             if (!em.Images.TryGetValue(p.ImageId, out var img)) continue;
             if (!_imageCache.TryGetValue(img, out var bmp))
             {
-                try { bmp = DecodeBitmap(img); }
-                catch (Exception ex) { Log($"decode FAILED id={img.Id} fmt={img.Format}: {ex.GetType().Name} {ex.Message}"); bmp = null; }
-                if (bmp is null) continue;
-                _imageCache[img] = bmp;
-                Log($"decoded id={img.Id} sizeDIP={bmp.Size.Width}x{bmp.Size.Height}");
+                if (_decoding.Add(img)) // not already decoding
+                    _ = Task.Run(() => DecodePixelsAsync(img));
+                continue; // will render on a later frame once uploaded
             }
             float ix = PadX + p.Col * _cellW;
             float iy = PadY + p.Row * _cellH;
             float iw = p.Cols > 0 ? p.Cols * _cellW : bmp.Size.Width;
             float ih = p.Rows > 0 ? p.Rows * _cellH : bmp.Size.Height;
-            Log($"draw id={img.Id} cell=({p.Col},{p.Row}) dest=({ix},{iy},{ix + iw},{iy + ih})");
             // Overload with an explicit destination RawRectF (Left,Top,Right,Bottom); source null = whole bitmap.
             try { _rt.DrawBitmap(bmp, new Vortice.RawRectF(ix, iy, ix + iw, iy + ih), 1f, BitmapInterpolationMode.Linear, null); }
             catch (Exception ex) { Log($"DrawBitmap FAILED: {ex.GetType().Name} {ex.Message}"); }
@@ -367,11 +388,25 @@ internal static class Program
     private static readonly BitmapProperties _bmpProps =
         new(new PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, AlphaMode.Premultiplied), 96f, 96f);
 
-    /// <summary>Decode a Kitty image (PNG via System.Drawing, or raw RGB/RGBA) into a premultiplied-BGRA D2D bitmap.</summary>
-    private static ID2D1Bitmap? DecodeBitmap(KittyImage img)
+    /// <summary>Background: decode to premultiplied BGRA pixels (no D2D), enqueue for UI upload, ask for a redraw.</summary>
+    private static void DecodePixelsAsync(KittyImage img)
     {
-        if (_rt is null) return null;
+        try
+        {
+            var (bgra, w, h) = DecodePixels(img);
+            _decoded.Enqueue((img, bgra, w, h));
+        }
+        catch (Exception ex)
+        {
+            Log($"decode FAILED id={img.Id} fmt={img.Format}: {ex.GetType().Name} {ex.Message}");
+            _decoded.Enqueue((img, null, 0, 0)); // signal failure so we stop retrying
+        }
+        finally { PostMessageW(_hwnd, WM_APP_REDRAW, IntPtr.Zero, IntPtr.Zero); }
+    }
 
+    /// <summary>Thread-safe decode (PNG via System.Drawing, or raw RGB/RGBA) to a premultiplied-BGRA buffer.</summary>
+    private static (byte[] bgra, int w, int h) DecodePixels(KittyImage img)
+    {
         if (img.Format == KittyFormat.Png)
         {
             using var ms = new MemoryStream(img.Data);
@@ -380,15 +415,21 @@ internal static class Program
             var data = gdi.LockBits(
                 new System.Drawing.Rectangle(0, 0, w, h),
                 System.Drawing.Imaging.ImageLockMode.ReadOnly,
-                System.Drawing.Imaging.PixelFormat.Format32bppPArgb); // premultiplied BGRA in memory
-            try { return _rt.CreateBitmap(new SizeI(w, h), data.Scan0, (uint)data.Stride, _bmpProps); }
+                System.Drawing.Imaging.PixelFormat.Format32bppPArgb); // premultiplied BGRA, stride == w*4 for 32bpp
+            try
+            {
+                var buf = new byte[w * 4 * h];
+                if (data.Stride == w * 4)
+                    Marshal.Copy(data.Scan0, buf, 0, buf.Length);
+                else // defensive: copy row by row if padded
+                    for (int y = 0; y < h; y++)
+                        Marshal.Copy(data.Scan0 + y * data.Stride, buf, y * w * 4, w * 4);
+                return (buf, w, h);
+            }
             finally { gdi.UnlockBits(data); }
         }
 
-        byte[] bgra = ToPremultipliedBgra(img);
-        var handle = GCHandle.Alloc(bgra, GCHandleType.Pinned);
-        try { return _rt.CreateBitmap(new SizeI(img.Width, img.Height), handle.AddrOfPinnedObject(), (uint)(img.Width * 4), _bmpProps); }
-        finally { handle.Free(); }
+        return (ToPremultipliedBgra(img), img.Width, img.Height);
     }
 
     private static byte[] ToPremultipliedBgra(KittyImage img)
