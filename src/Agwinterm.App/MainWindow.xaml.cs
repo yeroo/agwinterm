@@ -43,7 +43,7 @@ public sealed partial class MainWindow : Window, ISessionHost
     private readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock (_workspaces)
     private Ses? _activeRef;
     private object? _editing; // Ses or Workspace currently being renamed inline
-    private bool _termFocused;
+    private bool _windowActive = true;
     private TerminalSession? _session;   // mirrors the active session (rendering/input use this)
     private bool _started;
     private ControlServer? _control;
@@ -112,12 +112,20 @@ public sealed partial class MainWindow : Window, ISessionHost
         NewWorkspaceButton.Click += (_, _) => { CreateWorkspace(Guid.NewGuid().ToString(), null); GridCanvas.Focus(FocusState.Programmatic); };
         NewSessionButton.Click += (_, _) => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true);
 
-        GridCanvas.Loaded += (_, _) => GridCanvas.Focus(FocusState.Programmatic);
-        this.Activated += (_, e) => { if (e.WindowActivationState != WindowActivationState.Deactivated) FocusTerminal(); };
-        GridCanvas.GotFocus += (_, _) => { _termFocused = true; GridCanvas.Invalidate(); };
-        GridCanvas.LostFocus += (_, _) => { _termFocused = false; GridCanvas.Invalidate(); };
-        GridCanvas.CharacterReceived += OnCharacterReceived;
-        GridCanvas.KeyDown += OnKeyDown;
+        GridCanvas.Loaded += (_, _) => FocusTerminal();
+        this.Activated += (_, e) =>
+        {
+            _windowActive = e.WindowActivationState != WindowActivationState.Deactivated;
+            if (_windowActive) FocusTerminal();
+            GridCanvas.Invalidate();
+        };
+        // Capture keyboard at the ROOT (routed, handledEventsToo) so typing reaches the terminal
+        // regardless of which element holds focus — the Win2D canvas is an unreliable focus host.
+        var root = (UIElement)Content;
+        root.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler(OnKeyDown), handledEventsToo: true);
+        root.AddHandler(UIElement.CharacterReceivedEvent,
+            new Windows.Foundation.TypedEventHandler<UIElement, CharacterReceivedRoutedEventArgs>(OnCharacterReceived),
+            handledEventsToo: true);
         GridCanvas.SizeChanged += OnSizeChanged;
         GridCanvas.PointerPressed += OnPointerPressed;
         GridCanvas.PointerReleased += OnPointerReleased;
@@ -616,6 +624,7 @@ public sealed partial class MainWindow : Window, ISessionHost
 
     private void OnCharacterReceived(UIElement sender, CharacterReceivedRoutedEventArgs args)
     {
+        if (_editing is not null) return; // inline-rename TextBox owns input
         char c = args.Character;
         if (c >= 0x20 && c != 0x7f) Send(c.ToString());
     }
@@ -626,6 +635,7 @@ public sealed partial class MainWindow : Window, ISessionHost
 
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (_editing is not null) return; // inline-rename TextBox owns input
         bool ctrl = KeyHeld(VirtualKey.Control);
         bool shift = KeyHeld(VirtualKey.Shift);
         bool alt = KeyHeld(VirtualKey.Menu);
@@ -885,10 +895,10 @@ public sealed partial class MainWindow : Window, ISessionHost
                 float cy = PadY + cursorRow * _cellH;
                 var cur = WinColor.FromArgb(255, 222, 222, 230);
 
-                if (!_termFocused)
+                bool inputActive = _windowActive && _editing is null;
+                if (!inputActive)
                 {
-                    // Unfocused: a steady hollow box so a cursor is always visible and the
-                    // focus state is obvious (click the terminal to type).
+                    // Window inactive: steady hollow box so a cursor is always visible.
                     ds.DrawRectangle(cx + 0.5f, cy + 0.5f, _cellW - 1f, _cellH - 1f, cur, 1f);
                 }
                 else if (!_config.CursorBlink || _cursorOn)
