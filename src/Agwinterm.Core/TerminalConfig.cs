@@ -19,6 +19,7 @@ public sealed class TerminalConfig
     public CursorStyle CursorStyle { get; set; } = CursorStyle.Bar;
     public bool CursorBlink { get; set; } = true;
     public int CursorBlinkMs { get; set; } = 530;
+    public string Theme { get; set; } = "default";
 
     /// <summary>Default config file contents (also used to seed the file on first run).</summary>
     public const string DefaultText =
@@ -33,6 +34,9 @@ public sealed class TerminalConfig
         cursor-style    = bar
         cursor-blink    = true
         cursor-blink-ms = 530
+
+        # Color theme (pick live from the action palette; Ctrl+Shift+P -> Select Theme)
+        theme = default
         """;
 
     public static TerminalConfig Parse(string text)
@@ -54,6 +58,7 @@ public sealed class TerminalConfig
                 case "cursor-style": cfg.CursorStyle = ParseCursorStyle(val, cfg.CursorStyle); break;
                 case "cursor-blink": cfg.CursorBlink = ParseBool(val, cfg.CursorBlink); break;
                 case "cursor-blink-ms": if (int.TryParse(val, out var ms) && ms > 0) cfg.CursorBlinkMs = ms; break;
+                case "theme": if (val.Length > 0) cfg.Theme = val; break;
             }
         }
         return cfg;

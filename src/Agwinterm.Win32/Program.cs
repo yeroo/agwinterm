@@ -36,6 +36,9 @@ internal static class Program
     private static ID2D1SolidColorBrush? _brush;
 
     private static TerminalConfig _config = new();
+    private static Theme _theme = Theme.Default;                 // active colour theme (renderer resolves through it)
+    private static Theme? _themeBeforePreview;                   // saved when the theme picker opens (Esc reverts)
+    private static List<Theme> _allThemes = new();
     private static TerminalSession? _session;   // mirrors the active session (render/input use this)
     private static ControlServer? _control;
 
@@ -75,7 +78,7 @@ internal static class Program
     private static string? _toastText;
 
     // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
-    private enum PaletteKind { None, Sessions, Actions, Attention }
+    private enum PaletteKind { None, Sessions, Actions, Attention, Themes }
     private sealed class PalItem
     {
         public required string Label;
@@ -83,6 +86,7 @@ internal static class Program
         public string Search = "";
         public string Hint = "";
         public AgentStatus? Dot;      // leading status dot (attention/sessions)
+        public object? Data;          // e.g. the Theme for live-preview
         public Action? Run;           // null = non-actionable placeholder
     }
     private static PaletteKind _palette = PaletteKind.None;
@@ -140,6 +144,8 @@ internal static class Program
     {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         _config = LoadOrCreateConfig();
+        _allThemes = LoadThemes();
+        _theme = FindTheme(_config.Theme);
 
         IntPtr hInstance = GetModuleHandleW(null);
         _wndProc = WindowProc;
@@ -731,14 +737,20 @@ internal static class Program
 
     private static Color4 C4(Color c) => new(c.R / 255f, c.G / 255f, c.B / 255f, 1f);
 
-    /// <summary>Effective foreground for a cell: inverse swap, then faint (SGR 2) dimming.</summary>
-    private static Color Dimmed(Cell cell)
+    /// <summary>Effective foreground for a cell, resolved through the active theme: inverse swap,
+    /// then faint (SGR 2) dimming. Resolving via the theme (not the baked RGB) is what makes a
+    /// theme switch recolour already-printed content.</summary>
+    private static Color EffectiveFg(Cell cell)
     {
-        Color fg = cell.Attributes.HasFlag(CellAttributes.Inverse) ? cell.Background : cell.Foreground;
+        Color fg = cell.Attributes.HasFlag(CellAttributes.Inverse) ? _theme.ResolveBg(cell.BgSpec) : _theme.ResolveFg(cell.FgSpec);
         if (cell.Attributes.HasFlag(CellAttributes.Dim))
             fg = new Color((byte)(fg.R * 0.6f), (byte)(fg.G * 0.6f), (byte)(fg.B * 0.6f));
         return fg;
     }
+
+    /// <summary>Effective background for a cell, resolved through the active theme (inverse swaps with fg).</summary>
+    private static Color EffectiveBg(Cell cell)
+        => cell.Attributes.HasFlag(CellAttributes.Inverse) ? _theme.ResolveFg(cell.FgSpec) : _theme.ResolveBg(cell.BgSpec);
 
     // ---- Kitty images (Direct2D) ----
 
@@ -933,7 +945,7 @@ internal static class Program
         var rt = _rt!;
         var brush = _brush!;
         rt.BeginDraw();
-        rt.Clear(C4(Color.DefaultBackground));
+        rt.Clear(C4(_theme.DefaultBackground));
 
         var session = _session;
         if (session is not null)
@@ -957,13 +969,13 @@ internal static class Program
                     while (c < cols)
                     {
                         Cell cell = screen[r, c];
-                        Color bg = cell.Attributes.HasFlag(CellAttributes.Inverse) ? cell.Foreground : cell.Background;
-                        if (bg == Color.DefaultBackground) { c++; continue; }
+                        Color bg = EffectiveBg(cell);
+                        if (bg == _theme.DefaultBackground) { c++; continue; }
                         int start = c;
                         while (c < cols)
                         {
                             Cell cc = screen[r, c];
-                            Color b2 = cc.Attributes.HasFlag(CellAttributes.Inverse) ? cc.Foreground : cc.Background;
+                            Color b2 = EffectiveBg(cc);
                             if (cc.Width != 0 && b2 != bg) break;
                             c++;
                         }
@@ -978,7 +990,7 @@ internal static class Program
                         Cell cell = screen[r, c];
                         if (cell.Width == 0 || cell.Rune == ' ' || cell.Rune == '\0') { c++; continue; }
 
-                        Color runFg = Dimmed(cell);
+                        Color runFg = EffectiveFg(cell);
                         if (cell.Width == 2) // draw wide (CJK) glyphs individually; advances differ
                         {
                             brush.Color = C4(runFg);
@@ -996,7 +1008,7 @@ internal static class Program
                             Cell cc = screen[r, c];
                             if (cc.Width == 2 || cc.Width == 0) break; // wide glyph starts a new run
                             bool blank = cc.Rune == ' ' || cc.Rune == '\0';
-                            if (!blank && Dimmed(cc) != runFg) break;  // colour change ends the run
+                            if (!blank && EffectiveFg(cc) != runFg) break;  // colour change ends the run
                             _run.Append(blank ? ' ' : cc.Rune);
                             c++;
                             if (!blank) lastNonBlank = _run.Length;
@@ -1018,7 +1030,7 @@ internal static class Program
                 {
                     float cx = ContentX + em.CursorCol * _cellW;
                     float cy = ContentY + em.CursorRow * _cellH;
-                    brush.Color = new Color4(222 / 255f, 222 / 255f, 230 / 255f, 1f);
+                    brush.Color = C4(_theme.Cursor);
 
                     if (!_config.CursorBlink || _cursorOn)
                     {
@@ -1467,9 +1479,10 @@ internal static class Program
     private static void TogglePalette(PaletteKind kind)
     {
         if (_palette == kind) { ClosePalette(); return; }
+        if (kind == PaletteKind.Themes) _themeBeforePreview = _theme;
         _palette = kind; _palQuery = ""; _palSel = 0;
         BuildPaletteItems();
-        FilterPalette();
+        FilterPalette();          // calls PreviewSelectedTheme() at its end
         RequestRedraw();
     }
 
@@ -1518,6 +1531,16 @@ internal static class Program
                 A("Split", "", () => ShowToast("split not implemented yet"));
                 A("Scratch Terminal", "", () => ShowToast("scratch not implemented yet"));
                 A("Quick Terminal", "", () => ShowToast("quick terminal not implemented yet"));
+                A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
+                break;
+            }
+            case PaletteKind.Themes:
+            {
+                foreach (var th in _allThemes)
+                {
+                    var tx = th;
+                    _palAll.Add(new PalItem { Label = tx.Name, Search = tx.Name, Data = tx, Run = () => CommitTheme(tx) });
+                }
                 break;
             }
             case PaletteKind.Attention:
@@ -1557,6 +1580,7 @@ internal static class Program
                 .Select(x => x.it));
         }
         if (_palSel >= _palItems.Count) _palSel = Math.Max(0, _palItems.Count - 1);
+        PreviewSelectedTheme();
     }
 
     /// <summary>Subsequence fuzzy score: -1 = no match; higher = better (contiguity + earliness).</summary>
@@ -1579,10 +1603,12 @@ internal static class Program
     {
         switch (vk)
         {
-            case VK_ESCAPE: ClosePalette(); return true;
+            case VK_ESCAPE:
+                if (_palette == PaletteKind.Themes && _themeBeforePreview is not null) ApplyTheme(_themeBeforePreview);
+                ClosePalette(); return true;
             case VK_RETURN: RunPaletteSelection(); return true;
-            case VK_UP: if (_palSel > 0) { _palSel--; RequestRedraw(); } return true;
-            case VK_DOWN: if (_palSel < _palItems.Count - 1) { _palSel++; RequestRedraw(); } return true;
+            case VK_UP: if (_palSel > 0) { _palSel--; PreviewSelectedTheme(); RequestRedraw(); } return true;
+            case VK_DOWN: if (_palSel < _palItems.Count - 1) { _palSel++; PreviewSelectedTheme(); RequestRedraw(); } return true;
             case VK_BACK: if (_palQuery.Length > 0) { _palQuery = _palQuery[..^1]; _palSel = 0; FilterPalette(); RequestRedraw(); } return true;
         }
         return true; // swallow everything else from the terminal; printable arrives via WM_CHAR
@@ -1600,7 +1626,11 @@ internal static class Program
         foreach (var r in _palRows)
             if (my >= r.y0 && my < r.y1) { _palSel = r.idx; RunPaletteSelection(); return; }
         bool inPanel = mx >= _palPanel.X && mx < _palPanel.X + _palPanel.Width && my >= _palPanel.Y && my < _palPanel.Y + _palPanel.Height;
-        if (!inPanel) ClosePalette(); // click outside closes; inside (padding/query) is ignored
+        if (!inPanel)
+        {
+            if (_palette == PaletteKind.Themes && _themeBeforePreview is not null) ApplyTheme(_themeBeforePreview);
+            ClosePalette(); // click outside closes; inside (padding/query) is ignored
+        }
     }
 
     private static void DrawPalette(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
@@ -1626,7 +1656,7 @@ internal static class Program
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = _palPanel, RadiusX = 10f, RadiusY = 10f }, brush, 1f);
 
         // Query line (placeholder when empty) + blinking caret.
-        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", _ => "Attention" };
+        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", _ => "Attention" };
         brush.Color = _palQuery.Length > 0 ? ChromeText : ChromeDim;
         rt.DrawText(_palQuery.Length > 0 ? _palQuery : placeholder, _uiFont, new Rect(px + 16f, py + 9f, pw - 32f, queryH - 10f), brush);
         if (_cursorOn && _palQuery.Length > 0)
@@ -1878,6 +1908,127 @@ internal static class Program
     }
 
     // ---- Config (mirrors the WinUI shell) ----
+
+    // ---- Theming ----
+
+    private static void ApplyTheme(Theme t) { _theme = t; RequestRedraw(); }
+
+    private static void CommitTheme(Theme t)
+    {
+        ApplyTheme(t);
+        _config.Theme = t.Name;
+        _themeBeforePreview = null;
+        try { SaveThemeConfig(t.Name); } catch { }
+    }
+
+    /// <summary>Live-preview the theme under the selection while the theme picker is open.</summary>
+    private static void PreviewSelectedTheme()
+    {
+        if (_palette != PaletteKind.Themes) return;
+        if (_palSel >= 0 && _palSel < _palItems.Count && _palItems[_palSel].Data is Theme th) ApplyTheme(th);
+    }
+
+    private static Theme FindTheme(string name)
+        => _allThemes.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase)) ?? Theme.Default;
+
+    /// <summary>Persist the chosen theme by rewriting (or appending) the `theme =` line in the config.</summary>
+    private static void SaveThemeConfig(string name)
+    {
+        string path = ConfigPath;
+        string text = File.Exists(path) ? File.ReadAllText(path) : TerminalConfig.DefaultText;
+        var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
+        int idx = lines.FindIndex(l => { var t = l.TrimStart(); return !t.StartsWith("#") && t.StartsWith("theme", StringComparison.OrdinalIgnoreCase) && l.Contains('='); });
+        string ln = $"theme = {name}";
+        if (idx >= 0) lines[idx] = ln; else { lines.Add(""); lines.Add(ln); }
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, string.Join(Environment.NewLine, lines));
+    }
+
+    /// <summary>Built-in themes plus any ghostty-format files in %LOCALAPPDATA%\agwinterm\themes\.</summary>
+    private static List<Theme> LoadThemes()
+    {
+        var list = new List<Theme>
+        {
+            Theme.Default, // "default"
+            Make("Solarized Dark",
+                new[]{"#073642","#dc322f","#859900","#b58900","#268bd2","#d33682","#2aa198","#eee8d5",
+                      "#002b36","#cb4b16","#586e75","#657b83","#839496","#6c71c4","#93a1a1","#fdf6e3"},
+                "#839496","#002b36","#93a1a1"),
+            Make("Solarized Light",
+                new[]{"#073642","#dc322f","#859900","#b58900","#268bd2","#d33682","#2aa198","#eee8d5",
+                      "#002b36","#cb4b16","#586e75","#657b83","#839496","#6c71c4","#93a1a1","#fdf6e3"},
+                "#657b83","#fdf6e3","#586e75"),
+            Make("Nord",
+                new[]{"#3b4252","#bf616a","#a3be8c","#ebcb8b","#81a1c1","#b48ead","#88c0d0","#e5e9f0",
+                      "#4c566a","#bf616a","#a3be8c","#ebcb8b","#81a1c1","#b48ead","#8fbcbb","#eceff4"},
+                "#d8dee9","#2e3440","#d8dee9"),
+            Make("Gruvbox Dark",
+                new[]{"#282828","#cc241d","#98971a","#d79921","#458588","#b16286","#689d6a","#a89984",
+                      "#928374","#fb4934","#b8bb26","#fabd2f","#83a598","#d3869b","#8ec07c","#ebdbb2"},
+                "#ebdbb2","#282828","#ebdbb2"),
+            Make("Tokyo Night",
+                new[]{"#15161e","#f7768e","#9ece6a","#e0af68","#7aa2f7","#bb9af7","#7dcfff","#a9b1d6",
+                      "#414868","#f7768e","#9ece6a","#e0af68","#7aa2f7","#bb9af7","#7dcfff","#c0caf5"},
+                "#c0caf5","#1a1b26","#c0caf5"),
+            Make("One Dark",
+                new[]{"#282c34","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#abb2bf",
+                      "#545862","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#c8ccd4"},
+                "#abb2bf","#282c34","#528bff"),
+        };
+        try
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "themes");
+            if (Directory.Exists(dir))
+                foreach (var f in Directory.GetFiles(dir))
+                    if (ParseGhosttyTheme(f) is Theme th) list.Add(th);
+        }
+        catch { }
+        return list;
+    }
+
+    private static Theme Make(string name, string[] hex16, string fg, string bg, string cursor) => new()
+    {
+        Name = name,
+        Palette = hex16.Select(Hex).ToArray(),
+        DefaultForeground = Hex(fg),
+        DefaultBackground = Hex(bg),
+        Cursor = Hex(cursor),
+    };
+
+    private static Color Hex(string h)
+    {
+        h = h.Trim().TrimStart('#');
+        if (h.Length == 3) h = string.Concat(h[0], h[0], h[1], h[1], h[2], h[2]);
+        if (h.Length < 6) return new Color(0, 0, 0);
+        try { return new Color(Convert.ToByte(h[..2], 16), Convert.ToByte(h.Substring(2, 2), 16), Convert.ToByte(h.Substring(4, 2), 16)); }
+        catch { return new Color(0, 0, 0); }
+    }
+
+    /// <summary>Parse a ghostty-format theme file (palette = N=#rrggbb, background/foreground/cursor-color).</summary>
+    private static Theme? ParseGhosttyTheme(string path)
+    {
+        try
+        {
+            var pal = Theme.DefaultPalette();
+            Color fg = Color.DefaultForeground, bg = Color.DefaultBackground, cur = new(222, 222, 230);
+            foreach (var raw in File.ReadAllLines(path))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0 || line[0] == '#') continue;
+                int eq = line.IndexOf('='); if (eq <= 0) continue;
+                string key = line[..eq].Trim().ToLowerInvariant(); string val = line[(eq + 1)..].Trim();
+                switch (key)
+                {
+                    case "palette": int c = val.IndexOf('='); if (c > 0 && int.TryParse(val[..c].Trim(), out int pi) && pi is >= 0 and < 16) pal[pi] = Hex(val[(c + 1)..]); break;
+                    case "background": bg = Hex(val); break;
+                    case "foreground": fg = Hex(val); break;
+                    case "cursor-color": cur = Hex(val); break;
+                }
+            }
+            return new Theme { Name = Path.GetFileNameWithoutExtension(path), Palette = pal, DefaultForeground = fg, DefaultBackground = bg, Cursor = cur };
+        }
+        catch { return null; }
+    }
 
     private static string ConfigPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "agwinterm.conf");

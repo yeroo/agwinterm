@@ -41,6 +41,8 @@ public sealed class TerminalEmulator : IParserPerformer
 
     private Color _fg = Color.DefaultForeground;
     private Color _bg = Color.DefaultBackground;
+    private ColorSpec _fgSpec = ColorSpec.Default;   // semantic colour (default/indexed/rgb) for theming
+    private ColorSpec _bgSpec = ColorSpec.Default;
     private CellAttributes _attrs = CellAttributes.None;
 
     /// <summary>Window title set via OSC 0/2.</summary>
@@ -91,9 +93,9 @@ public sealed class TerminalEmulator : IParserPerformer
             Index();
         }
 
-        Screen[CursorRow, CursorCol] = new Cell(ch, _fg, _bg, _attrs, (byte)w);
+        Screen[CursorRow, CursorCol] = new Cell(ch, _fg, _bg, _attrs, (byte)w, _fgSpec, _bgSpec);
         if (w == 2)
-            Screen[CursorRow, CursorCol + 1] = new Cell('\0', _fg, _bg, _attrs, 0); // trailing spacer
+            Screen[CursorRow, CursorCol + 1] = new Cell('\0', _fg, _bg, _attrs, 0, _fgSpec, _bgSpec); // trailing spacer
         CursorCol += w;
     }
 
@@ -354,24 +356,24 @@ public sealed class TerminalEmulator : IParserPerformer
                 case 23: _attrs &= ~CellAttributes.Italic; break;
                 case 24: _attrs &= ~CellAttributes.Underline; break;
                 case 27: _attrs &= ~CellAttributes.Inverse; break;
-                case >= 30 and <= 37: _fg = Color.FromIndex(code - 30); break;
-                case 39: _fg = Color.DefaultForeground; break;
-                case >= 40 and <= 47: _bg = Color.FromIndex(code - 40); break;
-                case 49: _bg = Color.DefaultBackground; break;
-                case >= 90 and <= 97: _fg = Color.FromIndex(code - 90 + 8); break;
-                case >= 100 and <= 107: _bg = Color.FromIndex(code - 100 + 8); break;
-                case 38: i = ExtendedColor(p, i, ref _fg); break;
-                case 48: i = ExtendedColor(p, i, ref _bg); break;
+                case >= 30 and <= 37: _fg = Color.FromIndex(code - 30); _fgSpec = ColorSpec.Indexed(code - 30); break;
+                case 39: _fg = Color.DefaultForeground; _fgSpec = ColorSpec.Default; break;
+                case >= 40 and <= 47: _bg = Color.FromIndex(code - 40); _bgSpec = ColorSpec.Indexed(code - 40); break;
+                case 49: _bg = Color.DefaultBackground; _bgSpec = ColorSpec.Default; break;
+                case >= 90 and <= 97: _fg = Color.FromIndex(code - 90 + 8); _fgSpec = ColorSpec.Indexed(code - 90 + 8); break;
+                case >= 100 and <= 107: _bg = Color.FromIndex(code - 100 + 8); _bgSpec = ColorSpec.Indexed(code - 100 + 8); break;
+                case 38: i = ExtendedColor(p, i, ref _fg, ref _fgSpec); break;
+                case 48: i = ExtendedColor(p, i, ref _bg, ref _bgSpec); break;
             }
         }
     }
 
-    private static int ExtendedColor(IReadOnlyList<int> p, int i, ref Color target)
+    private static int ExtendedColor(IReadOnlyList<int> p, int i, ref Color target, ref ColorSpec spec)
     {
         if (i + 1 >= p.Count) return i;
         int mode = p[i + 1];
-        if (mode == 5 && i + 2 < p.Count) { target = Color.FromIndex(p[i + 2]); return i + 2; }
-        if (mode == 2 && i + 4 < p.Count) { target = new Color((byte)p[i + 2], (byte)p[i + 3], (byte)p[i + 4]); return i + 4; }
+        if (mode == 5 && i + 2 < p.Count) { target = Color.FromIndex(p[i + 2]); spec = ColorSpec.Indexed(p[i + 2]); return i + 2; }
+        if (mode == 2 && i + 4 < p.Count) { var c = new Color((byte)p[i + 2], (byte)p[i + 3], (byte)p[i + 4]); target = c; spec = ColorSpec.FromRgb(c); return i + 4; }
         return i + 1;
     }
 
@@ -379,11 +381,13 @@ public sealed class TerminalEmulator : IParserPerformer
     {
         _fg = Color.DefaultForeground;
         _bg = Color.DefaultBackground;
+        _fgSpec = ColorSpec.Default;
+        _bgSpec = ColorSpec.Default;
         _attrs = CellAttributes.None;
     }
 
     /// <summary>A blank cell carrying the current background (background-color-erase).</summary>
-    private Cell Blank() => new(' ', Color.DefaultForeground, _bg, CellAttributes.None);
+    private Cell Blank() => new(' ', Color.DefaultForeground, _bg, CellAttributes.None, 1, ColorSpec.Default, _bgSpec);
 
     private void EraseChars(int count)
     {
