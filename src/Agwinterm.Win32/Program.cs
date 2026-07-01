@@ -62,7 +62,15 @@ internal static class Program
     private static readonly List<(float x0, float x1, string action)> _titleButtons = new();
     private static readonly List<(float x0, float x1, string action)> _footerButtons = new();
     private static int _hoverCaption; // 0 none, 1 min, 2 max, 3 close (for hover paint)
+    private static int _capPressed;   // HT* of a pressed caption button (for click + pressed paint)
     private static string? _toastText;
+
+    // Inline rename (native child EDIT overlaid on the row being renamed).
+    private const int EDIT_ID = 101;
+    private static IntPtr _editHwnd;
+    private static object? _editing;         // Ses or Workspace currently being renamed
+    private static WndProc _editProc = null!; // kept alive; subclasses the EDIT to catch Enter/Esc
+    private static IntPtr _editOrigProc;
 
     // Chrome fonts (native Segoe UI for text, icon font for glyphs).
     private static IDWriteTextFormat _uiFont = null!;
@@ -111,7 +119,7 @@ internal static class Program
         var wc = new WNDCLASSEXW
         {
             cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<WNDCLASSEXW>(),
-            style = CS_HREDRAW | CS_VREDRAW,
+            style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
             lpfnWndProc = _wndProc,
             hInstance = hInstance,
             hCursor = LoadCursorW(IntPtr.Zero, IDC_ARROW),
@@ -416,6 +424,50 @@ internal static class Program
                 if (_hoverCaption != 0) { _hoverCaption = 0; RequestRedraw(); }
                 break;
 
+            case WM_NCLBUTTONDOWN:
+                {
+                    int ht = (int)wParam;
+                    // Consume caption-button presses so DefWindowProc doesn't start its own
+                    // (unreliable) loop; we perform min/max/close ourselves on button-up.
+                    if (ht == HTMINBUTTON || ht == HTMAXBUTTON || ht == HTCLOSE) { _capPressed = ht; RequestRedraw(); return IntPtr.Zero; }
+                    break; // HTCAPTION drag / HTTOP.. resize -> DefWindowProc
+                }
+            case WM_NCLBUTTONUP:
+                {
+                    int ht = (int)wParam;
+                    if (_capPressed != 0)
+                    {
+                        int pressed = _capPressed; _capPressed = 0; RequestRedraw();
+                        if (ht == pressed)
+                        {
+                            if (pressed == HTMINBUTTON) ShowWindow(hwnd, SW_MINIMIZE);
+                            else if (pressed == HTMAXBUTTON) ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+                            else if (pressed == HTCLOSE) PostMessageW(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                        }
+                        return IntPtr.Zero;
+                    }
+                    break;
+                }
+
+            case WM_COMMAND:
+                if (LoWord(wParam) == EDIT_ID && HiWord(wParam) == EN_KILLFOCUS) CommitRename();
+                return IntPtr.Zero;
+
+            case WM_CONTEXTMENU:
+                {
+                    int sx = LoWord(lParam), sy = HiWord(lParam);
+                    var pt = new POINT { x = sx, y = sy };
+                    if (sx == -1 && sy == -1) { GetCursorScreen(out sx, out sy); pt.x = sx; pt.y = sy; } // keyboard menu key
+                    ScreenToClient(hwnd, ref pt);
+                    if (pt.x < (int)_sidebarW && pt.y >= (int)TitleBarH)
+                    {
+                        var item = RowAt(pt.y);
+                        if (item is not null) ShowContextMenu(item, sx, sy);
+                        return IntPtr.Zero;
+                    }
+                    break;
+                }
+
             case WM_PAINT:
                 BeginPaint(hwnd, out PAINTSTRUCT ps);
                 Render();
@@ -478,6 +530,17 @@ internal static class Program
                     SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero;
                 }
             case WM_LBUTTONUP: if (InContent(lParam)) { SendMousePx(0, lParam, false); } ReleaseCapture(); return IntPtr.Zero;
+
+            case WM_LBUTTONDBLCLK:
+                {
+                    int mx = LoWord(lParam), my = HiWord(lParam);
+                    if (mx < (int)_sidebarW && my >= (int)TitleBarH && my < ClientH() - (int)FooterH)
+                    {
+                        var item = RowAt(my);
+                        if (item is not null) { StartRename(item); return IntPtr.Zero; }
+                    }
+                    return IntPtr.Zero;
+                }
             case WM_MBUTTONDOWN: if (InContent(lParam)) SendMousePx(1, lParam, true); return IntPtr.Zero;
             case WM_MBUTTONUP: if (InContent(lParam)) SendMousePx(1, lParam, false); return IntPtr.Zero;
             case WM_RBUTTONDOWN: if (InContent(lParam)) SendMousePx(2, lParam, true); return IntPtr.Zero;
@@ -553,6 +616,10 @@ internal static class Program
         if (ctrl && shift && vk == 'T') { CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true); return true; }
         if (ctrl && shift && vk == 'N') { CreateWorkspace(Guid.NewGuid().ToString(), null); return true; }
         if (ctrl && shift && vk == 'W') { if (_active is not null) CloseSessionInternal(_active); return true; }
+        if (ctrl && shift && vk == 'I') { GoToNextAttention(1); return true; }          // jump to next attention
+        if (ctrl && alt && vk == VK_UP) { GoToNextAttention(-1); return true; }          // previous attention
+        if (ctrl && alt && vk == VK_DOWN) { GoToNextAttention(1); return true; }         // next attention
+        if (!ctrl && !alt && !shift && vk == 0x71 && _active is not null) { StartRename(_active); return true; } // F2 rename
 
         if (ctrl && !alt)
         {
@@ -1005,6 +1072,209 @@ internal static class Program
         }
     }
 
+    private static object? RowAt(int my)
+    {
+        foreach (var (y0, y1, _, item) in _sidebarRows) if (my >= y0 && my < y1) return item;
+        return null;
+    }
+
+    private static void GetCursorScreen(out int x, out int y) { GetCursorPos(out POINT p); x = p.x; y = p.y; }
+
+    // ---- Inline rename (native child EDIT overlaid on the sidebar row) ----
+
+    private static void StartRename(object item)
+    {
+        if (_editHwnd != IntPtr.Zero) CommitRename();
+        bool isWs = item is Workspace;
+        float ry0 = -1, ry1 = -1;
+        foreach (var (y0, y1, _, it) in _sidebarRows) if (ReferenceEquals(it, item)) { ry0 = y0; ry1 = y1; break; }
+        if (ry0 < 0) { RequestRedraw(); return; } // row not currently visible
+        string name = item is Ses s ? s.Name : ((Workspace)item).Name;
+        float tx = isWs ? 22f : 34f;
+        int ex = (int)tx, ey = (int)ry0 + 2, ew = (int)(_sidebarW - tx - 8f), eh = (int)(ry1 - ry0) - 4;
+        _editHwnd = CreateWindowExW(0, "EDIT", name, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+            ex, ey, ew, eh, _hwnd, (IntPtr)EDIT_ID, GetModuleHandleW(null), IntPtr.Zero);
+        if (_editHwnd == IntPtr.Zero) return;
+        SendMessageW(_editHwnd, WM_SETFONT, GetStockObject(DEFAULT_GUI_FONT), (IntPtr)1);
+        SendMessageW(_editHwnd, (uint)EM_SETSEL, IntPtr.Zero, (IntPtr)(-1)); // select all
+        SetFocus(_editHwnd);
+        _editProc = EditProc; // keep alive
+        _editOrigProc = SetWindowLongPtrW(_editHwnd, GWLP_WNDPROC, Marshal.GetFunctionPointerForDelegate(_editProc));
+        _editing = item;
+        RequestRedraw();
+    }
+
+    // Subclass of the EDIT: commit on Enter, cancel on Escape, and swallow those chars (no beep).
+    private static IntPtr EditProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
+    {
+        if (msg == WM_KEYDOWN)
+        {
+            if ((int)wParam == VK_RETURN) { CommitRename(); return IntPtr.Zero; }
+            if ((int)wParam == VK_ESCAPE) { CancelRename(); return IntPtr.Zero; }
+        }
+        else if (msg == WM_CHAR)
+        {
+            int c = (int)wParam;
+            if (c == VK_RETURN || c == VK_ESCAPE || c == '\t') return IntPtr.Zero;
+        }
+        return CallWindowProcW(_editOrigProc, hwnd, msg, wParam, lParam);
+    }
+
+    private static void CommitRename()
+    {
+        if (_editHwnd == IntPtr.Zero) return;
+        var h = _editHwnd; var item = _editing;
+        _editHwnd = IntPtr.Zero; _editing = null; // clear first: EN_KILLFOCUS during destroy is then a no-op
+        var sb = new StringBuilder(256);
+        GetWindowTextW(h, sb, 256);
+        string name = sb.ToString().Trim();
+        if (name.Length > 0)
+        {
+            if (item is Ses s) s.Name = name;
+            else if (item is Workspace w) w.Name = name;
+        }
+        DestroyEditWindow(h);
+        RequestRedraw();
+    }
+
+    private static void CancelRename()
+    {
+        if (_editHwnd == IntPtr.Zero) return;
+        var h = _editHwnd; _editHwnd = IntPtr.Zero; _editing = null;
+        DestroyEditWindow(h);
+        RequestRedraw();
+    }
+
+    private static void DestroyEditWindow(IntPtr h)
+    {
+        if (_editOrigProc != IntPtr.Zero) { SetWindowLongPtrW(h, GWLP_WNDPROC, _editOrigProc); _editOrigProc = IntPtr.Zero; }
+        DestroyWindow(h);
+        SetFocus(_hwnd);
+    }
+
+    // ---- Context menus (native Win32 popup) ----
+
+    private const uint IDM_NEW_SESSION = 1, IDM_OPEN_DIR = 2, IDM_RENAME = 3, IDM_CLOSE = 4, IDM_CLEAR = 5, IDM_DELETE_WS = 6;
+    private const uint IDM_MOVE_BASE = 1000;
+
+    private static void ShowContextMenu(object item, int sx, int sy)
+    {
+        IntPtr menu = CreatePopupMenu();
+        if (item is Ses ses)
+        {
+            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
+            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
+            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_RENAME, "Rename");
+            List<Workspace> targets;
+            lock (_workspaces) targets = _workspaces.Where(w => !ReferenceEquals(w, ses.Ws)).ToList();
+            IntPtr sub = CreatePopupMenu();
+            for (int i = 0; i < targets.Count; i++) AppendMenuW(sub, MF_STRING, (UIntPtr)(IDM_MOVE_BASE + (uint)i), targets[i].Name);
+            AppendMenuW(menu, MF_POPUP | (targets.Count == 0 ? MF_GRAYED : 0), (UIntPtr)(ulong)sub, "Move to");
+            if (ses.S.Status != AgentStatus.Idle) AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_CLEAR, "Clear Status");
+            AppendMenuW(menu, MF_SEPARATOR, UIntPtr.Zero, "");
+            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_CLOSE, "Close Session");
+            int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN, sx, sy, _hwnd, IntPtr.Zero);
+            DestroyMenu(menu);
+            switch ((uint)cmd)
+            {
+                case IDM_NEW_SESSION: CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true); break;
+                case IDM_OPEN_DIR: { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ses.Ws, true); break; }
+                case IDM_RENAME: StartRename(ses); break;
+                case IDM_CLEAR: ses.S.SetStatus(AgentStatus.Idle); RequestRedraw(); break;
+                case IDM_CLOSE: CloseSessionInternal(ses); break;
+                default:
+                    if (cmd >= (int)IDM_MOVE_BASE && cmd < (int)IDM_MOVE_BASE + targets.Count)
+                        MoveSession(ses, targets[cmd - (int)IDM_MOVE_BASE]);
+                    break;
+            }
+        }
+        else if (item is Workspace ws)
+        {
+            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
+            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
+            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_RENAME, "Rename");
+            AppendMenuW(menu, MF_SEPARATOR, UIntPtr.Zero, "");
+            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_DELETE_WS, "Delete Workspace");
+            int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN, sx, sy, _hwnd, IntPtr.Zero);
+            DestroyMenu(menu);
+            switch ((uint)cmd)
+            {
+                case IDM_NEW_SESSION: CreateSession(Guid.NewGuid().ToString(), null, null, ws, true); break;
+                case IDM_OPEN_DIR: { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ws, true); break; }
+                case IDM_RENAME: StartRename(ws); break;
+                case IDM_DELETE_WS: DeleteWorkspace(ws); break;
+            }
+        }
+        else DestroyMenu(menu);
+    }
+
+    private static void MoveSession(Ses ses, Workspace target)
+    {
+        lock (_workspaces) { ses.Ws.Sessions.Remove(ses); target.Sessions.Add(ses); ses.Ws = target; target.Expanded = true; }
+        SetActive(ses);
+    }
+
+    private static void DeleteWorkspace(Workspace ws)
+    {
+        List<Ses> sessions;
+        bool hadActive = _active is not null && ReferenceEquals(_active.Ws, ws);
+        lock (_workspaces)
+        {
+            sessions = ws.Sessions.ToList();
+            ws.Sessions.Clear();
+            _workspaces.Remove(ws);
+            if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
+        }
+        foreach (var s in sessions) { try { s.S.Dispose(); } catch { } }
+        if (hadActive)
+        {
+            var next = AllSessions().FirstOrDefault();
+            if (next is not null) SetActive(next);
+            else CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true);
+        }
+        RequestRedraw();
+    }
+
+    /// <summary>Modal folder picker (native shell). Returns the chosen path or null.</summary>
+    private static string? PickFolder()
+    {
+        var bi = new BROWSEINFO
+        {
+            hwndOwner = _hwnd,
+            lpszTitle = "Open Directory",
+            ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
+        };
+        IntPtr pidl = SHBrowseForFolderW(ref bi);
+        if (pidl == IntPtr.Zero) return null;
+        var sb = new StringBuilder(260);
+        bool ok = SHGetPathFromIDListW(pidl, sb);
+        CoTaskMemFree(pidl);
+        return ok && sb.Length > 0 ? sb.ToString() : null;
+    }
+
+    // ---- Agent attention (title-bar bell + jump-to-next) ----
+
+    private static (bool blocked, bool active) AttentionState()
+    {
+        bool blocked = false, active = false;
+        foreach (var s in AllSessions())
+        {
+            var st = s.S.Status;
+            if (st == AgentStatus.Blocked) blocked = true;
+            else if (st is AgentStatus.Active or AgentStatus.Completed) active = true;
+        }
+        return (blocked, active);
+    }
+
+    private static void GoToNextAttention(int dir)
+    {
+        var list = AllSessions().Where(s => s.S.Status is AgentStatus.Blocked or AgentStatus.Completed).ToList();
+        if (list.Count == 0) { ShowToast("no sessions need attention"); return; }
+        int idx = _active is not null ? list.IndexOf(_active) : -1;
+        int next = idx < 0 ? (dir > 0 ? 0 : list.Count - 1) : ((idx + dir) % list.Count + list.Count) % list.Count;
+        SetActive(list[next]);
+    }
+
     // ---- Custom title bar / status bar (frameless chrome) ----
 
     private static readonly Color4 ChromeBg = new(0.043f, 0.051f, 0.059f, 1f);
@@ -1088,6 +1358,7 @@ internal static class Program
             case "toggle": ToggleSidebar(); break;
             case "new-session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true); break;
             case "new-workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
+            case "attention": GoToNextAttention(1); break;
             default: ShowToast(a + " not implemented yet"); break;
         }
     }
@@ -1140,8 +1411,8 @@ internal static class Program
         // Title + subtitle (native Segoe UI), stacked when a cwd is known.
         string title = _active?.Name ?? "agwinterm";
         string subtitle = _active is not null ? PrettyCwd(SafeCwd(_active)) : "";
-        float textRight = cw - 3 * CaptionBtnW - 3 * 40f - 12f;
-        float textW = MathF.Max(80f, textRight - 48f);
+        float actGroupX = cw - 3 * CaptionBtnW - 4 * 40f; // reserve bell + 3 action icons
+        float textW = MathF.Max(80f, actGroupX - 8f - 48f);
         brush.Color = ChromeText;
         if (subtitle.Length > 0)
         {
@@ -1156,13 +1427,18 @@ internal static class Program
         {
             ("", "overlay"), ("", "split"), ("", "quick terminal"),
         };
-        float bw = 40f, startX = cw - 3 * CaptionBtnW - acts.Length * bw;
+        float bw = 40f, startX = actGroupX;
         // Thin separator before the action group.
         brush.Color = new Color4(0.22f, 0.24f, 0.28f, 1f);
         rt.DrawLine(new System.Numerics.Vector2(startX - 8f, 11f), new System.Numerics.Vector2(startX - 8f, TitleBarH - 11f), brush, 1f);
+        // Attention bell: dim = nothing, plain = active/completed, amber = any blocked.
+        var (bellBlocked, bellActive) = AttentionState();
+        brush.Color = bellBlocked ? new Color4(240 / 255f, 160 / 255f, 40 / 255f, 1f) : (bellActive ? ChromeText : ChromeDim);
+        rt.DrawText("", _iconFont, new Rect(startX, 0, bw, TitleBarH), brush); // Ringer glyph
+        _titleButtons.Add((startX, startX + bw, "attention"));
         for (int i = 0; i < acts.Length; i++)
         {
-            float x = startX + i * bw;
+            float x = startX + (i + 1) * bw;
             brush.Color = ChromeDim;
             rt.DrawText(acts[i].glyph, _iconFont, new Rect(x, 0, bw, TitleBarH), brush);
             _titleButtons.Add((x, x + bw, acts[i].action));
@@ -1173,15 +1449,17 @@ internal static class Program
 
     private static void DrawCaption(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, int cw)
     {
+        int pressedIdx = _capPressed == HTMINBUTTON ? 1 : _capPressed == HTMAXBUTTON ? 2 : _capPressed == HTCLOSE ? 3 : 0;
         for (int i = 1; i <= 3; i++) // 1 min, 2 max/restore, 3 close (left to right)
         {
             float x0 = cw - (4 - i) * CaptionBtnW;
-            if (_hoverCaption == i)
+            bool hot = _hoverCaption == i || pressedIdx == i;
+            if (hot)
             {
                 brush.Color = i == 3 ? new Color4(0.86f, 0.15f, 0.18f, 1f) : new Color4(0.20f, 0.22f, 0.26f, 1f);
                 rt.FillRectangle(new Rect(x0, 0, CaptionBtnW, TitleBarH), brush);
             }
-            brush.Color = (_hoverCaption == 3 && i == 3) ? new Color4(1f, 1f, 1f, 1f) : ChromeText;
+            brush.Color = ((_hoverCaption == 3 || pressedIdx == 3) && i == 3) ? new Color4(1f, 1f, 1f, 1f) : ChromeText;
             float cx = x0 + CaptionBtnW / 2f, cy = TitleBarH / 2f;
             if (i == 1) rt.DrawLine(new System.Numerics.Vector2(cx - 5, cy), new System.Numerics.Vector2(cx + 5, cy), brush, 1f);
             else if (i == 2)

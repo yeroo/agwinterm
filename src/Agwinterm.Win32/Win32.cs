@@ -30,8 +30,10 @@ internal static class Win32
     public const uint WM_NCCALCSIZE = 0x0083;
     public const uint WM_NCHITTEST = 0x0084;
     public const uint WM_NCMOUSEMOVE = 0x00A0;
+    public const uint WM_NCLBUTTONDOWN = 0x00A1, WM_NCLBUTTONUP = 0x00A2;
     public const uint WM_NCMOUSELEAVE = 0x02A2;
     public const uint WM_GETMINMAXINFO = 0x0024;
+    public const int SW_MINIMIZE = 6, SW_MAXIMIZE = 3, SW_RESTORE = 9;
 
     // Hit-test result codes.
     public const int HTTRANSPARENT = -1, HTNOWHERE = 0, HTCLIENT = 1, HTCAPTION = 2;
@@ -44,6 +46,34 @@ internal static class Win32
 
     public const int MK_LBUTTON = 0x0001;
     public const int SW_SHOW = 5;
+
+    // Phase 3: inline rename (child EDIT), context menus, double-click.
+    public const uint WM_LBUTTONDBLCLK = 0x0203;
+    public const uint WM_COMMAND = 0x0111;
+    public const uint WM_CONTEXTMENU = 0x007B;
+    public const uint WM_SETFONT = 0x0030;
+    public const int EM_SETSEL = 0x00B1;
+    public const int EN_KILLFOCUS = 0x0200;
+    public const uint WS_CHILD = 0x40000000, ES_AUTOHSCROLL = 0x0080;
+    public const int GWLP_WNDPROC = -4;
+    public const int DEFAULT_GUI_FONT = 17;
+    public const uint CS_DBLCLKS = 0x0008;
+    public const uint TPM_RETURNCMD = 0x0100, TPM_RIGHTBUTTON = 0x0002, TPM_LEFTALIGN = 0x0000;
+    public const uint MF_STRING = 0x0000, MF_POPUP = 0x0010, MF_SEPARATOR = 0x0800, MF_GRAYED = 0x0001;
+    public const uint BIF_RETURNONLYFSDIRS = 0x0001, BIF_NEWDIALOGSTYLE = 0x0040;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct BROWSEINFO
+    {
+        public IntPtr hwndOwner;
+        public IntPtr pidlRoot;
+        public IntPtr pszDisplayName;
+        [MarshalAs(UnmanagedType.LPWStr)] public string lpszTitle;
+        public uint ulFlags;
+        public IntPtr lpfn;
+        public IntPtr lParam;
+        public int iImage;
+    }
 
     // Virtual keys
     public const int VK_BACK = 0x08, VK_TAB = 0x09, VK_RETURN = 0x0D, VK_ESCAPE = 0x1B, VK_SPACE = 0x20;
@@ -200,6 +230,56 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern bool KillTimer(IntPtr hWnd, IntPtr nIDEvent);
+
+    // ---- Phase 3 interop: child EDIT (inline rename), popup menus, folder picker ----
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool SetWindowTextW(IntPtr hWnd, string text);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowTextW(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetFocus(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr CallWindowProcW(IntPtr lpPrevWndFunc, IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr GetStockObject(int fnObject);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr CreatePopupMenu();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool AppendMenuW(IntPtr hMenu, uint uFlags, UIntPtr uIDNewItem, string lpNewItem);
+
+    [DllImport("user32.dll")]
+    public static extern int TrackPopupMenuEx(IntPtr hMenu, uint fuFlags, int x, int y, IntPtr hwnd, IntPtr lptpm);
+
+    [DllImport("user32.dll")]
+    public static extern bool DestroyMenu(IntPtr hMenu);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SHBrowseForFolderW(ref BROWSEINFO lpbi);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool SHGetPathFromIDListW(IntPtr pidl, System.Text.StringBuilder pszPath);
+
+    [DllImport("ole32.dll")]
+    public static extern void CoTaskMemFree(IntPtr pv);
 
     public static bool KeyDown(int vk) => (GetKeyState(vk) & 0x8000) != 0;
 
