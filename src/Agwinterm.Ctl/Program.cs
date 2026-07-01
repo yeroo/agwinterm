@@ -56,6 +56,10 @@ switch (area)
     case "tree": cmd = "tree"; break;
     case "install" when sub == "hooks": cmd = "install.hooks"; break;
     case "install" when sub == "skill": cmd = "install.skill"; break;
+    case "workspace" when sub == "new":
+        cmd = "workspace.new";
+        if (Opt("name") is { } wsname) cargs["name"] = wsname;
+        break;
     case "session":
         cmd = "session." + sub;
         target = DefaultTarget();

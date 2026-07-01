@@ -24,17 +24,25 @@ public sealed partial class MainWindow : Window, ISessionHost
     private const float PadX = 8f;
     private const float PadY = 6f;
 
-    /// <summary>One live session and its metadata.</summary>
     private sealed class Ses
     {
         public required string Id;
         public required string Name;
         public required TerminalSession S;
+        public required Workspace Ws;
     }
 
-    private readonly List<Ses> _all = new();   // ordered; guarded by 'lock (_all)' for control-thread reads
+    private sealed class Workspace
+    {
+        public required string Id;
+        public required string Name;
+        public readonly List<Ses> Sessions = new();
+        public bool Expanded = true;
+    }
+
+    private readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock (_workspaces)
     private Ses? _activeRef;
-    private TerminalSession? _session;          // mirrors the active session (all rendering/input uses this)
+    private TerminalSession? _session;   // mirrors the active session (rendering/input use this)
     private bool _started;
     private ControlServer? _control;
 
@@ -51,7 +59,6 @@ public sealed partial class MainWindow : Window, ISessionHost
     private static string ConfigPath => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "agwinterm.conf");
 
-    // Decoded Kitty images cached by (sessionId, imageId) so sessions don't collide.
     private readonly Dictionary<(string, int), CanvasBitmap> _imageCache = new();
     private readonly HashSet<(string, int)> _decoding = new();
 
@@ -79,7 +86,10 @@ public sealed partial class MainWindow : Window, ISessionHost
             timer.Start();
         }
 
-        NewSessionButton.Click += (_, _) => CreateSession(Guid.NewGuid().ToString(), null, null, makeActive: true);
+        NewWorkspaceButton.Click += (_, _) => { CreateWorkspace(Guid.NewGuid().ToString(), null); GridCanvas.Focus(FocusState.Programmatic); };
+        NewSessionButton.Click += (_, _) => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true);
+        FlagButton.Click += (_, _) => ToggleCollapseAll();
+
         GridCanvas.Loaded += (_, _) => GridCanvas.Focus(FocusState.Programmatic);
         this.Activated += (_, _) => GridCanvas.Focus(FocusState.Programmatic);
         GridCanvas.CharacterReceived += OnCharacterReceived;
@@ -89,7 +99,6 @@ public sealed partial class MainWindow : Window, ISessionHost
         GridCanvas.PointerReleased += OnPointerReleased;
         GridCanvas.PointerWheelChanged += OnPointerWheel;
         GridCanvas.PointerMoved += OnPointerMoved;
-        // Control server + first session are created once we know cell metrics + canvas size (first OnDraw).
     }
 
     private static TerminalConfig LoadOrCreateConfig()
@@ -118,15 +127,30 @@ public sealed partial class MainWindow : Window, ISessionHost
     {
         if (!_measured) return;
         var (cols, rows) = ComputeGridSize();
-        Ses[] sessions;
-        lock (_all) sessions = _all.ToArray();
-        foreach (var s in sessions)
+        foreach (var s in AllSessions())
             if (cols != s.S.Cols || rows != s.S.Rows)
                 s.S.Resize(cols, rows);
         GridCanvas.Invalidate();
     }
 
-    // ---- Session lifecycle (UI thread) ----
+    // ---- Model helpers ----
+
+    private List<Ses> AllSessions()
+    {
+        lock (_workspaces) return _workspaces.SelectMany(w => w.Sessions).ToList();
+    }
+
+    private Workspace ActiveWorkspace()
+    {
+        lock (_workspaces)
+        {
+            if (_activeRef is not null) return _activeRef.Ws;
+            if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
+            return _workspaces[0];
+        }
+    }
+
+    // ---- Lifecycle (UI thread) ----
 
     private void StartControlServerOnce()
     {
@@ -135,22 +159,30 @@ public sealed partial class MainWindow : Window, ISessionHost
         _control.Start();
     }
 
-    private void CreateSession(string id, string? name, string? cwd, bool makeActive)
+    private Workspace CreateWorkspace(string id, string? name)
+    {
+        Workspace ws;
+        lock (_workspaces)
+        {
+            ws = new Workspace { Id = id, Name = name ?? $"workspace {_workspaces.Count + 1}" };
+            _workspaces.Add(ws);
+        }
+        RebuildSidebar();
+        return ws;
+    }
+
+    private void CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive)
     {
         StartControlServerOnce();
         var (cols, rows) = ComputeGridSize();
         var session = new TerminalSession(cols, rows);
         int ordinal;
-        lock (_all) ordinal = _all.Count + 1;
-        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", S = session };
+        lock (_workspaces) ordinal = ws.Sessions.Count + 1;
+        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", S = session, Ws = ws };
 
         session.OutputReceived += () => DispatcherQueue.TryEnqueue(async () =>
         {
-            if (ReferenceEquals(_activeRef, ses))
-            {
-                await DecodeNewImagesAsync();
-                GridCanvas.Invalidate();
-            }
+            if (ReferenceEquals(_activeRef, ses)) { await DecodeNewImagesAsync(); GridCanvas.Invalidate(); }
         });
         session.StatusChanged += () => DispatcherQueue.TryEnqueue(() =>
         {
@@ -158,7 +190,7 @@ public sealed partial class MainWindow : Window, ISessionHost
             if (ReferenceEquals(_activeRef, ses)) UpdateTitle();
         });
 
-        lock (_all) _all.Add(ses);
+        lock (_workspaces) { ws.Sessions.Add(ses); ws.Expanded = true; }
 
         var env = new Dictionary<string, string>
         {
@@ -166,6 +198,7 @@ public sealed partial class MainWindow : Window, ISessionHost
             ["AGWINTERM_ENABLED"] = "1",
             ["AGWINTERM_PIPE"] = _control!.PipeName,
             ["AGWINTERM_SESSION_ID"] = id,
+            ["AGWINTERM_WORKSPACE_ID"] = ws.Id,
             ["AGWINTERM_WINDOW_ID"] = _windowId,
         };
         _ = StartSessionAsync(session, env, cwd);
@@ -188,8 +221,6 @@ public sealed partial class MainWindow : Window, ISessionHost
         RebuildSidebar();
         _ = DecodeNewImagesAsync();
         GridCanvas.Invalidate();
-        // Defer focus to the next tick so it sticks after layout/activation (a Focus() call
-        // made during the first draw is dropped, which is why typing only worked after re-activating).
         DispatcherQueue.TryEnqueue(() => GridCanvas.Focus(FocusState.Programmatic));
     }
 
@@ -197,14 +228,13 @@ public sealed partial class MainWindow : Window, ISessionHost
     {
         try { ses.S.Dispose(); } catch { }
         bool wasActive = ReferenceEquals(_activeRef, ses);
-        lock (_all) _all.Remove(ses);
+        lock (_workspaces) ses.Ws.Sessions.Remove(ses);
 
         if (wasActive)
         {
-            Ses? next;
-            lock (_all) next = _all.FirstOrDefault();
+            Ses? next = AllSessions().FirstOrDefault();
             if (next is not null) SetActive(next);
-            else CreateSession(Guid.NewGuid().ToString(), null, null, makeActive: true); // keep >= 1
+            else CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true);
         }
         RebuildSidebar();
         GridCanvas.Invalidate();
@@ -212,80 +242,189 @@ public sealed partial class MainWindow : Window, ISessionHost
 
     private void CycleSession(int dir)
     {
-        Ses? target = null;
-        lock (_all)
-        {
-            if (_all.Count < 2) return;
-            int i = _activeRef is null ? 0 : _all.IndexOf(_activeRef);
-            target = _all[((i + dir) % _all.Count + _all.Count) % _all.Count];
-        }
-        if (target is not null) SetActive(target);
+        var all = AllSessions();
+        if (all.Count < 2) return;
+        int i = _activeRef is null ? 0 : all.IndexOf(_activeRef);
+        SetActive(all[((i + dir) % all.Count + all.Count) % all.Count]);
     }
 
-    private static Brush StatusBrush(AgentStatus s) => new SolidColorBrush(s switch
+    private void ToggleCollapseAll()
+    {
+        lock (_workspaces)
+        {
+            bool anyExpanded = _workspaces.Any(w => w.Expanded);
+            foreach (var w in _workspaces) w.Expanded = !anyExpanded;
+        }
+        RebuildSidebar();
+    }
+
+    private static WinColor StatusColor(AgentStatus s) => s switch
     {
         AgentStatus.Active => WinColor.FromArgb(255, 60, 140, 255),
         AgentStatus.Blocked => WinColor.FromArgb(255, 240, 160, 40),
         AgentStatus.Completed => WinColor.FromArgb(255, 60, 200, 90),
         _ => WinColor.FromArgb(255, 90, 96, 102),
-    });
+    };
+
+    // ---- Hierarchical sidebar (agterm workspace→session outline) ----
 
     private void RebuildSidebar()
     {
         SidebarPanel.Children.Clear();
-        Ses[] sessions;
-        lock (_all) sessions = _all.ToArray();
-        foreach (var ses in sessions)
+        Workspace[] wss;
+        lock (_workspaces) wss = _workspaces.ToArray();
+
+        foreach (var ws in wss)
         {
-            var dot = new Ellipse { Width = 9, Height = 9, Fill = StatusBrush(ses.S.Status), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
-            var label = new TextBlock { Text = ses.Name, Foreground = new SolidColorBrush(Colors.White), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
-            var row = new StackPanel { Orientation = Orientation.Horizontal };
-            row.Children.Add(dot);
-            row.Children.Add(label);
-            var btn = new Button
-            {
-                Content = row,
-                Tag = ses,
-                IsTabStop = false, // don't steal keyboard focus from the terminal
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                HorizontalContentAlignment = HorizontalAlignment.Left,
-                Background = ReferenceEquals(ses, _activeRef)
-                    ? new SolidColorBrush(WinColor.FromArgb(255, 38, 44, 52))
-                    : new SolidColorBrush(Colors.Transparent),
-            };
-            btn.Click += (s, _) => { if (((Button)s).Tag is Ses t) SetActive(t); };
-            SidebarPanel.Children.Add(btn);
+            SidebarPanel.Children.Add(BuildWorkspaceRow(ws));
+            if (!ws.Expanded) continue;
+            Ses[] sessions;
+            lock (_workspaces) sessions = ws.Sessions.ToArray();
+            foreach (var ses in sessions)
+                SidebarPanel.Children.Add(BuildSessionRow(ses));
         }
     }
 
-    // ---- ISessionHost (called from the control server's background threads) ----
-
-    public TerminalSession? Resolve(string? target)
+    private Button BuildWorkspaceRow(Workspace ws)
     {
-        lock (_all)
+        int count;
+        lock (_workspaces) count = ws.Sessions.Count;
+        var tri = new TextBlock { Text = ws.Expanded ? "▾" : "▸", Foreground = new SolidColorBrush(Colors.Gray), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
+        var name = new TextBlock { Text = ws.Name, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = new SolidColorBrush(Colors.White), VerticalAlignment = VerticalAlignment.Center };
+        var num = new TextBlock { Text = count.ToString(), Foreground = new SolidColorBrush(Colors.Gray), FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(tri); row.Children.Add(name); row.Children.Add(num);
+
+        var btn = new Button
         {
-            if (string.IsNullOrEmpty(target) || target == "active") return _activeRef?.S;
-            return (_all.FirstOrDefault(x => x.Id == target) ?? _all.FirstOrDefault(x => x.Id.StartsWith(target)))?.S;
+            Content = row,
+            Tag = ws,
+            IsTabStop = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Background = new SolidColorBrush(Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(6, 4, 6, 4),
+        };
+        btn.Click += (_, _) => { lock (_workspaces) ws.Expanded = !ws.Expanded; RebuildSidebar(); };
+        btn.ContextFlyout = WorkspaceMenu(ws);
+        return btn;
+    }
+
+    private Button BuildSessionRow(Ses ses)
+    {
+        bool active = ReferenceEquals(ses, _activeRef);
+        // Status glyph shows on sessions you are NOT looking at (agterm rule); hidden on active.
+        var dot = new Ellipse { Width = 9, Height = 9, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+        dot.Fill = (!active && ses.S.Status != AgentStatus.Idle) ? new SolidColorBrush(StatusColor(ses.S.Status)) : new SolidColorBrush(Colors.Transparent);
+        var name = new TextBlock { Text = ses.Name, Foreground = new SolidColorBrush(Colors.White), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(18, 0, 0, 0) };
+        row.Children.Add(dot); row.Children.Add(name);
+
+        var btn = new Button
+        {
+            Content = row,
+            Tag = ses,
+            IsTabStop = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(6, 3, 6, 3),
+            Background = active ? new SolidColorBrush(WinColor.FromArgb(255, 38, 44, 52)) : new SolidColorBrush(Colors.Transparent),
+        };
+        btn.Click += (_, _) => SetActive(ses);
+        btn.ContextFlyout = SessionMenu(ses);
+        return btn;
+    }
+
+    private MenuFlyout WorkspaceMenu(Workspace ws)
+    {
+        var m = new MenuFlyout();
+        var newSes = new MenuFlyoutItem { Text = "New Session" };
+        newSes.Click += (_, _) => CreateSession(Guid.NewGuid().ToString(), null, null, ws, true);
+        var del = new MenuFlyoutItem { Text = "Delete Workspace" };
+        del.Click += (_, _) => DeleteWorkspace(ws);
+        lock (_workspaces) del.IsEnabled = _workspaces.Count > 1;
+        m.Items.Add(newSes);
+        m.Items.Add(del);
+        return m;
+    }
+
+    private MenuFlyout SessionMenu(Ses ses)
+    {
+        var m = new MenuFlyout();
+        if (ses.S.Status != AgentStatus.Idle)
+        {
+            var clear = new MenuFlyoutItem { Text = "Clear Status" };
+            clear.Click += (_, _) => ses.S.SetStatus(AgentStatus.Idle);
+            m.Items.Add(clear);
+        }
+        var close = new MenuFlyoutItem { Text = "Close Session" };
+        close.Click += (_, _) => CloseSessionInternal(ses);
+        m.Items.Add(close);
+        return m;
+    }
+
+    private void DeleteWorkspace(Workspace ws)
+    {
+        lock (_workspaces) { if (_workspaces.Count <= 1) return; }
+        foreach (var s in ws.Sessions.ToArray()) { try { s.S.Dispose(); } catch { } }
+        bool hadActive = _activeRef is not null && ReferenceEquals(_activeRef.Ws, ws);
+        lock (_workspaces) _workspaces.Remove(ws);
+        if (hadActive)
+        {
+            var next = AllSessions().FirstOrDefault();
+            if (next is not null) SetActive(next);
+            else CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true);
+        }
+        RebuildSidebar();
+    }
+
+    // ---- ISessionHost (control-server threads) ----
+
+    private Ses? Find(string? target)
+    {
+        lock (_workspaces)
+        {
+            if (string.IsNullOrEmpty(target) || target == "active") return _activeRef;
+            var all = _workspaces.SelectMany(w => w.Sessions).ToList();
+            return all.FirstOrDefault(x => x.Id == target) ?? all.FirstOrDefault(x => x.Id.StartsWith(target));
         }
     }
 
-    public IReadOnlyList<SessionSnapshot> Snapshot()
+    public TerminalSession? Resolve(string? target) => Find(target)?.S;
+
+    public IReadOnlyList<WorkspaceSnapshot> Tree()
     {
-        lock (_all)
-            return _all.Select(x => new SessionSnapshot(x.Id, x.Name, ReferenceEquals(x, _activeRef), x.S.Status)).ToList();
+        lock (_workspaces)
+            return _workspaces.Select(w => new WorkspaceSnapshot(
+                w.Id, w.Name,
+                _activeRef is not null && ReferenceEquals(_activeRef.Ws, w),
+                w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _activeRef), s.S.Status)).ToList()
+            )).ToList();
     }
 
-    public string NewSession(string? name, string? cwd)
+    public string NewSession(string? name, string? cwd, string? workspace)
     {
         string id = Guid.NewGuid().ToString();
-        DispatcherQueue.TryEnqueue(() => CreateSession(id, name, cwd, makeActive: true));
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            Workspace ws;
+            if (!string.IsNullOrEmpty(workspace))
+            {
+                lock (_workspaces)
+                    ws = _workspaces.FirstOrDefault(w => w.Id == workspace)
+                         ?? _workspaces.FirstOrDefault(w => w.Id.StartsWith(workspace)) ?? ActiveWorkspace();
+            }
+            else ws = ActiveWorkspace();
+            CreateSession(id, name, cwd, ws, makeActive: true);
+        });
         return id;
     }
 
     public bool SelectSession(string target)
     {
-        Ses? ses;
-        lock (_all) ses = _all.FirstOrDefault(x => x.Id == target) ?? _all.FirstOrDefault(x => x.Id.StartsWith(target));
+        var ses = Find(target);
         if (ses is null) return false;
         DispatcherQueue.TryEnqueue(() => SetActive(ses));
         return true;
@@ -293,11 +432,17 @@ public sealed partial class MainWindow : Window, ISessionHost
 
     public bool CloseSession(string target)
     {
-        Ses? ses;
-        lock (_all) ses = _all.FirstOrDefault(x => x.Id == target) ?? _all.FirstOrDefault(x => x.Id.StartsWith(target));
+        var ses = Find(target);
         if (ses is null) return false;
         DispatcherQueue.TryEnqueue(() => CloseSessionInternal(ses));
         return true;
+    }
+
+    public string NewWorkspace(string? name)
+    {
+        string id = Guid.NewGuid().ToString();
+        DispatcherQueue.TryEnqueue(() => CreateWorkspace(id, name));
+        return id;
     }
 
     private void UpdateTitle()
@@ -336,9 +481,9 @@ public sealed partial class MainWindow : Window, ISessionHost
         bool shift = KeyHeld(VirtualKey.Shift);
         bool alt = KeyHeld(VirtualKey.Menu);
 
-        // Reserved app chords for multi-session management (checked before terminal keys).
         if (ctrl && e.Key == VirtualKey.Tab) { CycleSession(shift ? -1 : 1); e.Handled = true; return; }
-        if (ctrl && shift && e.Key == VirtualKey.T) { CreateSession(Guid.NewGuid().ToString(), null, null, true); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == VirtualKey.T) { CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == VirtualKey.N) { CreateWorkspace(Guid.NewGuid().ToString(), null); e.Handled = true; return; }
         if (ctrl && shift && e.Key == VirtualKey.W && _activeRef is not null) { CloseSessionInternal(_activeRef); e.Handled = true; return; }
 
         if (_session is null) return;
@@ -477,14 +622,9 @@ public sealed partial class MainWindow : Window, ISessionHost
             {
                 var key = (active.Id, p.ImageId);
                 if (_imageCache.ContainsKey(key) || _decoding.Contains(key)) continue;
-                if (active.S.Emulator.Images.TryGetValue(p.ImageId, out var img))
-                {
-                    _decoding.Add(key);
-                    todo.Add(img);
-                }
+                if (active.S.Emulator.Images.TryGetValue(p.ImageId, out var img)) { _decoding.Add(key); todo.Add(img); }
             }
         }
-
         foreach (var img in todo)
         {
             var key = (active.Id, img.Id);
@@ -536,7 +676,7 @@ public sealed partial class MainWindow : Window, ISessionHost
         if (!_started && _measured)
         {
             _started = true;
-            CreateSession(Guid.NewGuid().ToString(), null, null, makeActive: true);
+            CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true);
         }
 
         var active = _activeRef;

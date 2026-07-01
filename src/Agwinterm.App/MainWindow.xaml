@@ -10,16 +10,29 @@
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
-        <Grid Grid.Column="0" Background="#0F1113">
+        <Grid Grid.Column="0" x:Name="Sidebar" Background="#0F1113">
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <Button Grid.Row="0" x:Name="NewSessionButton" Margin="6" IsTabStop="False"
-                    HorizontalAlignment="Stretch" Content="＋  New session" />
-            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                <StackPanel x:Name="SidebarPanel" Spacing="2" Margin="4" />
+            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="SidebarPanel" Spacing="1" Margin="2" />
             </ScrollViewer>
+            <!-- Sidebar footer (agterm's bottom bar): new workspace, new session, flagged toggle -->
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="2" Padding="6,4" Background="#0B0D0F">
+                <Button x:Name="NewWorkspaceButton" IsTabStop="False"
+                        ToolTipService.ToolTip="New Workspace">
+                    <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE8F4;" FontSize="14" />
+                </Button>
+                <Button x:Name="NewSessionButton" IsTabStop="False"
+                        ToolTipService.ToolTip="New Session">
+                    <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE710;" FontSize="14" />
+                </Button>
+                <Button x:Name="FlagButton" IsTabStop="False"
+                        ToolTipService.ToolTip="Show flagged sessions">
+                    <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE7C1;" FontSize="14" />
+                </Button>
+            </StackPanel>
         </Grid>
 
         <canvas:CanvasControl Grid.Column="1" x:Name="GridCanvas" Draw="OnDraw"

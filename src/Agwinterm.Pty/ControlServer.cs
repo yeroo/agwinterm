@@ -88,9 +88,10 @@ public sealed class ControlServer : IDisposable
                 case "install.hooks": return Ok(AgentHooks.Install());
                 case "install.skill": return Ok(AgentSkill.Install());
                 case "tree": return HandleTree();
-                case "session.new": return Ok(_host.NewSession(GetString(args, "name"), GetString(args, "cwd")));
+                case "session.new": return Ok(_host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace")));
                 case "session.select": return _host.SelectSession(target ?? "active") ? Ok("selected") : Err("session not found");
                 case "session.close": return _host.CloseSession(target ?? "active") ? Ok("closed") : Err("session not found");
+                case "workspace.new": return Ok(_host.NewWorkspace(GetString(args, "name")));
             }
 
             // Session-targeted commands.
@@ -113,17 +114,27 @@ public sealed class ControlServer : IDisposable
 
     private string HandleTree()
     {
-        var sb = new StringBuilder("{\"sessions\":[");
-        var list = _host.Snapshot();
-        for (int i = 0; i < list.Count; i++)
+        var sb = new StringBuilder("{\"workspaces\":[");
+        var tree = _host.Tree();
+        for (int w = 0; w < tree.Count; w++)
         {
-            var n = list[i];
-            if (i > 0) sb.Append(',');
-            sb.Append("{\"id\":").Append(JsonSerializer.Serialize(n.Id))
-              .Append(",\"name\":").Append(JsonSerializer.Serialize(n.Name))
-              .Append(",\"active\":").Append(n.Active ? "true" : "false")
-              .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()))
-              .Append('}');
+            var ws = tree[w];
+            if (w > 0) sb.Append(',');
+            sb.Append("{\"id\":").Append(JsonSerializer.Serialize(ws.Id))
+              .Append(",\"name\":").Append(JsonSerializer.Serialize(ws.Name))
+              .Append(",\"active\":").Append(ws.Active ? "true" : "false")
+              .Append(",\"sessions\":[");
+            for (int i = 0; i < ws.Sessions.Count; i++)
+            {
+                var n = ws.Sessions[i];
+                if (i > 0) sb.Append(',');
+                sb.Append("{\"id\":").Append(JsonSerializer.Serialize(n.Id))
+                  .Append(",\"name\":").Append(JsonSerializer.Serialize(n.Name))
+                  .Append(",\"active\":").Append(n.Active ? "true" : "false")
+                  .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()))
+                  .Append('}');
+            }
+            sb.Append("]}");
         }
         sb.Append("]}");
         return OkRaw(sb.ToString());
