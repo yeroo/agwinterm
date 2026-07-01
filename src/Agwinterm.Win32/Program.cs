@@ -124,6 +124,7 @@ internal static class Program
         public required TerminalSession S;
         public required Workspace Ws;
         public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
+        public float FontSize;     // per-session font zoom (pt); always set at creation (never 0 in practice)
     }
 
     private sealed class Workspace
@@ -245,6 +246,30 @@ internal static class Program
         if (_cellH < 1) _cellH = 16;
     }
 
+    // Per-font-size terminal metrics (text format + cell size), built on demand and cached.
+    // The chrome (sidebar/title bar) keeps the base _cellW/_cellH/_format; only the terminal
+    // content region scales with the ACTIVE session's font zoom.
+    private static readonly Dictionary<float, (IDWriteTextFormat Fmt, float CellW, float CellH)> _metrics = new();
+
+    private static (IDWriteTextFormat Fmt, float CellW, float CellH) Metrics(float px)
+    {
+        if (_metrics.TryGetValue(px, out var m)) return m;
+        IDWriteTextFormat fmt;
+        try { fmt = NewFormat(_config.FontFamily, px); }
+        catch { fmt = NewFormat("Consolas", px); }
+        using var run = _dwrite.CreateTextLayout(new string('M', 10), fmt, 4096f, 4096f);
+        using var one = _dwrite.CreateTextLayout("M", fmt, 4096f, 4096f);
+        float cw = run.Metrics.Width / 10f, ch = MathF.Round(one.Metrics.Height);
+        if (cw < 1) cw = 8;
+        if (ch < 1) ch = 16;
+        m = (fmt, cw, ch);
+        _metrics[px] = m;
+        return m;
+    }
+
+    private static float ActiveFontSize() => _active is { FontSize: > 0 } a ? a.FontSize : (float)_config.FontSize;
+    private static (IDWriteTextFormat Fmt, float CellW, float CellH) CurrentMetrics() => Metrics(ActiveFontSize());
+
     private static void CreateRenderTarget()
     {
         GetClientRect(_hwnd, out RECT rc);
@@ -271,14 +296,18 @@ internal static class Program
         _brush = _rt.CreateSolidColorBrush(new Color4(1f, 1f, 1f, 1f));
     }
 
-    private static (int cols, int rows) GridSize()
+    /// <summary>Grid size for the content region using the given font size's cell metrics.</summary>
+    private static (int cols, int rows) GridSizeFor(float px)
     {
+        var (_, cw, ch) = Metrics(px);
         GetClientRect(_hwnd, out RECT rc);
         int w = rc.right - rc.left, h = rc.bottom - rc.top;
-        int cols = Math.Max(1, (int)((w - _sidebarW - 2 * PadX) / _cellW));
-        int rows = Math.Max(1, (int)((h - TitleBarH - 2 * PadY) / _cellH));
+        int cols = Math.Max(1, (int)((w - _sidebarW - 2 * PadX) / cw));
+        int rows = Math.Max(1, (int)((h - TitleBarH - 2 * PadY) / ch));
         return (cols, rows);
     }
+
+    private static (int cols, int rows) GridSize() => GridSizeFor(ActiveFontSize());
 
     private static void StartSession()
     {
@@ -319,13 +348,14 @@ internal static class Program
         return ws;
     }
 
-    private static void CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive)
+    private static void CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null)
     {
-        var (cols, rows) = GridSize();
+        float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
+        var (cols, rows) = GridSizeFor(fs);
         var session = new TerminalSession(cols, rows);
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
-        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", S = session, Ws = ws, StartCwd = cwd };
+        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", S = session, Ws = ws, StartCwd = cwd, FontSize = fs };
 
         session.OutputReceived += () => { if (ReferenceEquals(_active, ses)) RequestRedraw(); };
         session.StatusChanged += RequestRedraw; // sidebar status dot updates for any session
@@ -352,11 +382,25 @@ internal static class Program
     {
         _active = ses;
         _session = ses.S;
-        var (cols, rows) = GridSize();
+        var (cols, rows) = GridSizeFor(ses.FontSize > 0 ? ses.FontSize : (float)_config.FontSize);
         if (ses.S.Cols != cols || ses.S.Rows != rows) ses.S.Resize(cols, rows);
         RequestRedraw();
         SaveState();
     }
+
+    /// <summary>Change a session's font zoom (delta 0 = reset to config default), reflow + repaint.</summary>
+    private static void ChangeFontSizeOf(Ses ses, int delta)
+    {
+        float ns = delta == 0 ? (float)_config.FontSize : Math.Clamp(ses.FontSize + delta, 6f, 48f);
+        if (ns == ses.FontSize) return;
+        ses.FontSize = ns;
+        var (cols, rows) = GridSizeFor(ns);
+        if (ses.S.Cols != cols || ses.S.Rows != rows) ses.S.Resize(cols, rows);
+        if (ReferenceEquals(_active, ses)) RequestRedraw();
+        SaveState();
+    }
+
+    private static void ChangeFontSize(int delta) { if (_active is not null) ChangeFontSizeOf(_active, delta); }
 
     private static void CloseSessionInternal(Ses ses)
     {
@@ -449,6 +493,15 @@ internal static class Program
             string id = Guid.NewGuid().ToString();
             Post(() => CreateWorkspace(id, name));
             return id;
+        }
+
+        public bool SetFontSize(string? target, string op)
+        {
+            var ses = Find(target);
+            if (ses is null) return false;
+            int delta = op switch { "inc" => 1, "dec" => -1, _ => 0 }; // reset otherwise
+            Post(() => ChangeFontSizeOf(ses, delta));
+            return true;
         }
     }
 
@@ -697,6 +750,9 @@ internal static class Program
             case "next_attention": GoToNextAttention(1); break;
             case "previous_attention": GoToNextAttention(-1); break;
             case "reload_keymap": ReloadKeymap(); break;
+            case "increase_font_size": ChangeFontSize(1); break;
+            case "decrease_font_size": ChangeFontSize(-1); break;
+            case "reset_font_size": ChangeFontSize(0); break;
         }
     }
 
@@ -755,8 +811,9 @@ internal static class Program
     {
         var em = _session?.Emulator;
         if (em is null || !em.MouseReporting) return;
-        int col = Math.Clamp((int)((pxX - ContentX) / _cellW), 0, em.Screen.Cols - 1);
-        int row = Math.Clamp((int)((pxY - ContentY) / _cellH), 0, em.Screen.Rows - 1);
+        var (_, cw, ch) = CurrentMetrics();
+        int col = Math.Clamp((int)((pxX - ContentX) / cw), 0, em.Screen.Cols - 1);
+        int row = Math.Clamp((int)((pxY - ContentY) / ch), 0, em.Screen.Rows - 1);
         string seq = em.MouseSgr
             ? $"\x1b[<{btn};{col + 1};{row + 1}{(press ? 'M' : 'm')}"
             : "\x1b[M" + (char)(32 + (press ? btn : 3)) + (char)(33 + col) + (char)(33 + row);
@@ -770,6 +827,18 @@ internal static class Program
 
         // While a palette is open it owns the keyboard (nav here, typing via WM_CHAR).
         if (_palette != PaletteKind.None) return PaletteKeyDown(vk);
+
+        // Fixed font-zoom shortcuts (Ctrl +/-/0, incl. numpad). Handled here, not via keymap.conf,
+        // because '+' clashes with the chord joiner (matching agterm's constraint).
+        if (ctrl && !alt)
+        {
+            switch (vk)
+            {
+                case 0xBB: case 0x6B: ChangeFontSize(1); return true;   // Ctrl+= / Ctrl+numpad-plus
+                case 0xBD: case 0x6D: ChangeFontSize(-1); return true;  // Ctrl+- / Ctrl+numpad-minus
+                case 0x30: case 0x60: ChangeFontSize(0); return true;   // Ctrl+0 / Ctrl+numpad-0
+            }
+        }
 
         // Keymap dispatch: build the chord and run its bound action (defaults overlaid by keymap.conf).
         // Unbound chords fall through to terminal input below.
@@ -844,7 +913,7 @@ internal static class Program
     /// thread so the UI never blocks; only the cheap GPU upload runs here. An image simply
     /// appears on the next redraw once its pixels are ready. Called under the session lock.
     /// </summary>
-    private static void DrawImages(TerminalEmulator em)
+    private static void DrawImages(TerminalEmulator em, float cw, float ch)
     {
         if (_rt is null) return;
 
@@ -886,10 +955,10 @@ internal static class Program
                     _ = Task.Run(() => DecodePixelsAsync(img));
                 continue; // will render on a later frame once uploaded
             }
-            float ix = ContentX + p.Col * _cellW;
-            float iy = ContentY + p.Row * _cellH;
-            float iw = p.Cols > 0 ? p.Cols * _cellW : bmp.Size.Width;
-            float ih = p.Rows > 0 ? p.Rows * _cellH : bmp.Size.Height;
+            float ix = ContentX + p.Col * cw;
+            float iy = ContentY + p.Row * ch;
+            float iw = p.Cols > 0 ? p.Cols * cw : bmp.Size.Width;
+            float ih = p.Rows > 0 ? p.Rows * ch : bmp.Size.Height;
             var dest = new Vortice.RawRectF(ix, iy, ix + iw, iy + ih);
             // Optional pixel source crop: scrolling just moves this window over the cached texture
             // (no re-transmit/re-decode/re-upload). null = whole image.
@@ -1032,6 +1101,7 @@ internal static class Program
                 var em = session.Emulator;
                 var screen = em.Screen;
                 int cols = screen.Cols, rows = screen.Rows;
+                var (fmt, cw, ch) = CurrentMetrics();  // active session's font zoom drives the terminal grid
 
                 // Text is drawn in runs of same-colour cells rather than one DrawText per
                 // cell: on a full-screen repaint that cuts thousands of shaping/layout calls
@@ -1039,7 +1109,7 @@ internal static class Program
                 // between a ~20ms frame and a ~3ms one while scrolling.
                 for (int r = 0; r < rows; r++)
                 {
-                    float y = ContentY + r * _cellH;
+                    float y = ContentY + r * ch;
 
                     // Pass 1: background fills, coalesced across equal-bg spans.
                     int c = 0;
@@ -1057,7 +1127,7 @@ internal static class Program
                             c++;
                         }
                         brush.Color = C4(bg);
-                        rt.FillRectangle(new Rect(ContentX + start * _cellW, y, (c - start) * _cellW, _cellH), brush);
+                        rt.FillRectangle(new Rect(ContentX + start * cw, y, (c - start) * cw, ch), brush);
                     }
 
                     // Pass 2: foreground text, coalesced into same-colour runs.
@@ -1071,8 +1141,8 @@ internal static class Program
                         if (cell.Width == 2) // draw wide (CJK) glyphs individually; advances differ
                         {
                             brush.Color = C4(runFg);
-                            float wx = ContentX + c * _cellW;
-                            rt.DrawText(cell.Rune.ToString(), _format, new Rect(wx, y, wx + 2 * _cellW, y + _cellH), brush);
+                            float wx = ContentX + c * cw;
+                            rt.DrawText(cell.Rune.ToString(), fmt, new Rect(wx, y, wx + 2 * cw, y + ch), brush);
                             c++;
                             continue;
                         }
@@ -1094,19 +1164,19 @@ internal static class Program
                         {
                             _run.Length = lastNonBlank; // drop trailing blanks (nothing to shape)
                             brush.Color = C4(runFg);
-                            float rx = ContentX + start * _cellW;
-                            rt.DrawText(_run.ToString(), _format, new Rect(rx, y, rx + _run.Length * _cellW, y + _cellH), brush);
+                            float rx = ContentX + start * cw;
+                            rt.DrawText(_run.ToString(), fmt, new Rect(rx, y, rx + _run.Length * cw, y + ch), brush);
                         }
                     }
                 }
 
                 if (!_noImages && em.Placements.Count > 0)
-                    DrawImages(em);
+                    DrawImages(em, cw, ch);
 
                 if (em.CursorVisible)
                 {
-                    float cx = ContentX + em.CursorCol * _cellW;
-                    float cy = ContentY + em.CursorRow * _cellH;
+                    float cx = ContentX + em.CursorCol * cw;
+                    float cy = ContentY + em.CursorRow * ch;
                     brush.Color = C4(_theme.Cursor);
 
                     if (!_config.CursorBlink || _cursorOn)
@@ -1114,15 +1184,15 @@ internal static class Program
                         switch (_config.CursorStyle)
                         {
                             case CursorStyle.Block:
-                                rt.FillRectangle(new Rect(cx, cy, _cellW, _cellH), brush);
+                                rt.FillRectangle(new Rect(cx, cy, cw, ch), brush);
                                 break;
                             case CursorStyle.Underline:
-                                float uh = MathF.Max(1f, MathF.Round(_cellH * 0.12f));
-                                rt.FillRectangle(new Rect(cx, cy + _cellH - uh, _cellW, uh), brush);
+                                float uh = MathF.Max(1f, MathF.Round(ch * 0.12f));
+                                rt.FillRectangle(new Rect(cx, cy + ch - uh, cw, uh), brush);
                                 break;
                             default:
-                                float barW = MathF.Max(1f, MathF.Round(_cellW * 0.14f));
-                                rt.FillRectangle(new Rect(cx, cy, barW, _cellH), brush);
+                                float barW = MathF.Max(1f, MathF.Round(cw * 0.14f));
+                                rt.FillRectangle(new Rect(cx, cy, barW, ch), brush);
                                 break;
                         }
                     }
@@ -1608,6 +1678,9 @@ internal static class Program
                 A("Previous Session", "Ctrl+Shift+Tab", () => CycleSession(-1));
                 A("Next Attention", "Ctrl+Alt+Down", () => GoToNextAttention(1));
                 A("Previous Attention", "Ctrl+Alt+Up", () => GoToNextAttention(-1));
+                A("Increase Font Size", "Ctrl+=", () => ChangeFontSize(1));
+                A("Decrease Font Size", "Ctrl+-", () => ChangeFontSize(-1));
+                A("Reset Font Size", "Ctrl+0", () => ChangeFontSize(0));
                 A("Split", "", () => ShowToast("split not implemented yet"));
                 A("Scratch Terminal", "", () => ShowToast("scratch not implemented yet"));
                 A("Quick Terminal", "", () => ShowToast("quick terminal not implemented yet"));
@@ -2129,7 +2202,7 @@ internal static class Program
 
     // ---- Persistence: workspace/session tree + selection + sidebar state ----
 
-    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string Cwd { get; set; } = ""; }
+    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } }
     private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
     private sealed class AppState { public List<WorkspaceState> Workspaces { get; set; } = new(); public string? ActiveId { get; set; } public float SidebarWidth { get; set; } = SidebarWFull; public bool SidebarVisible { get; set; } = true; }
 
@@ -2164,7 +2237,7 @@ internal static class Program
                 {
                     string live = PrettyCwd(SafeCwd(s));                       // OSC 7 cwd if the shell reports it
                     string cwd = live.Length > 0 ? live : (s.StartCwd ?? ""); // else the launch dir
-                    wss.Sessions.Add(new SessionState { Id = s.Id, Name = s.Name, Cwd = cwd });
+                    wss.Sessions.Add(new SessionState { Id = s.Id, Name = s.Name, Cwd = cwd, FontSize = s.FontSize });
                 }
                 st.Workspaces.Add(wss);
             }
@@ -2207,7 +2280,8 @@ internal static class Program
                     CreateSession(string.IsNullOrEmpty(s.Id) ? Guid.NewGuid().ToString() : s.Id,
                         string.IsNullOrWhiteSpace(s.Name) ? null : s.Name,
                         string.IsNullOrWhiteSpace(s.Cwd) ? null : s.Cwd,
-                        ws, makeActive: s.Id == st.ActiveId);
+                        ws, makeActive: s.Id == st.ActiveId,
+                        fontSize: s.FontSize > 0 ? s.FontSize : (float?)null);
                 lock (_workspaces) ws.Expanded = w.Expanded; // CreateSession forces Expanded=true; restore the saved state
             }
         }

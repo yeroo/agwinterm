@@ -87,6 +87,12 @@ switch (area)
                 Console.Error.WriteLine($"unknown session command '{sub}'"); return 2;
         }
         break;
+    case "font":
+        cmd = "font";
+        target = DefaultTarget();
+        if (sub is not ("inc" or "dec" or "reset")) { Console.Error.WriteLine("usage: agwintermctl font inc|dec|reset [--target ID]"); return 2; }
+        cargs["op"] = sub;
+        break;
     case "image" when sub == "show":
         cmd = "image.show";
         target = DefaultTarget();

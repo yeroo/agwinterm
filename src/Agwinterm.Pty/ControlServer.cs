@@ -97,6 +97,7 @@ public sealed class ControlServer : IDisposable
                 case "session.select": return _host.SelectSession(target ?? "active") ? Ok("selected") : Err("session not found");
                 case "session.close": return _host.CloseSession(target ?? "active") ? Ok("closed") : Err("session not found");
                 case "workspace.new": return Ok(_host.NewWorkspace(GetString(args, "name")));
+                case "font": return _host.SetFontSize(target, GetString(args, "op") ?? "") ? Ok("font") : Err("session not found");
             }
 
             // Session-targeted commands.

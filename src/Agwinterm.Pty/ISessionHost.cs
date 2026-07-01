@@ -29,6 +29,9 @@ public interface ISessionHost
 
     /// <summary>Create a workspace; returns its id.</summary>
     string NewWorkspace(string? name);
+
+    /// <summary>Adjust a session's font zoom: op = "inc" | "dec" | "reset". Returns false if the target isn't found.</summary>
+    bool SetFontSize(string? target, string op);
 }
 
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
@@ -45,4 +48,5 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SelectSession(string target) => true;
     public bool CloseSession(string target) => false;
     public string NewWorkspace(string? name) => "ws";
+    public bool SetFontSize(string? target, string op) => false; // no per-session font zoom in the single-session host
 }
