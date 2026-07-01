@@ -78,7 +78,7 @@ internal static class Program
     private static string? _toastText;
 
     // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
-    private enum PaletteKind { None, Sessions, Actions, Attention, Themes }
+    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom }
     private sealed class PalItem
     {
         public required string Label;
@@ -90,6 +90,12 @@ internal static class Program
         public Action? Run;           // null = non-actionable placeholder
     }
     private static PaletteKind _palette = PaletteKind.None;
+
+    // Keymap: chord (canonical string) -> action id or "command:<Label>"; custom commands from keymap.conf.
+    private static Dictionary<string, string> _keymap = new(StringComparer.OrdinalIgnoreCase);
+    private static List<(string Label, string Text)> _commands = new();
+    private static string[] _keymapDiag = Array.Empty<string>();
+
     private static string _palQuery = "";
     private static int _palSel;
     private static readonly List<PalItem> _palAll = new();
@@ -146,6 +152,7 @@ internal static class Program
         _config = LoadOrCreateConfig();
         _allThemes = LoadThemes();
         _theme = FindTheme(_config.Theme);
+        LoadKeymap();
 
         IntPtr hInstance = GetModuleHandleW(null);
         _wndProc = WindowProc;
@@ -653,6 +660,76 @@ internal static class Program
         _session?.Write(Encoding.UTF8.GetBytes(s));
     }
 
+    /// <summary>Dispatch a keymap action id (or "command:&lt;Label&gt;") to the matching behavior.</summary>
+    private static void RunAction(string action)
+    {
+        if (action.StartsWith("command:", StringComparison.OrdinalIgnoreCase))
+        {
+            string label = action["command:".Length..];
+            var cmd = _commands.FirstOrDefault(c => string.Equals(c.Label, label, StringComparison.OrdinalIgnoreCase));
+            if (cmd.Text is not null) RunCustomCommand(cmd.Text);
+            else ShowToast($"no command '{label}'");
+            return;
+        }
+        switch (action)
+        {
+            case "new_session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true); break;
+            case "new_workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
+            case "close_session": if (_active is not null) CloseSessionInternal(_active); break;
+            case "next_session": CycleSession(1); break;
+            case "previous_session": CycleSession(-1); break;
+            case "toggle_sidebar": ToggleSidebar(); break;
+            case "rename_session": if (_active is not null) StartRename(_active); break;
+            case "delete_workspace": if (_active is not null) DeleteWorkspace(_active.Ws); break;
+            case "session_palette": TogglePalette(PaletteKind.Sessions); break;
+            case "action_palette": TogglePalette(PaletteKind.Actions); break;
+            case "attention_list": TogglePalette(PaletteKind.Attention); break;
+            case "custom_palette": TogglePalette(PaletteKind.Custom); break;
+            case "next_attention": GoToNextAttention(1); break;
+            case "previous_attention": GoToNextAttention(-1); break;
+            case "reload_keymap": ReloadKeymap(); break;
+        }
+    }
+
+    /// <summary>Type a custom command's text + Enter into the active session, as if the user typed it.</summary>
+    private static void RunCustomCommand(string text)
+        => Send(text.Replace("\r", "").Replace("\n", "") + "\r");
+
+    private static string KeymapPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "keymap.conf");
+
+    private static void LoadKeymap()
+    {
+        try
+        {
+            string path = KeymapPath;
+            if (!File.Exists(path))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, Keymap.StarterText);
+            }
+            var parsed = Keymap.Parse(File.ReadAllText(path));
+            _keymap = parsed.Bindings;
+            _commands = parsed.Commands;
+            _keymapDiag = parsed.Diagnostics.ToArray();
+        }
+        catch
+        {
+            _keymap = new(StringComparer.OrdinalIgnoreCase);
+            foreach (var (c, a) in Keymap.DefaultBindings) _keymap[c] = a;
+            _commands = new();
+            _keymapDiag = Array.Empty<string>();
+        }
+    }
+
+    private static void ReloadKeymap()
+    {
+        LoadKeymap();
+        ShowToast(_keymapDiag.Length == 0
+            ? "keymap reloaded"
+            : $"keymap: {_keymapDiag.Length} issue(s) — {_keymapDiag[0]}");
+    }
+
     /// <summary>Coalesce many output/decode notifications into a single pending repaint.</summary>
     private static void RequestRedraw()
     {
@@ -685,21 +762,12 @@ internal static class Program
         // While a palette is open it owns the keyboard (nav here, typing via WM_CHAR).
         if (_palette != PaletteKind.None) return PaletteKeyDown(vk);
 
-        // Palette open/toggle shortcuts (before the terminal Ctrl+letter table eats them).
-        if (ctrl && !alt && !shift && vk == 'P') { TogglePalette(PaletteKind.Sessions); return true; }
-        if (ctrl && shift && vk == 'P') { TogglePalette(PaletteKind.Actions); return true; }
-        if (ctrl && shift && vk == 'I') { TogglePalette(PaletteKind.Attention); return true; } // attention LIST
+        // Keymap dispatch: build the chord and run its bound action (defaults overlaid by keymap.conf).
+        // Unbound chords fall through to terminal input below.
+        string? chord = Keymap.ChordFor(vk, ctrl, alt, shift);
+        if (chord is not null && _keymap.TryGetValue(chord, out var action)) { RunAction(action); return true; }
 
         if (_session is null) return false;
-
-        // agterm session/workspace shortcuts (handled before the terminal key table).
-        if (ctrl && vk == VK_TAB) { CycleSession(shift ? -1 : 1); return true; }
-        if (ctrl && shift && vk == 'T') { CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true); return true; }
-        if (ctrl && shift && vk == 'N') { CreateWorkspace(Guid.NewGuid().ToString(), null); return true; }
-        if (ctrl && shift && vk == 'W') { if (_active is not null) CloseSessionInternal(_active); return true; }
-        if (ctrl && alt && vk == VK_UP) { GoToNextAttention(-1); return true; }          // previous attention
-        if (ctrl && alt && vk == VK_DOWN) { GoToNextAttention(1); return true; }         // next attention
-        if (!ctrl && !alt && !shift && vk == 0x71 && _active is not null) { StartRename(_active); return true; } // F2 rename
 
         if (ctrl && !alt)
         {
@@ -1532,6 +1600,22 @@ internal static class Program
                 A("Scratch Terminal", "", () => ShowToast("scratch not implemented yet"));
                 A("Quick Terminal", "", () => ShowToast("quick terminal not implemented yet"));
                 A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
+                A("Custom Commands…", "Ctrl+Shift+O", () => TogglePalette(PaletteKind.Custom));
+                A("Reload Keymap", "", ReloadKeymap);
+                break;
+            }
+            case PaletteKind.Custom:
+            {
+                if (_commands.Count == 0)
+                {
+                    _palAll.Add(new PalItem { Label = "No custom commands", Secondary = "define them in keymap.conf", Run = null });
+                    break;
+                }
+                foreach (var c in _commands)
+                {
+                    var cc = c;
+                    _palAll.Add(new PalItem { Label = cc.Label, Secondary = cc.Text, Search = $"{cc.Label} {cc.Text}", Run = () => RunCustomCommand(cc.Text) });
+                }
                 break;
             }
             case PaletteKind.Themes:
@@ -1656,7 +1740,7 @@ internal static class Program
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = _palPanel, RadiusX = 10f, RadiusY = 10f }, brush, 1f);
 
         // Query line (placeholder when empty) + blinking caret.
-        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", _ => "Attention" };
+        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Custom => "Run command…", _ => "Attention" };
         brush.Color = _palQuery.Length > 0 ? ChromeText : ChromeDim;
         rt.DrawText(_palQuery.Length > 0 ? _palQuery : placeholder, _uiFont, new Rect(px + 16f, py + 9f, pw - 32f, queryH - 10f), brush);
         if (_cursorOn && _palQuery.Length > 0)

@@ -1,0 +1,162 @@
+using static Agwinterm.Win32.Win32;
+
+namespace Agwinterm.Win32;
+
+/// <summary>
+/// Parses %LOCALAPPDATA%\agwinterm\keymap.conf into chord→action bindings and custom
+/// commands. Our own simple format (inspired by agterm, not copied):
+///   map &lt;chord&gt; = &lt;action&gt;         rebind a built-in action
+///   map &lt;chord&gt; = command:&lt;Label&gt; bind a chord to a custom command
+///   command &lt;Label&gt; = &lt;text&gt;      type &lt;text&gt; + Enter into the active session
+///   '#' starts a comment; blank lines ignored.
+/// A canonical chord is "[ctrl+][alt+][shift+]&lt;key&gt;" where key ∈ a–z, 0–9, f1–f12,
+/// tab, enter, escape, space, up, down, left, right.
+/// </summary>
+internal static class Keymap
+{
+    /// <summary>Built-in action ids and their default chords (overridable by keymap.conf).</summary>
+    public static readonly (string Chord, string Action)[] DefaultBindings =
+    {
+        ("ctrl+shift+t", "new_session"),
+        ("ctrl+shift+n", "new_workspace"),
+        ("ctrl+shift+w", "close_session"),
+        ("ctrl+tab", "next_session"),
+        ("ctrl+shift+tab", "previous_session"),
+        ("ctrl+p", "session_palette"),
+        ("ctrl+shift+p", "action_palette"),
+        ("ctrl+shift+i", "attention_list"),
+        ("ctrl+shift+o", "custom_palette"),
+        ("ctrl+alt+up", "previous_attention"),
+        ("ctrl+alt+down", "next_attention"),
+        ("f2", "rename_session"),
+    };
+
+    public static readonly HashSet<string> ValidActions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "new_session", "new_workspace", "close_session", "next_session", "previous_session",
+        "toggle_sidebar", "rename_session", "delete_workspace", "session_palette", "action_palette",
+        "attention_list", "custom_palette", "next_attention", "previous_attention", "reload_keymap",
+    };
+
+    public const string StarterText =
+        """
+        # agwinterm keymap (our own simple format)
+        #
+        #   map <chord> = <action>          rebind a built-in action
+        #   map <chord> = command:<Label>   bind a chord to a custom command below
+        #   command <Label> = <text>        type <text> + Enter into the active session
+        #
+        # chords: ctrl+ alt+ shift+ then a key — a-z, 0-9, f1-f12,
+        #         tab enter escape space up down left right.  e.g. ctrl+shift+g
+        #
+        # actions: new_session new_workspace close_session next_session previous_session
+        #          toggle_sidebar rename_session delete_workspace session_palette
+        #          action_palette attention_list custom_palette next_attention
+        #          previous_attention reload_keymap
+        #
+        # Examples (uncomment to use):
+        # map ctrl+shift+g = command:Greet
+        # command Greet = echo hello from keymap
+        # command Git Status = git status
+        """;
+
+    public sealed class Parsed
+    {
+        public readonly Dictionary<string, string> Bindings = new(StringComparer.OrdinalIgnoreCase);
+        public readonly List<(string Label, string Text)> Commands = new();
+        public readonly List<string> Diagnostics = new();
+    }
+
+    /// <summary>Parse keymap text; starts from the defaults, then applies map/command lines.</summary>
+    public static Parsed Parse(string text)
+    {
+        var p = new Parsed();
+        foreach (var (c, a) in DefaultBindings) p.Bindings[c] = a; // defaults, overridable
+
+        int lineNo = 0;
+        foreach (var rawLine in text.Replace("\r\n", "\n").Split('\n'))
+        {
+            lineNo++;
+            var line = rawLine.Trim();
+            if (line.Length == 0 || line[0] == '#') continue;
+
+            if (line.StartsWith("map ", StringComparison.OrdinalIgnoreCase))
+            {
+                int eq = line.IndexOf('=');
+                if (eq < 0) { p.Diagnostics.Add($"line {lineNo}: 'map' needs '='"); continue; }
+                string chordRaw = line.Substring(3, eq - 3).Trim();
+                string target = line[(eq + 1)..].Trim();
+                string? chord = Canonicalize(chordRaw);
+                if (chord is null) { p.Diagnostics.Add($"line {lineNo}: bad chord '{chordRaw}'"); continue; }
+                if (target.StartsWith("command:", StringComparison.OrdinalIgnoreCase))
+                    p.Bindings[chord] = "command:" + target["command:".Length..].Trim();
+                else if (ValidActions.Contains(target))
+                    p.Bindings[chord] = target.ToLowerInvariant();
+                else { p.Diagnostics.Add($"line {lineNo}: unknown action '{target}'"); }
+            }
+            else if (line.StartsWith("command ", StringComparison.OrdinalIgnoreCase))
+            {
+                int eq = line.IndexOf('=');
+                if (eq < 0) { p.Diagnostics.Add($"line {lineNo}: 'command' needs '='"); continue; }
+                string label = line.Substring(7, eq - 7).Trim();
+                string cmdText = line[(eq + 1)..].Trim();
+                if (label.Length == 0 || cmdText.Length == 0) { p.Diagnostics.Add($"line {lineNo}: command needs a label and text"); continue; }
+                p.Commands.Add((label, cmdText));
+            }
+            else p.Diagnostics.Add($"line {lineNo}: expected 'map' or 'command'");
+        }
+        return p;
+    }
+
+    /// <summary>Normalize a chord string to canonical "[ctrl+][alt+][shift+]key"; null if unparseable.</summary>
+    public static string? Canonicalize(string s)
+    {
+        bool ctrl = false, alt = false, shift = false;
+        string? key = null;
+        foreach (var tokRaw in s.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            switch (tokRaw.ToLowerInvariant())
+            {
+                case "ctrl": case "control": ctrl = true; break;
+                case "alt": case "option": alt = true; break;
+                case "shift": shift = true; break;
+                default:
+                    if (key is not null) return null; // more than one key token
+                    string nk = tokRaw.ToLowerInvariant() == "esc" ? "escape" : tokRaw.ToLowerInvariant();
+                    if (!IsKey(nk)) return null;
+                    key = nk;
+                    break;
+            }
+        }
+        if (key is null) return null;
+        return (ctrl ? "ctrl+" : "") + (alt ? "alt+" : "") + (shift ? "shift+" : "") + key;
+    }
+
+    private static bool IsKey(string t)
+    {
+        if (t.Length == 1 && char.IsLetterOrDigit(t[0])) return true;
+        if (t.Length is 2 or 3 && t[0] == 'f' && int.TryParse(t[1..], out int n) && n is >= 1 and <= 12) return true;
+        return t is "tab" or "enter" or "escape" or "space" or "up" or "down" or "left" or "right";
+    }
+
+    /// <summary>Build the canonical chord for a live keypress, or null if the key isn't bindable.</summary>
+    public static string? ChordFor(int vk, bool ctrl, bool alt, bool shift)
+    {
+        string? key = KeyToken(vk);
+        if (key is null) return null;
+        return (ctrl ? "ctrl+" : "") + (alt ? "alt+" : "") + (shift ? "shift+" : "") + key;
+    }
+
+    private static string? KeyToken(int vk)
+    {
+        if (vk >= 'A' && vk <= 'Z') return ((char)('a' + (vk - 'A'))).ToString();
+        if (vk >= '0' && vk <= '9') return ((char)vk).ToString();
+        if (vk >= 0x70 && vk <= 0x7B) return "f" + (vk - 0x70 + 1);
+        return vk switch
+        {
+            VK_TAB => "tab", VK_RETURN => "enter", VK_ESCAPE => "escape", VK_SPACE => "space",
+            VK_UP => "up", VK_DOWN => "down", VK_LEFT => "left", VK_RIGHT => "right",
+            _ => null,
+        };
+    }
+}
