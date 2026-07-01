@@ -4,6 +4,7 @@
       <Platform Project="x64" />
     </Project>
     <Project Path="src/Agwinterm.Core/Agwinterm.Core.csproj" />
+    <Project Path="src/Agwinterm.Ctl/Agwinterm.Ctl.csproj" />
     <Project Path="src/Agwinterm.Pty/Agwinterm.Pty.csproj" />
   </Folder>
   <Folder Name="/tests/">
