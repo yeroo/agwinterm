@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using Agwinterm.Core;
 using Agwinterm.Pty;
@@ -38,6 +39,11 @@ internal static class Program
 
     private static float _cellW = 8, _cellH = 16;
     private static bool _cursorOn = true;
+
+    // Decoded Kitty images, keyed by the current KittyImage instance so a retransmit
+    // (new bytes, same id) re-decodes and the stale texture is pruned/disposed.
+    private static readonly Dictionary<KittyImage, ID2D1Bitmap> _imageCache = new();
+    private static readonly bool _noImages = Environment.GetEnvironmentVariable("AGWINTERM_NOIMG") == "1";
 
     [STAThread]
     private static void Main()
@@ -215,6 +221,33 @@ internal static class Program
                     return IntPtr.Zero;
                 }
 
+            case WM_LBUTTONDOWN: SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero;
+            case WM_LBUTTONUP: SendMousePx(0, lParam, false); ReleaseCapture(); return IntPtr.Zero;
+            case WM_MBUTTONDOWN: SendMousePx(1, lParam, true); return IntPtr.Zero;
+            case WM_MBUTTONUP: SendMousePx(1, lParam, false); return IntPtr.Zero;
+            case WM_RBUTTONDOWN: SendMousePx(2, lParam, true); return IntPtr.Zero;
+            case WM_RBUTTONUP: SendMousePx(2, lParam, false); return IntPtr.Zero;
+
+            case WM_MOUSEMOVE:
+                {
+                    var em = _session?.Emulator;
+                    if (em is not null && em.MouseReportsMotion)
+                        SendMousePx(32 + (((long)wParam & MK_LBUTTON) != 0 ? 0 : 3), lParam, true);
+                    return IntPtr.Zero;
+                }
+
+            case WM_MOUSEWHEEL:
+                {
+                    var em = _session?.Emulator;
+                    if (em is not null && em.MouseReporting)
+                    {
+                        var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
+                        ScreenToClient(_hwnd, ref pt);
+                        SendMouse(HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, true);
+                    }
+                    return IntPtr.Zero;
+                }
+
             case WM_DESTROY:
                 _session?.Dispose();
                 PostQuitMessage(0);
@@ -227,6 +260,23 @@ internal static class Program
     {
         _session?.NotifyActivity();
         _session?.Write(Encoding.UTF8.GetBytes(s));
+    }
+
+    /// <summary>Report a mouse event given raw client pixels packed in lParam (button code already encoded).</summary>
+    private static void SendMousePx(int btn, IntPtr lParam, bool press)
+        => SendMouse(btn, LoWord(lParam), HiWord(lParam), press);
+
+    /// <summary>Encode a mouse event (SGR or legacy) and send it to the child. Mirrors the WinUI shell.</summary>
+    private static void SendMouse(int btn, int pxX, int pxY, bool press)
+    {
+        var em = _session?.Emulator;
+        if (em is null || !em.MouseReporting) return;
+        int col = Math.Clamp((int)((pxX - PadX) / _cellW), 0, em.Screen.Cols - 1);
+        int row = Math.Clamp((int)((pxY - PadY) / _cellH), 0, em.Screen.Rows - 1);
+        string seq = em.MouseSgr
+            ? $"\x1b[<{btn};{col + 1};{row + 1}{(press ? 'M' : 'm')}"
+            : "\x1b[M" + (char)(32 + (press ? btn : 3)) + (char)(33 + col) + (char)(33 + row);
+        _session?.Write(Encoding.UTF8.GetBytes(seq));
     }
 
     /// <summary>Returns true if the key was consumed (matches the WinUI key table).</summary>
@@ -271,6 +321,99 @@ internal static class Program
 
     private static Color4 C4(Color c) => new(c.R / 255f, c.G / 255f, c.B / 255f, 1f);
 
+    // ---- Kitty images (Direct2D) ----
+
+    private static readonly string? _imgLog = Environment.GetEnvironmentVariable("AGWINTERM_IMGLOG");
+    private static void Log(string m) { if (_imgLog is not null) try { File.AppendAllText(_imgLog, m + "\n"); } catch { } }
+
+    /// <summary>Draw current image placements, decoding lazily and pruning stale textures. Called under the session lock.</summary>
+    private static void DrawImages(TerminalEmulator em)
+    {
+        if (_rt is null) return;
+        Log($"DrawImages: placements={em.Placements.Count} images={em.Images.Count}");
+
+        // Prune textures whose image was retransmitted or deleted (bounds memory during scroll).
+        if (_imageCache.Count > 0)
+        {
+            foreach (var stale in _imageCache.Keys.Where(k => !em.Images.Values.Contains(k)).ToList())
+            {
+                _imageCache[stale].Dispose();
+                _imageCache.Remove(stale);
+            }
+        }
+
+        foreach (var p in em.Placements)
+        {
+            if (!em.Images.TryGetValue(p.ImageId, out var img)) continue;
+            if (!_imageCache.TryGetValue(img, out var bmp))
+            {
+                try { bmp = DecodeBitmap(img); }
+                catch (Exception ex) { Log($"decode FAILED id={img.Id} fmt={img.Format}: {ex.GetType().Name} {ex.Message}"); bmp = null; }
+                if (bmp is null) continue;
+                _imageCache[img] = bmp;
+                Log($"decoded id={img.Id} sizeDIP={bmp.Size.Width}x{bmp.Size.Height}");
+            }
+            float ix = PadX + p.Col * _cellW;
+            float iy = PadY + p.Row * _cellH;
+            float iw = p.Cols > 0 ? p.Cols * _cellW : bmp.Size.Width;
+            float ih = p.Rows > 0 ? p.Rows * _cellH : bmp.Size.Height;
+            Log($"draw id={img.Id} cell=({p.Col},{p.Row}) dest=({ix},{iy},{ix + iw},{iy + ih})");
+            // Overload with an explicit destination RawRectF (Left,Top,Right,Bottom); source null = whole bitmap.
+            try { _rt.DrawBitmap(bmp, new Vortice.RawRectF(ix, iy, ix + iw, iy + ih), 1f, BitmapInterpolationMode.Linear, null); }
+            catch (Exception ex) { Log($"DrawBitmap FAILED: {ex.GetType().Name} {ex.Message}"); }
+        }
+    }
+
+    private static readonly BitmapProperties _bmpProps =
+        new(new PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, AlphaMode.Premultiplied), 96f, 96f);
+
+    /// <summary>Decode a Kitty image (PNG via System.Drawing, or raw RGB/RGBA) into a premultiplied-BGRA D2D bitmap.</summary>
+    private static ID2D1Bitmap? DecodeBitmap(KittyImage img)
+    {
+        if (_rt is null) return null;
+
+        if (img.Format == KittyFormat.Png)
+        {
+            using var ms = new MemoryStream(img.Data);
+            using var gdi = new System.Drawing.Bitmap(ms);
+            int w = gdi.Width, h = gdi.Height;
+            var data = gdi.LockBits(
+                new System.Drawing.Rectangle(0, 0, w, h),
+                System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                System.Drawing.Imaging.PixelFormat.Format32bppPArgb); // premultiplied BGRA in memory
+            try { return _rt.CreateBitmap(new SizeI(w, h), data.Scan0, (uint)data.Stride, _bmpProps); }
+            finally { gdi.UnlockBits(data); }
+        }
+
+        byte[] bgra = ToPremultipliedBgra(img);
+        var handle = GCHandle.Alloc(bgra, GCHandleType.Pinned);
+        try { return _rt.CreateBitmap(new SizeI(img.Width, img.Height), handle.AddrOfPinnedObject(), (uint)(img.Width * 4), _bmpProps); }
+        finally { handle.Free(); }
+    }
+
+    private static byte[] ToPremultipliedBgra(KittyImage img)
+    {
+        var d = img.Data;
+        var outb = new byte[img.Width * img.Height * 4];
+        if (img.Format == KittyFormat.Rgba)
+        {
+            for (int i = 0, j = 0; i + 3 < d.Length && j + 3 < outb.Length; i += 4, j += 4)
+            {
+                byte r = d[i], g = d[i + 1], b = d[i + 2], a = d[i + 3];
+                outb[j] = (byte)(b * a / 255); outb[j + 1] = (byte)(g * a / 255);
+                outb[j + 2] = (byte)(r * a / 255); outb[j + 3] = a;
+            }
+        }
+        else // Rgb: opaque
+        {
+            for (int i = 0, j = 0; i + 2 < d.Length && j + 3 < outb.Length; i += 3, j += 4)
+            {
+                outb[j] = d[i + 2]; outb[j + 1] = d[i + 1]; outb[j + 2] = d[i]; outb[j + 3] = 255;
+            }
+        }
+        return outb;
+    }
+
     private static void Render()
     {
         if (_rt is null || _brush is null) return;
@@ -298,6 +441,10 @@ internal static class Program
                         Color fgc = inverse ? cell.Background : cell.Foreground;
                         Color bgc = inverse ? cell.Foreground : cell.Background;
 
+                        // Faint (SGR 2): render the foreground dimmer, matching Windows Terminal.
+                        if (cell.Attributes.HasFlag(CellAttributes.Dim))
+                            fgc = new Color((byte)(fgc.R * 0.6f), (byte)(fgc.G * 0.6f), (byte)(fgc.B * 0.6f));
+
                         float w = cell.Width == 2 ? _cellW * 2 : _cellW;
 
                         if (bgc != Color.DefaultBackground)
@@ -313,6 +460,9 @@ internal static class Program
                         }
                     }
                 }
+
+                if (!_noImages && em.Placements.Count > 0)
+                    DrawImages(em);
 
                 if (em.CursorVisible)
                 {

@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Vortice.Direct2D1" Version="3.8.3" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.9" />
     <ProjectReference Include="../Agwinterm.Core/Agwinterm.Core.csproj" />
     <ProjectReference Include="../Agwinterm.Pty/Agwinterm.Pty.csproj" />
   </ItemGroup>

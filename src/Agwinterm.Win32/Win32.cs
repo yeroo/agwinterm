@@ -18,8 +18,14 @@ internal static class Win32
     public const uint WM_SYSKEYDOWN = 0x0104;
     public const uint WM_SYSCHAR = 0x0106;
     public const uint WM_TIMER = 0x0113;
+    public const uint WM_MOUSEMOVE = 0x0200;
+    public const uint WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202;
+    public const uint WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205;
+    public const uint WM_MBUTTONDOWN = 0x0207, WM_MBUTTONUP = 0x0208;
+    public const uint WM_MOUSEWHEEL = 0x020A;
     public const uint WM_APP_REDRAW = 0x8000; // WM_APP: cross-thread "please repaint"
 
+    public const int MK_LBUTTON = 0x0001;
     public const int SW_SHOW = 5;
 
     // Virtual keys
@@ -153,6 +159,15 @@ internal static class Win32
 
     [DllImport("kernel32.dll")]
     public static extern IntPtr GetModuleHandleW(string? lpModuleName);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetCapture(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    public static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
 
     public static bool KeyDown(int vk) => (GetKeyState(vk) & 0x8000) != 0;
 
