@@ -36,8 +36,36 @@ internal static class Program
     private static ID2D1SolidColorBrush? _brush;
 
     private static TerminalConfig _config = new();
-    private static TerminalSession? _session;
+    private static TerminalSession? _session;   // mirrors the active session (render/input use this)
     private static ControlServer? _control;
+
+    // ---- Multi-session model (agterm workspaces -> sessions), mirrors the WinUI shell ----
+    private static readonly string _windowId = Guid.NewGuid().ToString();
+    private static readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock(_workspaces)
+    private static Ses? _active;
+    // Actions queued from the pipe (background) thread to run on the UI thread.
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
+
+    private const float SidebarW = 220f;
+    private static float ContentX => SidebarW + PadX;         // terminal's left origin
+    // Row hit-boxes rebuilt each paint: (top, bottom, isWorkspace, item(Workspace|Ses)).
+    private static readonly List<(float y0, float y1, bool isWs, object item)> _sidebarRows = new();
+
+    private sealed class Ses
+    {
+        public required string Id;
+        public required string Name;
+        public required TerminalSession S;
+        public required Workspace Ws;
+    }
+
+    private sealed class Workspace
+    {
+        public required string Id;
+        public required string Name;
+        public readonly List<Ses> Sessions = new();
+        public bool Expanded = true;
+    }
 
     private static float _cellW = 8, _cellH = 16;
     private static bool _cursorOn = true;
@@ -160,33 +188,176 @@ internal static class Program
     {
         GetClientRect(_hwnd, out RECT rc);
         int w = rc.right - rc.left, h = rc.bottom - rc.top;
-        int cols = Math.Max(1, (int)((w - 2 * PadX) / _cellW));
+        int cols = Math.Max(1, (int)((w - SidebarW - 2 * PadX) / _cellW));
         int rows = Math.Max(1, (int)((h - 2 * PadY) / _cellH));
         return (cols, rows);
     }
 
     private static void StartSession()
     {
+        _control = new ControlServer(new Host(), "agwinterm");
+        _control.Start();
+        var ws = CreateWorkspace(Guid.NewGuid().ToString(), null);
+        CreateSession(Guid.NewGuid().ToString(), null, null, ws, makeActive: true);
+    }
+
+    // ---- Session/workspace management (UI thread) ----
+
+    private static List<Ses> AllSessions()
+    {
+        lock (_workspaces) return _workspaces.SelectMany(w => w.Sessions).ToList();
+    }
+
+    private static Workspace ActiveWorkspace()
+    {
+        lock (_workspaces)
+        {
+            if (_active is not null) return _active.Ws;
+            if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
+            return _workspaces[0];
+        }
+    }
+
+    private static Workspace CreateWorkspace(string id, string? name)
+    {
+        Workspace ws;
+        lock (_workspaces)
+        {
+            ws = new Workspace { Id = id, Name = name ?? $"workspace {_workspaces.Count + 1}" };
+            _workspaces.Add(ws);
+        }
+        RequestRedraw();
+        return ws;
+    }
+
+    private static void CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive)
+    {
         var (cols, rows) = GridSize();
         var session = new TerminalSession(cols, rows);
-        _session = session;
+        int ordinal;
+        lock (_workspaces) ordinal = ws.Sessions.Count + 1;
+        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", S = session, Ws = ws };
 
-        _control = new ControlServer(session, "agwinterm");
-        _control.Start();
+        session.OutputReceived += () => { if (ReferenceEquals(_active, ses)) RequestRedraw(); };
+        session.StatusChanged += RequestRedraw; // sidebar status dot updates for any session
 
-        session.OutputReceived += RequestRedraw;
+        lock (_workspaces) { ws.Sessions.Add(ses); ws.Expanded = true; }
 
-        string id = Guid.NewGuid().ToString();
         var env = new Dictionary<string, string>
         {
             ["AGWINTERM"] = "1",
             ["AGWINTERM_ENABLED"] = "1",
-            ["AGWINTERM_PIPE"] = _control.PipeName,
+            ["AGWINTERM_PIPE"] = _control!.PipeName,
             ["AGWINTERM_SESSION_ID"] = id,
-            ["AGWINTERM_WORKSPACE_ID"] = Guid.NewGuid().ToString(),
-            ["AGWINTERM_WINDOW_ID"] = Guid.NewGuid().ToString(),
+            ["AGWINTERM_WORKSPACE_ID"] = ws.Id,
+            ["AGWINTERM_WINDOW_ID"] = _windowId,
         };
-        _ = session.StartAsync("powershell.exe", new[] { "-NoLogo" }, extraEnv: env, cwd: null);
+        _ = session.StartAsync("powershell.exe", new[] { "-NoLogo" }, extraEnv: env, cwd: cwd);
+
+        if (makeActive || _active is null) SetActive(ses);
+        else RequestRedraw();
+    }
+
+    private static void SetActive(Ses ses)
+    {
+        _active = ses;
+        _session = ses.S;
+        var (cols, rows) = GridSize();
+        if (ses.S.Cols != cols || ses.S.Rows != rows) ses.S.Resize(cols, rows);
+        RequestRedraw();
+    }
+
+    private static void CloseSessionInternal(Ses ses)
+    {
+        try { ses.S.Dispose(); } catch { }
+        bool wasActive = ReferenceEquals(_active, ses);
+        lock (_workspaces) ses.Ws.Sessions.Remove(ses);
+        if (wasActive)
+        {
+            Ses? next = AllSessions().FirstOrDefault();
+            if (next is not null) SetActive(next);
+            else CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true);
+        }
+        RequestRedraw();
+    }
+
+    private static void CycleSession(int dir)
+    {
+        var all = AllSessions();
+        if (all.Count < 2) return;
+        int i = _active is null ? 0 : all.IndexOf(_active);
+        SetActive(all[((i + dir) % all.Count + all.Count) % all.Count]);
+    }
+
+    private static Ses? Find(string? target)
+    {
+        lock (_workspaces)
+        {
+            if (string.IsNullOrEmpty(target) || target == "active") return _active;
+            var all = _workspaces.SelectMany(w => w.Sessions).ToList();
+            return all.FirstOrDefault(x => x.Id == target) ?? all.FirstOrDefault(x => x.Id.StartsWith(target));
+        }
+    }
+
+    /// <summary>Run an action on the UI thread (pipe callbacks arrive on a background thread).</summary>
+    private static void Post(Action a)
+    {
+        _uiActions.Enqueue(a);
+        PostMessageW(_hwnd, WM_APP_ACTION, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    /// <summary>ISessionHost bridge so the control server / agwintermctl drive this window.</summary>
+    private sealed class Host : ISessionHost
+    {
+        public TerminalSession? Resolve(string? target) => Find(target)?.S;
+
+        public IReadOnlyList<WorkspaceSnapshot> Tree()
+        {
+            lock (_workspaces)
+                return _workspaces.Select(w => new WorkspaceSnapshot(
+                    w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
+                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), s.S.Status)).ToList()
+                )).ToList();
+        }
+
+        public string NewSession(string? name, string? cwd, string? workspace)
+        {
+            string id = Guid.NewGuid().ToString();
+            Post(() =>
+            {
+                Workspace ws;
+                if (!string.IsNullOrEmpty(workspace))
+                    lock (_workspaces)
+                        ws = _workspaces.FirstOrDefault(w => w.Id == workspace)
+                             ?? _workspaces.FirstOrDefault(w => w.Id.StartsWith(workspace)) ?? ActiveWorkspace();
+                else ws = ActiveWorkspace();
+                CreateSession(id, name, cwd, ws, makeActive: true);
+            });
+            return id;
+        }
+
+        public bool SelectSession(string target)
+        {
+            var ses = Find(target);
+            if (ses is null) return false;
+            Post(() => SetActive(ses));
+            return true;
+        }
+
+        public bool CloseSession(string target)
+        {
+            var ses = Find(target);
+            if (ses is null) return false;
+            Post(() => CloseSessionInternal(ses));
+            return true;
+        }
+
+        public string NewWorkspace(string? name)
+        {
+            string id = Guid.NewGuid().ToString();
+            Post(() => CreateWorkspace(id, name));
+            return id;
+        }
     }
 
     private static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -208,6 +379,11 @@ internal static class Program
             case WM_APP_REDRAW:
                 System.Threading.Interlocked.Exchange(ref _redrawPending, 0);
                 InvalidateRect(hwnd, IntPtr.Zero, false);
+                return IntPtr.Zero;
+
+            case WM_APP_ACTION:
+                while (_uiActions.TryDequeue(out var act))
+                    try { act(); } catch (Exception ex) { Perf($"uiaction ex: {ex.Message}"); }
                 return IntPtr.Zero;
 
             case WM_TIMER:
@@ -242,17 +418,19 @@ internal static class Program
                     return IntPtr.Zero;
                 }
 
-            case WM_LBUTTONDOWN: SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero;
-            case WM_LBUTTONUP: SendMousePx(0, lParam, false); ReleaseCapture(); return IntPtr.Zero;
-            case WM_MBUTTONDOWN: SendMousePx(1, lParam, true); return IntPtr.Zero;
-            case WM_MBUTTONUP: SendMousePx(1, lParam, false); return IntPtr.Zero;
-            case WM_RBUTTONDOWN: SendMousePx(2, lParam, true); return IntPtr.Zero;
-            case WM_RBUTTONUP: SendMousePx(2, lParam, false); return IntPtr.Zero;
+            case WM_LBUTTONDOWN:
+                if (LoWord(lParam) < (int)SidebarW) { SidebarClick(LoWord(lParam), HiWord(lParam)); return IntPtr.Zero; }
+                SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero;
+            case WM_LBUTTONUP: if (LoWord(lParam) >= (int)SidebarW) { SendMousePx(0, lParam, false); } ReleaseCapture(); return IntPtr.Zero;
+            case WM_MBUTTONDOWN: if (LoWord(lParam) >= (int)SidebarW) SendMousePx(1, lParam, true); return IntPtr.Zero;
+            case WM_MBUTTONUP: if (LoWord(lParam) >= (int)SidebarW) SendMousePx(1, lParam, false); return IntPtr.Zero;
+            case WM_RBUTTONDOWN: if (LoWord(lParam) >= (int)SidebarW) SendMousePx(2, lParam, true); return IntPtr.Zero;
+            case WM_RBUTTONUP: if (LoWord(lParam) >= (int)SidebarW) SendMousePx(2, lParam, false); return IntPtr.Zero;
 
             case WM_MOUSEMOVE:
                 {
                     var em = _session?.Emulator;
-                    if (em is not null && em.MouseReportsMotion)
+                    if (em is not null && em.MouseReportsMotion && LoWord(lParam) >= (int)SidebarW)
                         SendMousePx(32 + (((long)wParam & MK_LBUTTON) != 0 ? 0 : 3), lParam, true);
                     return IntPtr.Zero;
                 }
@@ -264,13 +442,14 @@ internal static class Program
                     {
                         var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
                         ScreenToClient(_hwnd, ref pt);
-                        SendMouse(HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, true);
+                        if (pt.x >= (int)SidebarW)
+                            SendMouse(HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, true);
                     }
                     return IntPtr.Zero;
                 }
 
             case WM_DESTROY:
-                _session?.Dispose();
+                foreach (var s in AllSessions()) { try { s.S.Dispose(); } catch { } }
                 PostQuitMessage(0);
                 return IntPtr.Zero;
         }
@@ -299,7 +478,7 @@ internal static class Program
     {
         var em = _session?.Emulator;
         if (em is null || !em.MouseReporting) return;
-        int col = Math.Clamp((int)((pxX - PadX) / _cellW), 0, em.Screen.Cols - 1);
+        int col = Math.Clamp((int)((pxX - ContentX) / _cellW), 0, em.Screen.Cols - 1);
         int row = Math.Clamp((int)((pxY - PadY) / _cellH), 0, em.Screen.Rows - 1);
         string seq = em.MouseSgr
             ? $"\x1b[<{btn};{col + 1};{row + 1}{(press ? 'M' : 'm')}"
@@ -312,6 +491,12 @@ internal static class Program
     {
         if (_session is null) return false;
         bool ctrl = KeyDown(VK_CONTROL), shift = KeyDown(VK_SHIFT), alt = KeyDown(VK_MENU);
+
+        // agterm session/workspace shortcuts (handled before the terminal key table).
+        if (ctrl && vk == VK_TAB) { CycleSession(shift ? -1 : 1); return true; }
+        if (ctrl && shift && vk == 'T') { CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true); return true; }
+        if (ctrl && shift && vk == 'N') { CreateWorkspace(Guid.NewGuid().ToString(), null); return true; }
+        if (ctrl && shift && vk == 'W') { if (_active is not null) CloseSessionInternal(_active); return true; }
 
         if (ctrl && !alt)
         {
@@ -415,7 +600,7 @@ internal static class Program
                     _ = Task.Run(() => DecodePixelsAsync(img));
                 continue; // will render on a later frame once uploaded
             }
-            float ix = PadX + p.Col * _cellW;
+            float ix = ContentX + p.Col * _cellW;
             float iy = PadY + p.Row * _cellH;
             float iw = p.Cols > 0 ? p.Cols * _cellW : bmp.Size.Width;
             float ih = p.Rows > 0 ? p.Rows * _cellH : bmp.Size.Height;
@@ -586,7 +771,7 @@ internal static class Program
                             c++;
                         }
                         brush.Color = C4(bg);
-                        rt.FillRectangle(new Rect(PadX + start * _cellW, y, (c - start) * _cellW, _cellH), brush);
+                        rt.FillRectangle(new Rect(ContentX + start * _cellW, y, (c - start) * _cellW, _cellH), brush);
                     }
 
                     // Pass 2: foreground text, coalesced into same-colour runs.
@@ -600,7 +785,7 @@ internal static class Program
                         if (cell.Width == 2) // draw wide (CJK) glyphs individually; advances differ
                         {
                             brush.Color = C4(runFg);
-                            float wx = PadX + c * _cellW;
+                            float wx = ContentX + c * _cellW;
                             rt.DrawText(cell.Rune.ToString(), _format, new Rect(wx, y, wx + 2 * _cellW, y + _cellH), brush);
                             c++;
                             continue;
@@ -623,7 +808,7 @@ internal static class Program
                         {
                             _run.Length = lastNonBlank; // drop trailing blanks (nothing to shape)
                             brush.Color = C4(runFg);
-                            float rx = PadX + start * _cellW;
+                            float rx = ContentX + start * _cellW;
                             rt.DrawText(_run.ToString(), _format, new Rect(rx, y, rx + _run.Length * _cellW, y + _cellH), brush);
                         }
                     }
@@ -634,7 +819,7 @@ internal static class Program
 
                 if (em.CursorVisible)
                 {
-                    float cx = PadX + em.CursorCol * _cellW;
+                    float cx = ContentX + em.CursorCol * _cellW;
                     float cy = PadY + em.CursorRow * _cellH;
                     brush.Color = new Color4(222 / 255f, 222 / 255f, 230 / 255f, 1f);
 
@@ -657,6 +842,84 @@ internal static class Program
                     }
                 }
             }
+        }
+        DrawSidebar(rt, brush);
+    }
+
+    // ---- Sidebar (custom Direct2D outline: workspaces -> sessions) ----
+
+    private static readonly Color4 SbBg = new(0.055f, 0.063f, 0.071f, 1f);
+    private static readonly Color4 SbHighlight = new(0.16f, 0.20f, 0.25f, 1f);
+    private static readonly Color4 SbHeaderText = new(0.75f, 0.78f, 0.82f, 1f);
+    private static readonly Color4 SbActiveText = new(1f, 1f, 1f, 1f);
+    private static readonly Color4 SbDimText = new(0.60f, 0.63f, 0.67f, 1f);
+
+    private static Color4 StatusDot(AgentStatus s) => s switch
+    {
+        AgentStatus.Active => new(60 / 255f, 140 / 255f, 255 / 255f, 1f),
+        AgentStatus.Blocked => new(240 / 255f, 160 / 255f, 40 / 255f, 1f),
+        AgentStatus.Completed => new(60 / 255f, 200 / 255f, 90 / 255f, 1f),
+        _ => new(90 / 255f, 96 / 255f, 102 / 255f, 1f),
+    };
+
+    private static void DrawSidebar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        GetClientRect(_hwnd, out RECT rc);
+        float h = rc.bottom - rc.top;
+        brush.Color = SbBg;
+        rt.FillRectangle(new Rect(0, 0, SidebarW, h), brush);
+
+        _sidebarRows.Clear();
+        float rowH = _cellH + 8f;
+        float y = PadY;
+
+        List<Workspace> wss;
+        lock (_workspaces) wss = _workspaces.ToList();
+
+        foreach (var ws in wss)
+        {
+            List<Ses> sessions;
+            bool expanded;
+            lock (_workspaces) { sessions = ws.Sessions.ToList(); expanded = ws.Expanded; }
+
+            brush.Color = SbHeaderText;
+            rt.DrawText(expanded ? "▾" : "▸", _format, TextRect(6f, y, 18f, rowH), brush); // chevron
+            rt.DrawText(ws.Name, _format, TextRect(24f, y, SidebarW - 48f, rowH), brush);
+            rt.DrawText(sessions.Count.ToString(), _format, TextRect(SidebarW - 24f, y, 20f, rowH), brush);
+            _sidebarRows.Add((y, y + rowH, true, ws));
+            y += rowH;
+
+            if (!expanded) continue;
+            foreach (var s in sessions)
+            {
+                bool active = ReferenceEquals(_active, s);
+                if (active)
+                {
+                    brush.Color = SbHighlight;
+                    rt.FillRectangle(new Rect(0, y, SidebarW, rowH), brush);
+                }
+                brush.Color = StatusDot(s.S.Status);
+                rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(26f, y + rowH / 2f), 4f, 4f), brush);
+                brush.Color = active ? SbActiveText : SbDimText;
+                rt.DrawText(s.Name, _format, TextRect(38f, y, SidebarW - 44f, rowH), brush);
+                _sidebarRows.Add((y, y + rowH, false, s));
+                y += rowH;
+            }
+        }
+    }
+
+    // DrawText layout rect is Left/Top/Right/Bottom; vertically centre the glyph cell in the row.
+    private static Rect TextRect(float x, float y, float w, float rowH)
+        => new(x, y + (rowH - _cellH) / 2f, x + w, y + (rowH + _cellH) / 2f);
+
+    private static void SidebarClick(int mx, int my)
+    {
+        foreach (var (y0, y1, isWs, item) in _sidebarRows)
+        {
+            if (my < y0 || my >= y1) continue;
+            if (isWs && item is Workspace ws) { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); }
+            else if (!isWs && item is Ses s) SetActive(s);
+            return;
         }
     }
 

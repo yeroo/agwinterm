@@ -24,6 +24,7 @@ internal static class Win32
     public const uint WM_MBUTTONDOWN = 0x0207, WM_MBUTTONUP = 0x0208;
     public const uint WM_MOUSEWHEEL = 0x020A;
     public const uint WM_APP_REDRAW = 0x8000; // WM_APP: cross-thread "please repaint"
+    public const uint WM_APP_ACTION = 0x8001; // WM_APP+1: drain queued UI-thread actions (pipe callbacks)
 
     public const int MK_LBUTTON = 0x0001;
     public const int SW_SHOW = 5;

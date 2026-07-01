@@ -68,6 +68,7 @@ switch (area)
             case "new":
                 if (Opt("cwd") is { } cwd) cargs["cwd"] = cwd;
                 if (Opt("name") is { } name) cargs["name"] = name;
+                if (Opt("workspace") is { } wsp) cargs["workspace"] = wsp;
                 target = null; // new isn't targeted
                 break;
             case "select":
