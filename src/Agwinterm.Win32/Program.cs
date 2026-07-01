@@ -419,8 +419,13 @@ internal static class Program
             float iy = PadY + p.Row * _cellH;
             float iw = p.Cols > 0 ? p.Cols * _cellW : bmp.Size.Width;
             float ih = p.Rows > 0 ? p.Rows * _cellH : bmp.Size.Height;
-            // Overload with an explicit destination RawRectF (Left,Top,Right,Bottom); source null = whole bitmap.
-            try { _rt.DrawBitmap(bmp, new Vortice.RawRectF(ix, iy, ix + iw, iy + ih), 1f, BitmapInterpolationMode.Linear, null); }
+            var dest = new Vortice.RawRectF(ix, iy, ix + iw, iy + ih);
+            // Optional pixel source crop: scrolling just moves this window over the cached texture
+            // (no re-transmit/re-decode/re-upload). null = whole image.
+            Vortice.RawRectF? src = (p.SrcW > 0 && p.SrcH > 0)
+                ? new Vortice.RawRectF(p.SrcX, p.SrcY, p.SrcX + p.SrcW, p.SrcY + p.SrcH)
+                : null;
+            try { _rt.DrawBitmap(bmp, dest, 1f, BitmapInterpolationMode.Linear, src); }
             catch (Exception ex) { Log($"DrawBitmap FAILED: {ex.GetType().Name} {ex.Message}"); }
         }
     }

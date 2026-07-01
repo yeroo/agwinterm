@@ -21,4 +21,6 @@ public sealed record KittyImage(int Id, KittyFormat Format, int Width, int Heigh
 /// span to scale the image into (Kitty c=/r=); 0 means use the image's native pixels.
 /// Scrolls with the grid like text.
 /// </summary>
-public sealed record ImagePlacement(int ImageId, int Row, int Col, int Cols = 0, int Rows = 0);
+public sealed record ImagePlacement(
+    int ImageId, int Row, int Col, int Cols = 0, int Rows = 0,
+    int SrcX = 0, int SrcY = 0, int SrcW = 0, int SrcH = 0);

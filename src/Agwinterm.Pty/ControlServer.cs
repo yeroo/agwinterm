@@ -203,7 +203,7 @@ public sealed class ControlServer : IDisposable
         // image whose content changed. The expensive file read stays out of the lock, and we pass
         // raw PNG bytes straight to the emulator — no base64 encode here and no base64 decode under
         // the lock (the renderer decodes PNG asynchronously on its own thread).
-        var ops = new List<(int id, int row, int col, int cols, int rows, byte[]? data)>();
+        var ops = new List<(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh, byte[]? data)>();
         int count = 0, transmits = 0;
         long readBytes = 0;
         foreach (var img in images.EnumerateArray())
@@ -212,6 +212,9 @@ public sealed class ControlServer : IDisposable
             if (path is null || !File.Exists(path)) continue;
             int row = GetInt(img, "row", 0), col = GetInt(img, "col", 0);
             int cols = GetInt(img, "cols", 0), rows = GetInt(img, "rows", 0), id = GetInt(img, "id", count + 1);
+            // Optional pixel source crop: lets a cached texture be scrolled by moving the visible
+            // window (a=p re-place) instead of re-transmitting cropped pixels each step.
+            int sx = GetInt(img, "sx", 0), sy = GetInt(img, "sy", 0), sw = GetInt(img, "sw", 0), sh = GetInt(img, "sh", 0);
 
             long sig = ContentSignature(path);
             bool transmit;
@@ -223,7 +226,7 @@ public sealed class ControlServer : IDisposable
                 try { data = File.ReadAllBytes(path); } catch { data = null; }
                 if (data is not null) { lock (state) state[id] = sig; transmits++; readBytes += data.Length; }
             }
-            ops.Add((id, row, col, cols, rows, data));
+            ops.Add((id, row, col, cols, rows, sx, sy, sw, sh, data));
             count++;
         }
 
@@ -239,7 +242,7 @@ public sealed class ControlServer : IDisposable
                     em.SetImageData(op.id, KittyFormat.Png, 0, 0, op.data);
                 else if (!em.HasImage(op.id))
                     continue; // never transmitted and no cached copy -> nothing to place
-                em.PlaceImage(op.id, op.row, op.col, op.cols, op.rows);
+                em.PlaceImage(op.id, op.row, op.col, op.cols, op.rows, op.sx, op.sy, op.sw, op.sh);
             }
         });
         if (_perfLog is not null)

@@ -239,11 +239,16 @@ public sealed class TerminalEmulator : IParserPerformer
     public void SetImageData(int id, KittyFormat format, int width, int height, byte[] data)
         => _images[id] = new KittyImage(id, format, width, height, data);
 
-    /// <summary>Place (or re-place) an image at an explicit cell, replacing any placement of the same id.</summary>
-    public void PlaceImage(int id, int row, int col, int cols, int rows)
+    /// <summary>
+    /// Place (or re-place) an image at an explicit cell, replacing any placement of the same id.
+    /// The optional pixel source rectangle (srcW/srcH &gt; 0) crops the image — used to scroll a
+    /// cached texture by moving the visible window rather than re-transmitting cropped pixels.
+    /// </summary>
+    public void PlaceImage(int id, int row, int col, int cols, int rows,
+        int srcX = 0, int srcY = 0, int srcW = 0, int srcH = 0)
     {
         _placements.RemoveAll(p => p.ImageId == id);
-        _placements.Add(new ImagePlacement(id, row, col, cols, rows));
+        _placements.Add(new ImagePlacement(id, row, col, cols, rows, srcX, srcY, srcW, srcH));
     }
 
     public void ApcDispatch(string data)
