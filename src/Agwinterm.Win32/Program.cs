@@ -1027,10 +1027,11 @@ internal static class Program
                     brush.Color = SbHighlight;
                     rt.FillRectangle(new Rect(0, y, _sidebarW, rowH), brush);
                 }
-                brush.Color = StatusDot(s.S.Status);
-                rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(26f, y + rowH / 2f), 4f, 4f), brush);
                 brush.Color = active ? SbActiveText : SbDimText;
-                rt.DrawText(s.Name, _uiFont, new Rect(38f, y, _sidebarW - 44f, rowH), brush);
+                rt.DrawText(s.Name, _uiFont, new Rect(26f, y, _sidebarW - 26f - 22f, rowH), brush);
+                // Status circle right-aligned in the row (agterm layout).
+                brush.Color = StatusDot(s.S.Status);
+                rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(_sidebarW - 16f, y + rowH / 2f), 4.5f, 4.5f), brush);
                 _sidebarRows.Add((y, y + rowH, false, s));
                 y += rowH;
             }
