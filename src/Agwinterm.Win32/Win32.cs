@@ -42,7 +42,23 @@ internal static class Win32
     public const int HTMINBUTTON = 8, HTMAXBUTTON = 9, HTCLOSE = 20;
 
     public const int SM_CXFRAME = 32, SM_CYFRAME = 33, SM_CXPADDEDBORDER = 92;
+    public const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77, SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
     public const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010, SWP_FRAMECHANGED = 0x0020;
+
+    // Window move/resize + placement (for persisting geometry).
+    public const uint WM_EXITSIZEMOVE = 0x0232;
+    public const int SIZE_RESTORED = 0, SIZE_MAXIMIZED = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WINDOWPLACEMENT
+    {
+        public int length;
+        public int flags;
+        public int showCmd;
+        public POINT ptMinPosition;
+        public POINT ptMaxPosition;
+        public RECT rcNormalPosition;
+    }
 
     public const int MK_LBUTTON = 0x0001;
     public const int SW_SHOW = 5;
@@ -227,6 +243,9 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
 
     [DllImport("user32.dll")]
     public static extern bool KillTimer(IntPtr hWnd, IntPtr nIDEvent);

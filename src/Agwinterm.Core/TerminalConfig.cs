@@ -21,6 +21,10 @@ public sealed class TerminalConfig
     public int CursorBlinkMs { get; set; } = 530;
     public string Theme { get; set; } = "default";
 
+    /// <summary>Inject a pwsh prompt hook that emits OSC 7 so the live working directory is tracked.
+    /// Off by default: the hook can override a customized prompt (e.g. oh-my-posh). Opt in for live cwd.</summary>
+    public bool ShellIntegration { get; set; } = false;
+
     /// <summary>Default config file contents (also used to seed the file on first run).</summary>
     public const string DefaultText =
         """
@@ -37,6 +41,11 @@ public sealed class TerminalConfig
 
         # Color theme (pick live from the action palette; Ctrl+Shift+P -> Select Theme)
         theme = default
+
+        # Shell integration: inject a pwsh prompt hook (OSC 7) to track the live working
+        # directory so it persists/restores accurately. Off by default because the hook can
+        # override a customized prompt (e.g. oh-my-posh). Set true to opt in to live-cwd tracking.
+        shell-integration = false
         """;
 
     public static TerminalConfig Parse(string text)
@@ -59,6 +68,7 @@ public sealed class TerminalConfig
                 case "cursor-blink": cfg.CursorBlink = ParseBool(val, cfg.CursorBlink); break;
                 case "cursor-blink-ms": if (int.TryParse(val, out var ms) && ms > 0) cfg.CursorBlinkMs = ms; break;
                 case "theme": if (val.Length > 0) cfg.Theme = val; break;
+                case "shell-integration": cfg.ShellIntegration = ParseBool(val, cfg.ShellIntegration); break;
             }
         }
         return cfg;

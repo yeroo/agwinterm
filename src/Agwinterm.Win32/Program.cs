@@ -191,8 +191,13 @@ internal static class Program
         if (RegisterClassExW(ref wc) == 0)
             throw new InvalidOperationException("RegisterClassExW failed: " + System.Runtime.InteropServices.Marshal.GetLastWin32Error());
 
-        _hwnd = CreateWindowExW(0, ClassName, "agwinterm", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            CW_USEDEFAULT, CW_USEDEFAULT, 1040, 660, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
+        LoadGeometry(); // restore saved window size/position (applied at creation; shown below)
+        // Created hidden (no WS_VISIBLE) so we can position it before the first paint; shown at the end.
+        _hwnd = _geoValid
+            ? CreateWindowExW(0, ClassName, "agwinterm", WS_OVERLAPPEDWINDOW,
+                _geoX, _geoY, _geoW, _geoH, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero)
+            : CreateWindowExW(0, ClassName, "agwinterm", WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT, CW_USEDEFAULT, 1040, 660, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
         if (_hwnd == IntPtr.Zero)
             throw new InvalidOperationException("CreateWindowExW failed: " + System.Runtime.InteropServices.Marshal.GetLastWin32Error());
 
@@ -214,7 +219,8 @@ internal static class Program
         if (_config.CursorBlink)
             SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
 
-        ShowWindow(_hwnd, SW_SHOW);
+        ShowWindow(_hwnd, _geoValid && _geoMax ? SW_MAXIMIZE : SW_SHOW);
+        _wasMaximized = IsZoomed(_hwnd);
         UpdateWindow(_hwnd);
 
         while (GetMessageW(out MSG msg, IntPtr.Zero, 0, 0) > 0)
@@ -383,11 +389,31 @@ internal static class Program
             ["AGWINTERM_WORKSPACE_ID"] = ws.Id,
             ["AGWINTERM_WINDOW_ID"] = _windowId,
         };
-        _ = session.StartAsync("powershell.exe", new[] { "-NoLogo" }, extraEnv: env, cwd: cwd);
+        _ = session.StartAsync("powershell.exe", ShellArgs(), extraEnv: env, cwd: cwd);
         return pane;
     }
 
-    private static void CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null)
+    /// <summary>
+    /// pwsh launch args. With shell integration on, inject a prompt hook (via -EncodedCommand,
+    /// so no quoting worries) that wraps the existing prompt (e.g. oh-my-posh) to also emit
+    /// OSC 7 with the live working directory — the emulator's OscDispatch(7) then keeps Cwd
+    /// current, so persistence saves the real directory after `cd`.
+    /// </summary>
+    private static string[] ShellArgs()
+    {
+        if (!_config.ShellIntegration) return new[] { "-NoLogo" };
+        const string hook =
+            "$global:__agwp=$function:prompt;" +
+            "function global:prompt{" +
+              "$p=(Get-Location).ProviderPath;" +
+              "if($p){[Console]::Write([char]27+']7;file://'+$env:COMPUTERNAME+'/'+($p -replace '\\\\','/')+[char]7)};" +
+              "if($global:__agwp){& $global:__agwp}else{\"PS $p> \"}" +
+            "}";
+        string b64 = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(hook));
+        return new[] { "-NoLogo", "-NoExit", "-EncodedCommand", b64 };
+    }
+
+    private static Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null)
     {
         float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
         int ordinal;
@@ -401,6 +427,15 @@ internal static class Program
         if (makeActive || _active is null) SetActive(ses);
         else RequestRedraw();
         SaveState();
+        return ses;
+    }
+
+    /// <summary>Append an extra pane to an existing session (used by split-layout restore).</summary>
+    private static Pane AppendPane(Ses ses, string paneId, string? cwd, float fontSize)
+    {
+        var p = CreatePane(paneId, ses.Ws, cwd, fontSize);
+        lock (_workspaces) ses.Panes.Add(p);
+        return p;
     }
 
     // ---- Pane layout ----
@@ -726,6 +761,12 @@ internal static class Program
                         InvalidateRect(hwnd, IntPtr.Zero, false);
                     }
                 }
+                // Persist on maximize/restore transitions (button clicks, not per-pixel drag).
+                { bool z = IsZoomed(hwnd); if (z != _wasMaximized) { _wasMaximized = z; SaveState(); } }
+                return IntPtr.Zero;
+
+            case WM_EXITSIZEMOVE:
+                SaveState(); // persist geometry after a manual move/resize drag
                 return IntPtr.Zero;
 
             case WM_KEYDOWN:
@@ -2148,6 +2189,7 @@ internal static class Program
     }
 
     private static string SafeCwd(Ses s) { lock (s.S.SyncRoot) return s.S.Emulator.Cwd; }
+    private static string SafeCwd(Pane p) { lock (p.S.SyncRoot) return p.S.Emulator.Cwd; }
 
     private static string PrettyCwd(string raw)
     {
@@ -2389,9 +2431,23 @@ internal static class Program
 
     // ---- Persistence: workspace/session tree + selection + sidebar state ----
 
-    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } }
+    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; }
+    // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
+    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public int Active { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; } }
     private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
-    private sealed class AppState { public List<WorkspaceState> Workspaces { get; set; } = new(); public string? ActiveId { get; set; } public float SidebarWidth { get; set; } = SidebarWFull; public bool SidebarVisible { get; set; } = true; }
+    private sealed class AppState
+    {
+        public List<WorkspaceState> Workspaces { get; set; } = new();
+        public string? ActiveId { get; set; }
+        public float SidebarWidth { get; set; } = SidebarWFull;
+        public bool SidebarVisible { get; set; } = true;
+        // Window geometry (restore rect; 0 width = unset). WindowMaximized reopens maximized.
+        public int WindowX { get; set; }
+        public int WindowY { get; set; }
+        public int WindowWidth { get; set; }
+        public int WindowHeight { get; set; }
+        public bool WindowMaximized { get; set; }
+    }
 
     private static readonly JsonSerializerOptions _stateJson = new() { WriteIndented = true };
 
@@ -2417,14 +2473,22 @@ internal static class Program
                 SidebarWidth = _sidebarW > 0 ? _sidebarW : SidebarWFull,
                 SidebarVisible = _sidebarW > 0,
             };
+            CaptureGeometry(st);
             foreach (var (id, name, expanded, sessions) in rows)
             {
                 var wss = new WorkspaceState { Id = id, Name = name, Expanded = expanded };
                 foreach (var s in sessions)
                 {
-                    string live = PrettyCwd(SafeCwd(s));                       // OSC 7 cwd if the shell reports it
-                    string cwd = live.Length > 0 ? live : (s.StartCwd ?? ""); // else the launch dir
-                    wss.Sessions.Add(new SessionState { Id = s.Id, Name = s.Name, Cwd = cwd, FontSize = s.FontSize });
+                    var ss = new SessionState { Id = s.Id, Name = s.Name, Active = s.Active };
+                    List<Pane> panes;
+                    lock (_workspaces) panes = s.Panes.ToList();
+                    foreach (var p in panes)
+                    {
+                        string live = PrettyCwd(SafeCwd(p));                       // OSC 7 cwd if the shell reports it
+                        string cwd = live.Length > 0 ? live : (p.StartCwd ?? ""); // else the launch dir
+                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio });
+                    }
+                    wss.Sessions.Add(ss);
                 }
                 st.Workspaces.Add(wss);
             }
@@ -2436,6 +2500,52 @@ internal static class Program
             File.Move(tmp, path, overwrite: true); // atomic replace so a crash never leaves a truncated file
         }
         catch { /* persistence is best-effort */ }
+    }
+
+    // Window geometry loaded from state.json at startup (applied at window creation).
+    private static bool _geoValid;
+    private static int _geoX, _geoY, _geoW, _geoH;
+    private static bool _geoMax;
+    private static bool _wasMaximized;
+
+    /// <summary>Fill AppState with the window's restore rect + maximized flag (GetWindowPlacement).</summary>
+    private static void CaptureGeometry(AppState st)
+    {
+        try
+        {
+            if (_hwnd == IntPtr.Zero) return;
+            var wp = new WINDOWPLACEMENT { length = System.Runtime.InteropServices.Marshal.SizeOf<WINDOWPLACEMENT>() };
+            if (!GetWindowPlacement(_hwnd, ref wp)) return;
+            var r = wp.rcNormalPosition;                 // restore rect even when maximized
+            st.WindowX = r.left; st.WindowY = r.top;
+            st.WindowWidth = r.right - r.left; st.WindowHeight = r.bottom - r.top;
+            st.WindowMaximized = wp.showCmd == SW_MAXIMIZE; // SW_SHOWMAXIMIZED == 3
+        }
+        catch { }
+    }
+
+    /// <summary>Read saved window geometry (best-effort, no side effects) and clamp it onto the visible desktop.</summary>
+    private static void LoadGeometry()
+    {
+        try
+        {
+            string path = StatePath;
+            if (!File.Exists(path)) return;
+            var st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(path));
+            if (st is null || st.WindowWidth <= 0 || st.WindowHeight <= 0) return;
+            int w = Math.Max(400, st.WindowWidth), h = Math.Max(300, st.WindowHeight);
+            int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            int x = st.WindowX, y = st.WindowY;
+            if (vw > 0 && vh > 0)
+            {
+                w = Math.Min(w, vw); h = Math.Min(h, vh);
+                x = Math.Clamp(x, vx, vx + vw - 100);   // keep at least a sliver on-screen
+                y = Math.Clamp(y, vy, vy + vh - 100);
+            }
+            _geoX = x; _geoY = y; _geoW = w; _geoH = h; _geoMax = st.WindowMaximized; _geoValid = true;
+        }
+        catch { }
     }
 
     /// <summary>Rebuild the tree from state.json via the normal Create* paths. Returns false to fall back to a default.</summary>
@@ -2464,11 +2574,32 @@ internal static class Program
                 // Recreate every saved workspace, including empty ones (agterm keeps empty workspaces).
                 var ws = CreateWorkspace(string.IsNullOrEmpty(w.Id) ? Guid.NewGuid().ToString() : w.Id, w.Name);
                 foreach (var s in w.Sessions ?? new List<SessionState>())
-                    CreateSession(string.IsNullOrEmpty(s.Id) ? Guid.NewGuid().ToString() : s.Id,
+                {
+                    // Back-compat: a pre-splits session has no Panes — synthesize one from its Cwd/FontSize.
+                    var pl = (s.Panes is { Count: > 0 })
+                        ? s.Panes
+                        : new List<PaneState> { new() { Id = s.Id, Cwd = s.Cwd, FontSize = s.FontSize, Ratio = 1f } };
+                    var first = pl[0];
+                    var ses = CreateSession(
+                        string.IsNullOrEmpty(s.Id) ? Guid.NewGuid().ToString() : s.Id,
                         string.IsNullOrWhiteSpace(s.Name) ? null : s.Name,
-                        string.IsNullOrWhiteSpace(s.Cwd) ? null : s.Cwd,
+                        string.IsNullOrWhiteSpace(first.Cwd) ? null : first.Cwd,
                         ws, makeActive: s.Id == st.ActiveId,
-                        fontSize: s.FontSize > 0 ? s.FontSize : (float?)null);
+                        fontSize: first.FontSize > 0 ? first.FontSize : (float?)null);
+                    for (int i = 1; i < pl.Count; i++)
+                        AppendPane(ses,
+                            string.IsNullOrEmpty(pl[i].Id) ? Guid.NewGuid().ToString() : pl[i].Id,
+                            string.IsNullOrWhiteSpace(pl[i].Cwd) ? null : pl[i].Cwd,
+                            pl[i].FontSize > 0 ? pl[i].FontSize : (float)_config.FontSize);
+                    lock (_workspaces)
+                    {
+                        for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
+                            ses.Panes[i].Ratio = pl[i].Ratio > 0 ? pl[i].Ratio : 1f;
+                        ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
+                    }
+                    if (ReferenceEquals(_active, ses)) _session = ses.S;
+                    RegridSession(ses);
+                }
                 lock (_workspaces) ws.Expanded = w.Expanded; // CreateSession forces Expanded=true; restore the saved state
             }
         }
