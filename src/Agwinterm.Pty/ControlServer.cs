@@ -1,5 +1,6 @@
 using System.IO;
 using System.IO.Pipes;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Agwinterm.Core;
@@ -16,6 +17,10 @@ public sealed class ControlServer : IDisposable
     private readonly ISessionHost _host;
     private readonly string _pipeName;
     private CancellationTokenSource? _cts;
+
+    // Per-session record of the last content signature transmitted for each image id, so an
+    // unchanged image can be re-placed (a=p) instead of re-transmitted (a=T) on every frame.
+    private readonly ConditionalWeakTable<TerminalSession, Dictionary<int, long>> _txState = new();
 
     public ControlServer(ISessionHost host, string pipeName = "agwinterm")
     {
@@ -187,31 +192,57 @@ public sealed class ControlServer : IDisposable
         return Ok("cleared");
     }
 
-    private static string HandleImageFrame(TerminalSession s, JsonElement args)
+    private string HandleImageFrame(TerminalSession s, JsonElement args)
     {
         if (args.ValueKind != JsonValueKind.Object ||
             !args.TryGetProperty("images", out var images) || images.ValueKind != JsonValueKind.Array)
             return Err("image.frame requires args.images array");
 
+        var state = _txState.GetOrCreateValue(s);
         var sb = new StringBuilder();
-        sb.Append("\x1b_Ga=d\x1b\\");
-        int count = 0;
+        sb.Append("\x1b_Ga=d\x1b\\"); // clear previous placements
+        int count = 0, transmits = 0;
         foreach (var img in images.EnumerateArray())
         {
             string? path = GetString(img, "path");
             if (path is null || !File.Exists(path)) continue;
             int row = GetInt(img, "row", 0), col = GetInt(img, "col", 0);
             int cols = GetInt(img, "cols", 0), rows = GetInt(img, "rows", 0), id = GetInt(img, "id", count + 1);
-            string b64 = Convert.ToBase64String(File.ReadAllBytes(path));
+
+            // Retransmit the pixels only when the file's content changed; otherwise re-place
+            // the already-transmitted image so scrolling/redraw costs nothing (no base64 here,
+            // no re-decode under the render lock, no GPU re-upload).
+            long sig = ContentSignature(path);
+            bool transmit;
+            lock (state) transmit = sig == 0 || !(state.TryGetValue(id, out var prev) && prev == sig);
+
             sb.Append('\x1b').Append('[').Append(row + 1).Append(';').Append(col + 1).Append('H');
-            sb.Append('\x1b').Append("_Gf=100,a=T,i=").Append(id);
+            sb.Append('\x1b').Append("_G");
+            sb.Append(transmit ? "f=100,a=T,i=" : "a=p,i=").Append(id);
             if (cols > 0) sb.Append(",c=").Append(cols);
             if (rows > 0) sb.Append(",r=").Append(rows);
-            sb.Append(';').Append(b64).Append('\x1b').Append('\\');
+            if (transmit)
+            {
+                sb.Append(';').Append(Convert.ToBase64String(File.ReadAllBytes(path)));
+                lock (state) state[id] = sig;
+                transmits++;
+            }
+            sb.Append('\x1b').Append('\\');
             count++;
         }
         s.Inject(Encoding.ASCII.GetBytes(sb.ToString()));
-        return Ok($"frame:{count}");
+        return Ok($"frame:{count}/{transmits}");
+    }
+
+    /// <summary>Cheap content signature (no full read): last-write time, length, and path.</summary>
+    private static long ContentSignature(string path)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            return fi.LastWriteTimeUtc.Ticks ^ ((long)fi.Length << 1) ^ (uint)StringComparer.OrdinalIgnoreCase.GetHashCode(path);
+        }
+        catch { return 0; }
     }
 
     private static string? GetString(JsonElement args, string key)
