@@ -19,7 +19,10 @@ internal static class Keymap
     {
         ("ctrl+shift+t", "new_session"),
         ("ctrl+shift+n", "new_workspace"),
-        ("ctrl+shift+w", "close_session"),
+        ("ctrl+shift+w", "close_pane"),
+        ("ctrl+d", "split_pane"),
+        ("ctrl+alt+left", "focus_left_pane"),
+        ("ctrl+alt+right", "focus_right_pane"),
         ("ctrl+tab", "next_session"),
         ("ctrl+shift+tab", "previous_session"),
         ("ctrl+p", "session_palette"),
@@ -33,7 +36,8 @@ internal static class Keymap
 
     public static readonly HashSet<string> ValidActions = new(StringComparer.OrdinalIgnoreCase)
     {
-        "new_session", "new_workspace", "close_session", "next_session", "previous_session",
+        "new_session", "new_workspace", "close_session", "close_pane", "split_pane",
+        "focus_left_pane", "focus_right_pane", "next_session", "previous_session",
         "toggle_sidebar", "rename_session", "delete_workspace", "session_palette", "action_palette",
         "attention_list", "custom_palette", "next_attention", "previous_attention", "reload_keymap",
     };

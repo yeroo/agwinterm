@@ -48,6 +48,9 @@ internal static class Program
     private static readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock(_workspaces)
     private static bool _restoring;                              // suppress SaveState while rebuilding from disk
     private static Ses? _active;
+    private const float DividerW = 6f;                       // gutter between panes
+    private static bool _divDragging;                        // dragging a pane divider
+    private static int _divLeft;                             // left-pane index of the divider being dragged
     // Actions queued from the pipe (background) thread to run on the UI thread.
     private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
 
@@ -117,14 +120,29 @@ internal static class Program
     private static IDWriteTextFormat _uiSmall = null!;
     private static IDWriteTextFormat _iconFont = null!;
 
+    /// <summary>One terminal surface within a session. A session is a left→right row of panes.</summary>
+    private sealed class Pane
+    {
+        public required string Id;
+        public required TerminalSession S;
+        public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
+        public float FontSize;     // per-pane font zoom (pt)
+        public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
+    }
+
     private sealed class Ses
     {
         public required string Id;
         public required string Name;
-        public required TerminalSession S;
         public required Workspace Ws;
-        public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
-        public float FontSize;     // per-session font zoom (pt); always set at creation (never 0 in practice)
+        public readonly List<Pane> Panes = new();
+        public int Active;         // index of the focused pane
+        public Pane ActivePane => Panes[Math.Clamp(Active, 0, Panes.Count - 1)];
+        // Back-compat shims: existing code that said ses.S / ses.FontSize / ses.StartCwd
+        // now refers to the ACTIVE PANE, so most single-pane logic is unchanged.
+        public TerminalSession S => ActivePane.S;
+        public float FontSize { get => ActivePane.FontSize; set => ActivePane.FontSize = value; }
+        public string? StartCwd { get => ActivePane.StartCwd; set => ActivePane.StartCwd = value; }
     }
 
     private sealed class Workspace
@@ -348,63 +366,158 @@ internal static class Program
         return ws;
     }
 
-    private static void CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null)
+    /// <summary>Create one terminal pane (its own ConPTY, env, wiring) sized for the given font.</summary>
+    private static Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize)
     {
-        float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
-        var (cols, rows) = GridSizeFor(fs);
+        var (cols, rows) = GridSizeFor(fontSize);
         var session = new TerminalSession(cols, rows);
-        int ordinal;
-        lock (_workspaces) ordinal = ws.Sessions.Count + 1;
-        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", S = session, Ws = ws, StartCwd = cwd, FontSize = fs };
-
-        session.OutputReceived += () => { if (ReferenceEquals(_active, ses)) RequestRedraw(); };
-        session.StatusChanged += RequestRedraw; // sidebar status dot updates for any session
-
-        lock (_workspaces) { ws.Sessions.Add(ses); ws.Expanded = true; }
-
+        var pane = new Pane { Id = paneId, S = session, StartCwd = cwd, FontSize = fontSize };
+        session.OutputReceived += RequestRedraw;   // coalesced; only the active session's panes are drawn
+        session.StatusChanged += RequestRedraw;
         var env = new Dictionary<string, string>
         {
             ["AGWINTERM"] = "1",
             ["AGWINTERM_ENABLED"] = "1",
             ["AGWINTERM_PIPE"] = _control!.PipeName,
-            ["AGWINTERM_SESSION_ID"] = id,
+            ["AGWINTERM_SESSION_ID"] = paneId,       // each pane is independently targetable
             ["AGWINTERM_WORKSPACE_ID"] = ws.Id,
             ["AGWINTERM_WINDOW_ID"] = _windowId,
         };
         _ = session.StartAsync("powershell.exe", new[] { "-NoLogo" }, extraEnv: env, cwd: cwd);
+        return pane;
+    }
+
+    private static void CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null)
+    {
+        float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
+        int ordinal;
+        lock (_workspaces) ordinal = ws.Sessions.Count + 1;
+        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws };
+        ses.Panes.Add(CreatePane(id, ws, cwd, fs));   // first pane shares the session id (control-API back-compat)
+        ses.Active = 0;
+
+        lock (_workspaces) { ws.Sessions.Add(ses); ws.Expanded = true; }
 
         if (makeActive || _active is null) SetActive(ses);
         else RequestRedraw();
         SaveState();
     }
 
+    // ---- Pane layout ----
+
+    /// <summary>Content region (px) available to the terminal, right of the sidebar and below the title bar.</summary>
+    private static (float x0, float y0, float w, float h) ContentArea()
+    {
+        float x0 = _sidebarW + PadX, y0 = TitleBarH + PadY;
+        float w = MathF.Max(1f, ClientW() - _sidebarW - 2 * PadX);
+        float h = MathF.Max(1f, ClientH() - TitleBarH - 2 * PadY);
+        return (x0, y0, w, h);
+    }
+
+    /// <summary>Lay out a session's panes as columns (px) by ratio, with a divider gutter between.</summary>
+    private static List<(Pane pane, float x, float y, float w, float h)> PaneLayout(Ses ses)
+    {
+        var (x0, y0, totalW, totalH) = ContentArea();
+        int n = ses.Panes.Count;
+        float avail = MathF.Max(n, totalW - (n - 1) * DividerW);
+        float sum = ses.Panes.Sum(p => p.Ratio);
+        if (sum <= 0) { foreach (var p in ses.Panes) p.Ratio = 1f / n; sum = 1f; }
+        var list = new List<(Pane, float, float, float, float)>(n);
+        float x = x0;
+        for (int i = 0; i < n; i++)
+        {
+            float w = avail * (ses.Panes[i].Ratio / sum);
+            list.Add((ses.Panes[i], x, y0, w, totalH));
+            x += w + DividerW;
+        }
+        return list;
+    }
+
+    /// <summary>Resize every pane's PTY grid to fit its column using the pane's own font metrics.</summary>
+    private static void RegridSession(Ses ses)
+    {
+        foreach (var (pane, _, _, w, h) in PaneLayout(ses))
+        {
+            var (_, cw, ch) = Metrics(pane.FontSize);
+            int cols = Math.Max(1, (int)(w / cw)), rows = Math.Max(1, (int)(h / ch));
+            if (pane.S.Cols != cols || pane.S.Rows != rows) pane.S.Resize(cols, rows);
+        }
+    }
+
     private static void SetActive(Ses ses)
     {
         _active = ses;
         _session = ses.S;
-        var (cols, rows) = GridSizeFor(ses.FontSize > 0 ? ses.FontSize : (float)_config.FontSize);
-        if (ses.S.Cols != cols || ses.S.Rows != rows) ses.S.Resize(cols, rows);
+        RegridSession(ses);
         RequestRedraw();
         SaveState();
     }
 
-    /// <summary>Change a session's font zoom (delta 0 = reset to config default), reflow + repaint.</summary>
+    /// <summary>Change the active pane's font zoom (delta 0 = reset to config default), reflow + repaint.</summary>
     private static void ChangeFontSizeOf(Ses ses, int delta)
     {
-        float ns = delta == 0 ? (float)_config.FontSize : Math.Clamp(ses.FontSize + delta, 6f, 48f);
-        if (ns == ses.FontSize) return;
-        ses.FontSize = ns;
-        var (cols, rows) = GridSizeFor(ns);
-        if (ses.S.Cols != cols || ses.S.Rows != rows) ses.S.Resize(cols, rows);
+        float cur = ses.FontSize;
+        float ns = delta == 0 ? (float)_config.FontSize : Math.Clamp(cur + delta, 6f, 48f);
+        if (ns == cur) return;
+        ses.FontSize = ns;               // active pane
+        RegridSession(ses);
         if (ReferenceEquals(_active, ses)) RequestRedraw();
         SaveState();
     }
 
     private static void ChangeFontSize(int delta) { if (_active is not null) ChangeFontSizeOf(_active, delta); }
 
+    // ---- Splits ----
+
+    private static void SplitActivePane()
+    {
+        var ses = _active;
+        if (ses is null) return;
+        var cur = ses.ActivePane;
+        string? cwd = string.IsNullOrEmpty(cur.StartCwd) ? null : cur.StartCwd;
+        var np = CreatePane(Guid.NewGuid().ToString(), ses.Ws, cwd, cur.FontSize);
+        float half = cur.Ratio / 2f;
+        cur.Ratio = half; np.Ratio = half;
+        int idx = ses.Panes.IndexOf(cur);
+        ses.Panes.Insert(idx + 1, np);
+        ses.Active = idx + 1;            // focus the new pane
+        _session = ses.S;
+        RegridSession(ses);
+        RequestRedraw();
+        SaveState();
+    }
+
+    private static void FocusPane(int dir)
+    {
+        var ses = _active;
+        if (ses is null || ses.Panes.Count < 2) return;
+        ses.Active = Math.Clamp(ses.Active + dir, 0, ses.Panes.Count - 1);
+        _session = ses.S;
+        RequestRedraw();
+    }
+
+    /// <summary>Close the focused pane; if it's the last pane, close the whole session.</summary>
+    private static void CloseActivePane()
+    {
+        var ses = _active;
+        if (ses is null) return;
+        if (ses.Panes.Count <= 1) { CloseSessionInternal(ses); return; }
+        var cur = ses.ActivePane;
+        int idx = ses.Panes.IndexOf(cur);
+        try { cur.S.Dispose(); } catch { }
+        ses.Panes.RemoveAt(idx);
+        float freed = cur.Ratio / ses.Panes.Count;
+        foreach (var p in ses.Panes) p.Ratio += freed;   // redistribute the freed width
+        ses.Active = Math.Clamp(idx, 0, ses.Panes.Count - 1);
+        _session = ses.S;
+        RegridSession(ses);
+        RequestRedraw();
+        SaveState();
+    }
+
     private static void CloseSessionInternal(Ses ses)
     {
-        try { ses.S.Dispose(); } catch { }
+        foreach (var p in ses.Panes) { try { p.S.Dispose(); } catch { } }
         bool wasActive = ReferenceEquals(_active, ses);
         lock (_workspaces) ses.Ws.Sessions.Remove(ses);
         if (wasActive)
@@ -445,7 +558,17 @@ internal static class Program
     /// <summary>ISessionHost bridge so the control server / agwintermctl drive this window.</summary>
     private sealed class Host : ISessionHost
     {
-        public TerminalSession? Resolve(string? target) => Find(target)?.S;
+        public TerminalSession? Resolve(string? target)
+        {
+            if (string.IsNullOrEmpty(target) || target == "active") return _active?.S;
+            lock (_workspaces)
+            {
+                var panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToList();
+                var p = panes.FirstOrDefault(x => x.Id == target) ?? panes.FirstOrDefault(x => x.Id.StartsWith(target));
+                if (p is not null) return p.S;   // target any pane by id (e.g. docxy's AGWINTERM_SESSION_ID)
+            }
+            return Find(target)?.S;
+        }
 
         public IReadOnlyList<WorkspaceSnapshot> Tree()
         {
@@ -599,9 +722,7 @@ internal static class Program
                     if (w > 0 && h > 0)
                     {
                         _rt.Resize(new SizeI(w, h));
-                        var (cols, rows) = GridSize();
-                        if (_session is not null && (cols != _session.Cols || rows != _session.Rows))
-                            _session.Resize(cols, rows);
+                        if (_active is not null) RegridSession(_active);
                         InvalidateRect(hwnd, IntPtr.Zero, false);
                     }
                 }
@@ -646,9 +767,13 @@ internal static class Program
                         }
                         return IntPtr.Zero;
                     }
+                    int di = DividerAtX(mx, my);
+                    if (di >= 0) { _divDragging = true; _divLeft = di; SetCapture(hwnd); return IntPtr.Zero; }
+                    FocusPaneAtX(mx);
                     SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero;
                 }
             case WM_LBUTTONUP:
+                if (_divDragging) { _divDragging = false; ReleaseCapture(); RequestRedraw(); return IntPtr.Zero; }
                 if (_sbPress)
                 {
                     ReleaseCapture();
@@ -679,6 +804,7 @@ internal static class Program
 
             case WM_MOUSEMOVE:
                 {
+                    if (_divDragging && ((long)wParam & MK_LBUTTON) != 0) { DragDivider(LoWord(lParam)); return IntPtr.Zero; }
                     if (_sbPress && ((long)wParam & MK_LBUTTON) != 0)
                     {
                         int mx = LoWord(lParam), my = HiWord(lParam);
@@ -709,7 +835,7 @@ internal static class Program
 
             case WM_DESTROY:
                 SaveState(); // persist the tree before tearing down sessions
-                foreach (var s in AllSessions()) { try { s.S.Dispose(); } catch { } }
+                foreach (var s in AllSessions()) foreach (var p in s.Panes) { try { p.S.Dispose(); } catch { } }
                 PostQuitMessage(0);
                 return IntPtr.Zero;
         }
@@ -737,7 +863,10 @@ internal static class Program
         {
             case "new_session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true); break;
             case "new_workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
-            case "close_session": if (_active is not null) CloseSessionInternal(_active); break;
+            case "close_session": case "close_pane": CloseActivePane(); break;
+            case "split_pane": SplitActivePane(); break;
+            case "focus_left_pane": FocusPane(-1); break;
+            case "focus_right_pane": FocusPane(1); break;
             case "next_session": CycleSession(1); break;
             case "previous_session": CycleSession(-1); break;
             case "toggle_sidebar": ToggleSidebar(); break;
@@ -806,14 +935,64 @@ internal static class Program
     private static void SendMousePx(int btn, IntPtr lParam, bool press)
         => SendMouse(btn, LoWord(lParam), HiWord(lParam), press);
 
+    /// <summary>Origin (px) + metrics of the ACTIVE pane, for mouse→cell mapping.</summary>
+    private static (float ox, float oy, float cw, float ch) ActivePaneView()
+    {
+        if (_active is not null)
+            foreach (var (pane, x, y, _, _) in PaneLayout(_active))
+                if (ReferenceEquals(pane, _active.ActivePane)) { var (_, cw, ch) = Metrics(pane.FontSize); return (x, y, cw, ch); }
+        var (_, c2, h2) = CurrentMetrics();
+        return (ContentX, ContentY, c2, h2);
+    }
+
+    /// <summary>Focus the pane of the active session under client-x (no-op if single pane / no session).</summary>
+    private static void FocusPaneAtX(int px)
+    {
+        if (_active is null || _active.Panes.Count < 2) return;
+        foreach (var (pane, x, _, w, _) in PaneLayout(_active))
+            if (px >= x && px < x + w + DividerW) { _active.Active = _active.Panes.IndexOf(pane); _session = _active.S; RequestRedraw(); return; }
+    }
+
+    /// <summary>Left-pane index of the divider gutter under client-(x,y), or -1.</summary>
+    private static int DividerAtX(int px, int py)
+    {
+        if (_active is null || _active.Panes.Count < 2) return -1;
+        var lay = PaneLayout(_active);
+        if (py < (int)lay[0].y || py > (int)(lay[0].y + lay[0].h)) return -1;
+        for (int i = 0; i < lay.Count - 1; i++)
+        {
+            float gx = lay[i].x + lay[i].w;
+            if (px >= gx - 2 && px <= gx + DividerW + 2) return i;
+        }
+        return -1;
+    }
+
+    /// <summary>Drag a divider: shift width between the two adjacent panes (clamped).</summary>
+    private static void DragDivider(int px)
+    {
+        if (_active is null || _divLeft < 0 || _divLeft + 1 >= _active.Panes.Count) return;
+        var (x0, _, totalW, _) = ContentArea();
+        float avail = MathF.Max(_active.Panes.Count, totalW - (_active.Panes.Count - 1) * DividerW);
+        float sum = _active.Panes.Sum(p => p.Ratio);
+        var lay = PaneLayout(_active);
+        float leftStart = lay[_divLeft].x;
+        float pairRatio = _active.Panes[_divLeft].Ratio + _active.Panes[_divLeft + 1].Ratio;
+        float newLeftW = Math.Clamp(px - leftStart, 24f, (pairRatio / sum) * avail - 24f);
+        float newLeftRatio = (newLeftW / avail) * sum;
+        _active.Panes[_divLeft + 1].Ratio = pairRatio - newLeftRatio;
+        _active.Panes[_divLeft].Ratio = newLeftRatio;
+        RegridSession(_active);
+        RequestRedraw();
+    }
+
     /// <summary>Encode a mouse event (SGR or legacy) and send it to the child. Mirrors the WinUI shell.</summary>
     private static void SendMouse(int btn, int pxX, int pxY, bool press)
     {
         var em = _session?.Emulator;
         if (em is null || !em.MouseReporting) return;
-        var (_, cw, ch) = CurrentMetrics();
-        int col = Math.Clamp((int)((pxX - ContentX) / cw), 0, em.Screen.Cols - 1);
-        int row = Math.Clamp((int)((pxY - ContentY) / ch), 0, em.Screen.Rows - 1);
+        var (ox, oy, cw, ch) = ActivePaneView();
+        int col = Math.Clamp((int)((pxX - ox) / cw), 0, em.Screen.Cols - 1);
+        int row = Math.Clamp((int)((pxY - oy) / ch), 0, em.Screen.Rows - 1);
         string seq = em.MouseSgr
             ? $"\x1b[<{btn};{col + 1};{row + 1}{(press ? 'M' : 'm')}"
             : "\x1b[M" + (char)(32 + (press ? btn : 3)) + (char)(33 + col) + (char)(33 + row);
@@ -913,7 +1092,7 @@ internal static class Program
     /// thread so the UI never blocks; only the cheap GPU upload runs here. An image simply
     /// appears on the next redraw once its pixels are ready. Called under the session lock.
     /// </summary>
-    private static void DrawImages(TerminalEmulator em, float cw, float ch)
+    private static void DrawImages(TerminalEmulator em, float ox, float oy, float cw, float ch)
     {
         if (_rt is null) return;
 
@@ -955,8 +1134,8 @@ internal static class Program
                     _ = Task.Run(() => DecodePixelsAsync(img));
                 continue; // will render on a later frame once uploaded
             }
-            float ix = ContentX + p.Col * cw;
-            float iy = ContentY + p.Row * ch;
+            float ix = ox + p.Col * cw;
+            float iy = oy + p.Row * ch;
             float iw = p.Cols > 0 ? p.Cols * cw : bmp.Size.Width;
             float ih = p.Rows > 0 ? p.Rows * ch : bmp.Size.Height;
             var dest = new Vortice.RawRectF(ix, iy, ix + iw, iy + ih);
@@ -1086,6 +1265,96 @@ internal static class Program
             Perf($"frame render={Stopwatch.GetElapsedTime(tStart).TotalMilliseconds:F2}ms uploads={_uploadCount} uploadMs={_uploadMs:F2} t={DateTime.Now:HH:mm:ss.fff}");
     }
 
+    /// <summary>Draw one terminal surface (cells, images, cursor) at origin (ox,oy) with its font metrics.</summary>
+    private static void RenderTerminal(TerminalSession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch)
+    {
+        var rt = _rt!;
+        var brush = _brush!;
+        lock (session.SyncRoot)
+        {
+            var em = session.Emulator;
+            var screen = em.Screen;
+            int cols = screen.Cols, rows = screen.Rows;
+            for (int r = 0; r < rows; r++)
+            {
+                float y = oy + r * ch;
+                int c = 0;
+                while (c < cols)  // Pass 1: coalesced background fills
+                {
+                    Cell cell = screen[r, c];
+                    Color bg = EffectiveBg(cell);
+                    if (bg == _theme.DefaultBackground) { c++; continue; }
+                    int start = c;
+                    while (c < cols)
+                    {
+                        Cell cc = screen[r, c];
+                        if (cc.Width != 0 && EffectiveBg(cc) != bg) break;
+                        c++;
+                    }
+                    brush.Color = C4(bg);
+                    rt.FillRectangle(new Rect(ox + start * cw, y, (c - start) * cw, ch), brush);
+                }
+                c = 0;
+                while (c < cols)  // Pass 2: coalesced same-colour text runs
+                {
+                    Cell cell = screen[r, c];
+                    if (cell.Width == 0 || cell.Rune == ' ' || cell.Rune == '\0') { c++; continue; }
+                    Color runFg = EffectiveFg(cell);
+                    if (cell.Width == 2)
+                    {
+                        brush.Color = C4(runFg);
+                        float wx = ox + c * cw;
+                        rt.DrawText(cell.Rune.ToString(), fmt, new Rect(wx, y, wx + 2 * cw, y + ch), brush);
+                        c++;
+                        continue;
+                    }
+                    int start = c;
+                    _run.Clear();
+                    int lastNonBlank = 0;
+                    while (c < cols)
+                    {
+                        Cell cc = screen[r, c];
+                        if (cc.Width == 2 || cc.Width == 0) break;
+                        bool blank = cc.Rune == ' ' || cc.Rune == '\0';
+                        if (!blank && EffectiveFg(cc) != runFg) break;
+                        _run.Append(blank ? ' ' : cc.Rune);
+                        c++;
+                        if (!blank) lastNonBlank = _run.Length;
+                    }
+                    if (lastNonBlank > 0)
+                    {
+                        _run.Length = lastNonBlank;
+                        brush.Color = C4(runFg);
+                        float rx = ox + start * cw;
+                        rt.DrawText(_run.ToString(), fmt, new Rect(rx, y, rx + _run.Length * cw, y + ch), brush);
+                    }
+                }
+            }
+
+            if (!_noImages && em.Placements.Count > 0)
+                DrawImages(em, ox, oy, cw, ch);
+
+            if (em.CursorVisible)
+            {
+                float cx = ox + em.CursorCol * cw, cy = oy + em.CursorRow * ch;
+                brush.Color = C4(_theme.Cursor);
+                if (!_config.CursorBlink || _cursorOn)
+                {
+                    switch (_config.CursorStyle)
+                    {
+                        case CursorStyle.Block: rt.FillRectangle(new Rect(cx, cy, cw, ch), brush); break;
+                        case CursorStyle.Underline:
+                            float uh = MathF.Max(1f, MathF.Round(ch * 0.12f));
+                            rt.FillRectangle(new Rect(cx, cy + ch - uh, cw, uh), brush); break;
+                        default:
+                            float barW = MathF.Max(1f, MathF.Round(cw * 0.14f));
+                            rt.FillRectangle(new Rect(cx, cy, barW, ch), brush); break;
+                    }
+                }
+            }
+        }
+    }
+
     private static void RenderBody()
     {
         var rt = _rt!;
@@ -1093,110 +1362,25 @@ internal static class Program
         rt.BeginDraw();
         rt.Clear(C4(_theme.DefaultBackground));
 
-        var session = _session;
-        if (session is not null)
+        if (_active is not null)
         {
-            lock (session.SyncRoot)
+            var layout = PaneLayout(_active);
+            foreach (var (pane, ox, oy, pw, ph) in layout)
             {
-                var em = session.Emulator;
-                var screen = em.Screen;
-                int cols = screen.Cols, rows = screen.Rows;
-                var (fmt, cw, ch) = CurrentMetrics();  // active session's font zoom drives the terminal grid
-
-                // Text is drawn in runs of same-colour cells rather than one DrawText per
-                // cell: on a full-screen repaint that cuts thousands of shaping/layout calls
-                // (and per-cell string allocations) down to a few dozen — the difference
-                // between a ~20ms frame and a ~3ms one while scrolling.
-                for (int r = 0; r < rows; r++)
+                var (fmt, cw, ch) = Metrics(pane.FontSize);
+                RenderTerminal(pane.S, ox, oy, fmt, cw, ch);
+            }
+            if (layout.Count > 1)
+            {
+                for (int i = 0; i < layout.Count - 1; i++)
                 {
-                    float y = ContentY + r * ch;
-
-                    // Pass 1: background fills, coalesced across equal-bg spans.
-                    int c = 0;
-                    while (c < cols)
-                    {
-                        Cell cell = screen[r, c];
-                        Color bg = EffectiveBg(cell);
-                        if (bg == _theme.DefaultBackground) { c++; continue; }
-                        int start = c;
-                        while (c < cols)
-                        {
-                            Cell cc = screen[r, c];
-                            Color b2 = EffectiveBg(cc);
-                            if (cc.Width != 0 && b2 != bg) break;
-                            c++;
-                        }
-                        brush.Color = C4(bg);
-                        rt.FillRectangle(new Rect(ContentX + start * cw, y, (c - start) * cw, ch), brush);
-                    }
-
-                    // Pass 2: foreground text, coalesced into same-colour runs.
-                    c = 0;
-                    while (c < cols)
-                    {
-                        Cell cell = screen[r, c];
-                        if (cell.Width == 0 || cell.Rune == ' ' || cell.Rune == '\0') { c++; continue; }
-
-                        Color runFg = EffectiveFg(cell);
-                        if (cell.Width == 2) // draw wide (CJK) glyphs individually; advances differ
-                        {
-                            brush.Color = C4(runFg);
-                            float wx = ContentX + c * cw;
-                            rt.DrawText(cell.Rune.ToString(), fmt, new Rect(wx, y, wx + 2 * cw, y + ch), brush);
-                            c++;
-                            continue;
-                        }
-
-                        int start = c;
-                        _run.Clear();
-                        int lastNonBlank = 0;
-                        while (c < cols)
-                        {
-                            Cell cc = screen[r, c];
-                            if (cc.Width == 2 || cc.Width == 0) break; // wide glyph starts a new run
-                            bool blank = cc.Rune == ' ' || cc.Rune == '\0';
-                            if (!blank && EffectiveFg(cc) != runFg) break;  // colour change ends the run
-                            _run.Append(blank ? ' ' : cc.Rune);
-                            c++;
-                            if (!blank) lastNonBlank = _run.Length;
-                        }
-                        if (lastNonBlank > 0)
-                        {
-                            _run.Length = lastNonBlank; // drop trailing blanks (nothing to shape)
-                            brush.Color = C4(runFg);
-                            float rx = ContentX + start * cw;
-                            rt.DrawText(_run.ToString(), fmt, new Rect(rx, y, rx + _run.Length * cw, y + ch), brush);
-                        }
-                    }
+                    float dx = layout[i].x + layout[i].w + DividerW / 2f;
+                    brush.Color = new Color4(0.28f, 0.31f, 0.36f, 1f);
+                    rt.FillRectangle(new Rect(dx - 0.5f, layout[i].y, 1f, layout[i].h), brush);
                 }
-
-                if (!_noImages && em.Placements.Count > 0)
-                    DrawImages(em, cw, ch);
-
-                if (em.CursorVisible)
-                {
-                    float cx = ContentX + em.CursorCol * cw;
-                    float cy = ContentY + em.CursorRow * ch;
-                    brush.Color = C4(_theme.Cursor);
-
-                    if (!_config.CursorBlink || _cursorOn)
-                    {
-                        switch (_config.CursorStyle)
-                        {
-                            case CursorStyle.Block:
-                                rt.FillRectangle(new Rect(cx, cy, cw, ch), brush);
-                                break;
-                            case CursorStyle.Underline:
-                                float uh = MathF.Max(1f, MathF.Round(ch * 0.12f));
-                                rt.FillRectangle(new Rect(cx, cy + ch - uh, cw, uh), brush);
-                                break;
-                            default:
-                                float barW = MathF.Max(1f, MathF.Round(cw * 0.14f));
-                                rt.FillRectangle(new Rect(cx, cy, barW, ch), brush);
-                                break;
-                        }
-                    }
-                }
+                var ap = layout.First(l => ReferenceEquals(l.pane, _active.ActivePane));
+                brush.Color = new Color4(0.30f, 0.55f, 0.95f, 1f);
+                rt.FillRectangle(new Rect(ap.x, TitleBarH + 1f, ap.w, 2f), brush); // accent marks the focused pane
             }
         }
         DrawSidebar(rt, brush);
@@ -1671,7 +1855,10 @@ internal static class Program
                 A("New Session", "Ctrl+Shift+T", () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true));
                 A("New Workspace", "Ctrl+Shift+N", () => CreateWorkspace(Guid.NewGuid().ToString(), null));
                 A("Rename Active Session", "F2", () => { if (_active is not null) StartRename(_active); });
-                A("Close Active Session", "Ctrl+Shift+W", () => { if (_active is not null) CloseSessionInternal(_active); });
+                A("Close Pane / Session", "Ctrl+Shift+W", CloseActivePane);
+                A("Split Pane", "Ctrl+D", SplitActivePane);
+                A("Focus Left Pane", "Ctrl+Alt+Left", () => FocusPane(-1));
+                A("Focus Right Pane", "Ctrl+Alt+Right", () => FocusPane(1));
                 A("Delete Active Workspace", "", () => { if (_active is not null) DeleteWorkspace(_active.Ws); });
                 A("Toggle Sidebar", "", ToggleSidebar);
                 A("Next Session", "Ctrl+Tab", () => CycleSession(1));
@@ -1681,7 +1868,6 @@ internal static class Program
                 A("Increase Font Size", "Ctrl+=", () => ChangeFontSize(1));
                 A("Decrease Font Size", "Ctrl+-", () => ChangeFontSize(-1));
                 A("Reset Font Size", "Ctrl+0", () => ChangeFontSize(0));
-                A("Split", "", () => ShowToast("split not implemented yet"));
                 A("Scratch Terminal", "", () => ShowToast("scratch not implemented yet"));
                 A("Quick Terminal", "", () => ShowToast("quick terminal not implemented yet"));
                 A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
@@ -1940,6 +2126,7 @@ internal static class Program
             case "new-session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true); break;
             case "new-workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
             case "attention": GoToNextAttention(1); break;
+            case "split": SplitActivePane(); break;
             default: ShowToast(a + " not implemented yet"); break;
         }
     }
