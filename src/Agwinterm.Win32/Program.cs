@@ -46,10 +46,28 @@ internal static class Program
     // Actions queued from the pipe (background) thread to run on the UI thread.
     private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
 
-    private const float SidebarW = 220f;
-    private static float ContentX => SidebarW + PadX;         // terminal's left origin
+    // Chrome geometry (custom title bar + status bar, drawn in Direct2D).
+    private const float TitleBarH = 40f;
+    private const float FooterH = 34f;       // toolbar at the bottom of the sidebar
+    private const float SidebarWFull = 220f;
+    private const float CaptionBtnW = 46f;   // native min/max/close hit width
+    private static float _sidebarW = SidebarWFull;            // 0 when collapsed
+
+    private static float ContentX => _sidebarW + PadX;        // terminal's left origin
+    private static float ContentY => TitleBarH + PadY;        // terminal's top origin (below the title bar)
+
     // Row hit-boxes rebuilt each paint: (top, bottom, isWorkspace, item(Workspace|Ses)).
     private static readonly List<(float y0, float y1, bool isWs, object item)> _sidebarRows = new();
+    // Chrome button hit-boxes rebuilt each paint: (x0, x1, action).
+    private static readonly List<(float x0, float x1, string action)> _titleButtons = new();
+    private static readonly List<(float x0, float x1, string action)> _footerButtons = new();
+    private static int _hoverCaption; // 0 none, 1 min, 2 max, 3 close (for hover paint)
+    private static string? _toastText;
+
+    // Chrome fonts (native Segoe UI for text, icon font for glyphs).
+    private static IDWriteTextFormat _uiFont = null!;
+    private static IDWriteTextFormat _uiSmall = null!;
+    private static IDWriteTextFormat _iconFont = null!;
 
     private sealed class Ses
     {
@@ -111,10 +129,16 @@ internal static class Program
         _d2d = D2D1.D2D1CreateFactory<ID2D1Factory>(Vortice.Direct2D1.FactoryType.SingleThreaded);
         _dwrite = DWrite.DWriteCreateFactory<IDWriteFactory>();
         _format = CreateTextFormat(_config);
+        _uiFont = NewChromeFormat("Segoe UI", 13f, center: false);
+        _uiSmall = NewChromeFormat("Segoe UI", 11.5f, center: false);
+        _iconFont = NewChromeFormat("Segoe Fluent Icons", 14f, center: true);
         MeasureCell();
 
         CreateRenderTarget();
         StartSession();
+
+        // Apply the custom frame (WM_NCCALCSIZE strips the OS title bar) before showing.
+        SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 
         if (_config.CursorBlink)
             SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
@@ -142,6 +166,17 @@ internal static class Program
         f.WordWrapping = WordWrapping.NoWrap;
         f.TextAlignment = TextAlignment.Leading;
         f.ParagraphAlignment = ParagraphAlignment.Near;
+        return f;
+    }
+
+    private static IDWriteTextFormat NewChromeFormat(string family, float px, bool center)
+    {
+        IDWriteTextFormat f;
+        try { f = _dwrite.CreateTextFormat(family, null, FontWeight.Normal, FontStyle.Normal, FontStretch.Normal, px); }
+        catch { f = _dwrite.CreateTextFormat("Segoe UI", null, FontWeight.Normal, FontStyle.Normal, FontStretch.Normal, px); }
+        f.WordWrapping = WordWrapping.NoWrap;
+        f.TextAlignment = center ? TextAlignment.Center : TextAlignment.Leading;
+        f.ParagraphAlignment = ParagraphAlignment.Center; // vertically centre within the row rect
         return f;
     }
 
@@ -188,8 +223,8 @@ internal static class Program
     {
         GetClientRect(_hwnd, out RECT rc);
         int w = rc.right - rc.left, h = rc.bottom - rc.top;
-        int cols = Math.Max(1, (int)((w - SidebarW - 2 * PadX) / _cellW));
-        int rows = Math.Max(1, (int)((h - 2 * PadY) / _cellH));
+        int cols = Math.Max(1, (int)((w - _sidebarW - 2 * PadX) / _cellW));
+        int rows = Math.Max(1, (int)((h - TitleBarH - 2 * PadY) / _cellH));
         return (cols, rows);
     }
 
@@ -370,6 +405,17 @@ internal static class Program
     {
         switch (msg)
         {
+            case WM_NCCALCSIZE:
+                if (wParam != IntPtr.Zero) { AdjustClientRect(hwnd, lParam); return IntPtr.Zero; }
+                break;
+
+            case WM_NCHITTEST:
+                return (IntPtr)HitTest(hwnd, LoWord(lParam), HiWord(lParam));
+
+            case WM_NCMOUSELEAVE:
+                if (_hoverCaption != 0) { _hoverCaption = 0; RequestRedraw(); }
+                break;
+
             case WM_PAINT:
                 BeginPaint(hwnd, out PAINTSTRUCT ps);
                 Render();
@@ -387,6 +433,7 @@ internal static class Program
                 return IntPtr.Zero;
 
             case WM_TIMER:
+                if ((int)wParam == 2) { _toastText = null; KillTimer(hwnd, (IntPtr)2); InvalidateRect(hwnd, IntPtr.Zero, false); return IntPtr.Zero; }
                 _cursorOn = !_cursorOn;
                 InvalidateRect(hwnd, IntPtr.Zero, false);
                 return IntPtr.Zero;
@@ -419,18 +466,27 @@ internal static class Program
                 }
 
             case WM_LBUTTONDOWN:
-                if (LoWord(lParam) < (int)SidebarW) { SidebarClick(LoWord(lParam), HiWord(lParam)); return IntPtr.Zero; }
-                SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero;
-            case WM_LBUTTONUP: if (LoWord(lParam) >= (int)SidebarW) { SendMousePx(0, lParam, false); } ReleaseCapture(); return IntPtr.Zero;
-            case WM_MBUTTONDOWN: if (LoWord(lParam) >= (int)SidebarW) SendMousePx(1, lParam, true); return IntPtr.Zero;
-            case WM_MBUTTONUP: if (LoWord(lParam) >= (int)SidebarW) SendMousePx(1, lParam, false); return IntPtr.Zero;
-            case WM_RBUTTONDOWN: if (LoWord(lParam) >= (int)SidebarW) SendMousePx(2, lParam, true); return IntPtr.Zero;
-            case WM_RBUTTONUP: if (LoWord(lParam) >= (int)SidebarW) SendMousePx(2, lParam, false); return IntPtr.Zero;
+                {
+                    int mx = LoWord(lParam), my = HiWord(lParam);
+                    if (my < (int)TitleBarH) { HitChrome(_titleButtons, mx); return IntPtr.Zero; }
+                    if (mx < (int)_sidebarW)
+                    {
+                        if (my >= ClientH() - (int)FooterH) HitChrome(_footerButtons, mx);
+                        else SidebarClick(mx, my);
+                        return IntPtr.Zero;
+                    }
+                    SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero;
+                }
+            case WM_LBUTTONUP: if (InContent(lParam)) { SendMousePx(0, lParam, false); } ReleaseCapture(); return IntPtr.Zero;
+            case WM_MBUTTONDOWN: if (InContent(lParam)) SendMousePx(1, lParam, true); return IntPtr.Zero;
+            case WM_MBUTTONUP: if (InContent(lParam)) SendMousePx(1, lParam, false); return IntPtr.Zero;
+            case WM_RBUTTONDOWN: if (InContent(lParam)) SendMousePx(2, lParam, true); return IntPtr.Zero;
+            case WM_RBUTTONUP: if (InContent(lParam)) SendMousePx(2, lParam, false); return IntPtr.Zero;
 
             case WM_MOUSEMOVE:
                 {
                     var em = _session?.Emulator;
-                    if (em is not null && em.MouseReportsMotion && LoWord(lParam) >= (int)SidebarW)
+                    if (em is not null && em.MouseReportsMotion && InContent(lParam))
                         SendMousePx(32 + (((long)wParam & MK_LBUTTON) != 0 ? 0 : 3), lParam, true);
                     return IntPtr.Zero;
                 }
@@ -442,7 +498,7 @@ internal static class Program
                     {
                         var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
                         ScreenToClient(_hwnd, ref pt);
-                        if (pt.x >= (int)SidebarW)
+                        if (pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
                             SendMouse(HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, true);
                     }
                     return IntPtr.Zero;
@@ -479,7 +535,7 @@ internal static class Program
         var em = _session?.Emulator;
         if (em is null || !em.MouseReporting) return;
         int col = Math.Clamp((int)((pxX - ContentX) / _cellW), 0, em.Screen.Cols - 1);
-        int row = Math.Clamp((int)((pxY - PadY) / _cellH), 0, em.Screen.Rows - 1);
+        int row = Math.Clamp((int)((pxY - ContentY) / _cellH), 0, em.Screen.Rows - 1);
         string seq = em.MouseSgr
             ? $"\x1b[<{btn};{col + 1};{row + 1}{(press ? 'M' : 'm')}"
             : "\x1b[M" + (char)(32 + (press ? btn : 3)) + (char)(33 + col) + (char)(33 + row);
@@ -601,7 +657,7 @@ internal static class Program
                 continue; // will render on a later frame once uploaded
             }
             float ix = ContentX + p.Col * _cellW;
-            float iy = PadY + p.Row * _cellH;
+            float iy = ContentY + p.Row * _cellH;
             float iw = p.Cols > 0 ? p.Cols * _cellW : bmp.Size.Width;
             float ih = p.Rows > 0 ? p.Rows * _cellH : bmp.Size.Height;
             var dest = new Vortice.RawRectF(ix, iy, ix + iw, iy + ih);
@@ -753,7 +809,7 @@ internal static class Program
                 // between a ~20ms frame and a ~3ms one while scrolling.
                 for (int r = 0; r < rows; r++)
                 {
-                    float y = PadY + r * _cellH;
+                    float y = ContentY + r * _cellH;
 
                     // Pass 1: background fills, coalesced across equal-bg spans.
                     int c = 0;
@@ -820,7 +876,7 @@ internal static class Program
                 if (em.CursorVisible)
                 {
                     float cx = ContentX + em.CursorCol * _cellW;
-                    float cy = PadY + em.CursorRow * _cellH;
+                    float cy = ContentY + em.CursorRow * _cellH;
                     brush.Color = new Color4(222 / 255f, 222 / 255f, 230 / 255f, 1f);
 
                     if (!_config.CursorBlink || _cursorOn)
@@ -844,6 +900,8 @@ internal static class Program
             }
         }
         DrawSidebar(rt, brush);
+        DrawTitleBar(rt, brush);
+        DrawToast(rt, brush);
     }
 
     // ---- Sidebar (custom Direct2D outline: workspaces -> sessions) ----
@@ -864,48 +922,72 @@ internal static class Program
 
     private static void DrawSidebar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
-        GetClientRect(_hwnd, out RECT rc);
-        float h = rc.bottom - rc.top;
-        brush.Color = SbBg;
-        rt.FillRectangle(new Rect(0, 0, SidebarW, h), brush);
-
         _sidebarRows.Clear();
+        _footerButtons.Clear();
+        if (_sidebarW <= 0) return;
+
+        brush.Color = SbBg;
+        rt.FillRectangle(new Rect(0, TitleBarH, _sidebarW, ClientH()), brush);
+
+        float rowsBottom = ClientH() - FooterH; // stop the list above the footer toolbar
         float rowH = _cellH + 8f;
-        float y = PadY;
+        float y = TitleBarH + PadY;
 
         List<Workspace> wss;
         lock (_workspaces) wss = _workspaces.ToList();
 
         foreach (var ws in wss)
         {
+            if (y + rowH > rowsBottom) break;
             List<Ses> sessions;
             bool expanded;
             lock (_workspaces) { sessions = ws.Sessions.ToList(); expanded = ws.Expanded; }
 
             brush.Color = SbHeaderText;
-            rt.DrawText(expanded ? "▾" : "▸", _format, TextRect(6f, y, 18f, rowH), brush); // chevron
-            rt.DrawText(ws.Name, _format, TextRect(24f, y, SidebarW - 48f, rowH), brush);
-            rt.DrawText(sessions.Count.ToString(), _format, TextRect(SidebarW - 24f, y, 20f, rowH), brush);
+            rt.DrawText(expanded ? "▾" : "▸", _format, TextRect(6f, y, 18f, rowH), brush); // chevron (mono, top-aligned)
+            rt.DrawText(ws.Name, _uiFont, new Rect(24f, y, _sidebarW - 48f, rowH), brush);
+            rt.DrawText(sessions.Count.ToString(), _uiSmall, new Rect(_sidebarW - 28f, y, 22f, rowH), brush);
             _sidebarRows.Add((y, y + rowH, true, ws));
             y += rowH;
 
             if (!expanded) continue;
             foreach (var s in sessions)
             {
+                if (y + rowH > rowsBottom) break;
                 bool active = ReferenceEquals(_active, s);
                 if (active)
                 {
                     brush.Color = SbHighlight;
-                    rt.FillRectangle(new Rect(0, y, SidebarW, rowH), brush);
+                    rt.FillRectangle(new Rect(0, y, _sidebarW, rowH), brush);
                 }
                 brush.Color = StatusDot(s.S.Status);
                 rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(26f, y + rowH / 2f), 4f, 4f), brush);
                 brush.Color = active ? SbActiveText : SbDimText;
-                rt.DrawText(s.Name, _format, TextRect(38f, y, SidebarW - 44f, rowH), brush);
+                rt.DrawText(s.Name, _uiFont, new Rect(38f, y, _sidebarW - 44f, rowH), brush);
                 _sidebarRows.Add((y, y + rowH, false, s));
                 y += rowH;
             }
         }
+        DrawSidebarFooter(rt, brush);
+    }
+
+    /// <summary>Toolbar at the bottom of the sidebar: new-workspace, new-session (left), flag (right).</summary>
+    private static void DrawSidebarFooter(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        float y = ClientH() - FooterH;
+        brush.Color = ChromeBg;
+        rt.FillRectangle(new Rect(0, y, _sidebarW, FooterH), brush);
+
+        float bx = 6f, bwid = 34f;
+        brush.Color = ChromeDim;
+        rt.DrawText("", _iconFont, new Rect(bx, y, bwid, FooterH), brush);         // new workspace
+        _footerButtons.Add((bx, bx + bwid, "new-workspace")); bx += bwid;
+        rt.DrawText("", _iconFont, new Rect(bx, y, bwid, FooterH), brush);         // new session
+        _footerButtons.Add((bx, bx + bwid, "new-session"));
+
+        float fx = _sidebarW - bwid - 4f;                                             // flag on the right
+        rt.DrawText("", _iconFont, new Rect(fx, y, bwid, FooterH), brush);
+        _footerButtons.Add((fx, fx + bwid, "flag"));
     }
 
     // DrawText layout rect is Left/Top/Right/Bottom; vertically centre the glyph cell in the row.
@@ -921,6 +1003,218 @@ internal static class Program
             else if (!isWs && item is Ses s) SetActive(s);
             return;
         }
+    }
+
+    // ---- Custom title bar / status bar (frameless chrome) ----
+
+    private static readonly Color4 ChromeBg = new(0.043f, 0.051f, 0.059f, 1f);
+    private static readonly Color4 ChromeText = new(0.92f, 0.93f, 0.95f, 1f);
+    private static readonly Color4 ChromeDim = new(0.55f, 0.58f, 0.62f, 1f);
+
+    private static int ClientW() { GetClientRect(_hwnd, out RECT rc); return rc.right - rc.left; }
+    private static int ClientH() { GetClientRect(_hwnd, out RECT rc); return rc.bottom - rc.top; }
+
+    private static bool InContent(IntPtr lParam)
+    {
+        int x = LoWord(lParam), y = HiWord(lParam);
+        return x >= (int)_sidebarW && y >= (int)TitleBarH;
+    }
+
+    /// <summary>WM_NCCALCSIZE: reclaim the OS caption into the client so we draw our own title bar.</summary>
+    private static void AdjustClientRect(IntPtr hwnd, IntPtr lParam)
+    {
+        // When maximized, inset by the frame so content isn't pushed off-screen / under the taskbar.
+        if (IsZoomed(hwnd))
+        {
+            var rc = Marshal.PtrToStructure<RECT>(lParam);
+            int fx = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            int fy = GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            rc.left += fx; rc.right -= fx; rc.top += fy; rc.bottom -= fy;
+            Marshal.StructureToPtr(rc, lParam, false);
+        }
+        // Otherwise leave the proposed rect: client fills the whole window (borderless); resize via NCHITTEST.
+    }
+
+    /// <summary>WM_NCHITTEST: resize borders, caption buttons (system-handled), draggable caption, else client.</summary>
+    private static int HitTest(IntPtr hwnd, int sx, int sy)
+    {
+        var pt = new POINT { x = sx, y = sy };
+        ScreenToClient(hwnd, ref pt);
+        int cw = ClientW(), ch = ClientH();
+        const int B = 8;
+        if (!IsZoomed(hwnd))
+        {
+            bool top = pt.y < B, bot = pt.y >= ch - B, left = pt.x < B, right = pt.x >= cw - B;
+            if (top && left) return HTTOPLEFT;
+            if (top && right) return HTTOPRIGHT;
+            if (bot && left) return HTBOTTOMLEFT;
+            if (bot && right) return HTBOTTOMRIGHT;
+            if (top) return HTTOP;
+            if (bot) return HTBOTTOM;
+            if (left) return HTLEFT;
+            if (right) return HTRIGHT;
+        }
+        if (pt.y < (int)TitleBarH)
+        {
+            int cap = CaptionButtonAt(pt.x, cw);
+            if (cap != _hoverCaption) { _hoverCaption = cap; RequestRedraw(); }
+            if (cap == 3) return HTCLOSE;
+            if (cap == 2) return HTMAXBUTTON;
+            if (cap == 1) return HTMINBUTTON;
+            foreach (var b in _titleButtons) if (pt.x >= b.x0 && pt.x < b.x1) return HTCLIENT; // our action buttons
+            return HTCAPTION; // draggable
+        }
+        if (_hoverCaption != 0) { _hoverCaption = 0; RequestRedraw(); }
+        return HTCLIENT;
+    }
+
+    private static int CaptionButtonAt(int x, int cw)
+    {
+        if (x >= cw - (int)CaptionBtnW) return 3;              // close
+        if (x >= cw - 2 * (int)CaptionBtnW) return 2;         // max/restore
+        if (x >= cw - 3 * (int)CaptionBtnW) return 1;         // min
+        return 0;
+    }
+
+    private static void HitChrome(List<(float x0, float x1, string action)> buttons, int mx)
+    {
+        foreach (var b in buttons) if (mx >= b.x0 && mx < b.x1) { ChromeAction(b.action); return; }
+    }
+
+    private static void ChromeAction(string a)
+    {
+        switch (a)
+        {
+            case "toggle": ToggleSidebar(); break;
+            case "new-session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true); break;
+            case "new-workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
+            default: ShowToast(a + " not implemented yet"); break;
+        }
+    }
+
+    private static void ToggleSidebar()
+    {
+        _sidebarW = _sidebarW > 0 ? 0 : SidebarWFull;
+        var (cols, rows) = GridSize();
+        _active?.S.Resize(cols, rows);
+        RequestRedraw();
+    }
+
+    private static void ShowToast(string text)
+    {
+        _toastText = text;
+        SetTimer(_hwnd, (IntPtr)2, 1900, IntPtr.Zero);
+        RequestRedraw();
+    }
+
+    private static string SafeCwd(Ses s) { lock (s.S.SyncRoot) return s.S.Emulator.Cwd; }
+
+    private static string PrettyCwd(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "";
+        string s = raw;
+        if (s.StartsWith("file://")) { s = s[7..]; int slash = s.IndexOf('/'); if (slash > 0) s = s[slash..]; }
+        try { s = Uri.UnescapeDataString(s); } catch { }
+        return s.TrimStart('/').Replace('/', '\\');
+    }
+
+    private static float MeasureText(string s, IDWriteTextFormat fmt)
+    {
+        using var tl = _dwrite.CreateTextLayout(s, fmt, 4096f, 100f);
+        return tl.Metrics.Width;
+    }
+
+    private static void DrawTitleBar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        _titleButtons.Clear();
+        int cw = ClientW();
+        brush.Color = ChromeBg;
+        rt.FillRectangle(new Rect(0, 0, cw, TitleBarH), brush);
+
+        // Sidebar toggle (hamburger) at far left.
+        brush.Color = ChromeText;
+        for (int i = -1; i <= 1; i++)
+            rt.DrawLine(new System.Numerics.Vector2(13f, TitleBarH / 2f + i * 5f), new System.Numerics.Vector2(27f, TitleBarH / 2f + i * 5f), brush, 1.4f);
+        _titleButtons.Add((0, 40, "toggle"));
+
+        // Title + subtitle (native Segoe UI), stacked when a cwd is known.
+        string title = _active?.Name ?? "agwinterm";
+        string subtitle = _active is not null ? PrettyCwd(SafeCwd(_active)) : "";
+        float textRight = cw - 3 * CaptionBtnW - 3 * 40f - 12f;
+        float textW = MathF.Max(80f, textRight - 48f);
+        brush.Color = ChromeText;
+        if (subtitle.Length > 0)
+        {
+            rt.DrawText(title, _uiFont, new Rect(48f, 3f, textW, 19f), brush);
+            brush.Color = ChromeDim;
+            rt.DrawText(subtitle, _uiSmall, new Rect(48f, 21f, textW, 16f), brush);
+        }
+        else rt.DrawText(title, _uiFont, new Rect(48f, 0f, textW, TitleBarH), brush);
+
+        // Action buttons (icon glyphs), right-aligned before the caption buttons.
+        (string glyph, string action)[] acts =
+        {
+            ("", "overlay"), ("", "split"), ("", "quick terminal"),
+        };
+        float bw = 40f, startX = cw - 3 * CaptionBtnW - acts.Length * bw;
+        // Thin separator before the action group.
+        brush.Color = new Color4(0.22f, 0.24f, 0.28f, 1f);
+        rt.DrawLine(new System.Numerics.Vector2(startX - 8f, 11f), new System.Numerics.Vector2(startX - 8f, TitleBarH - 11f), brush, 1f);
+        for (int i = 0; i < acts.Length; i++)
+        {
+            float x = startX + i * bw;
+            brush.Color = ChromeDim;
+            rt.DrawText(acts[i].glyph, _iconFont, new Rect(x, 0, bw, TitleBarH), brush);
+            _titleButtons.Add((x, x + bw, acts[i].action));
+        }
+
+        DrawCaption(rt, brush, cw);
+    }
+
+    private static void DrawCaption(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, int cw)
+    {
+        for (int i = 1; i <= 3; i++) // 1 min, 2 max/restore, 3 close (left to right)
+        {
+            float x0 = cw - (4 - i) * CaptionBtnW;
+            if (_hoverCaption == i)
+            {
+                brush.Color = i == 3 ? new Color4(0.86f, 0.15f, 0.18f, 1f) : new Color4(0.20f, 0.22f, 0.26f, 1f);
+                rt.FillRectangle(new Rect(x0, 0, CaptionBtnW, TitleBarH), brush);
+            }
+            brush.Color = (_hoverCaption == 3 && i == 3) ? new Color4(1f, 1f, 1f, 1f) : ChromeText;
+            float cx = x0 + CaptionBtnW / 2f, cy = TitleBarH / 2f;
+            if (i == 1) rt.DrawLine(new System.Numerics.Vector2(cx - 5, cy), new System.Numerics.Vector2(cx + 5, cy), brush, 1f);
+            else if (i == 2)
+            {
+                if (IsZoomed(_hwnd))
+                {
+                    rt.DrawRectangle(new Rect(cx - 5, cy - 3, 8, 8), brush, 1f);
+                    rt.DrawLine(new System.Numerics.Vector2(cx - 2, cy - 3), new System.Numerics.Vector2(cx - 2, cy - 5), brush, 1f);
+                    rt.DrawLine(new System.Numerics.Vector2(cx - 2, cy - 5), new System.Numerics.Vector2(cx + 5, cy - 5), brush, 1f);
+                    rt.DrawLine(new System.Numerics.Vector2(cx + 5, cy - 5), new System.Numerics.Vector2(cx + 5, cy + 3), brush, 1f);
+                    rt.DrawLine(new System.Numerics.Vector2(cx + 5, cy + 3), new System.Numerics.Vector2(cx + 3, cy + 3), brush, 1f);
+                }
+                else rt.DrawRectangle(new Rect(cx - 5, cy - 5, 10, 10), brush, 1f);
+            }
+            else
+            {
+                rt.DrawLine(new System.Numerics.Vector2(cx - 5, cy - 5), new System.Numerics.Vector2(cx + 5, cy + 5), brush, 1f);
+                rt.DrawLine(new System.Numerics.Vector2(cx - 5, cy + 5), new System.Numerics.Vector2(cx + 5, cy - 5), brush, 1f);
+            }
+        }
+    }
+
+    private static void DrawToast(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        if (_toastText is null) return;
+        int cw = ClientW(), ch = ClientH();
+        float tw = MeasureText(_toastText, _uiFont) + 32f, th = 34f;
+        float cx = _sidebarW + ((cw - _sidebarW) - tw) / 2f;
+        float ty = ch - th - 24f;
+        brush.Color = new Color4(0.13f, 0.15f, 0.18f, 1f);
+        rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx, ty, tw, th), RadiusX = 8f, RadiusY = 8f }, brush);
+        brush.Color = ChromeText;
+        rt.DrawText(_toastText, _uiFont, new Rect(cx + 16f, ty, tw - 24f, th), brush);
     }
 
     // ---- Config (mirrors the WinUI shell) ----

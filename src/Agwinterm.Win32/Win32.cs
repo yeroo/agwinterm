@@ -26,6 +26,22 @@ internal static class Win32
     public const uint WM_APP_REDRAW = 0x8000; // WM_APP: cross-thread "please repaint"
     public const uint WM_APP_ACTION = 0x8001; // WM_APP+1: drain queued UI-thread actions (pipe callbacks)
 
+    // Non-client messages for the custom (frameless) title bar.
+    public const uint WM_NCCALCSIZE = 0x0083;
+    public const uint WM_NCHITTEST = 0x0084;
+    public const uint WM_NCMOUSEMOVE = 0x00A0;
+    public const uint WM_NCMOUSELEAVE = 0x02A2;
+    public const uint WM_GETMINMAXINFO = 0x0024;
+
+    // Hit-test result codes.
+    public const int HTTRANSPARENT = -1, HTNOWHERE = 0, HTCLIENT = 1, HTCAPTION = 2;
+    public const int HTLEFT = 10, HTRIGHT = 11, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14;
+    public const int HTBOTTOM = 15, HTBOTTOMLEFT = 16, HTBOTTOMRIGHT = 17;
+    public const int HTMINBUTTON = 8, HTMAXBUTTON = 9, HTCLOSE = 20;
+
+    public const int SM_CXFRAME = 32, SM_CYFRAME = 33, SM_CXPADDEDBORDER = 92;
+    public const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010, SWP_FRAMECHANGED = 0x0020;
+
     public const int MK_LBUTTON = 0x0001;
     public const int SW_SHOW = 5;
 
@@ -169,6 +185,21 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int nIndex);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsZoomed(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    public static extern bool KillTimer(IntPtr hWnd, IntPtr nIDEvent);
 
     public static bool KeyDown(int vk) => (GetKeyState(vk) & 0x8000) != 0;
 
