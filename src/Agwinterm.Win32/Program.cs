@@ -61,6 +61,15 @@ internal static class Program
     // Chrome button hit-boxes rebuilt each paint: (x0, x1, action).
     private static readonly List<(float x0, float x1, string action)> _titleButtons = new();
     private static readonly List<(float x0, float x1, string action)> _footerButtons = new();
+
+    // Sidebar drag-reorder (in-memory only; the shell has no persistence yet).
+    private static bool _sbPress;         // left button pressed on a sidebar list row (click-vs-drag pending)
+    private static object? _pressItem;    // row under the press (Ses|Workspace|null)
+    private static int _pressX, _pressY;  // press point (client px)
+    private static bool _dragging;        // past the threshold -> reordering
+    private static object? _dragItem;     // Ses or Workspace being dragged
+    private static int _dragX, _dragY;    // current cursor (client px) while dragging
+    private const int DragThreshold = 5;
     private static int _hoverCaption; // 0 none, 1 min, 2 max, 3 close (for hover paint)
     private static int _capPressed;   // HT* of a pressed caption button (for click + pressed paint)
     private static string? _toastText;
@@ -526,6 +535,11 @@ internal static class Program
 
             case WM_KEYDOWN:
             case WM_SYSKEYDOWN:
+                if (_dragging && (int)wParam == VK_ESCAPE)
+                {
+                    _dragging = false; _sbPress = false; _pressItem = null; _dragItem = null;
+                    ReleaseCapture(); RequestRedraw(); return IntPtr.Zero;
+                }
                 if (OnKeyDown((int)wParam)) return IntPtr.Zero;
                 break;
 
@@ -548,13 +562,31 @@ internal static class Program
                     if (my < (int)TitleBarH) { HitChrome(_titleButtons, mx); return IntPtr.Zero; }
                     if (mx < (int)_sidebarW)
                     {
-                        if (my >= ClientH() - (int)FooterH) HitChrome(_footerButtons, mx);
-                        else SidebarClick(mx, my);
+                        if (my >= ClientH() - (int)FooterH) { HitChrome(_footerButtons, mx); return IntPtr.Zero; }
+                        // List row: begin click-vs-drag (act on release). Skip while renaming.
+                        if (_editHwnd == IntPtr.Zero)
+                        {
+                            _sbPress = true; _pressItem = RowAt(my); _pressX = mx; _pressY = my;
+                            _dragging = false; _dragItem = null;
+                            SetCapture(hwnd);
+                        }
                         return IntPtr.Zero;
                     }
                     SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero;
                 }
-            case WM_LBUTTONUP: if (InContent(lParam)) { SendMousePx(0, lParam, false); } ReleaseCapture(); return IntPtr.Zero;
+            case WM_LBUTTONUP:
+                if (_sbPress)
+                {
+                    ReleaseCapture();
+                    int ux = LoWord(lParam), uy = HiWord(lParam);
+                    if (_dragging && _dragItem is not null) DropDrag(_dragItem, uy);
+                    else SidebarClick(ux, uy);   // was a click, not a drag
+                    _sbPress = false; _pressItem = null; _dragItem = null; _dragging = false;
+                    RequestRedraw();
+                    return IntPtr.Zero;
+                }
+                if (InContent(lParam)) { SendMousePx(0, lParam, false); }
+                ReleaseCapture(); return IntPtr.Zero;
 
             case WM_LBUTTONDBLCLK:
                 {
@@ -573,6 +605,15 @@ internal static class Program
 
             case WM_MOUSEMOVE:
                 {
+                    if (_sbPress && ((long)wParam & MK_LBUTTON) != 0)
+                    {
+                        int mx = LoWord(lParam), my = HiWord(lParam);
+                        if (!_dragging && _pressItem is not null &&
+                            Math.Abs(mx - _pressX) + Math.Abs(my - _pressY) > DragThreshold)
+                        { _dragging = true; _dragItem = _pressItem; }
+                        if (_dragging) { _dragX = mx; _dragY = my; RequestRedraw(); }
+                        return IntPtr.Zero;
+                    }
                     var em = _session?.Emulator;
                     if (em is not null && em.MouseReportsMotion && InContent(lParam))
                         SendMousePx(32 + (((long)wParam & MK_LBUTTON) != 0 ? 0 : 3), lParam, true);
@@ -1061,7 +1102,8 @@ internal static class Program
                     brush.Color = SbHighlight;
                     rt.FillRectangle(new Rect(0, y, _sidebarW, rowH), brush);
                 }
-                brush.Color = active ? SbActiveText : SbDimText;
+                bool isDrag = _dragging && ReferenceEquals(s, _dragItem);
+                brush.Color = isDrag ? new Color4(0.5f, 0.53f, 0.57f, 0.45f) : (active ? SbActiveText : SbDimText);
                 rt.DrawText(s.Name, _uiFont, new Rect(26f, y, _sidebarW - 26f - 22f, rowH), brush);
                 // Status circle right-aligned in the row (agterm layout).
                 brush.Color = StatusDot(s.S.Status);
@@ -1070,6 +1112,7 @@ internal static class Program
                 y += rowH;
             }
         }
+        if (_dragging && _dragItem is not null) DrawDropIndicator(rt, brush);
         DrawSidebarFooter(rt, brush);
     }
 
@@ -1247,6 +1290,110 @@ internal static class Program
     {
         lock (_workspaces) { ses.Ws.Sessions.Remove(ses); target.Sessions.Add(ses); ses.Ws = target; target.Expanded = true; }
         SetActive(ses);
+    }
+
+    // ---- Sidebar drag-reorder (in-memory) ----
+
+    private static void DropDrag(object item, int my)
+    {
+        if (item is Ses s) DropSession(s, my);
+        else if (item is Workspace w) DropWorkspace(w, my);
+    }
+
+    /// <summary>The workspace whose region contains <paramref name="my"/> (last header at/above it; first if above all).</summary>
+    private static Workspace? TargetWorkspaceAt(int my)
+    {
+        Workspace? cur = null;
+        foreach (var (y0, _, isWs, it) in _sidebarRows)
+        {
+            if (!isWs || it is not Workspace w) continue;
+            if (cur is null) cur = w;   // default to the first workspace
+            if (y0 <= my) cur = w;      // the last header at/above my wins
+        }
+        return cur;
+    }
+
+    private static void DropSession(Ses drag, int my)
+    {
+        lock (_workspaces)
+        {
+            var target = TargetWorkspaceAt(my);
+            if (target is null) return;
+            // Insert index = visible target-ws session rows (excluding the dragged one) above my.
+            int idx = 0;
+            foreach (var (y0, y1, isWs, it) in _sidebarRows)
+                if (!isWs && it is Ses r && ReferenceEquals(r.Ws, target) && !ReferenceEquals(r, drag)
+                    && (y0 + y1) / 2f < my) idx++;
+            drag.Ws.Sessions.Remove(drag);
+            idx = Math.Clamp(idx, 0, target.Sessions.Count);
+            target.Sessions.Insert(idx, drag);
+            drag.Ws = target;
+            target.Expanded = true;
+        }
+        SetActive(drag);
+    }
+
+    private static void DropWorkspace(Workspace drag, int my)
+    {
+        lock (_workspaces)
+        {
+            int idx = 0;
+            foreach (var (y0, y1, isWs, it) in _sidebarRows)
+                if (isWs && it is Workspace w && !ReferenceEquals(w, drag) && (y0 + y1) / 2f < my) idx++;
+            _workspaces.Remove(drag);
+            idx = Math.Clamp(idx, 0, _workspaces.Count);
+            _workspaces.Insert(idx, drag);
+        }
+        RequestRedraw();
+    }
+
+    /// <summary>Pixel Y of the insertion line for the in-progress drag (-1 if none).</summary>
+    private static float DropIndicatorY()
+    {
+        if (_dragItem is Workspace)
+        {
+            float lastY1 = -1;
+            foreach (var (y0, y1, isWs, it) in _sidebarRows)
+                if (isWs && it is Workspace w && !ReferenceEquals(w, _dragItem))
+                {
+                    if (_dragY < (y0 + y1) / 2f) return y0;
+                    lastY1 = y1;
+                }
+            return lastY1;
+        }
+        if (_dragItem is Ses)
+        {
+            var target = TargetWorkspaceAt(_dragY);
+            if (target is null) return -1;
+            float headerBottom = -1, lastRowY1 = -1;
+            foreach (var (y0, y1, isWs, it) in _sidebarRows)
+            {
+                if (isWs && it is Workspace w && ReferenceEquals(w, target)) headerBottom = y1;
+                else if (!isWs && it is Ses r && ReferenceEquals(r.Ws, target) && !ReferenceEquals(r, _dragItem))
+                {
+                    if (_dragY < (y0 + y1) / 2f) return y0;
+                    lastRowY1 = y1;
+                }
+            }
+            return lastRowY1 > 0 ? lastRowY1 : headerBottom;
+        }
+        return -1;
+    }
+
+    private static void DrawDropIndicator(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        float lineY = DropIndicatorY();
+        if (lineY >= 0)
+        {
+            brush.Color = new Color4(0.30f, 0.60f, 0.98f, 1f);
+            rt.FillRectangle(new Rect(0, lineY - 1f, _sidebarW, 2f), brush);
+        }
+        string label = _dragItem is Ses s ? s.Name : _dragItem is Workspace w ? w.Name : "";
+        if (label.Length > 0)
+        {
+            brush.Color = new Color4(1f, 1f, 1f, 0.92f);
+            rt.DrawText(label, _uiFont, new Rect(24f, _dragY - 9f, _sidebarW - 8f, _dragY + 11f), brush);
+        }
     }
 
     private static void DeleteWorkspace(Workspace ws)
