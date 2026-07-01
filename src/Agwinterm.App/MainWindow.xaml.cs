@@ -102,10 +102,14 @@ public sealed partial class MainWindow : Window, ISessionHost
         tb.ButtonPressedBackgroundColor = WinColor.FromArgb(80, 255, 255, 255);
         SidebarToggle.Click += (_, _) => { ToggleSidebar(); GridCanvas.Focus(FocusState.Programmatic); };
         AttentionBell.Click += (_, _) => { GoToNextAttention(); };
+        // Not yet implemented (Step 4+): show a non-intrusive toast.
+        ScratchButton.Click += (_, _) => ShowToast("Scratch terminal — not implemented yet");
+        SplitButton.Click += (_, _) => ShowToast("Split panes — not implemented yet");
+        QuickButton.Click += (_, _) => ShowToast("Quick terminal — not implemented yet");
+        FlagButton.Click += (_, _) => ShowToast("Flagged view — not implemented yet");
 
         NewWorkspaceButton.Click += (_, _) => { CreateWorkspace(Guid.NewGuid().ToString(), null); GridCanvas.Focus(FocusState.Programmatic); };
         NewSessionButton.Click += (_, _) => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true);
-        FlagButton.Click += (_, _) => ToggleCollapseAll();
 
         GridCanvas.Loaded += (_, _) => GridCanvas.Focus(FocusState.Programmatic);
         this.Activated += (_, _) => GridCanvas.Focus(FocusState.Programmatic);
@@ -300,6 +304,7 @@ public sealed partial class MainWindow : Window, ISessionHost
             foreach (var ses in sessions)
                 SidebarPanel.Children.Add(BuildSessionRow(ses));
         }
+        UpdateChrome();
     }
 
     private FrameworkElement BuildRenameBox(string name, Action<string> commit)
@@ -309,7 +314,7 @@ public sealed partial class MainWindow : Window, ISessionHost
         tb.KeyDown += (s, e) =>
         {
             if (e.Key == VirtualKey.Enter) { commit(tb.Text); e.Handled = true; }
-            else if (e.Key == VirtualKey.Escape) { _editing = null; RebuildSidebar(); GridCanvas.Focus(FocusState.Programmatic); e.Handled = true; }
+            else if (e.Key == VirtualKey.Escape) { _editing = null; RebuildSidebar(); FocusTerminal(); e.Handled = true; }
         };
         tb.LostFocus += (_, _) => { if (_editing is not null) commit(tb.Text); };
         return tb;
@@ -317,10 +322,13 @@ public sealed partial class MainWindow : Window, ISessionHost
 
     private void StartRename(object item) { _editing = item; RebuildSidebar(); }
 
+    /// <summary>Return keyboard focus to the terminal, deferred so it sticks after layout.</summary>
+    private void FocusTerminal() => DispatcherQueue.TryEnqueue(() => GridCanvas.Focus(FocusState.Programmatic));
+
     private FrameworkElement BuildWorkspaceRow(Workspace ws)
     {
         if (ReferenceEquals(_editing, ws))
-            return BuildRenameBox(ws.Name, n => { if (!string.IsNullOrWhiteSpace(n)) ws.Name = n.Trim(); _editing = null; RebuildSidebar(); UpdateChrome(); GridCanvas.Focus(FocusState.Programmatic); });
+            return BuildRenameBox(ws.Name, n => { if (!string.IsNullOrWhiteSpace(n)) ws.Name = n.Trim(); _editing = null; RebuildSidebar(); UpdateChrome(); FocusTerminal(); });
 
         int count;
         lock (_workspaces) count = ws.Sessions.Count;
@@ -341,7 +349,7 @@ public sealed partial class MainWindow : Window, ISessionHost
             BorderThickness = new Thickness(0),
             Padding = new Thickness(6, 4, 6, 4),
         };
-        btn.Click += (_, _) => { lock (_workspaces) ws.Expanded = !ws.Expanded; RebuildSidebar(); };
+        btn.Click += (_, _) => { lock (_workspaces) ws.Expanded = !ws.Expanded; RebuildSidebar(); FocusTerminal(); };
         btn.DoubleTapped += (_, _) => StartRename(ws);
         btn.ContextFlyout = WorkspaceMenu(ws);
         return btn;
@@ -350,7 +358,7 @@ public sealed partial class MainWindow : Window, ISessionHost
     private FrameworkElement BuildSessionRow(Ses ses)
     {
         if (ReferenceEquals(_editing, ses))
-            return BuildRenameBox(ses.Name, n => { if (!string.IsNullOrWhiteSpace(n)) ses.Name = n.Trim(); _editing = null; RebuildSidebar(); UpdateChrome(); GridCanvas.Focus(FocusState.Programmatic); });
+            return BuildRenameBox(ses.Name, n => { if (!string.IsNullOrWhiteSpace(n)) ses.Name = n.Trim(); _editing = null; RebuildSidebar(); UpdateChrome(); FocusTerminal(); });
 
         bool active = ReferenceEquals(ses, _activeRef);
         // Persistent status dot: dim grey when idle, colored for active/blocked/completed.
@@ -551,6 +559,20 @@ public sealed partial class MainWindow : Window, ISessionHost
         SetActive(attention[(start + 1) % attention.Count]);
     }
 
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _toastTimer;
+
+    /// <summary>Show a brief, non-intrusive toast (e.g. "not implemented yet").</summary>
+    private void ShowToast(string message)
+    {
+        ToastText.Text = message;
+        Toast.Visibility = Visibility.Visible;
+        _toastTimer?.Stop();
+        _toastTimer = DispatcherQueue.CreateTimer();
+        _toastTimer.Interval = TimeSpan.FromSeconds(1.9);
+        _toastTimer.Tick += (s, _) => { ((Microsoft.UI.Dispatching.DispatcherQueueTimer)s).Stop(); Toast.Visibility = Visibility.Collapsed; };
+        _toastTimer.Start();
+    }
+
     /// <summary>Update the title-bar title/subtitle (cwd) and the 3-state attention bell.</summary>
     private void UpdateChrome()
     {
@@ -558,6 +580,7 @@ public sealed partial class MainWindow : Window, ISessionHost
         SubtitleText.Text = _activeRef is not null ? PrettyCwd(_activeRef.S.Emulator.Cwd) : "";
 
         var all = AllSessions();
+        FooterText.Text = all.Count == 1 ? "1 session" : $"{all.Count} sessions";
         bool blocked = all.Any(s => s.S.Status == AgentStatus.Blocked);
         bool attention = all.Any(s => s.S.Status != AgentStatus.Idle);
         BellIcon.Opacity = attention ? 1.0 : 0.5;

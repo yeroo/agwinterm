@@ -4,14 +4,31 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:canvas="using:Microsoft.Graphics.Canvas.UI.Xaml">
+
     <Grid Background="Black">
+        <Grid.Resources>
+            <!-- Compact, borderless icon button used across the chrome -->
+            <Style x:Key="ChromeIconButton" TargetType="Button">
+                <Setter Property="Width" Value="40" />
+                <Setter Property="Height" Value="32" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="IsTabStop" Value="False" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+                <Setter Property="VerticalContentAlignment" Value="Center" />
+                <Setter Property="FontFamily" Value="Segoe Fluent Icons,Segoe MDL2 Assets" />
+                <Setter Property="FontSize" Value="15" />
+            </Style>
+        </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="40" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <!-- Custom title bar (content extended into the caption) -->
-        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="#0B0D0F" Padding="6,0,0,0">
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="#0B0D0F">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
@@ -20,32 +37,34 @@
                 <ColumnDefinition Width="140" />
             </Grid.ColumnDefinitions>
 
-            <Button Grid.Column="0" x:Name="SidebarToggle" IsTabStop="False"
-                    Background="Transparent" BorderThickness="0" Padding="8,4"
-                    ToolTipService.ToolTip="Toggle Sidebar" VerticalAlignment="Center">
-                <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE700;" FontSize="15" />
-            </Button>
+            <Button Grid.Column="0" x:Name="SidebarToggle" Style="{StaticResource ChromeIconButton}"
+                    Content="&#xE700;" ToolTipService.ToolTip="Toggle Sidebar" />
 
-            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0,0,0">
-                <TextBlock x:Name="TitleText" Text="agwinterm" Foreground="White" FontSize="13" />
-                <TextBlock x:Name="SubtitleText" Text="" Foreground="#8A9199" FontSize="11"
-                           TextTrimming="CharacterEllipsis" MaxWidth="420" />
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="6,0,0,0">
+                <TextBlock x:Name="TitleText" Text="agwinterm" Foreground="White" FontSize="13" LineHeight="15" />
+                <TextBlock x:Name="SubtitleText" Text="" Foreground="#8A9199" FontSize="11" LineHeight="13"
+                           TextTrimming="CharacterEllipsis" MaxWidth="460" />
             </StackPanel>
 
             <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                <Button x:Name="AttentionBell" IsTabStop="False"
-                        Background="Transparent" BorderThickness="0" Padding="8,4"
+                <Button x:Name="AttentionBell" Style="{StaticResource ChromeIconButton}"
                         ToolTipService.ToolTip="No sessions need attention">
                     <FontIcon x:Name="BellIcon" FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets"
                               Glyph="&#xEA8F;" FontSize="15" Foreground="#8A9199" />
                 </Button>
+                <Button x:Name="ScratchButton" Style="{StaticResource ChromeIconButton}"
+                        Content="&#xE7C3;" ToolTipService.ToolTip="Scratch terminal" />
+                <Button x:Name="SplitButton" Style="{StaticResource ChromeIconButton}"
+                        Content="&#xE90D;" ToolTipService.ToolTip="Split right" />
+                <Button x:Name="QuickButton" Style="{StaticResource ChromeIconButton}"
+                        Content="&#xE756;" ToolTipService.ToolTip="Quick terminal" />
             </StackPanel>
         </Grid>
 
-        <!-- Content: sidebar + terminal -->
+        <!-- Content: sidebar + terminal (+ toast overlay) -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition x:Name="SidebarColumn" Width="200" />
+                <ColumnDefinition x:Name="SidebarColumn" Width="220" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
@@ -57,21 +76,29 @@
                 <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
                     <StackPanel x:Name="SidebarPanel" Spacing="1" Margin="2" />
                 </ScrollViewer>
-                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="2" Padding="6,4" Background="#0B0D0F">
-                    <Button x:Name="NewWorkspaceButton" IsTabStop="False" ToolTipService.ToolTip="New Workspace">
-                        <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE8F4;" FontSize="14" />
-                    </Button>
-                    <Button x:Name="NewSessionButton" IsTabStop="False" ToolTipService.ToolTip="New Session">
-                        <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE710;" FontSize="14" />
-                    </Button>
-                    <Button x:Name="FlagButton" IsTabStop="False" ToolTipService.ToolTip="Collapse / expand all">
-                        <FontIcon FontFamily="Segoe Fluent Icons,Segoe MDL2 Assets" Glyph="&#xE7C1;" FontSize="14" />
-                    </Button>
-                </StackPanel>
+                <Grid Grid.Row="1" Background="#0B0D0F" Padding="6,4">
+                    <StackPanel Orientation="Horizontal" Spacing="2" HorizontalAlignment="Left">
+                        <Button x:Name="NewWorkspaceButton" Style="{StaticResource ChromeIconButton}"
+                                Content="&#xE8F4;" ToolTipService.ToolTip="New Workspace" />
+                        <Button x:Name="NewSessionButton" Style="{StaticResource ChromeIconButton}"
+                                Content="&#xE710;" ToolTipService.ToolTip="New Session" />
+                        <Button x:Name="FlagButton" Style="{StaticResource ChromeIconButton}"
+                                Content="&#xE7C1;" ToolTipService.ToolTip="Show flagged sessions" />
+                    </StackPanel>
+                    <TextBlock x:Name="FooterText" HorizontalAlignment="Right" VerticalAlignment="Center"
+                               Foreground="#8A9199" FontSize="11" />
+                </Grid>
             </Grid>
 
             <canvas:CanvasControl Grid.Column="1" x:Name="GridCanvas" Draw="OnDraw"
                                   ClearColor="Black" IsTabStop="True" />
+
+            <!-- Non-intrusive toast -->
+            <Border x:Name="Toast" Grid.ColumnSpan="2" Visibility="Collapsed"
+                    HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,28"
+                    Background="#E6262B33" CornerRadius="8" Padding="16,10" BorderThickness="1" BorderBrush="#33FFFFFF">
+                <TextBlock x:Name="ToastText" Foreground="White" FontSize="13" />
+            </Border>
         </Grid>
     </Grid>
 </Window>
