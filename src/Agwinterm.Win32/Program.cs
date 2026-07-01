@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using Agwinterm.Core;
 using Agwinterm.Pty;
 using SharpGen.Runtime;
@@ -45,6 +46,7 @@ internal static class Program
     // ---- Multi-session model (agterm workspaces -> sessions), mirrors the WinUI shell ----
     private static readonly string _windowId = Guid.NewGuid().ToString();
     private static readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock(_workspaces)
+    private static bool _restoring;                              // suppress SaveState while rebuilding from disk
     private static Ses? _active;
     // Actions queued from the pipe (background) thread to run on the UI thread.
     private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
@@ -121,6 +123,7 @@ internal static class Program
         public required string Name;
         public required TerminalSession S;
         public required Workspace Ws;
+        public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
     }
 
     private sealed class Workspace
@@ -281,6 +284,7 @@ internal static class Program
     {
         _control = new ControlServer(new Host(), "agwinterm");
         _control.Start();
+        if (TryRestoreState()) return;
         var ws = CreateWorkspace(Guid.NewGuid().ToString(), null);
         CreateSession(Guid.NewGuid().ToString(), null, null, ws, makeActive: true);
     }
@@ -311,6 +315,7 @@ internal static class Program
             _workspaces.Add(ws);
         }
         RequestRedraw();
+        SaveState();
         return ws;
     }
 
@@ -320,7 +325,7 @@ internal static class Program
         var session = new TerminalSession(cols, rows);
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
-        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", S = session, Ws = ws };
+        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", S = session, Ws = ws, StartCwd = cwd };
 
         session.OutputReceived += () => { if (ReferenceEquals(_active, ses)) RequestRedraw(); };
         session.StatusChanged += RequestRedraw; // sidebar status dot updates for any session
@@ -340,6 +345,7 @@ internal static class Program
 
         if (makeActive || _active is null) SetActive(ses);
         else RequestRedraw();
+        SaveState();
     }
 
     private static void SetActive(Ses ses)
@@ -349,6 +355,7 @@ internal static class Program
         var (cols, rows) = GridSize();
         if (ses.S.Cols != cols || ses.S.Rows != rows) ses.S.Resize(cols, rows);
         RequestRedraw();
+        SaveState();
     }
 
     private static void CloseSessionInternal(Ses ses)
@@ -363,6 +370,7 @@ internal static class Program
             else CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true);
         }
         RequestRedraw();
+        SaveState();
     }
 
     private static void CycleSession(int dir)
@@ -647,6 +655,7 @@ internal static class Program
                 }
 
             case WM_DESTROY:
+                SaveState(); // persist the tree before tearing down sessions
                 foreach (var s in AllSessions()) { try { s.S.Dispose(); } catch { } }
                 PostQuitMessage(0);
                 return IntPtr.Zero;
@@ -1224,7 +1233,7 @@ internal static class Program
         foreach (var (y0, y1, isWs, item) in _sidebarRows)
         {
             if (my < y0 || my >= y1) continue;
-            if (isWs && item is Workspace ws) { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); }
+            if (isWs && item is Workspace ws) { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); SaveState(); }
             else if (!isWs && item is Ses s) SetActive(s);
             return;
         }
@@ -1293,6 +1302,7 @@ internal static class Program
         }
         DestroyEditWindow(h);
         RequestRedraw();
+        SaveState();
     }
 
     private static void CancelRename()
@@ -1425,6 +1435,7 @@ internal static class Program
             _workspaces.Insert(idx, drag);
         }
         RequestRedraw();
+        SaveState();
     }
 
     /// <summary>Pixel Y of the insertion line for the in-progress drag (-1 if none).</summary>
@@ -1495,6 +1506,7 @@ internal static class Program
             else CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true);
         }
         RequestRedraw();
+        SaveState();
     }
 
     /// <summary>Modal folder picker (native shell). Returns the chosen path or null.</summary>
@@ -1865,6 +1877,7 @@ internal static class Program
         var (cols, rows) = GridSize();
         _active?.S.Resize(cols, rows);
         RequestRedraw();
+        SaveState();
     }
 
     private static void ShowToast(string text)
@@ -2112,6 +2125,99 @@ internal static class Program
             return new Theme { Name = Path.GetFileNameWithoutExtension(path), Palette = pal, DefaultForeground = fg, DefaultBackground = bg, Cursor = cur };
         }
         catch { return null; }
+    }
+
+    // ---- Persistence: workspace/session tree + selection + sidebar state ----
+
+    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string Cwd { get; set; } = ""; }
+    private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
+    private sealed class AppState { public List<WorkspaceState> Workspaces { get; set; } = new(); public string? ActiveId { get; set; } public float SidebarWidth { get; set; } = SidebarWFull; public bool SidebarVisible { get; set; } = true; }
+
+    private static readonly JsonSerializerOptions _stateJson = new() { WriteIndented = true };
+
+    private static string StatePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "state.json");
+
+    /// <summary>Snapshot the tree/selection/sidebar to disk atomically. No-op while restoring; ignores IO errors.</summary>
+    private static void SaveState()
+    {
+        if (_restoring) return;
+        try
+        {
+            // Snapshot rows under the workspaces lock, then read each cwd (which locks the
+            // session) OUTSIDE that lock to keep lock ordering consistent.
+            List<(string id, string name, bool expanded, List<Ses> sessions)> rows;
+            lock (_workspaces)
+                rows = _workspaces.Select(w => (w.Id, w.Name, w.Expanded, w.Sessions.ToList())).ToList();
+            string? activeId = _active?.Id;
+
+            var st = new AppState
+            {
+                ActiveId = activeId,
+                SidebarWidth = _sidebarW > 0 ? _sidebarW : SidebarWFull,
+                SidebarVisible = _sidebarW > 0,
+            };
+            foreach (var (id, name, expanded, sessions) in rows)
+            {
+                var wss = new WorkspaceState { Id = id, Name = name, Expanded = expanded };
+                foreach (var s in sessions)
+                {
+                    string live = PrettyCwd(SafeCwd(s));                       // OSC 7 cwd if the shell reports it
+                    string cwd = live.Length > 0 ? live : (s.StartCwd ?? ""); // else the launch dir
+                    wss.Sessions.Add(new SessionState { Id = s.Id, Name = s.Name, Cwd = cwd });
+                }
+                st.Workspaces.Add(wss);
+            }
+
+            string path = StatePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(st, _stateJson));
+            File.Move(tmp, path, overwrite: true); // atomic replace so a crash never leaves a truncated file
+        }
+        catch { /* persistence is best-effort */ }
+    }
+
+    /// <summary>Rebuild the tree from state.json via the normal Create* paths. Returns false to fall back to a default.</summary>
+    private static bool TryRestoreState()
+    {
+        AppState? st;
+        try
+        {
+            string path = StatePath;
+            if (!File.Exists(path)) return false;
+            st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(path));
+        }
+        catch
+        {
+            try { File.Move(StatePath, StatePath + ".bad", overwrite: true); } catch { } // keep the corrupt file for inspection
+            return false;
+        }
+        if (st?.Workspaces is null || !st.Workspaces.Any(w => w.Sessions is { Count: > 0 })) return false;
+
+        _restoring = true;
+        try
+        {
+            _sidebarW = st.SidebarVisible ? (st.SidebarWidth > 0 ? st.SidebarWidth : SidebarWFull) : 0;
+            foreach (var w in st.Workspaces)
+            {
+                // Recreate every saved workspace, including empty ones (agterm keeps empty workspaces).
+                var ws = CreateWorkspace(string.IsNullOrEmpty(w.Id) ? Guid.NewGuid().ToString() : w.Id, w.Name);
+                foreach (var s in w.Sessions ?? new List<SessionState>())
+                    CreateSession(string.IsNullOrEmpty(s.Id) ? Guid.NewGuid().ToString() : s.Id,
+                        string.IsNullOrWhiteSpace(s.Name) ? null : s.Name,
+                        string.IsNullOrWhiteSpace(s.Cwd) ? null : s.Cwd,
+                        ws, makeActive: s.Id == st.ActiveId);
+                lock (_workspaces) ws.Expanded = w.Expanded; // CreateSession forces Expanded=true; restore the saved state
+            }
+        }
+        finally { _restoring = false; }
+
+        if (_active is null) { var f = AllSessions().FirstOrDefault(); if (f is not null) SetActive(f); }
+        if (AllSessions().Count == 0) return false; // nothing usable came back -> default
+        SaveState();
+        RequestRedraw();
+        return true;
     }
 
     private static string ConfigPath => Path.Combine(
