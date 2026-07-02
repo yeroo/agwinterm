@@ -131,6 +131,11 @@ public sealed class ControlServer : IDisposable
                 case "settings.open": return Ok(_host.SettingsOpen());
                 case "sidebar": _host.SidebarOp(GetString(args, "op") ?? "toggle"); return Ok("sidebar");
                 case "session.copy": return Ok(_host.SessionCopy(target)); // selection text (host-side), "" if none
+                case "selection.all": return Ok(_host.SelectionAll(target));
+                case "selection.copy": return Ok(_host.SelectionCopy(target));      // -> Windows clipboard
+                case "selection.clear": return Ok(_host.SelectionClear(target));
+                case "selection.finalize": return Ok(_host.SelectionFinalize(target)); // copy-on-select path (testing)
+                case "session.paste": return Ok(_host.SessionPaste(target, GetString(args, "text")));
                 case "session.search": return Ok(_host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
                 case "session.scratch": return _host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
                 case "quick": _host.Quick(GetString(args, "op") ?? "toggle"); return Ok("quick");

@@ -35,6 +35,10 @@ public sealed class TerminalConfig
     /// <summary>Paste the clipboard on a right-click in the terminal (when the app isn't grabbing the mouse).</summary>
     public bool RightClickPaste { get; set; } = true;
 
+    /// <summary>Auto-copy the selection to the clipboard the moment a selection is finished (mouse-up /
+    /// word / line select), without needing Ctrl+C. Off by default. The selection stays highlighted.</summary>
+    public bool CopyOnSelect { get; set; } = false;
+
     /// <summary>Show OS desktop notifications (tray balloon) for OSC 9/777 / notify. Off → in-app banner + badge only.</summary>
     public bool DesktopNotifications { get; set; } = true;
 
@@ -80,6 +84,9 @@ public sealed class TerminalConfig
 
         # Paste the clipboard on right-click in the terminal (when the app isn't using the mouse).
         right-click-paste = true
+
+        # Auto-copy the selection to the clipboard as soon as it's made (no Ctrl+C needed).
+        copy-on-select = false
 
         # Desktop notifications: show an OS tray-balloon for OSC 9/777 / `agwintermctl notify`
         # (the in-app banner + sidebar badge always show regardless). Set false to suppress the OS toast.
@@ -139,6 +146,7 @@ public sealed class TerminalConfig
                 case "shell-integration": cfg.ShellIntegration = ParseBool(val, cfg.ShellIntegration); break;
                 case "restore-commands": cfg.RestoreCommands = ParseBool(val, cfg.RestoreCommands); break;
                 case "right-click-paste": cfg.RightClickPaste = ParseBool(val, cfg.RightClickPaste); break;
+                case "copy-on-select": cfg.CopyOnSelect = ParseBool(val, cfg.CopyOnSelect); break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;
                 case "inactive-pane-dim": if (int.TryParse(val, out var ipd)) cfg.InactivePaneDim = System.Math.Clamp(ipd, 0, 100); break;

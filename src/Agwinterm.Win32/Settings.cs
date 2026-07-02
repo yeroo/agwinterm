@@ -46,6 +46,7 @@ internal static partial class Program
         ("New-session directory", "new-session-dir", SKind.Edit, new string[0], false),
         ("Blocked sound", "blocked-sound", SKind.Edit, new string[0], false),
         ("Paste on right-click", "right-click-paste", SKind.Check, new string[0], false),
+        ("Copy on select", "copy-on-select", SKind.Check, new string[0], false),
         ("Desktop notifications", "desktop-notifications", SKind.Check, new string[0], false),
         ("Shell integration (live cwd) *", "shell-integration", SKind.Check, new string[0], false),
         ("Restore running commands *", "restore-commands", SKind.Check, new string[0], false),
@@ -74,7 +75,7 @@ internal static partial class Program
         if (_settingsFont == IntPtr.Zero)
             _settingsFont = CreateFontW(-13, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
 
-        const int w = 470, h = 640;
+        const int w = 470, h = 680;
         int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
         if (GetWindowRect(_hwnd, out RECT pr)) { x = pr.left + ((pr.right - pr.left) - w) / 2; y = pr.top + ((pr.bottom - pr.top) - h) / 2; }
         _settingsHwnd = CreateWindowExW(0, SettingsClass, "agwinterm — Settings",

@@ -12,6 +12,9 @@ using System.Text.Json;
 //   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
 //   agwintermctl session type <text...> [--target ID]
 //   agwintermctl session write <text...> [--target ID]
+//   agwintermctl session copy [--target ID]           (returns the selection text)
+//   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
+//   agwintermctl selection all|copy|clear|finalize [--target ID]
 //   agwintermctl image show <path> [--row R] [--col C] [--id N] [--target ID]
 //   agwintermctl install hooks
 // Target defaults to $AGWINTERM_SESSION_ID (the current session) when not given.
@@ -118,6 +121,9 @@ switch (area)
                 break;
             case "text": break; // dump the buffer; target only
             case "copy": break;  // return the target's selection text; target only
+            case "paste": // paste literal text (or the clipboard if none) into the target pane
+                cargs["text"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("text") ?? "");
+                break;
             case "go":
                 if (rest.Count == 0) { Console.Error.WriteLine("session go needs a direction (next|prev|first|last|next-attention|prev-attention)"); return 2; }
                 cargs["dir"] = rest[0]; target = null;
@@ -193,6 +199,13 @@ switch (area)
         break;
     case "config" when sub == "list": cmd = "config.list"; break;
     case "settings": cmd = "settings.open"; break;
+    case "selection":
+        // agwintermctl selection all|copy|clear|finalize [--target ID]
+        if (sub is not ("all" or "copy" or "clear" or "finalize"))
+        { Console.Error.WriteLine("usage: agwintermctl selection all|copy|clear|finalize [--target ID]"); return 2; }
+        cmd = "selection." + sub;
+        target = DefaultTarget();
+        break;
     case "sidebar":
         cmd = "sidebar";
         // `sidebar mode tree|flagged|toggle` switches the view mode; otherwise show|hide|toggle|expand|collapse.

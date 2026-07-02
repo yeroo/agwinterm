@@ -80,6 +80,17 @@ public interface ISessionHost
     /// <summary>Current text selection of the target session's active pane ("" if none).</summary>
     string SessionCopy(string? target);
 
+    /// <summary>Select the target pane's whole buffer (scrollback + live grid).</summary>
+    string SelectionAll(string? target);
+    /// <summary>Copy the target pane's current selection to the Windows clipboard.</summary>
+    string SelectionCopy(string? target);
+    /// <summary>Clear the target pane's selection.</summary>
+    string SelectionClear(string? target);
+    /// <summary>Run the selection-finalize path (honors copy-on-select) — for scripting/testing.</summary>
+    string SelectionFinalize(string? target);
+    /// <summary>Paste text (or the clipboard when text is null/empty) into the target pane, honoring bracketed paste.</summary>
+    string SessionPaste(string? target, string? text);
+
     /// <summary>Open/drive the find bar over the active session; returns "N of M" / "no matches" / "closed".</summary>
     string SessionSearch(string? target, string? query, string? action);
 
@@ -165,6 +176,11 @@ public sealed class SingleSessionHost : ISessionHost
     public string ConfigList() => "";
     public string SettingsOpen() => "unsupported";
     public string SessionCopy(string? target) => "";
+    public string SelectionAll(string? target) => "unsupported";
+    public string SelectionCopy(string? target) => "unsupported";
+    public string SelectionClear(string? target) => "unsupported";
+    public string SelectionFinalize(string? target) => "unsupported";
+    public string SessionPaste(string? target, string? text) => "unsupported";
     public string SessionSearch(string? target, string? query, string? action) => "";
     public bool SessionScratch(string? target, string op) => false;
     public void Quick(string op) { }

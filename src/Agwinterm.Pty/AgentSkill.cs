@@ -66,6 +66,14 @@ public static class AgentSkill
         - `agwintermctl session search "<term>"`                 — open the find bar over the active session; returns "N of M" (or "no matches")
         - `agwintermctl session search --next|--prev|--close`    — step matches / close the find bar
 
+        ## Selection & clipboard
+        - `agwintermctl selection all [--target <id>]`           — select the whole buffer (scrollback + live grid)
+        - `agwintermctl selection copy [--target <id>]`          — copy the current selection to the Windows clipboard
+        - `agwintermctl selection clear [--target <id>]`         — clear the selection
+        - `agwintermctl session paste "<text>" [--target <id>]`  — paste text into the pane (clipboard if text omitted; honors bracketed paste)
+        - keys: Ctrl+C (copy selection) · Ctrl+V (paste) · Ctrl+Shift+A (select all) · double/triple-click = word/line · drag past the edge auto-scrolls
+        - config `copy-on-select = true` auto-copies each finished selection (no Ctrl+C needed)
+
         ## Type into a session
         - `agwintermctl session type "npm test" --target <id>`   — send keystrokes (newline = Enter)
 
@@ -132,8 +140,8 @@ public static class AgentSkill
         - `agwintermctl config get <key>` · `config set <key> <value>` — read/change a setting (persists to agwinterm.conf, applies live)
           Keys: font-family, font-size, cursor-style, cursor-blink, cursor-blink-ms, theme, scrollback-lines,
           inactive-pane-dim (0-100, dims non-active split panes), window-opacity (30-100), sidebar-tint (-100..100),
-          scroll-speed (1-10), new-session-dir, right-click-paste, desktop-notifications, shell-integration, restore-commands,
-          blocked-sound. Changing the theme retints the WHOLE window (sidebar/title/status), not just the terminal.
+          scroll-speed (1-10), new-session-dir, right-click-paste, copy-on-select, desktop-notifications, shell-integration,
+          restore-commands, blocked-sound. Changing the theme retints the WHOLE window (sidebar/title/status), not just the terminal.
 
         ## Config / restore
         - `agwintermctl keymap reload`                           — re-parse keymap.conf (reports diagnostics)

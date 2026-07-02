@@ -106,6 +106,10 @@ internal static partial class Program
     private static bool _selecting;       // left-drag selecting text in the content region
     private static bool _selMoved;        // moved past a cell during the drag (distinguishes click from select)
     private static int _lastClickMs, _clickCount, _lastClickLine, _lastClickCol;
+    private static Pane? _selPane;        // pane the current selection drag belongs to (locked at press)
+    private static int _selAutoDir;       // drag-autoscroll: -1 mouse above pane, +1 below, 0 in-bounds
+    private static int _selMouseX;        // last drag X (client px) for column tracking during autoscroll
+    private const int SelAutoTimer = 7;   // WM_TIMER id for drag-autoscroll ticks
 
     // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
     private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom }
@@ -1283,6 +1287,41 @@ internal static partial class Program
             return pane is not null ? SelectionText(pane) : ""; // reads under the session lock; safe off-UI-thread
         }
 
+        // Selection/clipboard control API. Clipboard + selection are UI-thread concepts, so hop on-thread.
+        public string SelectionAll(string? target) => InvokeOnUi(() =>
+        {
+            var p = PaneForTarget(target); if (p is null) return "no session";
+            SelectAll(p); return p.HasSel ? "selected all" : "empty";
+        });
+
+        public string SelectionCopy(string? target) => InvokeOnUi(() =>
+        {
+            var p = PaneForTarget(target); if (p is null) return "no session";
+            if (!p.HasSel) return "no selection";
+            string t = SelectionText(p); CopySelection(p); return $"copied {t.Length} chars";
+        });
+
+        public string SelectionClear(string? target) => InvokeOnUi(() =>
+        {
+            var p = PaneForTarget(target); if (p is null) return "no session";
+            p.ClearSel(); RequestRedraw(); return "cleared";
+        });
+
+        // Test/observability hook: run the same finalize path a mouse-up runs (honors copy-on-select).
+        public string SelectionFinalize(string? target) => InvokeOnUi(() =>
+        {
+            var p = PaneForTarget(target); if (p is null) return "no session";
+            FinalizeSelection(p);
+            return _config.CopyOnSelect ? (p.HasSel ? "finalized (copied)" : "finalized (empty)") : "finalized (copy-on-select off)";
+        });
+
+        public string SessionPaste(string? target, string? text) => InvokeOnUi(() =>
+        {
+            var p = PaneForTarget(target); if (p is null) return "no session";
+            PasteTextInto(p, text ?? ClipboardGet());
+            return "pasted";
+        });
+
         // Search operates on the active pane's find bar (a UI-thread concept); run it synchronously
         // on the UI thread and return the "N of M" status. (target is accepted for API shape; v1
         // searches the active session.)
@@ -1374,6 +1413,20 @@ internal static partial class Program
     }
 
     /// <summary>Resolve a control-API target ("active"/null/id/prefix) to its owning session.</summary>
+    /// <summary>Resolve a control-API target to a specific pane: the active surface for "active"/empty,
+    /// else a pane by (prefix) id, else the target session's active pane.</summary>
+    private static Pane? PaneForTarget(string? target)
+    {
+        if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface();
+        lock (_workspaces)
+        {
+            var panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToList();
+            var p = panes.FirstOrDefault(x => x.Id == target) ?? panes.FirstOrDefault(x => x.Id.StartsWith(target));
+            if (p is not null) return p;
+        }
+        return FindSesForTarget(target)?.ActivePane;
+    }
+
     private static Ses? FindSesForTarget(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return _active;
@@ -1480,6 +1533,7 @@ internal static partial class Program
 
             case WM_TIMER:
                 if ((int)wParam == 2) { _toastText = null; _toastTarget = null; KillTimer(hwnd, (IntPtr)2); InvalidateRect(hwnd, IntPtr.Zero, false); return IntPtr.Zero; }
+                if ((int)wParam == SelAutoTimer) { SelAutoscrollTick(); return IntPtr.Zero; }
                 _cursorOn = !_cursorOn;
                 InvalidateRect(hwnd, IntPtr.Zero, false);
                 return IntPtr.Zero;
@@ -1578,6 +1632,7 @@ internal static partial class Program
                         { SelectLine(h0.pane, line); _clickCount = 3; _selMoved = true; }
                         else { BeginSelect(h0.pane, line, col, shiftDn); _clickCount = 1; }
                         _lastClickMs = Environment.TickCount;
+                        _selPane = h0.pane; _selAutoDir = 0; _selMouseX = mx;
                         _selecting = true; SetCapture(hwnd); RequestRedraw();
                     }
                     return IntPtr.Zero;
@@ -1596,8 +1651,10 @@ internal static partial class Program
                 }
                 if (_selecting)
                 {
-                    _selecting = false; ReleaseCapture();
+                    _selecting = false; ReleaseCapture(); StopSelAutoscroll();
+                    var sp = _selPane; _selPane = null;
                     if (!_selMoved) { ActiveSurface()?.ClearSel(); RequestRedraw(); } // plain click clears
+                    else if (sp is not null) FinalizeSelection(sp);                   // copy-on-select
                     return IntPtr.Zero;
                 }
                 if (InContent(lParam)) { SendMousePx(0, lParam, false); }
@@ -1616,6 +1673,7 @@ internal static partial class Program
                         var (line, col) = CellAtPx(h0.pane, h0.ox, h0.oy, h0.cw, h0.ch, mx, my);
                         SelectWord(h0.pane, line, col);
                         _clickCount = 2; _lastClickMs = Environment.TickCount; _selMoved = true; _selecting = false;
+                        FinalizeSelection(h0.pane);
                         RequestRedraw();
                     }
                     return IntPtr.Zero;
@@ -1647,10 +1705,19 @@ internal static partial class Program
                     }
                     if (_selecting && ((long)wParam & MK_LBUTTON) != 0)
                     {
-                        if (PaneAt(LoWord(lParam), HiWord(lParam)) is { } h0)
+                        int mmx = LoWord(lParam), mmy = HiWord(lParam);
+                        _selMouseX = mmx;
+                        if (_selPane is { } sp && PaneBox(sp) is { } bx)
                         {
-                            var (line, col) = CellAtPx(h0.pane, h0.ox, h0.oy, h0.cw, h0.ch, LoWord(lParam), HiWord(lParam));
-                            UpdateSelect(h0.pane, line, col); RequestRedraw();
+                            float top = bx.oy, bottom = bx.oy + bx.rows * bx.ch;
+                            _selAutoDir = mmy < top ? -1 : (mmy >= bottom ? 1 : 0);
+                            // Track focus at the vertically-clamped point so horizontal moves register out of bounds.
+                            int cy = (int)Math.Clamp(mmy, top, bottom - 1);
+                            var (line, col) = CellAtPx(sp, bx.ox, bx.oy, bx.cw, bx.ch, mmx, cy);
+                            UpdateSelect(sp, line, col);
+                            if (_selAutoDir != 0) SetTimer(hwnd, (IntPtr)SelAutoTimer, 50, IntPtr.Zero);
+                            else StopSelAutoscroll();
+                            RequestRedraw();
                         }
                         return IntPtr.Zero;
                     }
@@ -1765,6 +1832,9 @@ internal static partial class Program
             case "toggle_flag": if (_active is not null) FlagOp(_active, "toggle"); break;
             case "toggle_flagged_view": ToggleFlaggedView(); break;
             case "focus_workspace": WorkspaceFocusOp("toggle"); break;
+            case "select_all": if (ActiveSurface() is { } sa) SelectAll(sa); break;
+            case "copy_selection": if (ActiveSurface() is { } sc && sc.HasSel) CopySelection(sc); break;
+            case "paste": if (ActiveSurface() is { } sp2) PasteInto(sp2); break;
         }
     }
 
@@ -2048,6 +2118,25 @@ internal static partial class Program
         return null;
     }
 
+    /// <summary>Origin/cell-size/row-count of a specific pane (for drag-autoscroll), or null if not laid out.</summary>
+    private static (float ox, float oy, float cw, float ch, int rows)? PaneBox(Pane pane)
+    {
+        if (_cover is not null && ReferenceEquals(pane, _cover))
+        {
+            var (cx, cy, _, chh) = CoverRect();
+            var (_, ccw, cch) = Metrics(_cover.FontSize);
+            return (cx, cy, ccw, cch, Math.Max(1, (int)(chh / cch)));
+        }
+        if (_active is null) return null;
+        foreach (var (p, x, y, _, h) in PaneLayout(_active))
+            if (ReferenceEquals(p, pane))
+            {
+                var (_, cw, ch) = Metrics(pane.FontSize);
+                return (x, y, cw, ch, Math.Max(1, (int)(h / ch)));
+            }
+        return null;
+    }
+
     /// <summary>Map a client point to an ABSOLUTE (line,col) in the pane (history + live grid).</summary>
     private static (int line, int col) CellAtPx(Pane pane, float ox, float oy, float cw, float ch, int px, int py)
     {
@@ -2135,16 +2224,60 @@ internal static partial class Program
         p.SelAncLine = p.SelFocLine = line; p.SelAncCol = 0; p.SelFocCol = cols - 1; p.HasSel = true;
     }
 
-    private static void CopySelection(Pane pane)
+    private static void CopySelection(Pane pane, bool clear = true)
     {
         string t = SelectionText(pane);
         if (t.Length > 0) ClipboardSet(t);
-        pane.ClearSel(); RequestRedraw();
+        if (clear) pane.ClearSel();
+        RequestRedraw();
     }
 
-    private static void PasteInto(Pane pane)
+    /// <summary>Select the pane's entire buffer — all scrollback history through the last live row.</summary>
+    private static void SelectAll(Pane p)
     {
-        string t = ClipboardGet();
+        var em = p.S.Emulator;
+        int cols, rows, hist;
+        lock (p.S.SyncRoot) { cols = em.Screen.Cols; rows = em.Screen.Rows; hist = em.HistoryCount; }
+        p.SelAncLine = 0; p.SelAncCol = 0;
+        p.SelFocLine = hist + rows - 1; p.SelFocCol = cols - 1;
+        p.HasSel = (hist + rows) > 0 && cols > 0;
+        RequestRedraw();
+    }
+
+    /// <summary>Called when a selection is finished (drag mouse-up / word / line select). Honors copy-on-select
+    /// by copying to the clipboard without clearing the highlight.</summary>
+    private static void FinalizeSelection(Pane p)
+    {
+        if (_config.CopyOnSelect && p.HasSel) CopySelection(p, clear: false);
+    }
+
+    private static void StopSelAutoscroll()
+    {
+        if (_selAutoDir != 0) { _selAutoDir = 0; KillTimer(_hwnd, (IntPtr)SelAutoTimer); }
+    }
+
+    /// <summary>Drag-autoscroll tick: while the mouse is held above/below the selection pane, scroll its
+    /// scrollback one line toward the cursor and extend the selection to the newly-revealed edge.</summary>
+    private static void SelAutoscrollTick()
+    {
+        if (!_selecting || _selAutoDir == 0 || _selPane is not { } sp || PaneBox(sp) is not { } bx) { StopSelAutoscroll(); return; }
+        int cols, rows, hist;
+        lock (sp.S.SyncRoot) { cols = sp.S.Emulator.Screen.Cols; rows = sp.S.Emulator.Screen.Rows; hist = sp.S.Emulator.HistoryCount; }
+        // dir -1 (mouse above) reveals older lines -> larger ScrollOffset; dir +1 (below) -> smaller.
+        int no = Math.Clamp(sp.ScrollOffset - _selAutoDir, 0, hist);
+        sp.ScrollOffset = no;
+        int vr = _selAutoDir < 0 ? 0 : rows - 1;                      // extend to the top/bottom visible row
+        int line = Math.Clamp(hist - no + vr, 0, hist + rows - 1);
+        int col = Math.Clamp((int)((_selMouseX - bx.ox) / bx.cw), 0, cols - 1);
+        UpdateSelect(sp, line, col);
+        RequestRedraw();
+    }
+
+    private static void PasteInto(Pane pane) => PasteTextInto(pane, ClipboardGet());
+
+    /// <summary>Paste literal text into a pane, honoring bracketed-paste mode (shared by Ctrl+V and the API).</summary>
+    private static void PasteTextInto(Pane pane, string t)
+    {
         if (t.Length == 0) return;
         t = t.Replace("\r\n", "\r").Replace("\n", "\r");
         if (pane.S.Emulator.BracketedPaste) t = "\x1b[200~" + t + "\x1b[201~";
@@ -3508,6 +3641,9 @@ internal static partial class Program
                 A("Show Flagged / All Sessions", "", ToggleFlaggedView);
                 A("Focus Workspace", "", () => WorkspaceFocusOp("toggle"));
                 A("Toggle Sidebar", "", ToggleSidebar);
+                A("Select All", "Ctrl+Shift+A", () => { if (ActiveSurface() is { } p) SelectAll(p); });
+                A("Copy Selection", "Ctrl+C", () => { if (ActiveSurface() is { } p && p.HasSel) CopySelection(p); });
+                A("Paste", "Ctrl+V", () => { if (ActiveSurface() is { } p) PasteInto(p); });
                 A("Next Session", "Ctrl+Tab", () => CycleSession(1));
                 A("Previous Session", "Ctrl+Shift+Tab", () => CycleSession(-1));
                 A("Next Attention", "Ctrl+Alt+Down", () => GoToNextAttention(1));
@@ -4089,7 +4225,7 @@ internal static partial class Program
     {
         "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
         "scrollback-lines", "inactive-pane-dim", "window-opacity", "sidebar-tint", "scroll-speed",
-        "new-session-dir", "right-click-paste", "desktop-notifications", "shell-integration",
+        "new-session-dir", "right-click-paste", "copy-on-select", "desktop-notifications", "shell-integration",
         "restore-commands", "blocked-sound",
     };
 
@@ -4127,6 +4263,7 @@ internal static partial class Program
         "scroll-speed" => _config.ScrollSpeed.ToString(),
         "new-session-dir" => _config.NewSessionDir,
         "right-click-paste" => _config.RightClickPaste ? "true" : "false",
+        "copy-on-select" => _config.CopyOnSelect ? "true" : "false",
         "desktop-notifications" => _config.DesktopNotifications ? "true" : "false",
         "shell-integration" => _config.ShellIntegration ? "true" : "false",
         "restore-commands" => _config.RestoreCommands ? "true" : "false",
