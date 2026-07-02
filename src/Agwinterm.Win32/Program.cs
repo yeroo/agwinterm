@@ -101,6 +101,12 @@ internal static class Program
     }
     private static PaletteKind _palette = PaletteKind.None;
 
+    // In-terminal search (find bar over the active pane's buffer + scrollback).
+    private static bool _searchActive;
+    private static string _searchQuery = "";
+    private static readonly List<(int Line, int Col0, int Col1)> _searchMatches = new(); // absolute line index (history ++ live)
+    private static int _searchCur;
+
     // Keymap: chord (canonical string) -> action id or "command:<Label>"; custom commands from keymap.conf.
     private static Dictionary<string, string> _keymap = new(StringComparer.OrdinalIgnoreCase);
     private static List<(string Label, string Text)> _commands = new();
@@ -721,6 +727,22 @@ internal static class Program
         PostMessageW(_hwnd, WM_APP_ACTION, IntPtr.Zero, IntPtr.Zero);
     }
 
+    // Synchronous UI-thread invoke (for control verbs that mutate UI state AND return a value,
+    // e.g. session.search). SendMessageW blocks the caller until the UI thread runs the func.
+    private static Func<string>? _syncFn;
+    private static string _syncResult = "";
+    private static readonly object _syncLock = new();
+    private static string InvokeOnUi(Func<string> fn)
+    {
+        lock (_syncLock)
+        {
+            _syncFn = fn;
+            SendMessageW(_hwnd, WM_APP_SYNC, IntPtr.Zero, IntPtr.Zero);
+            _syncFn = null;
+            return _syncResult;
+        }
+    }
+
     /// <summary>ISessionHost bridge so the control server / agwintermctl drive this window.</summary>
     private sealed class Host : ISessionHost
     {
@@ -896,6 +918,22 @@ internal static class Program
                                   .FirstOrDefault(p => ReferenceEquals(p.S, s));
             return pane is not null ? SelectionText(pane) : ""; // reads under the session lock; safe off-UI-thread
         }
+
+        // Search operates on the active pane's find bar (a UI-thread concept); run it synchronously
+        // on the UI thread and return the "N of M" status. (target is accepted for API shape; v1
+        // searches the active session.)
+        public string SessionSearch(string? target, string? query, string? action) => InvokeOnUi(() =>
+        {
+            if (_active is null) return "no session";
+            if (action == "close") { CloseSearch(); return "closed"; }
+            if (!_searchActive) _searchActive = true;
+            if (!string.IsNullOrEmpty(query)) { _searchQuery = query!; RecomputeSearch(); _searchCur = 0; ScrollToMatch(); }
+            else if (action == "next") SearchStep(1);
+            else if (action == "prev") SearchStep(-1);
+            else { RecomputeSearch(); ScrollToMatch(); }
+            RequestRedraw();
+            return SearchStatus();
+        });
     }
 
     private static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -984,6 +1022,10 @@ internal static class Program
                     try { act(); } catch (Exception ex) { Perf($"uiaction ex: {ex.Message}"); }
                 return IntPtr.Zero;
 
+            case WM_APP_SYNC:
+                try { _syncResult = _syncFn?.Invoke() ?? ""; } catch (Exception ex) { _syncResult = ""; Perf($"sync ex: {ex.Message}"); }
+                return IntPtr.Zero;
+
             case WM_TIMER:
                 if ((int)wParam == 2) { _toastText = null; KillTimer(hwnd, (IntPtr)2); InvalidateRect(hwnd, IntPtr.Zero, false); return IntPtr.Zero; }
                 _cursorOn = !_cursorOn;
@@ -1025,6 +1067,11 @@ internal static class Program
                     if (_palette != PaletteKind.None)
                     {
                         if (c >= 0x20 && c != 0x7f) { _palQuery += c; _palSel = 0; FilterPalette(); RequestRedraw(); }
+                        return IntPtr.Zero;
+                    }
+                    if (_searchActive)
+                    {
+                        if (c >= 0x20 && c != 0x7f) { _searchQuery += c; RecomputeSearch(); _searchCur = 0; ScrollToMatch(); RequestRedraw(); }
                         return IntPtr.Zero;
                     }
                     if (c >= 0x20 && c != 0x7f) Send(c.ToString());
@@ -1228,6 +1275,7 @@ internal static class Program
             case "next_attention": GoToNextAttention(1); break;
             case "previous_attention": GoToNextAttention(-1); break;
             case "reload_keymap": ReloadKeymap(); break;
+            case "toggle_search": ToggleSearch(); break;
             case "increase_font_size": ChangeFontSize(1); break;
             case "decrease_font_size": ChangeFontSize(-1); break;
             case "reset_font_size": ChangeFontSize(0); break;
@@ -1477,6 +1525,86 @@ internal static class Program
         RequestRedraw();
     }
 
+    // ---- In-terminal search (find bar over the active pane's buffer + scrollback) ----
+
+    private static void ToggleSearch()
+    {
+        if (_searchActive) { CloseSearch(); return; }
+        _searchActive = true; _searchQuery = ""; _searchMatches.Clear(); _searchCur = 0;
+        RequestRedraw();
+    }
+
+    private static void CloseSearch() { _searchActive = false; _searchMatches.Clear(); RequestRedraw(); }
+
+    /// <summary>Recompute all case-insensitive matches for _searchQuery over the active pane's history + live grid.</summary>
+    private static void RecomputeSearch()
+    {
+        _searchMatches.Clear();
+        var ap = _active?.ActivePane;
+        if (ap is null || _searchQuery.Length == 0) return;
+        string q = _searchQuery.ToLowerInvariant();
+        var em = ap.S.Emulator;
+        lock (ap.S.SyncRoot)
+        {
+            int cols = em.Screen.Cols, rows = em.Screen.Rows, hist = em.HistoryCount;
+            var sb = new StringBuilder(cols);
+            for (int line = 0; line < hist + rows; line++)
+            {
+                sb.Clear();
+                for (int c = 0; c < cols; c++)
+                {
+                    Cell cell = CellAbs(em, hist, rows, cols, line, c);
+                    sb.Append(cell.Rune == '\0' ? ' ' : cell.Rune);
+                }
+                string text = sb.ToString().ToLowerInvariant();
+                int idx = 0;
+                while ((idx = text.IndexOf(q, idx, StringComparison.Ordinal)) >= 0)
+                {
+                    _searchMatches.Add((line, idx, idx + q.Length - 1));
+                    idx += q.Length;
+                }
+            }
+        }
+        if (_searchCur >= _searchMatches.Count) _searchCur = 0;
+    }
+
+    private static void SearchStep(int dir)
+    {
+        if (_searchMatches.Count == 0) return;
+        int n = _searchMatches.Count;
+        _searchCur = ((_searchCur + dir) % n + n) % n;
+        ScrollToMatch(); RequestRedraw();
+    }
+
+    private static void ScrollToMatch()
+    {
+        var ap = _active?.ActivePane;
+        if (ap is null || _searchCur < 0 || _searchCur >= _searchMatches.Count) return;
+        int ml = _searchMatches[_searchCur].Line;
+        var em = ap.S.Emulator;
+        int rows, hist; lock (ap.S.SyncRoot) { rows = em.Screen.Rows; hist = em.HistoryCount; }
+        ap.ScrollOffset = Math.Clamp(hist - ml + rows / 2, 0, hist); // centre the match; live grid => snaps to 0
+    }
+
+    private static string SearchStatus()
+        => _searchMatches.Count == 0 ? (_searchQuery.Length == 0 ? "" : "no matches")
+           : $"{_searchCur + 1} of {_searchMatches.Count}";
+
+    private static bool SearchKeyDown(int vk)
+    {
+        bool shift = KeyDown(VK_SHIFT);
+        switch (vk)
+        {
+            case VK_ESCAPE: CloseSearch(); return true;
+            case VK_RETURN: SearchStep(shift ? -1 : 1); return true;
+            case 0x72: SearchStep(shift ? -1 : 1); return true; // F3
+            case VK_BACK:
+                if (_searchQuery.Length > 0) { _searchQuery = _searchQuery[..^1]; RecomputeSearch(); _searchCur = 0; ScrollToMatch(); RequestRedraw(); }
+                return true;
+        }
+        return true; // consume all keys while the find bar is open
+    }
+
     private static void ClipboardSet(string text)
     {
         if (!OpenClipboard(_hwnd)) return;
@@ -1520,6 +1648,8 @@ internal static class Program
 
         // While a palette is open it owns the keyboard (nav here, typing via WM_CHAR).
         if (_palette != PaletteKind.None) return PaletteKeyDown(vk);
+        // While the find bar is open it owns the keyboard (Enter/F3 nav, Esc close, Backspace edit).
+        if (_searchActive) return SearchKeyDown(vk);
 
         // Shift+PageUp/PageDown (and Home/End) scroll this pane's scrollback; never reach the PTY.
         if (shift && !ctrl && !alt && _active is not null)
@@ -1820,6 +1950,7 @@ internal static class Program
             bool hasSel = selPane is { HasSel: true };
             int sl0 = 0, sc0 = 0, sl1 = 0, sc1 = 0;
             if (hasSel) NormSel(selPane!, out sl0, out sc0, out sl1, out sc1);
+            bool searchHere = _searchActive && selPane is not null && ReferenceEquals(selPane, _active?.ActivePane);
             // Visible row r maps into [history ++ live grid], shifted up by `off`.
             Cell CellAt(int r, int c)
             {
@@ -1849,18 +1980,27 @@ internal static class Program
                     brush.Color = C4(bg);
                     rt.FillRectangle(new Rect(ox + start * cw, y, (c - start) * cw, ch), brush);
                 }
-                if (hasSel)  // selection highlight for this row (behind the text)
+                int abs = hist - off + r;
+                if (hasSel && abs >= sl0 && abs <= sl1)  // selection highlight (behind the text)
                 {
-                    int abs = hist - off + r;
-                    if (abs >= sl0 && abs <= sl1)
+                    int from = Math.Clamp(abs == sl0 ? sc0 : 0, 0, cols - 1);
+                    int to = Math.Clamp(abs == sl1 ? sc1 : cols - 1, 0, cols - 1);
+                    if (to >= from)
                     {
-                        int from = Math.Clamp(abs == sl0 ? sc0 : 0, 0, cols - 1);
-                        int to = Math.Clamp(abs == sl1 ? sc1 : cols - 1, 0, cols - 1);
-                        if (to >= from)
-                        {
-                            brush.Color = new Color4(40 / 255f, 90 / 255f, 150 / 255f, 1f);
-                            rt.FillRectangle(new Rect(ox + from * cw, y, (to - from + 1) * cw, ch), brush);
-                        }
+                        brush.Color = new Color4(40 / 255f, 90 / 255f, 150 / 255f, 1f);
+                        rt.FillRectangle(new Rect(ox + from * cw, y, (to - from + 1) * cw, ch), brush);
+                    }
+                }
+                if (searchHere)  // search-match highlight (amber; current match brighter)
+                {
+                    for (int mi = 0; mi < _searchMatches.Count; mi++)
+                    {
+                        var m = _searchMatches[mi];
+                        if (m.Line != abs) continue;
+                        int from = Math.Clamp(m.Col0, 0, cols - 1), to = Math.Clamp(m.Col1, 0, cols - 1);
+                        brush.Color = mi == _searchCur ? new Color4(235 / 255f, 175 / 255f, 45 / 255f, 1f)
+                                                       : new Color4(150 / 255f, 110 / 255f, 25 / 255f, 1f);
+                        rt.FillRectangle(new Rect(ox + from * cw, y, (to - from + 1) * cw, ch), brush);
                     }
                 }
                 c = 0;
@@ -1965,8 +2105,33 @@ internal static class Program
         }
         DrawSidebar(rt, brush);
         DrawTitleBar(rt, brush);
+        DrawSearchBar(rt, brush);
         DrawToast(rt, brush);
         DrawPalette(rt, brush);
+    }
+
+    /// <summary>Find bar (top-right of the content region) shown while search is active.</summary>
+    private static void DrawSearchBar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        if (!_searchActive) return;
+        float barW = 340f, barH = 30f;
+        float x = Math.Max(_sidebarW + 8f, ClientW() - barW - 12f), y = TitleBarH + 8f;
+        var rr = new RoundedRectangle { Rect = new Rect(x, y, barW, barH), RadiusX = 6f, RadiusY = 6f };
+        brush.Color = new Color4(0.13f, 0.15f, 0.18f, 1f);
+        rt.FillRoundedRectangle(rr, brush);
+        brush.Color = new Color4(0.30f, 0.55f, 0.95f, 1f);
+        rt.DrawRoundedRectangle(rr, brush, 1f);
+        brush.Color = ChromeDim;
+        rt.DrawText("", _iconFont, new Rect(x + 6f, y, 22f, barH), brush); // magnifier
+        bool empty = _searchQuery.Length == 0;
+        brush.Color = empty ? ChromeDim : ChromeText;
+        rt.DrawText(empty ? "Find" : _searchQuery + "▏", _uiFont, new Rect(x + 30f, y, barW - 116f, barH), brush);
+        string status = SearchStatus();
+        if (status.Length > 0)
+        {
+            brush.Color = ChromeDim;
+            rt.DrawText(status, _uiSmall, new Rect(x + barW - 82f, y, 76f, barH), brush);
+        }
     }
 
     // ---- Sidebar (custom Direct2D outline: workspaces -> sessions) ----

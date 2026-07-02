@@ -32,6 +32,7 @@ internal static class Keymap
         ("ctrl+alt+up", "previous_attention"),
         ("ctrl+alt+down", "next_attention"),
         ("f2", "rename_session"),
+        ("ctrl+f", "toggle_search"),
     };
 
     public static readonly HashSet<string> ValidActions = new(StringComparer.OrdinalIgnoreCase)
@@ -40,6 +41,7 @@ internal static class Keymap
         "focus_left_pane", "focus_right_pane", "next_session", "previous_session",
         "toggle_sidebar", "rename_session", "delete_workspace", "session_palette", "action_palette",
         "attention_list", "custom_palette", "next_attention", "previous_attention", "reload_keymap",
+        "toggle_search",
     };
 
     public const string StarterText =

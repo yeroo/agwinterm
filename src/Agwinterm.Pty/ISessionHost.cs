@@ -70,6 +70,9 @@ public interface ISessionHost
 
     /// <summary>Current text selection of the target session's active pane ("" if none).</summary>
     string SessionCopy(string? target);
+
+    /// <summary>Open/drive the find bar over the active session; returns "N of M" / "no matches" / "closed".</summary>
+    string SessionSearch(string? target, string? query, string? action);
 }
 
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
@@ -106,4 +109,5 @@ public sealed class SingleSessionHost : ISessionHost
     public string RestoreClear() => "";
     public void SidebarOp(string op) { }
     public string SessionCopy(string? target) => "";
+    public string SessionSearch(string? target, string? query, string? action) => "";
 }

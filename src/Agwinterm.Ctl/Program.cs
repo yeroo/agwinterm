@@ -118,6 +118,12 @@ switch (area)
                 if (rest.Count > 0 && Opt("to") is null) cargs["workspace"] = rest[0]; // relocate to workspace
                 else cargs["dir"] = Opt("to") ?? "down";                                // reorder within workspace
                 break;
+            case "search": // session search "term" | --next | --prev | --close
+                if (Opt("close") is not null) cargs["action"] = "close";
+                else if (Opt("next") is not null) cargs["action"] = "next";
+                else if (Opt("prev") is not null) cargs["action"] = "prev";
+                else if (rest.Count > 0) cargs["query"] = string.Join(' ', rest);
+                break;
             case "split": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break;
             case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
             case "resize":

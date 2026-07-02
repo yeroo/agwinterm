@@ -127,6 +127,7 @@ public sealed class ControlServer : IDisposable
                 case "restore.clear": return Ok(_host.RestoreClear());
                 case "sidebar": _host.SidebarOp(GetString(args, "op") ?? "toggle"); return Ok("sidebar");
                 case "session.copy": return Ok(_host.SessionCopy(target)); // selection text (host-side), "" if none
+                case "session.search": return Ok(_host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
             }
 
             // Session-targeted commands.

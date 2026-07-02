@@ -54,6 +54,8 @@ public static class AgentSkill
         ## Read a session's output
         - `agwintermctl session text [--target <id>]`            — dump the session's visible buffer as plain text (great for reading command output)
         - `agwintermctl session copy [--target <id>]`            — return the session's current mouse text selection ("" if none)
+        - `agwintermctl session search "<term>"`                 — open the find bar over the active session; returns "N of M" (or "no matches")
+        - `agwintermctl session search --next|--prev|--close`    — step matches / close the find bar
 
         ## Type into a session
         - `agwintermctl session type "npm test" --target <id>`   — send keystrokes (newline = Enter)
