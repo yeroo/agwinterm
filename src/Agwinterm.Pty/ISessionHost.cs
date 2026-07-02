@@ -99,6 +99,11 @@ public interface ISessionHost
 
     /// <summary>Focus/unfocus the active workspace (hide the others in the sidebar tree): op = on|off|toggle.</summary>
     void WorkspaceFocus(string op);
+
+    /// <summary>Drive the MRU (Ctrl+Tab) session switcher state machine directly:
+    /// op = begin|advance|advance-back|commit|cancel. Returns the resulting active session name.
+    /// Lets the control API / tests exercise the walk without synthetic global key input.</summary>
+    string SessionSwitch(string op);
 }
 
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
@@ -142,4 +147,5 @@ public sealed class SingleSessionHost : ISessionHost
     public bool Notify(string? target, string? title, string body) => false;
     public bool SessionFlag(string? target, string op) => false;
     public void WorkspaceFocus(string op) { }
+    public string SessionSwitch(string op) => "unsupported";
 }

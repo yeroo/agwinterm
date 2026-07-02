@@ -99,6 +99,9 @@ public static class AgentSkill
         - `agwintermctl workspace focus on|off|toggle`           — show only the active workspace in the tree
           (hide the rest); a "show all" banner / this verb brings the others back.
         - `agwintermctl tree --json` reports `"flagged":true` per flagged session.
+        - `agwintermctl session switch begin|advance|advance-back|commit|cancel` — drive the MRU (Ctrl+Tab)
+          recency switcher programmatically (advance previews the next recent session; commit lands it). The
+          interactive equivalent is holding Ctrl and tapping Tab (Shift+Tab walks back, Esc cancels).
 
         ## Splits, font, sidebar, theme
         - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)

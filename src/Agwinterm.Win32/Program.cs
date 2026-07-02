@@ -132,6 +132,15 @@ internal static class Program
     private static List<(string Label, string Text)> _commands = new();
     private static string[] _keymapDiag = Array.Empty<string>();
 
+    // MRU (most-recently-used) session switcher — Ctrl+Tab walks the recency stack (Alt+Tab semantics).
+    // _mru holds session ids, front = most recently active. During a walk we preview-select the target
+    // but suppress recency updates; releasing Ctrl commits (fronts the target); Esc cancels back to start.
+    private static readonly List<string> _mru = new();
+    private static bool _mruWalking;
+    private static List<Ses> _mruSnapshot = new();  // recency-ordered sessions captured at walk start
+    private static int _mruIdx;                      // current target index into _mruSnapshot
+    private static Ses? _mruStart;                   // session active when the walk began (for Esc cancel)
+
     private static string _palQuery = "";
     private static int _palSel;
     private static readonly List<PalItem> _palAll = new();
@@ -584,8 +593,97 @@ internal static class Program
         _session = ActiveSurface()?.S;                          // a quick cover (if any) keeps input; else the new pane
         RegridSession(ses);
         if (_cover is not null) RegridCover();
+        TouchMru(ses);   // move to front of the recency stack (suppressed mid-walk so previews don't reorder)
         RequestRedraw();
         SaveState();
+    }
+
+    // ---- MRU session recency stack (Ctrl+Tab switcher) ----
+
+    /// <summary>Move a session to the front of the recency stack. No-op while a walk is in progress
+    /// (preview-selects during a walk must not rewrite the stack — only the commit does).</summary>
+    private static void TouchMru(Ses ses)
+    {
+        if (_mruWalking) return;
+        _mru.Remove(ses.Id);
+        _mru.Insert(0, ses.Id);
+    }
+
+    /// <summary>Drop dead ids and append any live session not yet tracked (unseen go to the back).</summary>
+    private static void EnsureMru()
+    {
+        var live = AllSessions();
+        _mru.RemoveAll(id => !live.Any(s => s.Id == id));
+        foreach (var s in live) if (!_mru.Contains(s.Id)) _mru.Add(s.Id);
+    }
+
+    private static Ses? FindSes(string id)
+    {
+        lock (_workspaces) return _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Id == id);
+    }
+
+    /// <summary>Begin a walk: snapshot the recency order and park the cursor on the active session.
+    /// Returns false (no walk) when fewer than 2 sessions exist.</summary>
+    private static bool StartWalk()
+    {
+        EnsureMru();
+        var order = _mru.Select(FindSes).Where(s => s is not null).Cast<Ses>().ToList();
+        if (order.Count < 2) return false;               // 1 session: no-op, no HUD
+        _mruWalking = true;
+        _mruSnapshot = order;
+        _mruStart = _active;
+        _mruIdx = _active is null ? 0 : Math.Max(0, order.IndexOf(_active));
+        return true;
+    }
+
+    /// <summary>Advance the Ctrl+Tab walk by dir (+1 = older/next, -1 = newer/prev), previewing the target.
+    /// Starting a walk (first tap) snapshots the recency order and lands on the previous session.</summary>
+    private static void MruWalk(int dir)
+    {
+        if (!_mruWalking && !StartWalk()) return;
+        int n = _mruSnapshot.Count;
+        _mruIdx = ((_mruIdx + dir) % n + n) % n;
+        SetActive(_mruSnapshot[_mruIdx]);                // preview (TouchMru suppressed while walking)
+        RequestRedraw();
+    }
+
+    /// <summary>Ctrl released: finalize the walk — the highlighted session becomes active + MRU front.</summary>
+    private static void MruCommit()
+    {
+        if (!_mruWalking) return;
+        _mruWalking = false;
+        Ses? target = _mruIdx >= 0 && _mruIdx < _mruSnapshot.Count ? _mruSnapshot[_mruIdx] : _active;
+        _mruSnapshot = new(); _mruStart = null;
+        if (target is not null) SetActive(target);        // not walking now → fronts it in the stack
+        RequestRedraw();
+    }
+
+    /// <summary>Esc during a walk: return to the session that was active when the walk began; no MRU change.</summary>
+    private static void MruCancel()
+    {
+        if (!_mruWalking) return;
+        _mruWalking = false;
+        Ses? start = _mruStart;
+        _mruSnapshot = new(); _mruStart = null;
+        if (start is not null) SetActive(start);          // start was already front, so the stack is unchanged
+        RequestRedraw();
+    }
+
+    /// <summary>Drive the MRU walk state machine directly (same methods the Ctrl+Tab keys call).
+    /// Exists so the control API / tests can exercise begin→advance→commit deterministically with
+    /// zero global key injection. Returns the current active session name (or a short status).</summary>
+    private static string SwitchOp(string op)
+    {
+        switch (op)
+        {
+            case "begin": StartWalk(); break;
+            case "advance": case "next": MruWalk(1); break;
+            case "advance-back": case "back": case "prev": case "previous": MruWalk(-1); break;
+            case "commit": MruCommit(); break;
+            case "cancel": MruCancel(); break;
+            default: return $"unknown op '{op}'";
+        }
+        return _active?.Name ?? "(none)";
     }
 
     // ---- Cover terminals (scratch / quick) ----
@@ -796,6 +894,7 @@ internal static class Program
         if (ses.Scratch is not null) { if (_coverKind == 1 && ReferenceEquals(_cover, ses.Scratch)) HideCover(); try { ses.Scratch.S.Dispose(); } catch { } ses.Scratch = null; }
         if (ses.Overlay is not null) CloseOverlayOf(ses); // dismiss + dispose this session's overlay
         bool wasActive = ReferenceEquals(_active, ses);
+        _mru.Remove(ses.Id);
         lock (_workspaces) ses.Ws.Sessions.Remove(ses);
         if (wasActive)
         {
@@ -1231,6 +1330,8 @@ internal static class Program
         }
 
         public void WorkspaceFocus(string op) => Post(() => WorkspaceFocusOp(op));
+
+        public string SessionSwitch(string op) => InvokeOnUi(() => SwitchOp(op));
     }
 
     /// <summary>Resolve a control-API target ("active"/null/id/prefix) to its owning session.</summary>
@@ -1372,6 +1473,12 @@ internal static class Program
                     ReleaseCapture(); RequestRedraw(); return IntPtr.Zero;
                 }
                 if (OnKeyDown((int)wParam)) return IntPtr.Zero;
+                break;
+
+            case WM_KEYUP:
+                // Committing the MRU walk happens when Ctrl is finally released (any key-up where Ctrl
+                // is no longer held is exactly the Ctrl-up event; a Tab-up with Ctrl still down is ignored).
+                if (_mruWalking && !KeyDown(VK_CONTROL)) { MruCommit(); return IntPtr.Zero; }
                 break;
 
             case WM_CHAR:
@@ -1989,6 +2096,9 @@ internal static class Program
         // A --wait overlay whose program has exited hangs around; any key dismisses it.
         if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return true; }
 
+        // Escape during an MRU walk cancels back to where the walk began.
+        if (_mruWalking && vk == VK_ESCAPE) { MruCancel(); return true; }
+
         // While a palette is open it owns the keyboard (nav here, typing via WM_CHAR).
         if (_palette != PaletteKind.None) return PaletteKeyDown(vk);
         // While the find bar is open it owns the keyboard (Enter/F3 nav, Esc close, Backspace edit).
@@ -2031,6 +2141,16 @@ internal static class Program
                 // plain Ctrl+C with no selection falls through to the interrupt below
             }
             else if (vk == 0x56) { PasteInto(ap); return true; } // Ctrl+V / Ctrl+Shift+V
+        }
+
+        // Ctrl+Tab / Ctrl+Shift+Tab drive the MRU session walk (needs WM_KEYUP to commit, so it lives
+        // here rather than the keymap dispatch). Honoured only while the chord is still bound to the
+        // session-cycle action (default) — a user rebind of the chord falls through to keymap dispatch.
+        if (ctrl && !alt && vk == VK_TAB)
+        {
+            string mruChord = shift ? "ctrl+shift+tab" : "ctrl+tab";
+            if (!_keymap.TryGetValue(mruChord, out var mruAct) || mruAct is "next_session" or "previous_session")
+            { MruWalk(shift ? -1 : 1); return true; }
         }
 
         // Keymap dispatch: build the chord and run its bound action (defaults overlaid by keymap.conf).
@@ -2459,6 +2579,46 @@ internal static class Program
         DrawSearchBar(rt, brush);
         DrawToast(rt, brush);
         DrawPalette(rt, brush);
+        DrawSwitcher(rt, brush);
+    }
+
+    /// <summary>The Ctrl+Tab switcher HUD: a centered panel listing sessions in recency order with the
+    /// current walk target highlighted. Painted only while a walk is in progress; never takes focus.</summary>
+    private static void DrawSwitcher(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        if (!_mruWalking || _mruSnapshot.Count < 2) return;
+        int cw = ClientW(), ch = ClientH();
+        brush.Color = PalScrim;
+        rt.FillRectangle(new Rect(0, 0, cw, ch), brush);
+
+        const float rowH = 36f, headH = 30f;
+        int n = _mruSnapshot.Count;
+        float pw = MathF.Min(460f, cw - 80f);
+        float ph = headH + n * rowH + 10f;
+        float px = (cw - pw) / 2f, py = MathF.Max(TitleBarH + 16f, (ch - ph) / 2f);
+        var panel = new Rect(px, py, pw, ph);
+
+        brush.Color = PalBg;
+        rt.FillRoundedRectangle(new RoundedRectangle { Rect = panel, RadiusX = 10f, RadiusY = 10f }, brush);
+        brush.Color = PalBorder;
+        rt.DrawRoundedRectangle(new RoundedRectangle { Rect = panel, RadiusX = 10f, RadiusY = 10f }, brush, 1f);
+
+        brush.Color = ChromeDim;
+        rt.DrawText("Recent sessions — hold Ctrl, Tab to cycle", _uiSmall, new Rect(px + 16f, py + 8f, pw - 32f, 18f), brush);
+
+        for (int i = 0; i < n; i++)
+        {
+            var s = _mruSnapshot[i];
+            float ry = py + headH + i * rowH;
+            if (i == _mruIdx) { brush.Color = PalSel; rt.FillRectangle(new Rect(px + 4f, ry, pw - 8f, rowH), brush); }
+            brush.Color = StatusDot(s.ActivePane.S.Status);
+            rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(px + 18f, ry + rowH / 2f), 4.5f, 4.5f), brush);
+            brush.Color = i == _mruIdx ? new Color4(1f, 1f, 1f, 1f) : ChromeText;
+            rt.DrawText(s.Name, _uiFont, new Rect(px + 32f, ry + (rowH - 20f) / 2f, pw - 150f, 20f), brush);
+            brush.Color = ChromeDim;
+            float wsw = MeasureText(s.Ws.Name, _uiSmall);
+            rt.DrawText(s.Ws.Name, _uiSmall, new Rect(px + pw - 16f - wsw, ry + (rowH - 16f) / 2f, wsw + 2f, 16f), brush);
+        }
     }
 
     /// <summary>Render a session's pane grid (terminals + split dividers + focused-pane accent).</summary>

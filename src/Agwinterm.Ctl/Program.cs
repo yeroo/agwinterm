@@ -144,6 +144,7 @@ switch (area)
                 break;
             case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
             case "flag": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|clear
+            case "switch": cargs["op"] = rest.Count > 0 ? rest[0] : "advance"; target = null; break; // MRU walk: begin|advance|advance-back|commit|cancel
             case "resize":
                 if (double.TryParse(Opt("split-ratio"), System.Globalization.CultureInfo.InvariantCulture, out var sr)) cargs["ratio"] = sr;
                 if (int.TryParse(Opt("grow-left"), out var gl)) cargs["grow-left"] = gl;
