@@ -4151,10 +4151,15 @@ internal static partial class Program
         return $"{key} = {ConfigValue(key)}" + (deferred ? "  (applies to new sessions)" : "");
     }
 
-    /// <summary>Built-in themes plus any ghostty-format files in %LOCALAPPDATA%\agwinterm\themes\.</summary>
+    /// <summary>
+    /// Built-in themes, then the curated ghostty files bundled next to the exe (themes/),
+    /// then any user files in %LOCALAPPDATA%\agwinterm\themes\. Deduped by name
+    /// (case-insensitive), first-seen wins — so a compiled built-in beats a bundled/user
+    /// file of the same name, and bundled beats user.
+    /// </summary>
     private static List<Theme> LoadThemes()
     {
-        var list = new List<Theme>
+        var builtins = new List<Theme>
         {
             Theme.Default, // "default"
             Make("Solarized Dark",
@@ -4182,14 +4187,26 @@ internal static partial class Program
                       "#545862","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#c8ccd4"},
                 "#abb2bf","#282c34","#528bff"),
         };
-        try
+
+        var list = new List<Theme>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Add(Theme t) { if (seen.Add(t.Name)) list.Add(t); }
+
+        foreach (var t in builtins) Add(t);
+
+        // Bundled themes ship in themes/ next to the exe; user themes live under LOCALAPPDATA.
+        string bundledDir = Path.Combine(AppContext.BaseDirectory, "themes");
+        string userDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "themes");
+        foreach (var dir in new[] { bundledDir, userDir })
         {
-            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "themes");
-            if (Directory.Exists(dir))
+            try
+            {
+                if (!Directory.Exists(dir)) continue;
                 foreach (var f in Directory.GetFiles(dir))
-                    if (ParseGhosttyTheme(f) is Theme th) list.Add(th);
+                    if (ParseGhosttyTheme(f) is Theme th) Add(th);
+            }
+            catch { }
         }
-        catch { }
         return list;
     }
 

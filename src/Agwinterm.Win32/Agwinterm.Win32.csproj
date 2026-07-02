@@ -15,4 +15,11 @@
     <ProjectReference Include="../Agwinterm.Core/Agwinterm.Core.csproj" />
     <ProjectReference Include="../Agwinterm.Pty/Agwinterm.Pty.csproj" />
   </ItemGroup>
+  <!-- Bundle the curated ghostty theme files next to the exe (output themes/ dir). -->
+  <ItemGroup>
+    <None Include="..\..\themes\*.conf">
+      <Link>themes\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 </Project>

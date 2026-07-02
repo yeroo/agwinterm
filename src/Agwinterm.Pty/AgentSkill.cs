@@ -123,6 +123,8 @@ public static class AgentSkill
         - `agwintermctl font inc|dec|reset [--target <id>]`      — per-session font zoom
         - `agwintermctl sidebar show|hide|toggle|expand|collapse`
         - `agwintermctl theme list` · `agwintermctl theme set "Solarized Light"`
+          Bundled curated themes — dark: Dracula, Tokyo Night, Catppuccin Mocha, Gruvbox Dark, Nord, One Dark, Solarized Dark;
+          light: Solarized Light, Catppuccin Latte, GitHub Light. Drop more ghostty-format files in %LOCALAPPDATA%\agwinterm\themes\.
 
         ## Settings & config
         - `agwintermctl settings`                                — open the Settings window (grouped appearance/behavior controls)
