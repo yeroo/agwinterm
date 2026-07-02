@@ -970,6 +970,7 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         var ses = _active;
         if (ses is null) return;
+        if (ses.Panes.Count >= 2) return;   // agterm model: strictly primary + one split (no 3+ panes)
         var cur = ses.ActivePane;
         string? cwd = string.IsNullOrEmpty(cur.StartCwd) ? null : cur.StartCwd;
         var np = CreatePane(Guid.NewGuid().ToString(), ses.Ws, cwd, cur.FontSize);
@@ -1158,7 +1159,7 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         var ses = _active;
         if (ses is null || ses.Panes.Count <= 1) return;
-        var keep = ses.ActivePane;
+        var keep = ses.Panes[0];   // agterm: collapsing the split keeps the primary (left) pane, not whichever is focused
         foreach (var p in ses.Panes) if (!ReferenceEquals(p, keep)) { try { p.S.Dispose(); } catch { } }
         ses.Panes.Clear(); ses.Panes.Add(keep); keep.Ratio = 1f; ses.Active = 0;
         _session = ses.S;
@@ -2193,7 +2194,7 @@ internal partial class Program : ISessionHost, IWindowHost
             case "new_session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true); break;
             case "new_workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
             case "close_session": case "close_pane": if (_coverKind == 3) CloseActiveOverlay(); else if (_cover is not null) HideCover(); else CloseActivePane(); break;
-            case "split_pane": SplitActivePane(); break;
+            case "split_pane": SplitOp("toggle"); break;   // toggle 1<->2 panes (agterm-style), not add
             case "toggle_scratch": if (_active is not null) ScratchOp(_active, "toggle"); break;
             case "quick_terminal": QuickOp("toggle"); break;
             case "focus_left_pane": FocusPane(-1); break;
@@ -4195,7 +4196,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 A("Switch Window…", "", () => TogglePalette(PaletteKind.Windows));
                 A("Rename Active Session", "F2", () => { if (_active is not null) StartRename(_active); });
                 A("Close Pane / Session", "Ctrl+Shift+W", CloseActivePane);
-                A("Split Pane", "Ctrl+D", SplitActivePane);
+                A("Split Pane", "Ctrl+D", () => SplitOp("toggle"));
                 A("Focus Left Pane", "Ctrl+Alt+Left", () => FocusPane(-1));
                 A("Focus Right Pane", "Ctrl+Alt+Right", () => FocusPane(1));
                 A("Delete Active Workspace", "", () => { if (_active is not null) DeleteWorkspace(_active.Ws); });
@@ -4567,7 +4568,7 @@ internal partial class Program : ISessionHost, IWindowHost
             case "new-workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
             case "attention": GoToNextAttention(1); break;
             case "scratch": if (_active is not null) ScratchOp(_active, "toggle"); break;
-            case "split": SplitActivePane(); break;
+            case "split": SplitOp("toggle"); break;   // title-bar split button toggles the split on/off
             case "quick terminal": QuickOp("toggle"); break;
             case "flag": ToggleFlaggedView(); break;   // footer flag button toggles the flagged working-set view
             case "unfocus": _focusedWorkspaceId = null; RequestRedraw(); SaveState(); break;
