@@ -160,6 +160,12 @@ switch (area)
         cmd = "quick";
         cargs["op"] = sub.Length > 0 ? sub : "toggle"; // on|off|toggle; the window's throwaway shell
         break;
+    case "notify": // agwintermctl notify <body...> [--title T] [--target ID]
+        cmd = "notify";
+        target = DefaultTarget();
+        cargs["body"] = string.Join(' ', positionals.Skip(1));
+        if (Opt("title") is { } ntitle) cargs["title"] = ntitle;
+        break;
     case "font":
         cmd = "font";
         target = DefaultTarget();

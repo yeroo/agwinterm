@@ -39,4 +39,34 @@ public class OscTests
         var t = Feed("\x1b]0;hidden\x07visible");
         Assert.Equal("visible", t.DumpRow(0));
     }
+
+    [Fact]
+    public void Osc9_FiresNotifiedWithBody()
+    {
+        var t = new TerminalEmulator(40, 3);
+        string? gotTitle = null, gotBody = null;
+        t.Notified += (title, body) => { gotTitle = title; gotBody = body; };
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]9;build finished\x07"));
+        Assert.Equal("", gotTitle);
+        Assert.Equal("build finished", gotBody);
+    }
+
+    [Fact]
+    public void Osc777_NotifyFiresNotifiedWithTitleAndBody()
+    {
+        var t = new TerminalEmulator(40, 3);
+        string? gotTitle = null, gotBody = null;
+        t.Notified += (title, body) => { gotTitle = title; gotBody = body; };
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]777;notify;npm;tests passed\x07"));
+        Assert.Equal("npm", gotTitle);
+        Assert.Equal("tests passed", gotBody);
+    }
+
+    [Fact]
+    public void Osc9_DoesNotChangeTitleOrCwd()
+    {
+        var t = Feed("\x1b]9;hello\x07");
+        Assert.Equal("", t.Title);
+        Assert.Equal("", t.Cwd);
+    }
 }

@@ -134,6 +134,9 @@ public sealed class ControlServer : IDisposable
                     return Ok(_host.SessionOverlay(target, GetString(args, "action") ?? "open",
                         GetString(args, "command"), GetInt(args, "size-percent", 0),
                         GetBool(args, "wait"), GetBool(args, "block")));
+                case "notify":
+                    return _host.Notify(target, GetString(args, "title"), GetString(args, "body") ?? "")
+                        ? Ok("notified") : Err("session not found");
             }
 
             // Session-targeted commands.
@@ -176,6 +179,7 @@ public sealed class ControlServer : IDisposable
                   .Append(",\"active\":").Append(n.Active ? "true" : "false")
                   .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()));
                 if (n.Overlay) sb.Append(",\"overlay\":true");
+                if (n.Notifications > 0) sb.Append(",\"notifications\":").Append(n.Notifications);
                 sb.Append('}');
             }
             sb.Append("]}");

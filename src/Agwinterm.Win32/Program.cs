@@ -90,6 +90,9 @@ internal static class Program
     private static int _hoverCaption; // 0 none, 1 min, 2 max, 3 close (for hover paint)
     private static int _capPressed;   // HT* of a pressed caption button (for click + pressed paint)
     private static string? _toastText;
+    private static Ses? _toastTarget;   // when the toast is a notification banner: click it to jump to this session
+    private static Rect _toastRect;     // last-drawn banner rect (for click-to-jump hit-testing)
+    private static bool _trayAdded;     // whether the Shell_NotifyIcon tray icon has been created (for OS balloons)
 
     // Terminal text selection drag + multi-click (word/line) tracking.
     private static bool _selecting;       // left-drag selecting text in the content region
@@ -160,6 +163,7 @@ internal static class Program
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
+        public int Unread;         // unread desktop-notification count (OSC 9/777 / notify) since last visit
         // Text selection (absolute line index: [0..HistoryCount) history, then the live grid rows).
         public bool HasSel;
         public int SelAncLine, SelAncCol, SelFocLine, SelFocCol;
@@ -425,6 +429,7 @@ internal static class Program
         // and clears any selection (its absolute coordinates would otherwise shift under new history).
         session.OutputReceived += () => { pane.ScrollOffset = 0; pane.ClearSel(); RequestRedraw(); };
         session.StatusChanged += RequestRedraw;
+        session.Emulator.Notified += (title, body) => Post(() => OnNotified(pane, title, body));
         var env = new Dictionary<string, string>
         {
             ["AGWINTERM"] = "1",
@@ -545,6 +550,7 @@ internal static class Program
     private static void SetActive(Ses ses)
     {
         _active = ses;
+        ClearUnread(ses);   // visiting a session clears its notification badge (agterm's "cleared when seen")
         // A scratch/overlay cover belongs to the previous session; drop it (quick is per-app, kept).
         if (_coverKind is 1 or 3) { _cover = null; _coverKind = 0; _ovlOwner = null; }
         // If the newly-active session has an overlay up, re-show it as the cover.
@@ -929,7 +935,7 @@ internal static class Program
             lock (_workspaces)
                 return _workspaces.Select(w => new WorkspaceSnapshot(
                     w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
-                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), s.S.Status, s.Overlay is not null)).ToList()
+                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), s.S.Status, s.Overlay is not null, UnreadOf(s))).ToList()
                 )).ToList();
         }
 
@@ -1138,6 +1144,14 @@ internal static class Program
                 }
             }
         }
+
+        public bool Notify(string? target, string? title, string body)
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null) return false;
+            Post(() => OnNotified(ses.ActivePane, title ?? "", body));
+            return true;
+        }
     }
 
     /// <summary>Resolve a control-API target ("active"/null/id/prefix) to its owning session.</summary>
@@ -1246,7 +1260,7 @@ internal static class Program
                 return IntPtr.Zero;
 
             case WM_TIMER:
-                if ((int)wParam == 2) { _toastText = null; KillTimer(hwnd, (IntPtr)2); InvalidateRect(hwnd, IntPtr.Zero, false); return IntPtr.Zero; }
+                if ((int)wParam == 2) { _toastText = null; _toastTarget = null; KillTimer(hwnd, (IntPtr)2); InvalidateRect(hwnd, IntPtr.Zero, false); return IntPtr.Zero; }
                 _cursorOn = !_cursorOn;
                 InvalidateRect(hwnd, IntPtr.Zero, false);
                 return IntPtr.Zero;
@@ -1303,6 +1317,15 @@ internal static class Program
                 {
                     int mx = LoWord(lParam), my = HiWord(lParam);
                     if (_palette != PaletteKind.None) { PaletteClick(mx, my); return IntPtr.Zero; }
+                    // Notification banner: clicking it jumps to the raising session and dismisses.
+                    if (_toastText is not null && _toastTarget is not null &&
+                        mx >= _toastRect.Left && mx <= _toastRect.Right && my >= _toastRect.Top && my <= _toastRect.Bottom)
+                    {
+                        var t = _toastTarget;
+                        _toastText = null; _toastTarget = null; KillTimer(hwnd, (IntPtr)2);
+                        SetActive(t);
+                        return IntPtr.Zero;
+                    }
                     if (my < (int)TitleBarH) { HitChrome(_titleButtons, mx); return IntPtr.Zero; }
                     if (mx < (int)_sidebarW)
                     {
@@ -1445,6 +1468,7 @@ internal static class Program
                 }
 
             case WM_DESTROY:
+                RemoveTrayIcon();                 // drop the shell tray balloon icon
                 SaveState(captureCommands: true); // persist the tree (+ foreground commands) before tearing down sessions
                 foreach (var s in AllSessions()) { foreach (var p in s.Panes) { try { p.S.Dispose(); } catch { } } try { s.Scratch?.S.Dispose(); } catch { } try { s.Overlay?.S.Dispose(); } catch { } }
                 try { _quick?.S.Dispose(); } catch { }
@@ -2488,6 +2512,17 @@ internal static class Program
                 brush.Color = isDrag ? new Color4(0.5f, 0.53f, 0.57f, 0.45f) : (active ? SbActiveText : SbDimText);
                 if (!ReferenceEquals(_editing, s)) // the rename box covers the name while editing
                     rt.DrawText(s.Name, _uiFont, new Rect(26f, y, _sidebarW - 26f - 22f, rowH), brush);
+                // Unread-notification count badge, just left of the status circle.
+                int unread = UnreadOf(s);
+                if (unread > 0)
+                {
+                    string bn = unread > 99 ? "99+" : unread.ToString();
+                    float bw = MeasureText(bn, _uiSmall) + 10f, bx = _sidebarW - 30f - bw;
+                    brush.Color = new Color4(0.90f, 0.30f, 0.24f, 1f); // notification red pill
+                    rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(bx, y + rowH / 2f - 8f, bw, 16f), RadiusX = 8f, RadiusY = 8f }, brush);
+                    brush.Color = new Color4(1f, 1f, 1f, 1f);
+                    rt.DrawText(bn, _uiSmall, new Rect(bx + 5f, y + rowH / 2f - 8f, bw - 8f, 16f), brush);
+                }
                 // Status circle right-aligned in the row (agterm layout).
                 brush.Color = StatusDot(s.S.Status);
                 rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(_sidebarW - 16f, y + rowH / 2f), 4.5f, 4.5f), brush);
@@ -3191,8 +3226,71 @@ internal static class Program
     private static void ShowToast(string text)
     {
         _toastText = text;
+        _toastTarget = null;
         SetTimer(_hwnd, (IntPtr)2, 1900, IntPtr.Zero);
         RequestRedraw();
+    }
+
+    // ---- Notifications (OSC 9 / OSC 777 / notify) ----
+
+    /// <summary>Find the session that owns a pane (any pane, its scratch, or its overlay; or the quick cover).</summary>
+    private static Ses? OwningSes(Pane p)
+    {
+        lock (_workspaces)
+            foreach (var w in _workspaces)
+                foreach (var s in w.Sessions)
+                    if (s.Panes.Contains(p) || ReferenceEquals(s.Scratch, p) || ReferenceEquals(s.Overlay, p))
+                        return s;
+        return null;
+    }
+
+    /// <summary>A pane raised a desktop notification. Runs on the UI thread (marshaled from the pump).</summary>
+    private static void OnNotified(Pane p, string title, string body)
+    {
+        var ses = OwningSes(p);
+        // Count it against the session unless that pane is the surface you're looking at right now.
+        if (!ReferenceEquals(p, ActiveSurface())) p.Unread++;
+        string label = string.IsNullOrEmpty(title) ? body : $"{title}: {body}";
+        _toastText = label.Length == 0 ? "(notification)" : label;
+        _toastTarget = ses;                       // clicking the banner jumps to the raising session
+        SetTimer(_hwnd, (IntPtr)2, 4000, IntPtr.Zero);
+        if (_config.DesktopNotifications) TrayNotify(title, body);
+        RequestRedraw();
+    }
+
+    /// <summary>Total unread notifications across a session's panes (for the sidebar badge).</summary>
+    private static int UnreadOf(Ses s) { int n = 0; foreach (var p in s.Panes) n += p.Unread; return n; }
+
+    private static void ClearUnread(Ses s) { foreach (var p in s.Panes) p.Unread = 0; if (s.Scratch is not null) s.Scratch.Unread = 0; if (s.Overlay is not null) s.Overlay.Unread = 0; }
+
+    /// <summary>Show an OS desktop notification via a Shell_NotifyIcon tray balloon (no AUMID/shortcut needed).</summary>
+    private static void TrayNotify(string title, string body)
+    {
+        try
+        {
+            var d = new NOTIFYICONDATAW
+            {
+                cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NOTIFYICONDATAW>(),
+                hWnd = _hwnd,
+                uID = 1,
+                uFlags = NIF_INFO | (_trayAdded ? 0u : (NIF_ICON | NIF_TIP)),
+                hIcon = _trayAdded ? IntPtr.Zero : LoadIconW(IntPtr.Zero, (IntPtr)32512), // IDI_APPLICATION
+                szTip = "agwinterm",
+                szInfoTitle = string.IsNullOrEmpty(title) ? "agwinterm" : title,
+                szInfo = body.Length == 0 ? " " : body,
+                dwInfoFlags = 0,
+            };
+            if (!_trayAdded) { _trayAdded = Shell_NotifyIconW(NIM_ADD, ref d); }
+            Shell_NotifyIconW(NIM_MODIFY, ref d);
+        }
+        catch { /* balloon is best-effort; the in-app banner + badge are the reliable surface */ }
+    }
+
+    private static void RemoveTrayIcon()
+    {
+        if (!_trayAdded) return;
+        try { var d = new NOTIFYICONDATAW { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NOTIFYICONDATAW>(), hWnd = _hwnd, uID = 1 }; Shell_NotifyIconW(NIM_DELETE, ref d); } catch { }
+        _trayAdded = false;
     }
 
     private static string SafeCwd(Ses s) { lock (s.S.SyncRoot) return s.S.Emulator.Cwd; }
@@ -3307,6 +3405,7 @@ internal static class Program
         float tw = MeasureText(_toastText, _uiFont) + 32f, th = 34f;
         float cx = _sidebarW + ((cw - _sidebarW) - tw) / 2f;
         float ty = ch - th - 24f;
+        _toastRect = new Rect(cx, ty, tw, th);   // recorded for click-to-jump hit-testing
         brush.Color = new Color4(0.13f, 0.15f, 0.18f, 1f);
         rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx, ty, tw, th), RadiusX = 8f, RadiusY = 8f }, brush);
         brush.Color = ChromeText;

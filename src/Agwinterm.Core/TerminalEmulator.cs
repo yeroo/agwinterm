@@ -357,6 +357,10 @@ public sealed class TerminalEmulator : IParserPerformer
     private static int GetKittyInt(Dictionary<string, string> d, string key, int def)
         => d.TryGetValue(key, out var v) && int.TryParse(v, out var n) ? n : def;
 
+    /// <summary>Raised when the program requests a desktop notification via OSC 9 or OSC 777
+    /// (title, body). Fires on the feed/pump thread — consumers must marshal to their UI thread.</summary>
+    public event Action<string, string>? Notified;
+
     public void OscDispatch(int command, string text)
     {
         switch (command)
@@ -367,6 +371,14 @@ public sealed class TerminalEmulator : IParserPerformer
                 break;
             case 7:
                 Cwd = text;
+                break;
+            case 9: // OSC 9 ; <message>  — body-only desktop notification
+                Notified?.Invoke("", text);
+                break;
+            case 777: // OSC 777 ; notify ; <title> ; <body>
+                var parts = text.Split(';');
+                if (parts.Length >= 2 && parts[0] == "notify")
+                    Notified?.Invoke(parts[1], parts.Length >= 3 ? string.Join(';', parts[2..]) : "");
                 break;
         }
     }

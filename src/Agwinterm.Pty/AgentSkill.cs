@@ -73,6 +73,15 @@ public static class AgentSkill
         - `agwintermctl session overlay close [--target <id>]`   — dismiss the overlay now.
         - `agwintermctl session overlay result`                 — the last overlay's `exit N` (or `no overlay`).
 
+        ## Notify the user (desktop notification)
+        - `agwintermctl notify "build finished" [--title "npm"] [--target <id>]`
+          — raise a notification against a session: an in-app banner (click it to jump to that session),
+          a red count badge on the session's sidebar row (cleared when you next select it), and an OS
+          tray balloon (unless `desktop-notifications = false` in the config). Great for signaling that a
+          long task finished or that you need attention while the user is looking at another session.
+          You can also emit it straight from the shell with an OSC sequence: `printf '\e]9;%s\a' "message"`
+          (or OSC 777: `\e]777;notify;Title;Body\a`).
+
         ## Splits, font, sidebar, theme
         - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
         - `agwintermctl font inc|dec|reset [--target <id>]`      — per-session font zoom
