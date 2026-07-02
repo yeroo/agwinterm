@@ -3,7 +3,7 @@ using Agwinterm.Core;
 namespace Agwinterm.Pty;
 
 /// <summary>A session's metadata for the control-API tree.</summary>
-public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status, bool Overlay = false, int Notifications = 0, bool Flagged = false);
+public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status, bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -120,6 +120,11 @@ public interface ISessionHost
     /// <summary>Focus/unfocus the active workspace (hide the others in the sidebar tree): op = on|off|toggle.</summary>
     void WorkspaceFocus(string op);
 
+    /// <summary>Set/clear a session's background watermark. action = set|clear. For set: <paramref name="path"/> is
+    /// the source image (copied into app data), <paramref name="opacity"/> 0..100 (-1 = keep current),
+    /// <paramref name="mode"/> = fit|fill|center|tile (null = keep). Returns an ack / "no session".</summary>
+    string SessionBackground(string? target, string action, string? path, int opacity, string? mode);
+
     /// <summary>Drive the MRU (Ctrl+Tab) session switcher state machine directly:
     /// op = begin|advance|advance-back|commit|cancel. Returns the resulting active session name.
     /// Lets the control API / tests exercise the walk without synthetic global key input.</summary>
@@ -188,6 +193,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool Notify(string? target, string? title, string body) => false;
     public bool SessionFlag(string? target, string op) => false;
     public void WorkspaceFocus(string op) { }
+    public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => "unsupported";
     public string SessionSwitch(string op) => "unsupported";
     public string CommandRun(string nameOrCommand, string? mode) => "unsupported";
     public string CommandList() => "";

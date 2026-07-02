@@ -150,6 +150,13 @@ switch (area)
                 break;
             case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
             case "flag": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|clear
+            case "background": // session background set <path> [--opacity N] [--mode fit|fill|center|tile] | background clear
+                cargs["action"] = rest.Count > 0 ? rest[0] : "set";
+                if (rest.Count > 1) cargs["path"] = string.Join(' ', rest.Skip(1));
+                else if (Opt("path") is { } bgp) cargs["path"] = bgp;
+                if (int.TryParse(Opt("opacity"), out var bop)) cargs["opacity"] = bop;
+                if (Opt("mode") is { } bgm) cargs["mode"] = bgm;
+                break;
             case "switch": cargs["op"] = rest.Count > 0 ? rest[0] : "advance"; target = null; break; // MRU walk: begin|advance|advance-back|commit|cancel
             case "resize":
                 if (double.TryParse(Opt("split-ratio"), System.Globalization.CultureInfo.InvariantCulture, out var sr)) cargs["ratio"] = sr;

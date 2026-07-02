@@ -180,6 +180,9 @@ public sealed class ControlServer : IDisposable
                 case "session.flag":
                     return host.SessionFlag(target, GetString(args, "op") ?? "toggle") ? Ok("flag") : Err("session not found");
                 case "workspace.focus": host.WorkspaceFocus(GetString(args, "op") ?? "toggle"); return Ok("focus");
+                case "session.background":
+                    return Ok(host.SessionBackground(target, GetString(args, "action") ?? "set",
+                        GetString(args, "path"), GetInt(args, "opacity", -1), GetString(args, "mode")));
                 case "session.switch": return Ok(host.SessionSwitch(GetString(args, "op") ?? "advance"));
                 case "command.run":
                 {
@@ -249,6 +252,7 @@ public sealed class ControlServer : IDisposable
                   .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()));
                 if (n.Overlay) sb.Append(",\"overlay\":true");
                 if (n.Flagged) sb.Append(",\"flagged\":true");
+                if (n.Background) sb.Append(",\"background\":true");
                 if (n.Notifications > 0) sb.Append(",\"notifications\":").Append(n.Notifications);
                 sb.Append('}');
             }

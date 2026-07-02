@@ -255,6 +255,10 @@ internal partial class Program : ISessionHost, IWindowHost
         public int OverlaySizePercent; // 0 = full content region; 1..100 = centered floating panel
         public bool OverlayWait;   // keep the overlay after its program exits (press a key to close)
         public bool OverlayExited; // the overlay's program has exited and it's awaiting a key
+        // Wave F2: per-session background watermark (a faint image drawn behind the terminal of every pane).
+        public string? BgPath;      // absolute path to the copied image under AppDir\backgrounds (null = none)
+        public int BgOpacity = 15;  // 0..100 (drawn opacity of the watermark)
+        public string BgMode = "fit"; // fit | fill | center | tile
         public Pane ActivePane => Panes[Math.Clamp(Active, 0, Panes.Count - 1)];
         // Back-compat shims: existing code that said ses.S / ses.FontSize / ses.StartCwd
         // now refers to the ACTIVE PANE, so most single-pane logic is unchanged.
@@ -284,6 +288,13 @@ internal partial class Program : ISessionHost, IWindowHost
     // bgra == null signals a decode failure (so we can drop it from _decoding without retrying forever).
     private readonly System.Collections.Concurrent.ConcurrentQueue<(KittyImage img, byte[]? bgra, int w, int h)> _decoded = new();
     private static readonly bool _noImages = Environment.GetEnvironmentVariable("AGWINTERM_NOIMG") == "1";
+
+    // Wave F2: session background watermarks. A separate cache keyed by the copied file path
+    // (one bitmap per distinct image, at native size); decode happens off the UI thread just like
+    // the Kitty pipeline, so a background image never stalls rendering — it appears on a later frame.
+    private readonly Dictionary<string, ID2D1Bitmap> _bgCache = new();
+    private readonly HashSet<string> _bgDecoding = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(string path, byte[]? bgra, int w, int h)> _bgDecoded = new();
 
     [STAThread]
     private static void Main()
@@ -1009,6 +1020,7 @@ internal partial class Program : ISessionHost, IWindowHost
         if (ses.Overlay is not null) CloseOverlayOf(ses); // dismiss + dispose this session's overlay
         bool wasActive = ReferenceEquals(_active, ses);
         _mru.Remove(ses.Id);
+        EvictWatermark(ses.BgPath); SweepBackground(ses.Id); // drop the session's watermark file + texture
         lock (_workspaces) ses.Ws.Sessions.Remove(ses);
         if (wasActive)
         {
@@ -1018,6 +1030,74 @@ internal partial class Program : ISessionHost, IWindowHost
         }
         RequestRedraw();
         SaveState();
+    }
+
+    // ---- Wave F2: session background watermark storage/lifecycle (UI thread) ----
+
+    /// <summary>Copy the chosen image into AppDir\backgrounds\&lt;sessionId&gt;&lt;ext&gt; and set the session's spec.</summary>
+    private string SetBackground(Ses ses, string source, int opacity, string? mode)
+    {
+        if (!File.Exists(source)) return "file not found: " + source;
+        string ext = Path.GetExtension(source);
+        if (string.IsNullOrEmpty(ext)) ext = ".img";
+        string dst = Path.Combine(BackgroundsDir, ses.Id + ext);
+        try
+        {
+            Directory.CreateDirectory(BackgroundsDir);
+            SweepBackground(ses.Id);          // remove any prior copy (possibly a different extension)
+            EvictWatermark(ses.BgPath);
+            File.Copy(source, dst, overwrite: true);
+        }
+        catch (Exception ex) { return "copy failed: " + ex.Message; }
+
+        ses.BgPath = dst;
+        if (opacity >= 0) ses.BgOpacity = System.Math.Clamp(opacity, 0, 100);
+        if (!string.IsNullOrWhiteSpace(mode))
+        {
+            string m = mode!.Trim().ToLowerInvariant();
+            if (m is "fit" or "fill" or "center" or "tile") ses.BgMode = m;
+        }
+        EvictWatermark(dst);                   // force a fresh decode of the new bytes
+        SaveState();
+        RequestRedraw();
+        return $"background set ({ses.BgMode}, {ses.BgOpacity}%)";
+    }
+
+    private void ClearBackground(Ses ses)
+    {
+        EvictWatermark(ses.BgPath);
+        SweepBackground(ses.Id);
+        ses.BgPath = null;
+        SaveState();
+        RequestRedraw();
+    }
+
+    /// <summary>Delete any copied background file(s) for a session id (best-effort).</summary>
+    private static void SweepBackground(string sessionId)
+    {
+        try
+        {
+            if (!Directory.Exists(BackgroundsDir)) return;
+            foreach (var f in Directory.EnumerateFiles(BackgroundsDir, sessionId + ".*"))
+                try { File.Delete(f); } catch { }
+        }
+        catch { }
+    }
+
+    /// <summary>Sweep watermark files for every session in a (possibly closed) window's snapshot.</summary>
+    private static void SweepWindowBackgrounds(string windowId)
+    {
+        try
+        {
+            string p = Path.Combine(AppDir, "windows", windowId + ".json");
+            if (!File.Exists(p)) return;
+            var st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(p));
+            if (st is null) return;
+            foreach (var ws in st.Workspaces)
+                foreach (var s in ws.Sessions)
+                    if (!string.IsNullOrEmpty(s.Id)) SweepBackground(s.Id);
+        }
+        catch { }
     }
 
     private void CycleSession(int dir)
@@ -1260,6 +1340,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 _windowIndex.RemoveAll(m => m.Id == target.Id);
                 if (_frontmostId == target.Id) _frontmostId = _windowIndex.FirstOrDefault(m => m.IsOpen)?.Id ?? _windowIndex.FirstOrDefault()?.Id;
             }
+            SweepWindowBackgrounds(target.Id); // remove watermark files for that window's sessions
             try { File.Delete(Path.Combine(AppDir, "windows", target.Id + ".json")); } catch { }
             SaveIndex();
         });
@@ -1354,7 +1435,7 @@ internal partial class Program : ISessionHost, IWindowHost
             lock (_workspaces)
                 return _workspaces.Select(w => new WorkspaceSnapshot(
                     w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
-                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), s.S.Status, s.Overlay is not null, UnreadOf(s), s.Flagged)).ToList()
+                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), s.S.Status, s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null)).ToList()
                 )).ToList();
         }
 
@@ -1620,6 +1701,15 @@ internal partial class Program : ISessionHost, IWindowHost
             Post(() => FlagOp(ses, op));
             return true;
         }
+
+        public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => InvokeOnUi(() =>
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null) return "no session";
+            if (action == "clear") { ClearBackground(ses); return "cleared"; }
+            if (string.IsNullOrWhiteSpace(path)) return "background set needs a path";
+            return SetBackground(ses, path!, opacity, mode);
+        });
 
         public void WorkspaceFocus(string op) => Post(() => WorkspaceFocusOp(op));
 
@@ -2916,6 +3006,106 @@ internal partial class Program : ISessionHost, IWindowHost
     private static readonly BitmapProperties _bmpProps =
         new(new PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, AlphaMode.Premultiplied), 96f, 96f);
 
+    /// <summary>
+    /// Draw a session's background watermark into a pane's content rect (behind the cells; text is
+    /// painted on top so it stays readable). Decode is off the UI thread (like DrawImages); the
+    /// image simply appears once ready. Scrollback doesn't move it — it's pinned to the pane.
+    /// </summary>
+    private void DrawWatermark(Ses ses, float ox, float oy, float pw, float ph)
+    {
+        if (_rt is null || string.IsNullOrEmpty(ses.BgPath) || ses.BgOpacity <= 0 || pw <= 1 || ph <= 1) return;
+        string path = ses.BgPath!;
+
+        // Upload anything decoded on background threads (cheap; UI thread only).
+        while (_bgDecoded.TryDequeue(out var d))
+        {
+            _bgDecoding.Remove(d.path);
+            if (d.bgra is null || _bgCache.ContainsKey(d.path)) continue;
+            try
+            {
+                var h = GCHandle.Alloc(d.bgra, GCHandleType.Pinned);
+                try { _bgCache[d.path] = _rt.CreateBitmap(new SizeI(d.w, d.h), h.AddrOfPinnedObject(), (uint)(d.w * 4), _bmpProps); }
+                finally { h.Free(); }
+            }
+            catch (Exception ex) { Log($"watermark upload FAILED {path}: {ex.Message}"); }
+        }
+
+        if (!_bgCache.TryGetValue(path, out var bmp))
+        {
+            if (_bgDecoding.Add(path)) _ = Task.Run(() => DecodeBackgroundAsync(path));
+            return; // renders on a later frame once uploaded
+        }
+
+        float iw = bmp.Size.Width, ih = bmp.Size.Height;
+        if (iw < 1 || ih < 1) return;
+        float opacity = System.Math.Clamp(ses.BgOpacity, 0, 100) / 100f;
+
+        _rt.PushAxisAlignedClip(new Vortice.RawRectF(ox, oy, ox + pw, oy + ph), AntialiasMode.Aliased);
+        try
+        {
+            switch (ses.BgMode)
+            {
+                case "tile":
+                    for (float ty = oy; ty < oy + ph; ty += ih)
+                        for (float tx = ox; tx < ox + pw; tx += iw)
+                            _rt.DrawBitmap(bmp, new Vortice.RawRectF(tx, ty, tx + iw, ty + ih), opacity, BitmapInterpolationMode.Linear, null);
+                    break;
+                case "center":
+                {
+                    float cx = ox + (pw - iw) / 2f, cy = oy + (ph - ih) / 2f;
+                    _rt.DrawBitmap(bmp, new Vortice.RawRectF(cx, cy, cx + iw, cy + ih), opacity, BitmapInterpolationMode.Linear, null);
+                    break;
+                }
+                default: // "fit" (letterbox) and "fill" (cover) — same math, min vs max scale; clip handles overflow.
+                {
+                    float scale = ses.BgMode == "fill" ? MathF.Max(pw / iw, ph / ih) : MathF.Min(pw / iw, ph / ih);
+                    float dw = iw * scale, dh = ih * scale;
+                    float dx = ox + (pw - dw) / 2f, dy = oy + (ph - dh) / 2f;
+                    _rt.DrawBitmap(bmp, new Vortice.RawRectF(dx, dy, dx + dw, dy + dh), opacity, BitmapInterpolationMode.Linear, null);
+                    break;
+                }
+            }
+        }
+        catch (Exception ex) { Log($"watermark draw FAILED {path}: {ex.Message}"); }
+        finally { _rt.PopAxisAlignedClip(); }
+    }
+
+    /// <summary>Background: decode a watermark image file to premultiplied BGRA, enqueue for UI upload.</summary>
+    private void DecodeBackgroundAsync(string path)
+    {
+        try
+        {
+            using var gdi = new System.Drawing.Bitmap(path); // PNG/JPG/BMP/GIF via GDI+
+            int w = gdi.Width, h = gdi.Height;
+            var data = gdi.LockBits(new System.Drawing.Rectangle(0, 0, w, h),
+                System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+            byte[] buf;
+            try
+            {
+                buf = new byte[w * 4 * h];
+                if (data.Stride == w * 4) Marshal.Copy(data.Scan0, buf, 0, buf.Length);
+                else for (int y = 0; y < h; y++) Marshal.Copy(data.Scan0 + y * data.Stride, buf, y * w * 4, w * 4);
+            }
+            finally { gdi.UnlockBits(data); }
+            _bgDecoded.Enqueue((path, buf, w, h));
+        }
+        catch (Exception ex)
+        {
+            Log($"watermark decode FAILED {path}: {ex.Message}");
+            _bgDecoded.Enqueue((path, null, 0, 0)); // stop retrying
+        }
+        finally { RequestRedraw(); }
+    }
+
+    /// <summary>Drop a cached watermark bitmap (after clear/replace) so the file handle/texture is freed.</summary>
+    private void EvictWatermark(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return;
+        if (_bgCache.Remove(path!, out var bmp)) { try { bmp.Dispose(); } catch { } }
+        _bgDecoding.Remove(path!);
+    }
+
     /// <summary>Background: decode to premultiplied BGRA pixels (no D2D), enqueue for UI upload, ask for a redraw.</summary>
     private void DecodePixelsAsync(KittyImage img)
     {
@@ -2990,6 +3180,10 @@ internal partial class Program : ISessionHost, IWindowHost
         _imageCache.Clear();
         _decoding.Clear();
         while (_decoded.TryDequeue(out _)) { }
+        foreach (var b in _bgCache.Values) { try { b.Dispose(); } catch { } } // watermark textures are device-bound too
+        _bgCache.Clear();
+        _bgDecoding.Clear();
+        while (_bgDecoded.TryDequeue(out _)) { }
         try { _brush?.Dispose(); } catch { }
         try { _rt?.Dispose(); } catch { }
         _brush = null; _rt = null;
@@ -3259,6 +3453,7 @@ internal partial class Program : ISessionHost, IWindowHost
         foreach (var (pane, ox, oy, pw, ph) in layout)
         {
             var (fmt, cw, ch) = Metrics(pane.FontSize);
+            DrawWatermark(ses, ox, oy, pw, ph);   // faint session background, behind the cells
             RenderTerminal(pane.S, ox, oy, fmt, cw, ch, pane.ScrollOffset, pane);
             // Dim non-active panes in a split so the focused one stands out.
             if (layout.Count > 1 && !ReferenceEquals(pane, ses.ActivePane) && _config.InactivePaneDim > 0)
@@ -4915,7 +5110,9 @@ internal partial class Program : ISessionHost, IWindowHost
 
     private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
-    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; } }
+    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
+        // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
+        public string? BgFile { get; set; } public int BgOpacity { get; set; } = 15; public string BgMode { get; set; } = "fit"; }
     private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
     private sealed class AppState
     {
@@ -4940,6 +5137,7 @@ internal partial class Program : ISessionHost, IWindowHost
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm");
     private static string WindowsIndexPath => Path.Combine(AppDir, "windows.json");
     private static string LegacyStatePath => Path.Combine(AppDir, "state.json");
+    private static string BackgroundsDir => Path.Combine(AppDir, "backgrounds"); // copied per-session watermark images
     // Per-window tree snapshot. Multi-window (F1b): each window persists to windows/<id>.json.
     private string StatePath => Path.Combine(AppDir, "windows", Id + ".json");
 
@@ -5137,7 +5335,8 @@ internal partial class Program : ISessionHost, IWindowHost
                 var wss = new WorkspaceState { Id = id, Name = name, Expanded = expanded };
                 foreach (var s in sessions)
                 {
-                    var ss = new SessionState { Id = s.Id, Name = s.Name, Active = s.Active, Flagged = s.Flagged };
+                    var ss = new SessionState { Id = s.Id, Name = s.Name, Active = s.Active, Flagged = s.Flagged,
+                        BgFile = s.BgPath is null ? null : Path.GetFileName(s.BgPath), BgOpacity = s.BgOpacity, BgMode = s.BgMode };
                     List<Pane> panes;
                     lock (_workspaces) panes = s.Panes.ToList();
                     foreach (var p in panes)
@@ -5246,6 +5445,11 @@ internal partial class Program : ISessionHost, IWindowHost
                         ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
                     }
                     ses.Flagged = s.Flagged;
+                    if (!string.IsNullOrEmpty(s.BgFile)) // restore the watermark if its copied file still exists
+                    {
+                        string bg = Path.Combine(BackgroundsDir, s.BgFile!);
+                        if (File.Exists(bg)) { ses.BgPath = bg; ses.BgOpacity = s.BgOpacity; ses.BgMode = string.IsNullOrWhiteSpace(s.BgMode) ? "fit" : s.BgMode; }
+                    }
                     if (ReferenceEquals(_active, ses)) _session = ses.S;
                     RegridSession(ses);
 

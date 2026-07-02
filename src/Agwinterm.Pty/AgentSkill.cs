@@ -142,6 +142,9 @@ public static class AgentSkill
         - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
         - `agwintermctl font inc|dec|reset [--target <id>]`      — per-session font zoom
         - `agwintermctl sidebar show|hide|toggle|expand|collapse`
+        - `agwintermctl session background set <image> [--opacity 0..100] [--mode fit|fill|center|tile]` — a faint per-session
+          watermark drawn behind the terminal (the image is copied into app data); `session background clear` removes it.
+          Per-session (honors `--target`/`--window`); persists; `tree` reports `"background":true`.
         - `agwintermctl theme list` · `agwintermctl theme set "Solarized Light"`
           Bundled curated themes — dark: Dracula, Tokyo Night, Catppuccin Mocha, Gruvbox Dark, Nord, One Dark, Solarized Dark;
           light: Solarized Light, Catppuccin Latte, GitHub Light. Drop more ghostty-format files in %LOCALAPPDATA%\agwinterm\themes\.
