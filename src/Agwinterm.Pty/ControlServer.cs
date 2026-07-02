@@ -128,6 +128,8 @@ public sealed class ControlServer : IDisposable
                 case "sidebar": _host.SidebarOp(GetString(args, "op") ?? "toggle"); return Ok("sidebar");
                 case "session.copy": return Ok(_host.SessionCopy(target)); // selection text (host-side), "" if none
                 case "session.search": return Ok(_host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
+                case "session.scratch": return _host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
+                case "quick": _host.Quick(GetString(args, "op") ?? "toggle"); return Ok("quick");
             }
 
             // Session-targeted commands.

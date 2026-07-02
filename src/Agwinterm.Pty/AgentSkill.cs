@@ -60,6 +60,10 @@ public static class AgentSkill
         ## Type into a session
         - `agwintermctl session type "npm test" --target <id>`   — send keystrokes (newline = Enter)
 
+        ## Scratch & quick terminals
+        - `agwintermctl session scratch on|off|toggle [--target <id>]` — a per-session extra shell drawn over that session's content (opens in the session's cwd; stays alive when hidden; not restored)
+        - `agwintermctl quick on|off|toggle`                     — the window's single throwaway shell, dropped over the active session (opens in the home dir; stays alive when hidden; not restored)
+
         ## Splits, font, sidebar, theme
         - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
         - `agwintermctl font inc|dec|reset [--target <id>]`      — per-session font zoom

@@ -125,6 +125,7 @@ switch (area)
                 else if (rest.Count > 0) cargs["query"] = string.Join(' ', rest);
                 break;
             case "split": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break;
+            case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
             case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
             case "resize":
                 if (double.TryParse(Opt("split-ratio"), System.Globalization.CultureInfo.InvariantCulture, out var sr)) cargs["ratio"] = sr;
@@ -146,6 +147,10 @@ switch (area)
     case "sidebar":
         cmd = "sidebar";
         cargs["op"] = sub.Length > 0 ? sub : "toggle";
+        break;
+    case "quick":
+        cmd = "quick";
+        cargs["op"] = sub.Length > 0 ? sub : "toggle"; // on|off|toggle; the window's throwaway shell
         break;
     case "font":
         cmd = "font";

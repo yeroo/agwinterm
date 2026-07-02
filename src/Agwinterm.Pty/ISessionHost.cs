@@ -73,6 +73,12 @@ public interface ISessionHost
 
     /// <summary>Open/drive the find bar over the active session; returns "N of M" / "no matches" / "closed".</summary>
     string SessionSearch(string? target, string? query, string? action);
+
+    /// <summary>Toggle/show/hide a session's scratch terminal: op = on|off|toggle. Returns false if the target isn't found.</summary>
+    bool SessionScratch(string? target, string op);
+
+    /// <summary>Toggle/show/hide the window's quick terminal: op = on|off|toggle.</summary>
+    void Quick(string op);
 }
 
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
@@ -110,4 +116,6 @@ public sealed class SingleSessionHost : ISessionHost
     public void SidebarOp(string op) { }
     public string SessionCopy(string? target) => "";
     public string SessionSearch(string? target, string? query, string? action) => "";
+    public bool SessionScratch(string? target, string op) => false;
+    public void Quick(string op) { }
 }

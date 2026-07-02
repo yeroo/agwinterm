@@ -40,7 +40,11 @@ internal static class Program
     private static Theme _theme = Theme.Default;                 // active colour theme (renderer resolves through it)
     private static Theme? _themeBeforePreview;                   // saved when the theme picker opens (Esc reverts)
     private static List<Theme> _allThemes = new();
-    private static TerminalSession? _session;   // mirrors the active session (render/input use this)
+    private static TerminalSession? _session;   // mirrors the ACTIVE SURFACE (active pane, or a shown cover)
+    // Auxiliary "cover" terminal drawn over the content region: scratch (per-session) or quick (per-app).
+    private static Pane? _cover;                // the shown cover, or null
+    private static int _coverKind;              // 0 none, 1 scratch, 2 quick
+    private static Pane? _quick;                // the single per-app quick terminal (lazy; kept alive)
     private static ControlServer? _control;
 
     // ---- Multi-session model (agterm workspaces -> sessions), mirrors the WinUI shell ----
@@ -164,6 +168,7 @@ internal static class Program
         public required Workspace Ws;
         public readonly List<Pane> Panes = new();
         public int Active;         // index of the focused pane
+        public Pane? Scratch;      // per-session scratch terminal (lazy; kept alive when hidden; not restored)
         public Pane ActivePane => Panes[Math.Clamp(Active, 0, Panes.Count - 1)];
         // Back-compat shims: existing code that said ses.S / ses.FontSize / ses.StartCwd
         // now refers to the ACTIVE PANE, so most single-pane logic is unchanged.
@@ -526,11 +531,82 @@ internal static class Program
     private static void SetActive(Ses ses)
     {
         _active = ses;
-        _session = ses.S;
+        if (_coverKind == 1) { _cover = null; _coverKind = 0; } // a scratch cover belonged to the previous session
+        _session = ActiveSurface()?.S;                          // a quick cover (if any) keeps input; else the new pane
         RegridSession(ses);
+        if (_cover is not null) RegridCover();
         RequestRedraw();
         SaveState();
     }
+
+    // ---- Cover terminals (scratch / quick) ----
+
+    /// <summary>The surface that receives input/render focus: a shown cover, else the active pane.</summary>
+    private static Pane? ActiveSurface() => _cover ?? _active?.ActivePane;
+
+    private static void SyncSession() => _session = ActiveSurface()?.S;
+
+    /// <summary>A real filesystem cwd for a session (OSC 7 if reported, else the pane's launch dir).</summary>
+    private static string? CwdOf(Ses ses)
+    {
+        string raw = SafeCwd(ses);
+        return string.IsNullOrWhiteSpace(raw) ? ses.StartCwd : PrettyCwd(raw);
+    }
+
+    private static void ShowCover(Pane p, int kind) { _cover = p; _coverKind = kind; SyncSession(); RegridCover(); RequestRedraw(); }
+
+    private static void HideCover()
+    {
+        _cover = null; _coverKind = 0; SyncSession();
+        if (_active is not null) RegridSession(_active);
+        RequestRedraw();
+    }
+
+    /// <summary>Resize the shown cover's PTY to fill the whole content region using its own metrics.</summary>
+    private static void RegridCover()
+    {
+        if (_cover is null) return;
+        var (_, _, w, h) = ContentArea();
+        var (_, cw, ch) = Metrics(_cover.FontSize);
+        int cols = Math.Max(1, (int)(w / cw)), rows = Math.Max(1, (int)(h / ch));
+        if (_cover.S.Cols != cols || _cover.S.Rows != rows) _cover.S.Resize(cols, rows);
+        _cover.ScrollOffset = Math.Clamp(_cover.ScrollOffset, 0, _cover.S.Emulator.HistoryCount);
+    }
+
+    /// <summary>Show a session's scratch terminal (creating it lazily in the session's cwd).</summary>
+    private static void ShowScratch(Ses ses)
+    {
+        ses.Scratch ??= CreatePane(ses.Id + ":scratch:" + Guid.NewGuid().ToString("N")[..6], ses.Ws, CwdOf(ses), ses.FontSize);
+        ShowCover(ses.Scratch, 1);
+    }
+
+    private static void ShowQuick()
+    {
+        _quick ??= CreatePane("quick:" + Guid.NewGuid().ToString("N")[..6], ActiveWorkspace(),
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), (float)_config.FontSize);
+        ShowCover(_quick, 2);
+    }
+
+    /// <summary>scratch op on|off|toggle for a session's scratch cover.</summary>
+    private static void ScratchOp(Ses ses, string op)
+    {
+        bool showing = _coverKind == 1 && ReferenceEquals(_cover, ses.Scratch) && ses.Scratch is not null;
+        if (op == "off") { if (showing) HideCover(); return; }
+        if (op == "on") { if (!showing) ShowScratch(ses); return; }
+        if (showing) HideCover(); else ShowScratch(ses); // toggle
+    }
+
+    private static void QuickOp(string op)
+    {
+        bool showing = _coverKind == 2;
+        if (op == "off") { if (showing) HideCover(); return; }
+        if (op == "on") { if (!showing) ShowQuick(); return; }
+        if (showing) HideCover(); else ShowQuick(); // toggle
+    }
+
+    /// <summary>Change one pane's font zoom (delta 0 = reset to the config default). Caller reflows.</summary>
+    private static void ChangeFontSizeOfPane(Pane p, int delta)
+        => p.FontSize = delta == 0 ? (float)_config.FontSize : Math.Clamp(p.FontSize + delta, 6f, 48f);
 
     /// <summary>Change the active pane's font zoom (delta 0 = reset to config default), reflow + repaint.</summary>
     private static void ChangeFontSizeOf(Ses ses, int delta)
@@ -544,7 +620,11 @@ internal static class Program
         SaveState();
     }
 
-    private static void ChangeFontSize(int delta) { if (_active is not null) ChangeFontSizeOf(_active, delta); }
+    private static void ChangeFontSize(int delta)
+    {
+        if (_cover is not null) { ChangeFontSizeOfPane(_cover, delta); RegridCover(); RequestRedraw(); }
+        else if (_active is not null) ChangeFontSizeOf(_active, delta);
+    }
 
     // ---- Splits ----
 
@@ -597,6 +677,8 @@ internal static class Program
     private static void CloseSessionInternal(Ses ses)
     {
         foreach (var p in ses.Panes) { try { p.S.Dispose(); } catch { } }
+        // Dismiss + dispose this session's scratch cover if it belongs here.
+        if (ses.Scratch is not null) { if (_coverKind == 1 && ReferenceEquals(_cover, ses.Scratch)) HideCover(); try { ses.Scratch.S.Dispose(); } catch { } ses.Scratch = null; }
         bool wasActive = ReferenceEquals(_active, ses);
         lock (_workspaces) ses.Ws.Sessions.Remove(ses);
         if (wasActive)
@@ -748,7 +830,7 @@ internal static class Program
     {
         public TerminalSession? Resolve(string? target)
         {
-            if (string.IsNullOrEmpty(target) || target == "active") return _active?.S;
+            if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface()?.S;
             lock (_workspaces)
             {
                 var panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToList();
@@ -934,6 +1016,31 @@ internal static class Program
             RequestRedraw();
             return SearchStatus();
         });
+
+        public bool SessionScratch(string? target, string op)
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null) return false;
+            Post(() => ScratchOp(ses, op));
+            return true;
+        }
+
+        public void Quick(string op) => Post(() => QuickOp(op));
+    }
+
+    /// <summary>Resolve a control-API target ("active"/null/id/prefix) to its owning session.</summary>
+    private static Ses? FindSesForTarget(string? target)
+    {
+        if (string.IsNullOrEmpty(target) || target == "active") return _active;
+        lock (_workspaces)
+        {
+            var all = _workspaces.SelectMany(w => w.Sessions).ToList();
+            foreach (var s in all)
+                if (s.Id == target || s.Panes.Any(p => p.Id == target)) return s;
+            foreach (var s in all)
+                if (s.Id.StartsWith(target) || s.Panes.Any(p => p.Id.StartsWith(target))) return s;
+        }
+        return null;
     }
 
     private static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -1040,6 +1147,7 @@ internal static class Program
                     {
                         _rt.Resize(new SizeI(w, h));
                         if (_active is not null) RegridSession(_active);
+                        if (_cover is not null) RegridCover();
                         InvalidateRect(hwnd, IntPtr.Zero, false);
                     }
                 }
@@ -1095,9 +1203,9 @@ internal static class Program
                         }
                         return IntPtr.Zero;
                     }
-                    int di = DividerAtX(mx, my);
+                    int di = _cover is null ? DividerAtX(mx, my) : -1;
                     if (di >= 0) { _divDragging = true; _divLeft = di; SetCapture(hwnd); return IntPtr.Zero; }
-                    FocusPaneAtX(mx);
+                    if (_cover is null) FocusPaneAtX(mx); // covers capture the whole content region
                     bool shiftDn = KeyDown(VK_SHIFT);
                     var em0 = _session?.Emulator;
                     if (em0 is not null && em0.MouseReporting && !shiftDn) { SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero; }
@@ -1128,7 +1236,7 @@ internal static class Program
                 if (_selecting)
                 {
                     _selecting = false; ReleaseCapture();
-                    if (!_selMoved && _active is not null) { _active.ActivePane.ClearSel(); RequestRedraw(); } // plain click clears
+                    if (!_selMoved) { ActiveSurface()?.ClearSel(); RequestRedraw(); } // plain click clears
                     return IntPtr.Zero;
                 }
                 if (InContent(lParam)) { SendMousePx(0, lParam, false); }
@@ -1158,8 +1266,8 @@ internal static class Program
                 {
                     var em2 = _session?.Emulator;
                     if (em2 is not null && em2.MouseReporting) SendMousePx(2, lParam, true);
-                    else if (_config.RightClickPaste && _active is not null)
-                        PasteInto(PaneAt(LoWord(lParam), HiWord(lParam))?.pane ?? _active.ActivePane);
+                    else if (_config.RightClickPaste && (PaneAt(LoWord(lParam), HiWord(lParam))?.pane ?? ActiveSurface()) is { } pp)
+                        PasteInto(pp);
                 }
                 return IntPtr.Zero;
             case WM_RBUTTONUP: if (InContent(lParam)) SendMousePx(2, lParam, false); return IntPtr.Zero;
@@ -1203,6 +1311,13 @@ internal static class Program
                         return IntPtr.Zero;
                     }
                     // Otherwise scroll the pane under the cursor through its scrollback history.
+                    if (_cover is not null && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
+                    {
+                        int hn = _cover.S.Emulator.HistoryCount;
+                        int no = Math.Clamp(_cover.ScrollOffset + (HiWord(wParam) > 0 ? 3 : -3), 0, hn);
+                        if (no != _cover.ScrollOffset) { _cover.ScrollOffset = no; RequestRedraw(); }
+                        return IntPtr.Zero;
+                    }
                     if (_active is not null && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
                         foreach (var (p, x, _, w, _) in PaneLayout(_active))
                             if (pt.x >= x && pt.x < x + w)
@@ -1218,7 +1333,8 @@ internal static class Program
 
             case WM_DESTROY:
                 SaveState(captureCommands: true); // persist the tree (+ foreground commands) before tearing down sessions
-                foreach (var s in AllSessions()) foreach (var p in s.Panes) { try { p.S.Dispose(); } catch { } }
+                foreach (var s in AllSessions()) { foreach (var p in s.Panes) { try { p.S.Dispose(); } catch { } } try { s.Scratch?.S.Dispose(); } catch { } }
+                try { _quick?.S.Dispose(); } catch { }
                 PostQuitMessage(0);
                 return IntPtr.Zero;
         }
@@ -1227,7 +1343,8 @@ internal static class Program
 
     private static void Send(string s)
     {
-        if (_active is not null) { _active.ActivePane.ScrollOffset = 0; _active.ActivePane.ClearSel(); } // typing snaps to bottom, clears selection
+        var surf = ActiveSurface();
+        if (surf is not null) { surf.ScrollOffset = 0; surf.ClearSel(); } // typing snaps to bottom, clears selection
         _session?.NotifyActivity();
         _session?.Write(Encoding.UTF8.GetBytes(s));
     }
@@ -1235,7 +1352,7 @@ internal static class Program
     /// <summary>Scroll the active pane's scrollback by delta lines (or to top/bottom for ±int.MaxValue).</summary>
     private static bool ScrollActivePane(int deltaLines)
     {
-        var p = _active?.ActivePane;
+        var p = ActiveSurface();
         if (p is null) return false;
         int hist = p.S.Emulator.HistoryCount;
         int no = deltaLines == int.MaxValue ? hist : deltaLines == int.MinValue ? 0
@@ -1259,8 +1376,10 @@ internal static class Program
         {
             case "new_session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true); break;
             case "new_workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
-            case "close_session": case "close_pane": CloseActivePane(); break;
+            case "close_session": case "close_pane": if (_cover is not null) HideCover(); else CloseActivePane(); break;
             case "split_pane": SplitActivePane(); break;
+            case "toggle_scratch": if (_active is not null) ScratchOp(_active, "toggle"); break;
+            case "quick_terminal": QuickOp("toggle"); break;
             case "focus_left_pane": FocusPane(-1); break;
             case "focus_right_pane": FocusPane(1); break;
             case "next_session": CycleSession(1); break;
@@ -1410,7 +1529,9 @@ internal static class Program
     /// <summary>Pane of the active session under a client point + its origin/metrics, or null.</summary>
     private static (Pane pane, float ox, float oy, float cw, float ch)? PaneAt(int px, int py)
     {
-        if (_active is null || px < (int)_sidebarW || py < (int)TitleBarH || py >= ClientH() - (int)FooterH) return null;
+        if (px < (int)_sidebarW || py < (int)TitleBarH || py >= ClientH() - (int)FooterH) return null;
+        if (_cover is not null) { var (cx, cy, _, _) = ContentArea(); var (_, ccw, cch) = Metrics(_cover.FontSize); return (_cover, cx, cy, ccw, cch); }
+        if (_active is null) return null;
         foreach (var (pane, x, y, w, _) in PaneLayout(_active))
             if (px >= x && px < x + w + DividerW)
             {
@@ -1540,7 +1661,7 @@ internal static class Program
     private static void RecomputeSearch()
     {
         _searchMatches.Clear();
-        var ap = _active?.ActivePane;
+        var ap = ActiveSurface();
         if (ap is null || _searchQuery.Length == 0) return;
         string q = _searchQuery.ToLowerInvariant();
         var em = ap.S.Emulator;
@@ -1578,7 +1699,7 @@ internal static class Program
 
     private static void ScrollToMatch()
     {
-        var ap = _active?.ActivePane;
+        var ap = ActiveSurface();
         if (ap is null || _searchCur < 0 || _searchCur >= _searchMatches.Count) return;
         int ml = _searchMatches[_searchCur].Line;
         var em = ap.S.Emulator;
@@ -1673,6 +1794,7 @@ internal static class Program
                 case 0xBB: case 0x6B: ChangeFontSize(1); return true;   // Ctrl+= / Ctrl+numpad-plus
                 case 0xBD: case 0x6D: ChangeFontSize(-1); return true;  // Ctrl+- / Ctrl+numpad-minus
                 case 0x30: case 0x60: ChangeFontSize(0); return true;   // Ctrl+0 / Ctrl+numpad-0
+                case 0xC0: QuickOp("toggle"); return true;              // Ctrl+` — quick terminal (VK_OEM_3, can't be a chord)
             }
         }
 
@@ -1950,7 +2072,7 @@ internal static class Program
             bool hasSel = selPane is { HasSel: true };
             int sl0 = 0, sc0 = 0, sl1 = 0, sc1 = 0;
             if (hasSel) NormSel(selPane!, out sl0, out sc0, out sl1, out sc1);
-            bool searchHere = _searchActive && selPane is not null && ReferenceEquals(selPane, _active?.ActivePane);
+            bool searchHere = _searchActive && selPane is not null && ReferenceEquals(selPane, ActiveSurface());
             // Visible row r maps into [history ++ live grid], shifted up by `off`.
             Cell CellAt(int r, int c)
             {
@@ -2082,7 +2204,20 @@ internal static class Program
         rt.BeginDraw();
         rt.Clear(C4(_theme.DefaultBackground));
 
-        if (_active is not null)
+        if (_cover is not null)
+        {
+            var (ox, oy, cw0, ch0) = ContentArea();
+            var (fmt, cw, ch) = Metrics(_cover.FontSize);
+            RenderTerminal(_cover.S, ox, oy, fmt, cw, ch, _cover.ScrollOffset, _cover);
+            // Corner badge so it's obvious a cover is up.
+            string badge = _coverKind == 1 ? "scratch" : "quick";
+            float bw = MeasureText(badge, _uiSmall) + 16f;
+            brush.Color = new Color4(0.16f, 0.20f, 0.25f, 0.92f);
+            rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(ox + cw0 - bw - 6f, oy + 4f, bw, 20f), RadiusX = 5f, RadiusY = 5f }, brush);
+            brush.Color = ChromeText;
+            rt.DrawText(badge, _uiSmall, new Rect(ox + cw0 - bw + 2f, oy + 4f, bw - 8f, 20f), brush);
+        }
+        else if (_active is not null)
         {
             var layout = PaneLayout(_active);
             foreach (var (pane, ox, oy, pw, ph) in layout)
@@ -2621,8 +2756,8 @@ internal static class Program
                 A("Increase Font Size", "Ctrl+=", () => ChangeFontSize(1));
                 A("Decrease Font Size", "Ctrl+-", () => ChangeFontSize(-1));
                 A("Reset Font Size", "Ctrl+0", () => ChangeFontSize(0));
-                A("Scratch Terminal", "", () => ShowToast("scratch not implemented yet"));
-                A("Quick Terminal", "", () => ShowToast("quick terminal not implemented yet"));
+                A("Scratch Terminal", "Ctrl+J", () => { if (_active is not null) ScratchOp(_active, "toggle"); });
+                A("Quick Terminal", "Ctrl+`", () => QuickOp("toggle"));
                 A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
                 A("Custom Commands…", "Ctrl+Shift+O", () => TogglePalette(PaletteKind.Custom));
                 A("Install Shell Integration", "", InstallShellIntegration);
@@ -2881,6 +3016,7 @@ internal static class Program
             case "new-workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
             case "attention": GoToNextAttention(1); break;
             case "split": SplitActivePane(); break;
+            case "quick terminal": QuickOp("toggle"); break;
             default: ShowToast(a + " not implemented yet"); break;
         }
     }
@@ -2888,8 +3024,8 @@ internal static class Program
     private static void ToggleSidebar()
     {
         _sidebarW = _sidebarW > 0 ? 0 : SidebarWFull;
-        var (cols, rows) = GridSize();
-        _active?.S.Resize(cols, rows);
+        if (_active is not null) RegridSession(_active);
+        if (_cover is not null) RegridCover();
         RequestRedraw();
         SaveState();
     }
