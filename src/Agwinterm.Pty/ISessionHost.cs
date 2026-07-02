@@ -104,6 +104,18 @@ public interface ISessionHost
     /// op = begin|advance|advance-back|commit|cancel. Returns the resulting active session name.
     /// Lets the control API / tests exercise the walk without synthetic global key input.</summary>
     string SessionSwitch(string op);
+
+    /// <summary>Run a custom command (by keymap label) or a raw command string, expanding {AGW_*} tokens and
+    /// injecting $AGW_* env from the active session. <paramref name="mode"/> (send|new|overlay|detached)
+    /// overrides the command's configured mode (raw strings default to "new"). Returns "mode: &lt;expanded&gt;".</summary>
+    string CommandRun(string nameOrCommand, string? mode);
+
+    /// <summary>List configured custom commands: one tab-separated "label\tmode\tchord\ttext" line each.</summary>
+    string CommandList();
+
+    /// <summary>Drive the leader-chord state machine for observability/testing:
+    /// op = state|begin|cancel|"key:&lt;chord&gt;". Returns "idle"|"pending"|the resolution result.</summary>
+    string CommandLeader(string op);
 }
 
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
@@ -148,4 +160,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionFlag(string? target, string op) => false;
     public void WorkspaceFocus(string op) { }
     public string SessionSwitch(string op) => "unsupported";
+    public string CommandRun(string nameOrCommand, string? mode) => "unsupported";
+    public string CommandList() => "";
+    public string CommandLeader(string op) => "idle";
 }

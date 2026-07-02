@@ -129,8 +129,16 @@ internal static class Program
 
     // Keymap: chord (canonical string) -> action id or "command:<Label>"; custom commands from keymap.conf.
     private static Dictionary<string, string> _keymap = new(StringComparer.OrdinalIgnoreCase);
-    private static List<(string Label, string Text)> _commands = new();
+    private static List<Keymap.CmdDef> _commands = new();
     private static string[] _keymapDiag = Array.Empty<string>();
+
+    // Leader/prefix chord (tmux-style): press the leader, then a second chord resolves against
+    // _leaderBindings. While pending we paint a hint and swallow keys; Esc / timeout cancels.
+    private static string? _leader;
+    private static Dictionary<string, string> _leaderBindings = new(StringComparer.OrdinalIgnoreCase);
+    private static bool _leaderPending;
+    private static long _leaderAtMs;
+    private const long LeaderTimeoutMs = 3000;
 
     // MRU (most-recently-used) session switcher — Ctrl+Tab walks the recency stack (Alt+Tab semantics).
     // _mru holds session ids, front = most recently active. During a walk we preview-select the target
@@ -440,7 +448,8 @@ internal static class Program
 
     /// <summary>Create one terminal pane (its own ConPTY, env, wiring) sized for the given font.
     /// When <paramref name="command"/> is set, that argv runs as the pane's process instead of the shell.</summary>
-    private static Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null, bool shellWrap = false)
+    private static Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null,
+        bool shellWrap = false, bool interactive = false, Dictionary<string, string>? extraEnv = null)
     {
         var (cols, rows) = GridSizeFor(fontSize);
         var session = new TerminalSession(cols, rows);
@@ -470,7 +479,12 @@ internal static class Program
             ["AGWINTERM_WORKSPACE_ID"] = ws.Id,
             ["AGWINTERM_WINDOW_ID"] = _windowId,
         };
-        if (!string.IsNullOrWhiteSpace(command) && shellWrap)
+        if (extraEnv is not null) foreach (var kv in extraEnv) env[kv.Key] = kv.Value; // custom-command $AGW_* context
+        if (!string.IsNullOrWhiteSpace(command) && interactive)
+            // Run the command in a fresh shell that STAYS OPEN afterwards (custom-command "new" mode):
+            // the user's profile loads (oh-my-posh etc.), the command runs, then it's an interactive shell.
+            _ = session.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoExit", "-Command", command! }, extraEnv: env, cwd: cwd);
+        else if (!string.IsNullOrWhiteSpace(command) && shellWrap)
             // Run the whole command line through cmd so shell syntax works AND the child's exit code
             // propagates. Verbatim so it becomes exactly `cmd.exe /c <command>` (no extra quoting,
             // which cmd's /c quote-stripping rules would otherwise mangle).
@@ -511,13 +525,14 @@ internal static class Program
     /// </summary>
     private static string[] ShellArgs() => new[] { "-NoLogo" };
 
-    private static Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null, string? command = null)
+    private static Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
+        string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null)
     {
         float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws };
-        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command));   // first pane shares the session id (control-API back-compat)
+        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv));   // first pane shares the session id (control-API back-compat)
         ses.Active = 0;
 
         lock (_workspaces) { ws.Sessions.Add(ses); ws.Expanded = true; }
@@ -767,13 +782,13 @@ internal static class Program
 
     /// <summary>Open an overlay on a session: run <paramref name="command"/> in an ephemeral terminal over it.
     /// sizePercent 0 = full content region; 1..100 = a centered floating panel. Returns "id PID".</summary>
-    private static string OverlayOpen(Ses ses, string command, int sizePercent, bool wait)
+    private static string OverlayOpen(Ses ses, string command, int sizePercent, bool wait, Dictionary<string, string>? extraEnv = null)
     {
         CloseOverlayOf(ses);                    // one overlay per session; replace any existing one
         _overlayDone.Reset();
         _lastOverlayExit = "no overlay"; _overlayExitCode = 0;
         string id = ses.Id + ":overlay:" + Guid.NewGuid().ToString("N")[..6];
-        var pane = CreatePane(id, ses.Ws, CwdOf(ses), ses.FontSize, command, shellWrap: true);
+        var pane = CreatePane(id, ses.Ws, CwdOf(ses), ses.FontSize, command, shellWrap: true, extraEnv: extraEnv);
         ses.Overlay = pane;
         ses.OverlaySizePercent = Math.Clamp(sizePercent, 0, 100);
         ses.OverlayWait = wait;
@@ -1332,6 +1347,20 @@ internal static class Program
         public void WorkspaceFocus(string op) => Post(() => WorkspaceFocusOp(op));
 
         public string SessionSwitch(string op) => InvokeOnUi(() => SwitchOp(op));
+
+        public string CommandRun(string nameOrCommand, string? mode) => InvokeOnUi(() =>
+        {
+            var cmd = _commands.FirstOrDefault(c => string.Equals(c.Label, nameOrCommand, StringComparison.OrdinalIgnoreCase));
+            string text = cmd?.Text ?? nameOrCommand;
+            // A configured command uses its mode unless overridden; a raw command defaults to a new session.
+            string useMode = mode ?? cmd?.Mode ?? "new";
+            string expanded = RunCommandText(text, useMode);
+            return $"{useMode}: {expanded}";
+        });
+
+        public string CommandList() => InvokeOnUi(CommandListText);
+
+        public string CommandLeader(string op) => InvokeOnUi(() => LeaderOp(op));
     }
 
     /// <summary>Resolve a control-API target ("active"/null/id/prefix) to its owning session.</summary>
@@ -1691,7 +1720,7 @@ internal static class Program
         {
             string label = action["command:".Length..];
             var cmd = _commands.FirstOrDefault(c => string.Equals(c.Label, label, StringComparison.OrdinalIgnoreCase));
-            if (cmd.Text is not null) RunCustomCommand(cmd.Text);
+            if (cmd is not null) RunCustomCommand(cmd);
             else ShowToast($"no command '{label}'");
             return;
         }
@@ -1736,9 +1765,145 @@ internal static class Program
             Post(() => ShowToast(result));
         });
 
-    /// <summary>Type a custom command's text + Enter into the active session, as if the user typed it.</summary>
-    private static void RunCustomCommand(string text)
-        => Send(text.Replace("\r", "").Replace("\n", "") + "\r");
+    /// <summary>Run a configured custom command per its mode (send|new|overlay|detached), expanding {AGW_*}.</summary>
+    private static void RunCustomCommand(Keymap.CmdDef cmd) => RunCommandText(cmd.Text, cmd.Mode);
+
+    /// <summary>Run an arbitrary command string in a mode, expanding {AGW_*} tokens and injecting $AGW_*
+    /// env from the active session. Returns the expanded command line (for the control API / observability).</summary>
+    private static string RunCommandText(string text, string? mode)
+    {
+        var ctx = _active;
+        string expanded = ExpandAgwTokens(text, ctx);
+        switch ((mode ?? "send").ToLowerInvariant())
+        {
+            case "new":
+                CreateSession(Guid.NewGuid().ToString(), null, RawCwdOf(ctx), ActiveWorkspace(), makeActive: true,
+                    command: expanded, interactive: true, extraEnv: AgwEnv(ctx));
+                break;
+            case "overlay":
+                if (ctx is not null) OverlayOpen(ctx, expanded, 0, false, AgwEnv(ctx));
+                else ShowToast("no session for overlay command");
+                break;
+            case "detached":
+                RunDetached(expanded, RawCwdOf(ctx), AgwEnv(ctx));
+                break;
+            default: // send — type it into the active session, as if the user typed it + Enter
+                Send(expanded.Replace("\r", "").Replace("\n", "") + "\r");
+                break;
+        }
+        return expanded;
+    }
+
+    /// <summary>The active pane's real working directory (Windows path), or "" if unknown.</summary>
+    private static string RawCwdOf(Ses? ses)
+    {
+        if (ses is null) return "";
+        string live = PrettyCwd(SafeCwd(ses));
+        return live.Length > 0 ? live : (ses.StartCwd ?? "");
+    }
+
+    /// <summary>Best-effort path to agwintermctl.exe (next to us), else just "agwintermctl" (assume PATH).</summary>
+    private static string CtlPath()
+    {
+        try { string p = Path.Combine(AppContext.BaseDirectory, "agwintermctl.exe"); if (File.Exists(p)) return p; }
+        catch { }
+        return "agwintermctl";
+    }
+
+    /// <summary>The {AGW_*} / $AGW_* values for a session context (active by default).</summary>
+    private static Dictionary<string, string> AgwValues(Ses? ses) => new(StringComparer.Ordinal)
+    {
+        ["AGW_SESSION"] = ses?.Name ?? "",
+        ["AGW_SESSION_ID"] = ses?.Id ?? "",
+        ["AGW_WORKSPACE"] = ses?.Ws.Name ?? "",
+        ["AGW_CWD"] = RawCwdOf(ses),
+        ["AGW_PANE_ID"] = ses?.ActivePane.Id ?? "",
+        ["AGW_APP"] = CtlPath(),
+    };
+
+    /// <summary>Expand {AGW_*} tokens; unknown {AGW_*} tokens expand to "".</summary>
+    private static string ExpandAgwTokens(string text, Ses? ses)
+    {
+        if (string.IsNullOrEmpty(text) || text.IndexOf("{AGW_", StringComparison.Ordinal) < 0) return text;
+        var vals = AgwValues(ses);
+        return System.Text.RegularExpressions.Regex.Replace(text, @"\{AGW_[A-Z0-9_]+\}",
+            m => vals.TryGetValue(m.Value[1..^1], out var v) ? v : "");
+    }
+
+    /// <summary>$AGW_* environment (+ AGWINTERM=1) for a launched custom-command process.</summary>
+    private static Dictionary<string, string> AgwEnv(Ses? ses)
+    {
+        var d = AgwValues(ses);
+        d["AGWINTERM"] = "1";
+        return d;
+    }
+
+    /// <summary>Detached run: an independent OS process (no PTY, not tied to a session), via cmd /c so
+    /// shell syntax (redirection, `start &lt;url&gt;`) works. Non-blocking; inherits the $AGW_* context + cwd.</summary>
+    private static void RunDetached(string command, string? cwd, Dictionary<string, string> env)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = string.IsNullOrWhiteSpace(cwd) ? "" : cwd!,
+            };
+            psi.ArgumentList.Add("/c");
+            psi.ArgumentList.Add(command);
+            foreach (var kv in env) psi.Environment[kv.Key] = kv.Value;
+            System.Diagnostics.Process.Start(psi);
+        }
+        catch (Exception ex) { ShowToast("detached: " + ex.Message); }
+    }
+
+    // ---- Leader/prefix chord state machine (used by OnKeyDown + the command.leader control verb) ----
+
+    private static void BeginLeader() { _leaderPending = true; _leaderAtMs = Environment.TickCount64; RequestRedraw(); }
+    private static void CancelLeader() { if (_leaderPending) { _leaderPending = false; RequestRedraw(); } }
+
+    /// <summary>Resolve a second chord against the leader bindings (runs it or toasts); clears pending.</summary>
+    private static string ResolveLeader(string chord)
+    {
+        _leaderPending = false; RequestRedraw();
+        if (_leaderBindings.TryGetValue(chord, out var action)) { RunAction(action); return "ran " + action; }
+        ShowToast($"leader: no binding for {chord}");
+        return "no leader binding";
+    }
+
+    /// <summary>Build the human-readable command list (label, mode, resolved chord, text) for command.list.</summary>
+    private static string CommandListText()
+    {
+        string ChordOf(string label)
+        {
+            string want = "command:" + label;
+            foreach (var kv in _keymap) if (string.Equals(kv.Value, want, StringComparison.OrdinalIgnoreCase)) return kv.Key;
+            foreach (var kv in _leaderBindings) if (string.Equals(kv.Value, want, StringComparison.OrdinalIgnoreCase)) return "leader " + kv.Key;
+            return "";
+        }
+        if (_commands.Count == 0) return "(no custom commands defined in keymap.conf)";
+        var sb = new StringBuilder();
+        foreach (var c in _commands)
+            sb.Append(c.Label).Append('\t').Append(c.Mode).Append('\t')
+              .Append(ChordOf(c.Label) is { Length: > 0 } ch ? ch : "-").Append('\t').Append(c.Text).Append('\n');
+        return sb.ToString().TrimEnd('\n');
+    }
+
+    /// <summary>UI-thread driver for the command.leader control verb (state|begin|cancel|key:&lt;chord&gt;).</summary>
+    private static string LeaderOp(string op)
+    {
+        if (op == "begin") { if (_leader is null) return "no leader configured"; BeginLeader(); return "pending"; }
+        if (op == "cancel") { CancelLeader(); return "idle"; }
+        if (op.StartsWith("key:", StringComparison.OrdinalIgnoreCase))
+        {
+            string? chord = Keymap.Canonicalize(op[4..]);
+            if (chord is null) return "bad chord";
+            if (!_leaderPending) BeginLeader();
+            return ResolveLeader(chord);
+        }
+        return _leaderPending ? "pending" : "idle"; // "state"
+    }
 
     private static string KeymapPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "keymap.conf");
@@ -1756,6 +1921,8 @@ internal static class Program
             var parsed = Keymap.Parse(File.ReadAllText(path));
             _keymap = parsed.Bindings;
             _commands = parsed.Commands;
+            _leader = parsed.Leader;
+            _leaderBindings = parsed.LeaderBindings;
             _keymapDiag = parsed.Diagnostics.ToArray();
         }
         catch
@@ -1763,8 +1930,11 @@ internal static class Program
             _keymap = new(StringComparer.OrdinalIgnoreCase);
             foreach (var (c, a) in Keymap.DefaultBindings) _keymap[c] = a;
             _commands = new();
+            _leader = null;
+            _leaderBindings = new(StringComparer.OrdinalIgnoreCase);
             _keymapDiag = Array.Empty<string>();
         }
+        _leaderPending = false;
     }
 
     private static void ReloadKeymap()
@@ -2103,6 +2273,23 @@ internal static class Program
         if (_palette != PaletteKind.None) return PaletteKeyDown(vk);
         // While the find bar is open it owns the keyboard (Enter/F3 nav, Esc close, Backspace edit).
         if (_searchActive) return SearchKeyDown(vk);
+
+        // Leader/prefix sequence (tmux-style). When pending, the next chord resolves against the leader
+        // bindings; Esc / timeout cancels; modifier-only keydowns stay pending. Checked before the normal
+        // chord/clipboard/terminal paths so the leader chord and its follow-up key are captured.
+        if (_leaderPending)
+        {
+            if (Environment.TickCount64 - _leaderAtMs > LeaderTimeoutMs) CancelLeader(); // expired — fall through to normal handling
+            else
+            {
+                if (vk == VK_ESCAPE) { CancelLeader(); return true; }
+                string? lc = Keymap.ChordFor(vk, ctrl, alt, shift);
+                if (lc is null) return true;   // lone modifier — keep waiting, swallow
+                ResolveLeader(lc);
+                return true;
+            }
+        }
+        if (_leader is not null && Keymap.ChordFor(vk, ctrl, alt, shift) == _leader) { BeginLeader(); return true; }
 
         // Shift+PageUp/PageDown (and Home/End) scroll this pane's scrollback; never reach the PTY.
         if (shift && !ctrl && !alt && _active is not null)
@@ -2578,6 +2765,7 @@ internal static class Program
         DrawTitleBar(rt, brush);
         DrawSearchBar(rt, brush);
         DrawToast(rt, brush);
+        DrawLeaderHint(rt, brush);
         DrawPalette(rt, brush);
         DrawSwitcher(rt, brush);
     }
@@ -3326,7 +3514,8 @@ internal static class Program
                 foreach (var c in _commands)
                 {
                     var cc = c;
-                    _palAll.Add(new PalItem { Label = cc.Label, Secondary = cc.Text, Search = $"{cc.Label} {cc.Text}", Run = () => RunCustomCommand(cc.Text) });
+                    string sec = cc.Mode == "send" ? cc.Text : $"[{cc.Mode}]  {cc.Text}";
+                    _palAll.Add(new PalItem { Label = cc.Label, Secondary = sec, Search = $"{cc.Label} {cc.Text}", Run = () => RunCustomCommand(cc) });
                 }
                 break;
             }
@@ -3773,6 +3962,19 @@ internal static class Program
         rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx, ty, tw, th), RadiusX = 8f, RadiusY = 8f }, brush);
         brush.Color = ChromeText;
         rt.DrawText(_toastText, _uiFont, new Rect(cx + 16f, ty, tw - 24f, th), brush);
+    }
+
+    /// <summary>While a leader sequence is pending, a small pill hint (bottom-left of the content region).</summary>
+    private static void DrawLeaderHint(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        if (!_leaderPending) return;
+        string txt = $"leader  {_leader}  —  press a key…";
+        float tw = MeasureText(txt, _uiFont) + 32f, th = 34f;
+        float x = _sidebarW + 24f, y = ClientH() - th - 24f;
+        brush.Color = new Color4(0.22f, 0.17f, 0.33f, 1f);   // purple-ish so it reads distinctly from a toast
+        rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, y, tw, th), RadiusX = 8f, RadiusY = 8f }, brush);
+        brush.Color = ChromeText;
+        rt.DrawText(txt, _uiFont, new Rect(x + 16f, y, tw - 24f, th), brush);
     }
 
     // ---- Config (mirrors the WinUI shell) ----

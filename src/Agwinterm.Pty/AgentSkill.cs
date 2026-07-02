@@ -103,6 +103,21 @@ public static class AgentSkill
           recency switcher programmatically (advance previews the next recent session; commit lands it). The
           interactive equivalent is holding Ctrl and tapping Tab (Shift+Tab walks back, Esc cancels).
 
+        ## Custom commands (keymap.conf) & the launcher
+        Define commands in keymap.conf, then run them by chord (Ctrl+Shift+O palette) or the control API:
+        - `command <Label> = <text>`                    — default "send" mode: types the text into the active session
+        - `command [new] <Label> = <text>`              — run in a fresh session's shell (stays interactive after)
+        - `command [overlay] <Label> = <text>`          — run in an ephemeral overlay pane over the session
+        - `command [detached] <Label> = <text>`         — launch an independent OS process (open a URL, external tool)
+        - Run one: `agwintermctl command run "<Label or raw command>" [--mode new|overlay|detached|send]`
+          (a raw command with no matching label defaults to `--mode new`).
+        - List them: `agwintermctl command list`         — tab-separated `label  mode  chord  text`.
+        - `{AGW_*}` tokens are expanded in the text AND passed as `$AGW_*` env vars to the launched process:
+          `{AGW_SESSION}` (name) · `{AGW_SESSION_ID}` · `{AGW_WORKSPACE}` · `{AGW_CWD}` (active pane cwd) ·
+          `{AGW_PANE_ID}` · `{AGW_APP}` (path to agwintermctl, for callbacks). Unknown `{AGW_*}` → empty.
+        - Leader chords (tmux-style): `leader = ctrl+k`, then `map leader b = command:Build`. Press the leader,
+          then the follow-up key. Drive/observe it with `agwintermctl command leader state|begin|cancel|key:<chord>`.
+
         ## Splits, font, sidebar, theme
         - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
         - `agwintermctl font inc|dec|reset [--target <id>]`      — per-session font zoom

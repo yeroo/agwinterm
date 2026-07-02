@@ -5,12 +5,17 @@ namespace Agwinterm.Win32;
 /// <summary>
 /// Parses %LOCALAPPDATA%\agwinterm\keymap.conf into chord→action bindings and custom
 /// commands. Our own simple format (inspired by agterm, not copied):
-///   map &lt;chord&gt; = &lt;action&gt;         rebind a built-in action
-///   map &lt;chord&gt; = command:&lt;Label&gt; bind a chord to a custom command
-///   command &lt;Label&gt; = &lt;text&gt;      type &lt;text&gt; + Enter into the active session
+///   map &lt;chord&gt; = &lt;action&gt;          rebind a built-in action
+///   map &lt;chord&gt; = command:&lt;Label&gt;  bind a chord to a custom command
+///   command &lt;Label&gt; = &lt;text&gt;       run &lt;text&gt; (default: type it into the active session)
+///   command [new|overlay|detached|send] &lt;Label&gt; = &lt;text&gt;   choose the run mode
+///   leader = &lt;chord&gt;                 set the leader/prefix chord (tmux-style)
+///   map leader &lt;chord&gt; = &lt;action|command:Label&gt;   bind a leader sequence
 ///   '#' starts a comment; blank lines ignored.
 /// A canonical chord is "[ctrl+][alt+][shift+]&lt;key&gt;" where key ∈ a–z, 0–9, f1–f12,
 /// tab, enter, escape, space, up, down, left, right.
+/// The command &lt;text&gt; may contain {AGW_*} tokens (expanded from the active session) and the
+/// launched process receives $AGW_* environment variables — see the agent skill for the list.
 /// </summary>
 internal static class Keymap
 {
@@ -53,30 +58,54 @@ internal static class Keymap
         #
         #   map <chord> = <action>          rebind a built-in action
         #   map <chord> = command:<Label>   bind a chord to a custom command below
-        #   command <Label> = <text>        type <text> + Enter into the active session
+        #   command <Label> = <text>        run <text> (default: type it into the active session)
+        #   command [new|overlay|detached] <Label> = <text>   choose the run mode
+        #   leader = <chord>                set a leader/prefix chord (tmux-style)
+        #   map leader <chord> = <action|command:Label>        bind a leader sequence
         #
         # chords: ctrl+ alt+ shift+ then a key — a-z, 0-9, f1-f12,
         #         tab enter escape space up down left right.  e.g. ctrl+shift+g
         #
+        # run modes: send (default; types into the active session) | new (fresh session's
+        #            shell runs it) | overlay (ephemeral pane over the session) | detached
+        #            (independent OS process — open a URL, launch an external tool)
+        #
+        # tokens (expanded in <text>) + matching $AGW_* env vars given to the process:
+        #   {AGW_SESSION} {AGW_SESSION_ID} {AGW_WORKSPACE} {AGW_CWD} {AGW_PANE_ID} {AGW_APP}
+        #
         # actions: new_session new_workspace close_session next_session previous_session
         #          toggle_sidebar rename_session delete_workspace session_palette
         #          action_palette attention_list custom_palette next_attention
-        #          previous_attention reload_keymap
+        #          previous_attention reload_keymap toggle_flag focus_workspace
         #
         # Examples (uncomment to use):
         # map ctrl+shift+g = command:Greet
-        # command Greet = echo hello from keymap
-        # command Git Status = git status
+        # command Greet = echo hello from {AGW_SESSION}
+        # command [new] Log = echo running in {AGW_CWD}
+        # command [detached] Docs = start https://example.com
+        # leader = ctrl+k
+        # map leader g = command:Greet
         """;
+
+    /// <summary>A custom command: a label, the text to run, and how to run it.</summary>
+    /// <param name="Mode">send | new | overlay | detached.</param>
+    public sealed record CmdDef(string Label, string Text, string Mode);
+
+    public static readonly HashSet<string> ValidModes = new(StringComparer.OrdinalIgnoreCase)
+    { "send", "new", "overlay", "detached" };
 
     public sealed class Parsed
     {
         public readonly Dictionary<string, string> Bindings = new(StringComparer.OrdinalIgnoreCase);
-        public readonly List<(string Label, string Text)> Commands = new();
+        public readonly List<CmdDef> Commands = new();
         public readonly List<string> Diagnostics = new();
+        /// <summary>The leader/prefix chord (canonical), or null if none configured.</summary>
+        public string? Leader;
+        /// <summary>Second chord (canonical) → action id / "command:&lt;Label&gt;", pressed after the leader.</summary>
+        public readonly Dictionary<string, string> LeaderBindings = new(StringComparer.OrdinalIgnoreCase);
     }
 
-    /// <summary>Parse keymap text; starts from the defaults, then applies map/command lines.</summary>
+    /// <summary>Parse keymap text; starts from the defaults, then applies map/command/leader lines.</summary>
     public static Parsed Parse(string text)
     {
         var p = new Parsed();
@@ -89,30 +118,58 @@ internal static class Keymap
             var line = rawLine.Trim();
             if (line.Length == 0 || line[0] == '#') continue;
 
-            if (line.StartsWith("map ", StringComparison.OrdinalIgnoreCase))
+            if (line.StartsWith("leader ", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("leader=", StringComparison.OrdinalIgnoreCase))
+            {
+                int eq = line.IndexOf('=');
+                if (eq < 0) { p.Diagnostics.Add($"line {lineNo}: 'leader' needs '='"); continue; }
+                string chordRaw = line[(eq + 1)..].Trim();
+                string? chord = Canonicalize(chordRaw);
+                if (chord is null) { p.Diagnostics.Add($"line {lineNo}: bad leader chord '{chordRaw}'"); continue; }
+                p.Leader = chord;
+            }
+            else if (line.StartsWith("map ", StringComparison.OrdinalIgnoreCase))
             {
                 int eq = line.IndexOf('=');
                 if (eq < 0) { p.Diagnostics.Add($"line {lineNo}: 'map' needs '='"); continue; }
                 string chordRaw = line.Substring(3, eq - 3).Trim();
                 string target = line[(eq + 1)..].Trim();
+
+                // "map leader <chord> = ..." binds a leader sequence into LeaderBindings.
+                bool isLeader = chordRaw.StartsWith("leader ", StringComparison.OrdinalIgnoreCase);
+                if (isLeader) chordRaw = chordRaw["leader ".Length..].Trim();
+
                 string? chord = Canonicalize(chordRaw);
                 if (chord is null) { p.Diagnostics.Add($"line {lineNo}: bad chord '{chordRaw}'"); continue; }
+                var into = isLeader ? p.LeaderBindings : p.Bindings;
                 if (target.StartsWith("command:", StringComparison.OrdinalIgnoreCase))
-                    p.Bindings[chord] = "command:" + target["command:".Length..].Trim();
+                    into[chord] = "command:" + target["command:".Length..].Trim();
                 else if (ValidActions.Contains(target))
-                    p.Bindings[chord] = target.ToLowerInvariant();
+                    into[chord] = target.ToLowerInvariant();
                 else { p.Diagnostics.Add($"line {lineNo}: unknown action '{target}'"); }
             }
             else if (line.StartsWith("command ", StringComparison.OrdinalIgnoreCase))
             {
                 int eq = line.IndexOf('=');
                 if (eq < 0) { p.Diagnostics.Add($"line {lineNo}: 'command' needs '='"); continue; }
-                string label = line.Substring(7, eq - 7).Trim();
+                string head = line.Substring(7, eq - 7).Trim();  // between "command " and '='
                 string cmdText = line[(eq + 1)..].Trim();
+
+                // Optional "[mode]" prefix before the label: command [new] Build = ...
+                string mode = "send";
+                if (head.StartsWith("["))
+                {
+                    int rb = head.IndexOf(']');
+                    if (rb < 0) { p.Diagnostics.Add($"line {lineNo}: command mode missing ']'"); continue; }
+                    mode = head.Substring(1, rb - 1).Trim().ToLowerInvariant();
+                    head = head[(rb + 1)..].Trim();
+                    if (!ValidModes.Contains(mode)) { p.Diagnostics.Add($"line {lineNo}: unknown run mode '{mode}'"); mode = "send"; }
+                }
+                string label = head;
                 if (label.Length == 0 || cmdText.Length == 0) { p.Diagnostics.Add($"line {lineNo}: command needs a label and text"); continue; }
-                p.Commands.Add((label, cmdText));
+                p.Commands.Add(new CmdDef(label, cmdText, mode));
             }
-            else p.Diagnostics.Add($"line {lineNo}: expected 'map' or 'command'");
+            else p.Diagnostics.Add($"line {lineNo}: expected 'map', 'command' or 'leader'");
         }
         return p;
     }

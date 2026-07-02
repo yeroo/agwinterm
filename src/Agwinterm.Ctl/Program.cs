@@ -154,6 +154,24 @@ switch (area)
                 Console.Error.WriteLine($"unknown session command '{sub}'"); return 2;
         }
         break;
+    case "command":
+        switch (sub)
+        {
+            case "run": // command run "<name-or-command...>" [--mode new|overlay|detached|send]
+                cmd = "command.run";
+                if (rest.Count > 0) cargs["name"] = string.Join(' ', rest);
+                else if (Opt("command") is { } rawcmd) cargs["command"] = rawcmd;
+                else { Console.Error.WriteLine("command run needs a name or command"); return 2; }
+                if (Opt("mode") is { } cmode) cargs["mode"] = cmode;
+                break;
+            case "list": cmd = "command.list"; break;
+            case "leader": // command leader state|begin|cancel|key:<chord>
+                cmd = "command.leader";
+                cargs["op"] = rest.Count > 0 ? rest[0] : "state";
+                break;
+            default: Console.Error.WriteLine($"unknown command '{area} {sub}'"); return 2;
+        }
+        break;
     case "theme" when sub == "list": cmd = "theme.list"; break;
     case "theme" when sub == "set":
         cmd = "theme.set";

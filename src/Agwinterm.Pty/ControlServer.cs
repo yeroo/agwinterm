@@ -141,6 +141,14 @@ public sealed class ControlServer : IDisposable
                     return _host.SessionFlag(target, GetString(args, "op") ?? "toggle") ? Ok("flag") : Err("session not found");
                 case "workspace.focus": _host.WorkspaceFocus(GetString(args, "op") ?? "toggle"); return Ok("focus");
                 case "session.switch": return Ok(_host.SessionSwitch(GetString(args, "op") ?? "advance"));
+                case "command.run":
+                {
+                    string? nameOrCmd = GetString(args, "name") ?? GetString(args, "command");
+                    if (string.IsNullOrWhiteSpace(nameOrCmd)) return Err("command.run needs args.name or args.command");
+                    return Ok(_host.CommandRun(nameOrCmd!, GetString(args, "mode")));
+                }
+                case "command.list": return Ok(_host.CommandList());
+                case "command.leader": return Ok(_host.CommandLeader(GetString(args, "op") ?? "state"));
             }
 
             // Session-targeted commands.
