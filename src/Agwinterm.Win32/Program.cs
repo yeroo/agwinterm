@@ -123,7 +123,7 @@ internal static class Program
         if (_editFont == IntPtr.Zero)
             _editFont = CreateFontW(-13, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
         if (_editBrush == IntPtr.Zero)
-            _editBrush = CreateSolidBrush(RGB(38, 42, 48));
+            _editBrush = CreateSolidBrush(RGB(41, 51, 64)); // == SbHighlight, so the box blends with the row
     }
 
     // Chrome fonts (native Segoe UI for text, icon font for glyphs).
@@ -712,9 +712,9 @@ internal static class Program
                 if (LoWord(wParam) == EDIT_ID && HiWord(wParam) == EN_KILLFOCUS) CommitRename();
                 return IntPtr.Zero;
 
-            case WM_CTLCOLOREDIT: // dark background + light text for the rename box (wParam = HDC)
-                SetTextColor(wParam, RGB(235, 235, 235));
-                SetBkColor(wParam, RGB(38, 42, 48));
+            case WM_CTLCOLOREDIT: // highlight-matching background + white text (wParam = HDC)
+                SetTextColor(wParam, RGB(255, 255, 255));
+                SetBkColor(wParam, RGB(41, 51, 64));
                 return _editBrush;
 
             case WM_CONTEXTMENU:
@@ -1568,12 +1568,15 @@ internal static class Program
         if (ry0 < 0) { RequestRedraw(); return; } // row not currently visible
         string name = item is Ses s ? s.Name : ((Workspace)item).Name;
         EnsureEditGdi();
-        float tx = isWs ? 24f : 26f; // align with where the row name is drawn (so no leftover text peeks)
-        int ex = (int)tx, ey = (int)ry0 + 2, ew = (int)(_sidebarW - tx - 8f), eh = (int)(ry1 - ry0) - 4;
+        // Fill the whole row (matches the highlight band); a left text-margin puts the text exactly
+        // where the row name is drawn, so nothing shifts when editing starts.
+        int leftMargin = isWs ? 24 : 26;
+        int ey = (int)ry0, eh = (int)(ry1 - ry0);
         _editHwnd = CreateWindowExW(0, "EDIT", name, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            ex, ey, ew, eh, _hwnd, (IntPtr)EDIT_ID, GetModuleHandleW(null), IntPtr.Zero);
+            0, ey, (int)_sidebarW, eh, _hwnd, (IntPtr)EDIT_ID, GetModuleHandleW(null), IntPtr.Zero);
         if (_editHwnd == IntPtr.Zero) return;
         SendMessageW(_editHwnd, WM_SETFONT, _editFont, (IntPtr)1);
+        SendMessageW(_editHwnd, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN), (IntPtr)(leftMargin | (8 << 16)));
         SendMessageW(_editHwnd, (uint)EM_SETSEL, IntPtr.Zero, (IntPtr)(-1)); // select all
         SetFocus(_editHwnd);
         _editProc = EditProc; // keep alive

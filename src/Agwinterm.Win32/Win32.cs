@@ -69,6 +69,8 @@ internal static class Win32
     public const uint WM_CONTEXTMENU = 0x007B;
     public const uint WM_SETFONT = 0x0030;
     public const int EM_SETSEL = 0x00B1;
+    public const uint EM_SETMARGINS = 0x00D3;
+    public const int EC_LEFTMARGIN = 0x0001, EC_RIGHTMARGIN = 0x0002;
     public const int EN_KILLFOCUS = 0x0200;
     public const uint WS_CHILD = 0x40000000, ES_AUTOHSCROLL = 0x0080;
     public const int GWLP_WNDPROC = -4;
