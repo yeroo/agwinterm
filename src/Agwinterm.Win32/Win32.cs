@@ -279,6 +279,28 @@ internal static class Win32
     [DllImport("gdi32.dll")]
     public static extern IntPtr GetStockObject(int fnObject);
 
+    public const uint WM_CTLCOLOREDIT = 0x0133;
+
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr CreateFontW(int cHeight, int cWidth, int cEscapement, int cOrientation,
+        int cWeight, uint bItalic, uint bUnderline, uint bStrikeOut, uint iCharSet, uint iOutPrecision,
+        uint iClipPrecision, uint iQuality, uint iPitchAndFamily, string pszFaceName);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateSolidBrush(int color);
+
+    [DllImport("gdi32.dll")]
+    public static extern int SetBkColor(IntPtr hdc, int color);
+
+    [DllImport("gdi32.dll")]
+    public static extern int SetTextColor(IntPtr hdc, int color);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(IntPtr obj);
+
+    /// <summary>Pack R,G,B into a Win32 COLORREF (0x00BBGGRR).</summary>
+    public static int RGB(int r, int g, int b) => (r & 0xFF) | ((g & 0xFF) << 8) | ((b & 0xFF) << 16);
+
     [DllImport("user32.dll")]
     public static extern IntPtr CreatePopupMenu();
 

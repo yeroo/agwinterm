@@ -114,6 +114,17 @@ internal static class Program
     private static object? _editing;         // Ses or Workspace currently being renamed
     private static WndProc _editProc = null!; // kept alive; subclasses the EDIT to catch Enter/Esc
     private static IntPtr _editOrigProc;
+    private static IntPtr _editFont;          // cached HFONT for the rename box (matches the sidebar)
+    private static IntPtr _editBrush;         // cached dark background brush (WM_CTLCOLOREDIT)
+
+    private static void EnsureEditGdi()
+    {
+        // Segoe UI ~13px to match the sidebar row text; ClearType; dark bg like the sidebar.
+        if (_editFont == IntPtr.Zero)
+            _editFont = CreateFontW(-13, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
+        if (_editBrush == IntPtr.Zero)
+            _editBrush = CreateSolidBrush(RGB(38, 42, 48));
+    }
 
     // Chrome fonts (native Segoe UI for text, icon font for glyphs).
     private static IDWriteTextFormat _uiFont = null!;
@@ -700,6 +711,11 @@ internal static class Program
             case WM_COMMAND:
                 if (LoWord(wParam) == EDIT_ID && HiWord(wParam) == EN_KILLFOCUS) CommitRename();
                 return IntPtr.Zero;
+
+            case WM_CTLCOLOREDIT: // dark background + light text for the rename box (wParam = HDC)
+                SetTextColor(wParam, RGB(235, 235, 235));
+                SetBkColor(wParam, RGB(38, 42, 48));
+                return _editBrush;
 
             case WM_CONTEXTMENU:
                 {
@@ -1468,7 +1484,8 @@ internal static class Program
 
             brush.Color = SbHeaderText;
             rt.DrawText(expanded ? "▾" : "▸", _format, TextRect(6f, y, 18f, rowH), brush); // chevron (mono, top-aligned)
-            rt.DrawText(ws.Name, _uiFont, new Rect(24f, y, _sidebarW - 48f, rowH), brush);
+            if (!ReferenceEquals(_editing, ws)) // the rename box covers the name while editing
+                rt.DrawText(ws.Name, _uiFont, new Rect(24f, y, _sidebarW - 48f, rowH), brush);
             rt.DrawText(sessions.Count.ToString(), _uiSmall, new Rect(_sidebarW - 28f, y, 22f, rowH), brush);
             _sidebarRows.Add((y, y + rowH, true, ws));
             y += rowH;
@@ -1485,7 +1502,8 @@ internal static class Program
                 }
                 bool isDrag = _dragging && ReferenceEquals(s, _dragItem);
                 brush.Color = isDrag ? new Color4(0.5f, 0.53f, 0.57f, 0.45f) : (active ? SbActiveText : SbDimText);
-                rt.DrawText(s.Name, _uiFont, new Rect(26f, y, _sidebarW - 26f - 22f, rowH), brush);
+                if (!ReferenceEquals(_editing, s)) // the rename box covers the name while editing
+                    rt.DrawText(s.Name, _uiFont, new Rect(26f, y, _sidebarW - 26f - 22f, rowH), brush);
                 // Status circle right-aligned in the row (agterm layout).
                 brush.Color = StatusDot(s.S.Status);
                 rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(_sidebarW - 16f, y + rowH / 2f), 4.5f, 4.5f), brush);
@@ -1549,12 +1567,13 @@ internal static class Program
         foreach (var (y0, y1, _, it) in _sidebarRows) if (ReferenceEquals(it, item)) { ry0 = y0; ry1 = y1; break; }
         if (ry0 < 0) { RequestRedraw(); return; } // row not currently visible
         string name = item is Ses s ? s.Name : ((Workspace)item).Name;
-        float tx = isWs ? 22f : 34f;
+        EnsureEditGdi();
+        float tx = isWs ? 24f : 26f; // align with where the row name is drawn (so no leftover text peeks)
         int ex = (int)tx, ey = (int)ry0 + 2, ew = (int)(_sidebarW - tx - 8f), eh = (int)(ry1 - ry0) - 4;
         _editHwnd = CreateWindowExW(0, "EDIT", name, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
             ex, ey, ew, eh, _hwnd, (IntPtr)EDIT_ID, GetModuleHandleW(null), IntPtr.Zero);
         if (_editHwnd == IntPtr.Zero) return;
-        SendMessageW(_editHwnd, WM_SETFONT, GetStockObject(DEFAULT_GUI_FONT), (IntPtr)1);
+        SendMessageW(_editHwnd, WM_SETFONT, _editFont, (IntPtr)1);
         SendMessageW(_editHwnd, (uint)EM_SETSEL, IntPtr.Zero, (IntPtr)(-1)); // select all
         SetFocus(_editHwnd);
         _editProc = EditProc; // keep alive
