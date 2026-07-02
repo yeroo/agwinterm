@@ -139,6 +139,7 @@ internal static class Program
         public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
+        public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
     }
 
     private sealed class Ses
@@ -389,8 +390,10 @@ internal static class Program
     {
         var (cols, rows) = GridSizeFor(fontSize);
         var session = new TerminalSession(cols, rows);
+        session.Emulator.ScrollbackMax = _config.Scrollback;
         var pane = new Pane { Id = paneId, S = session, StartCwd = cwd, FontSize = fontSize };
-        session.OutputReceived += RequestRedraw;   // coalesced; only the active session's panes are drawn
+        // New output snaps this pane back to the live bottom (so output jumps you out of scrollback).
+        session.OutputReceived += () => { pane.ScrollOffset = 0; RequestRedraw(); };
         session.StatusChanged += RequestRedraw;
         var env = new Dictionary<string, string>
         {
@@ -500,6 +503,7 @@ internal static class Program
             var (_, cw, ch) = Metrics(pane.FontSize);
             int cols = Math.Max(1, (int)(w / cw)), rows = Math.Max(1, (int)(h / ch));
             if (pane.S.Cols != cols || pane.S.Rows != rows) pane.S.Resize(cols, rows);
+            pane.ScrollOffset = Math.Clamp(pane.ScrollOffset, 0, pane.S.Emulator.HistoryCount);
         }
     }
 
@@ -1078,14 +1082,26 @@ internal static class Program
 
             case WM_MOUSEWHEEL:
                 {
+                    var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
+                    ScreenToClient(_hwnd, ref pt);
                     var em = _session?.Emulator;
-                    if (em is not null && em.MouseReporting)
+                    if (em is not null && em.MouseReporting) // app wants the wheel (forward to the active pane)
                     {
-                        var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
-                        ScreenToClient(_hwnd, ref pt);
                         if (pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
                             SendMouse(HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, true);
+                        return IntPtr.Zero;
                     }
+                    // Otherwise scroll the pane under the cursor through its scrollback history.
+                    if (_active is not null && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
+                        foreach (var (p, x, _, w, _) in PaneLayout(_active))
+                            if (pt.x >= x && pt.x < x + w)
+                            {
+                                int histN = p.S.Emulator.HistoryCount;
+                                int dir = HiWord(wParam) > 0 ? 1 : -1; // wheel up scrolls back into history
+                                int no = Math.Clamp(p.ScrollOffset + dir * 3, 0, histN);
+                                if (no != p.ScrollOffset) { p.ScrollOffset = no; RequestRedraw(); }
+                                break;
+                            }
                     return IntPtr.Zero;
                 }
 
@@ -1100,8 +1116,21 @@ internal static class Program
 
     private static void Send(string s)
     {
+        if (_active is not null) _active.ActivePane.ScrollOffset = 0; // typing snaps back to the live bottom
         _session?.NotifyActivity();
         _session?.Write(Encoding.UTF8.GetBytes(s));
+    }
+
+    /// <summary>Scroll the active pane's scrollback by delta lines (or to top/bottom for ±int.MaxValue).</summary>
+    private static bool ScrollActivePane(int deltaLines)
+    {
+        var p = _active?.ActivePane;
+        if (p is null) return false;
+        int hist = p.S.Emulator.HistoryCount;
+        int no = deltaLines == int.MaxValue ? hist : deltaLines == int.MinValue ? 0
+               : Math.Clamp(p.ScrollOffset + deltaLines, 0, hist);
+        if (no != p.ScrollOffset) { p.ScrollOffset = no; RequestRedraw(); }
+        return true;
     }
 
     /// <summary>Dispatch a keymap action id (or "command:&lt;Label&gt;") to the matching behavior.</summary>
@@ -1271,6 +1300,19 @@ internal static class Program
 
         // While a palette is open it owns the keyboard (nav here, typing via WM_CHAR).
         if (_palette != PaletteKind.None) return PaletteKeyDown(vk);
+
+        // Shift+PageUp/PageDown (and Home/End) scroll this pane's scrollback; never reach the PTY.
+        if (shift && !ctrl && !alt && _active is not null)
+        {
+            int page = Math.Max(1, _active.ActivePane.S.Rows - 1);
+            switch (vk)
+            {
+                case VK_PRIOR: return ScrollActivePane(page);        // Shift+PageUp — older
+                case VK_NEXT: return ScrollActivePane(-page);        // Shift+PageDown — newer
+                case VK_HOME: return ScrollActivePane(int.MaxValue); // oldest
+                case VK_END: return ScrollActivePane(int.MinValue);  // live bottom
+            }
+        }
 
         // Fixed font-zoom shortcuts (Ctrl +/-/0, incl. numpad). Handled here, not via keymap.conf,
         // because '+' clashes with the chord joiner (matching agterm's constraint).
@@ -1531,7 +1573,7 @@ internal static class Program
     }
 
     /// <summary>Draw one terminal surface (cells, images, cursor) at origin (ox,oy) with its font metrics.</summary>
-    private static void RenderTerminal(TerminalSession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch)
+    private static void RenderTerminal(TerminalSession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch, int scrollOffset)
     {
         var rt = _rt!;
         var brush = _brush!;
@@ -1540,19 +1582,31 @@ internal static class Program
             var em = session.Emulator;
             var screen = em.Screen;
             int cols = screen.Cols, rows = screen.Rows;
+            int hist = em.HistoryCount;
+            int off = em.IsAltScreen ? 0 : Math.Clamp(scrollOffset, 0, hist);
+            // Visible row r maps into [history ++ live grid], shifted up by `off`.
+            Cell CellAt(int r, int c)
+            {
+                if (off <= 0) return screen[r, c];
+                int vi = hist - off + r;
+                if (vi < 0) return Cell.Empty;
+                if (vi < hist) return em.GetHistoryCell(vi, c);
+                int live = vi - hist;
+                return live < rows ? screen[live, c] : Cell.Empty;
+            }
             for (int r = 0; r < rows; r++)
             {
                 float y = oy + r * ch;
                 int c = 0;
                 while (c < cols)  // Pass 1: coalesced background fills
                 {
-                    Cell cell = screen[r, c];
+                    Cell cell = CellAt(r, c);
                     Color bg = EffectiveBg(cell);
                     if (bg == _theme.DefaultBackground) { c++; continue; }
                     int start = c;
                     while (c < cols)
                     {
-                        Cell cc = screen[r, c];
+                        Cell cc = CellAt(r, c);
                         if (cc.Width != 0 && EffectiveBg(cc) != bg) break;
                         c++;
                     }
@@ -1562,7 +1616,7 @@ internal static class Program
                 c = 0;
                 while (c < cols)  // Pass 2: coalesced same-colour text runs
                 {
-                    Cell cell = screen[r, c];
+                    Cell cell = CellAt(r, c);
                     if (cell.Width == 0 || cell.Rune == ' ' || cell.Rune == '\0') { c++; continue; }
                     Color runFg = EffectiveFg(cell);
                     if (cell.Width == 2)
@@ -1578,7 +1632,7 @@ internal static class Program
                     int lastNonBlank = 0;
                     while (c < cols)
                     {
-                        Cell cc = screen[r, c];
+                        Cell cc = CellAt(r, c);
                         if (cc.Width == 2 || cc.Width == 0) break;
                         bool blank = cc.Rune == ' ' || cc.Rune == '\0';
                         if (!blank && EffectiveFg(cc) != runFg) break;
@@ -1596,10 +1650,21 @@ internal static class Program
                 }
             }
 
-            if (!_noImages && em.Placements.Count > 0)
+            if (!_noImages && em.Placements.Count > 0 && off == 0)
                 DrawImages(em, ox, oy, cw, ch);
 
-            if (em.CursorVisible)
+            if (off > 0) // scrollback position indicator on the pane's right edge
+            {
+                float trackX = ox + cols * cw - 3f, trackH = rows * ch, total = hist + rows;
+                float thumbH = MathF.Max(12f, trackH * rows / total);
+                float thumbY = oy + (trackH - thumbH) * (hist - off) / MathF.Max(1, hist);
+                brush.Color = new Color4(1f, 1f, 1f, 0.10f);
+                rt.FillRectangle(new Rect(trackX, oy, 3f, trackH), brush);
+                brush.Color = new Color4(1f, 1f, 1f, 0.35f);
+                rt.FillRectangle(new Rect(trackX, thumbY, 3f, thumbH), brush);
+            }
+
+            if (em.CursorVisible && off == 0)
             {
                 float cx = ox + em.CursorCol * cw, cy = oy + em.CursorRow * ch;
                 brush.Color = C4(_theme.Cursor);
@@ -1633,7 +1698,7 @@ internal static class Program
             foreach (var (pane, ox, oy, pw, ph) in layout)
             {
                 var (fmt, cw, ch) = Metrics(pane.FontSize);
-                RenderTerminal(pane.S, ox, oy, fmt, cw, ch);
+                RenderTerminal(pane.S, ox, oy, fmt, cw, ch, pane.ScrollOffset);
             }
             if (layout.Count > 1)
             {

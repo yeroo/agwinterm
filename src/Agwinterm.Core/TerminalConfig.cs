@@ -21,6 +21,9 @@ public sealed class TerminalConfig
     public int CursorBlinkMs { get; set; } = 530;
     public string Theme { get; set; } = "default";
 
+    /// <summary>Rows of scrollback history kept per pane (0 disables). Scroll up with the wheel / Shift+PgUp.</summary>
+    public int Scrollback { get; set; } = 5000;
+
     /// <summary>Inject a pwsh prompt hook that emits OSC 7 so the live working directory is tracked.
     /// Off by default: the hook can override a customized prompt (e.g. oh-my-posh). Opt in for live cwd.</summary>
     public bool ShellIntegration { get; set; } = false;
@@ -45,6 +48,9 @@ public sealed class TerminalConfig
 
         # Color theme (pick live from the action palette; Ctrl+Shift+P -> Select Theme)
         theme = default
+
+        # Scrollback: rows of history to keep per pane (0 disables). Scroll with the wheel or Shift+PgUp/PgDn.
+        scrollback-lines = 5000
 
         # Shell integration: inject a pwsh prompt hook (OSC 7) to track the live working
         # directory so it persists/restores accurately. Off by default because the hook can
@@ -72,6 +78,7 @@ public sealed class TerminalConfig
             {
                 case "font-family": if (val.Length > 0) cfg.FontFamily = val; break;
                 case "font-size": if (double.TryParse(val, out var fs) && fs > 0) cfg.FontSize = fs; break;
+                case "scrollback-lines": if (int.TryParse(val, out var sb) && sb >= 0) cfg.Scrollback = sb; break;
                 case "cursor-style": cfg.CursorStyle = ParseCursorStyle(val, cfg.CursorStyle); break;
                 case "cursor-blink": cfg.CursorBlink = ParseBool(val, cfg.CursorBlink); break;
                 case "cursor-blink-ms": if (int.TryParse(val, out var ms) && ms > 0) cfg.CursorBlinkMs = ms; break;

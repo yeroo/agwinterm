@@ -39,6 +39,35 @@ public sealed class TerminalEmulator : IParserPerformer
     private int _scrollTop;
     private int _scrollBottom;
 
+    // Scrollback: rows scrolled off the TOP of the MAIN screen (oldest first). Trimmed in batches
+    // to amortise the cost, so the count can float up to ScrollbackMax + a small slack.
+    private readonly List<Cell[]> _history = new();
+    private const int TrimSlack = 512;
+
+    /// <summary>Max scrollback rows to keep (0 disables history; excess is dropped oldest-first).</summary>
+    public int ScrollbackMax { get; set; } = 5000;
+
+    /// <summary>Rows of scrollback available above the live screen (main screen only).</summary>
+    public int HistoryCount => _history.Count;
+
+    /// <summary>Read a scrolled-off cell; history row 0 is the oldest. Pads to the current width.</summary>
+    public Cell GetHistoryCell(int historyRow, int col)
+    {
+        if ((uint)historyRow >= (uint)_history.Count) return Cell.Empty;
+        var row = _history[historyRow];
+        return (uint)col < (uint)row.Length ? row[col] : Cell.Empty;
+    }
+
+    private void PushHistory()
+    {
+        int cols = Screen.Cols;
+        var row = new Cell[cols];
+        for (int c = 0; c < cols; c++) row[c] = Screen[0, c];
+        _history.Add(row);
+        if (_history.Count > ScrollbackMax + TrimSlack)
+            _history.RemoveRange(0, _history.Count - ScrollbackMax);
+    }
+
     private Color _fg = Color.DefaultForeground;
     private Color _bg = Color.DefaultBackground;
     private ColorSpec _fgSpec = ColorSpec.Default;   // semantic colour (default/indexed/rgb) for theming
@@ -454,6 +483,9 @@ public sealed class TerminalEmulator : IParserPerformer
 
     private void ScrollRegionUp()
     {
+        // A full-height scroll on the main screen pushes the top row into scrollback.
+        if (!IsAltScreen && ScrollbackMax > 0 && _scrollTop == 0 && _scrollBottom == Screen.Rows - 1)
+            PushHistory();
         for (int r = _scrollTop + 1; r <= _scrollBottom; r++)
             for (int c = 0; c < Screen.Cols; c++)
                 Screen[r - 1, c] = Screen[r, c];
