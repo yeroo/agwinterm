@@ -68,6 +68,15 @@ public interface ISessionHost
     /// <summary>Sidebar: op = show|hide|toggle|expand|collapse.</summary>
     void SidebarOp(string op);
 
+    /// <summary>Set a config key (persists to agwinterm.conf + applies live). Returns an ack.</summary>
+    string ConfigSet(string key, string value);
+    /// <summary>Current value of a config key.</summary>
+    string ConfigGet(string key);
+    /// <summary>All config keys with their current values ("key = value" per line).</summary>
+    string ConfigList();
+    /// <summary>Open the Settings window.</summary>
+    string SettingsOpen();
+
     /// <summary>Current text selection of the target session's active pane ("" if none).</summary>
     string SessionCopy(string? target);
 
@@ -151,6 +160,10 @@ public sealed class SingleSessionHost : ISessionHost
     public string KeymapReload() => "";
     public string RestoreClear() => "";
     public void SidebarOp(string op) { }
+    public string ConfigSet(string key, string value) => "unsupported";
+    public string ConfigGet(string key) => "";
+    public string ConfigList() => "";
+    public string SettingsOpen() => "unsupported";
     public string SessionCopy(string? target) => "";
     public string SessionSearch(string? target, string? query, string? action) => "";
     public bool SessionScratch(string? target, string op) => false;

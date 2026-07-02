@@ -77,6 +77,21 @@ internal static class Win32
     public const int GWLP_WNDPROC = -4;
     public const int DEFAULT_GUI_FONT = 17;
     public const uint CS_DBLCLKS = 0x0008;
+
+    // Settings window: popup + native controls (EDIT / BUTTON / COMBOBOX).
+    public const uint WS_POPUP = 0x80000000, WS_CAPTION = 0x00C00000, WS_SYSMENU = 0x00080000;
+    public const uint WS_TABSTOP = 0x00010000, WS_VSCROLL = 0x00200000, WS_GROUP = 0x00020000;
+    public const uint BS_AUTOCHECKBOX = 0x0003, BS_GROUPBOX = 0x0007;
+    public const uint CBS_DROPDOWNLIST = 0x0003, CBS_HASSTRINGS = 0x0200;
+    public const uint CB_ADDSTRING = 0x0143, CB_RESETCONTENT = 0x014B, CB_SETCURSEL = 0x014E, CB_GETCURSEL = 0x0147;
+    public const uint BM_GETCHECK = 0x00F0, BM_SETCHECK = 0x00F1;
+    public const int BN_CLICKED = 0, CBN_SELCHANGE = 1;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SendMessageW(IntPtr hWnd, uint msg, IntPtr wParam, string lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
     public const uint TPM_RETURNCMD = 0x0100, TPM_RIGHTBUTTON = 0x0002, TPM_LEFTALIGN = 0x0000;
     public const uint MF_STRING = 0x0000, MF_POPUP = 0x0010, MF_SEPARATOR = 0x0800, MF_GRAYED = 0x0001;
     public const uint BIF_RETURNONLYFSDIRS = 0x0001, BIF_NEWDIALOGSTYLE = 0x0040;
@@ -305,6 +320,16 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindowLongPtrW(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetLayeredWindowAttributes(IntPtr hWnd, uint crKey, byte bAlpha, uint dwFlags);
+
+    public const int GWL_EXSTYLE = -20;
+    public const int WS_EX_LAYERED = 0x00080000;
+    public const uint LWA_ALPHA = 0x00000002;
 
     [DllImport("user32.dll")]
     public static extern IntPtr CallWindowProcW(IntPtr lpPrevWndFunc, IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);

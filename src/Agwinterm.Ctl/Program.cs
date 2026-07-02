@@ -180,6 +180,19 @@ switch (area)
         break;
     case "keymap" when sub == "reload": cmd = "keymap.reload"; break;
     case "restore" when sub == "clear": cmd = "restore.clear"; break;
+    case "config" when sub == "set":
+        cmd = "config.set";
+        if (rest.Count < 1) { Console.Error.WriteLine("config set needs <key> <value>"); return 2; }
+        cargs["key"] = rest[0];
+        cargs["value"] = rest.Count > 1 ? string.Join(' ', rest.Skip(1)) : "";
+        break;
+    case "config" when sub == "get":
+        cmd = "config.get";
+        if (rest.Count < 1) { Console.Error.WriteLine("config get needs <key>"); return 2; }
+        cargs["key"] = rest[0];
+        break;
+    case "config" when sub == "list": cmd = "config.list"; break;
+    case "settings": cmd = "settings.open"; break;
     case "sidebar":
         cmd = "sidebar";
         // `sidebar mode tree|flagged|toggle` switches the view mode; otherwise show|hide|toggle|expand|collapse.

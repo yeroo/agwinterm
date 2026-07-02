@@ -20,7 +20,7 @@ namespace Agwinterm.Win32;
 /// the PTY, with no framework focus model in the way. Rendering mirrors the WinUI
 /// OnDraw path but on an ID2D1HwndRenderTarget.
 /// </summary>
-internal static class Program
+internal static partial class Program
 {
     private const float PadX = 8f;
     private const float PadY = 6f;
@@ -246,6 +246,7 @@ internal static class Program
         _config = LoadOrCreateConfig();
         _allThemes = LoadThemes();
         _theme = FindTheme(_config.Theme);
+        RecomputeChrome();
         LoadKeymap();
 
         IntPtr hInstance = GetModuleHandleW(null);
@@ -295,6 +296,7 @@ internal static class Program
 
         ShowWindow(_hwnd, _geoValid && _geoMax ? SW_MAXIMIZE : SW_SHOW);
         _wasMaximized = IsZoomed(_hwnd);
+        ApplyWindowOpacity();
         UpdateWindow(_hwnd);
 
         while (GetMessageW(out MSG msg, IntPtr.Zero, 0, 0) > 0)
@@ -529,6 +531,9 @@ internal static class Program
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null)
     {
         float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
+        // Fall back to the configured default new-session directory when no explicit cwd was given.
+        if (string.IsNullOrEmpty(cwd) && !string.IsNullOrWhiteSpace(_config.NewSessionDir) && Directory.Exists(_config.NewSessionDir))
+            cwd = _config.NewSessionDir;
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws };
@@ -1254,6 +1259,11 @@ internal static class Program
 
         public string KeymapReload() { Post(ReloadKeymap); return "keymap reload requested"; }
 
+        public string ConfigSet(string key, string value) => InvokeOnUi(() => ConfigSetInternal(key, value));
+        public string ConfigGet(string key) => InvokeOnUi(() => ConfigValue(key.Trim().ToLowerInvariant()));
+        public string ConfigList() => InvokeOnUi(() => string.Join("\n", ConfigKeys.Select(k => $"{k} = {ConfigValue(k)}")));
+        public string SettingsOpen() { Post(OpenSettingsWindow); return "settings opened"; }
+
         public string RestoreClear()
         {
             try { if (File.Exists(StatePath)) { File.Delete(StatePath); return "restore state cleared"; } return "no restore state"; }
@@ -1665,7 +1675,8 @@ internal static class Program
                     if (_cover is not null && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
                     {
                         int hn = _cover.S.Emulator.HistoryCount;
-                        int no = Math.Clamp(_cover.ScrollOffset + (HiWord(wParam) > 0 ? 3 : -3), 0, hn);
+                        int step = Math.Clamp(_config.ScrollSpeed, 1, 10);
+                        int no = Math.Clamp(_cover.ScrollOffset + (HiWord(wParam) > 0 ? step : -step), 0, hn);
                         if (no != _cover.ScrollOffset) { _cover.ScrollOffset = no; RequestRedraw(); }
                         return IntPtr.Zero;
                     }
@@ -1675,7 +1686,7 @@ internal static class Program
                             {
                                 int histN = p.S.Emulator.HistoryCount;
                                 int dir = HiWord(wParam) > 0 ? 1 : -1; // wheel up scrolls back into history
-                                int no = Math.Clamp(p.ScrollOffset + dir * 3, 0, histN);
+                                int no = Math.Clamp(p.ScrollOffset + dir * Math.Clamp(_config.ScrollSpeed, 1, 10), 0, histN);
                                 if (no != p.ScrollOffset) { p.ScrollOffset = no; RequestRedraw(); }
                                 break;
                             }
@@ -2699,9 +2710,9 @@ internal static class Program
                 float trackX = ox + cols * cw - 3f, trackH = rows * ch, total = hist + rows;
                 float thumbH = MathF.Max(12f, trackH * rows / total);
                 float thumbY = oy + (trackH - thumbH) * (hist - off) / MathF.Max(1, hist);
-                brush.Color = new Color4(1f, 1f, 1f, 0.10f);
+                brush.Color = WithA(ChromeText, 0.10f);
                 rt.FillRectangle(new Rect(trackX, oy, 3f, trackH), brush);
-                brush.Color = new Color4(1f, 1f, 1f, 0.35f);
+                brush.Color = WithA(ChromeText, 0.35f);
                 rt.FillRectangle(new Rect(trackX, thumbY, 3f, thumbH), brush);
             }
 
@@ -2755,7 +2766,7 @@ internal static class Program
                 rt.FillRectangle(new Rect(fx, fy, fw, fh), brush);
                 var (fmt, cw, ch) = Metrics(_cover!.FontSize);
                 RenderTerminal(_cover.S, fx, fy, fmt, cw, ch, _cover.ScrollOffset, _cover);
-                brush.Color = new Color4(0.35f, 0.55f, 0.9f, 1f);            // 1px frame
+                brush.Color = ChromeAccent;                                  // 1px frame
                 rt.DrawRectangle(new Rect(fx - 1f, fy - 1f, fw + 2f, fh + 2f), brush, 1f);
                 DrawCoverBadge(rt, brush, fx + fw, fy);
                 DrawOverlayFooter(rt, brush);
@@ -2801,7 +2812,7 @@ internal static class Program
             if (i == _mruIdx) { brush.Color = PalSel; rt.FillRectangle(new Rect(px + 4f, ry, pw - 8f, rowH), brush); }
             brush.Color = StatusDot(s.ActivePane.S.Status);
             rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(px + 18f, ry + rowH / 2f), 4.5f, 4.5f), brush);
-            brush.Color = i == _mruIdx ? new Color4(1f, 1f, 1f, 1f) : ChromeText;
+            brush.Color = i == _mruIdx ? SbActiveText : ChromeText;
             rt.DrawText(s.Name, _uiFont, new Rect(px + 32f, ry + (rowH - 20f) / 2f, pw - 150f, 20f), brush);
             brush.Color = ChromeDim;
             float wsw = MeasureText(s.Ws.Name, _uiSmall);
@@ -2817,17 +2828,23 @@ internal static class Program
         {
             var (fmt, cw, ch) = Metrics(pane.FontSize);
             RenderTerminal(pane.S, ox, oy, fmt, cw, ch, pane.ScrollOffset, pane);
+            // Dim non-active panes in a split so the focused one stands out.
+            if (layout.Count > 1 && !ReferenceEquals(pane, ses.ActivePane) && _config.InactivePaneDim > 0)
+            {
+                brush.Color = WithA(new Color4(0f, 0f, 0f, 1f), System.Math.Clamp(_config.InactivePaneDim, 0, 100) / 100f * 0.9f);
+                rt.FillRectangle(new Rect(ox, oy, pw, ph), brush);
+            }
         }
         if (layout.Count > 1)
         {
             for (int i = 0; i < layout.Count - 1; i++)
             {
                 float dx = layout[i].x + layout[i].w + DividerW / 2f;
-                brush.Color = new Color4(0.28f, 0.31f, 0.36f, 1f);
+                brush.Color = ChromeBorder;
                 rt.FillRectangle(new Rect(dx - 0.5f, layout[i].y, 1f, layout[i].h), brush);
             }
             var ap = layout.First(l => ReferenceEquals(l.pane, ses.ActivePane));
-            brush.Color = new Color4(0.30f, 0.55f, 0.95f, 1f);
+            brush.Color = ChromeAccent;
             rt.FillRectangle(new Rect(ap.x, TitleBarH + 1f, ap.w, 2f), brush); // accent marks the focused pane
         }
     }
@@ -2838,7 +2855,7 @@ internal static class Program
         string badge = _coverKind switch { 1 => "scratch", 2 => "quick", 3 => "overlay", _ => "" };
         if (badge.Length == 0) return;
         float bw = MeasureText(badge, _uiSmall) + 16f;
-        brush.Color = new Color4(0.16f, 0.20f, 0.25f, 0.92f);
+        brush.Color = WithA(SbHighlight, 0.92f);
         rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(rightX - bw - 6f, topY + 4f, bw, 20f), RadiusX = 5f, RadiusY = 5f }, brush);
         brush.Color = ChromeText;
         rt.DrawText(badge, _uiSmall, new Rect(rightX - bw + 2f, topY + 4f, bw - 8f, 20f), brush);
@@ -2851,7 +2868,7 @@ internal static class Program
         var (fx, fy, fw, fh) = CoverRect();
         string msg = $"  exited ({_overlayExitCode}) — press any key to close  ";
         float bh = 22f;
-        brush.Color = new Color4(0.30f, 0.55f, 0.95f, 0.95f);
+        brush.Color = WithA(ChromeAccent, 0.95f);
         rt.FillRectangle(new Rect(fx, fy + fh - bh, fw, bh), brush);
         brush.Color = new Color4(1f, 1f, 1f, 1f);
         rt.DrawText(msg, _uiSmall, new Rect(fx + 4f, fy + fh - bh, fw - 8f, bh), brush);
@@ -2864,9 +2881,9 @@ internal static class Program
         float barW = 340f, barH = 30f;
         float x = Math.Max(_sidebarW + 8f, ClientW() - barW - 12f), y = TitleBarH + 8f;
         var rr = new RoundedRectangle { Rect = new Rect(x, y, barW, barH), RadiusX = 6f, RadiusY = 6f };
-        brush.Color = new Color4(0.13f, 0.15f, 0.18f, 1f);
+        brush.Color = PalBg;
         rt.FillRoundedRectangle(rr, brush);
-        brush.Color = new Color4(0.30f, 0.55f, 0.95f, 1f);
+        brush.Color = ChromeAccent;
         rt.DrawRoundedRectangle(rr, brush, 1f);
         brush.Color = ChromeDim;
         rt.DrawText("", _iconFont, new Rect(x + 6f, y, 22f, barH), brush); // magnifier
@@ -2883,11 +2900,13 @@ internal static class Program
 
     // ---- Sidebar (custom Direct2D outline: workspaces -> sessions) ----
 
-    private static readonly Color4 SbBg = new(0.055f, 0.063f, 0.071f, 1f);
-    private static readonly Color4 SbHighlight = new(0.16f, 0.20f, 0.25f, 1f);
-    private static readonly Color4 SbHeaderText = new(0.75f, 0.78f, 0.82f, 1f);
-    private static readonly Color4 SbActiveText = new(1f, 1f, 1f, 1f);
-    private static readonly Color4 SbDimText = new(0.60f, 0.63f, 0.67f, 1f);
+    // Chrome colours are DERIVED from the active theme (see RecomputeChrome), so a theme switch
+    // recolours the whole window, not just the terminal cells. Defaults match the old dark chrome.
+    private static Color4 SbBg = new(0.055f, 0.063f, 0.071f, 1f);
+    private static Color4 SbHighlight = new(0.16f, 0.20f, 0.25f, 1f);
+    private static Color4 SbHeaderText = new(0.75f, 0.78f, 0.82f, 1f);
+    private static Color4 SbActiveText = new(1f, 1f, 1f, 1f);
+    private static Color4 SbDimText = new(0.60f, 0.63f, 0.67f, 1f);
 
     private static Color4 StatusDot(AgentStatus s) => s switch
     {
@@ -2927,9 +2946,9 @@ internal static class Program
         if (focused is not null)
         {
             // "Focused" banner: a full-width accent strip; clicking it clears the focus (back to all workspaces).
-            brush.Color = new Color4(0.14f, 0.22f, 0.34f, 1f);
+            brush.Color = Mix(SbBg, ChromeAccent, 0.32f);
             rt.FillRectangle(new Rect(0, y, _sidebarW, rowH), brush);
-            brush.Color = new Color4(0.55f, 0.75f, 1f, 1f);
+            brush.Color = Mix(ChromeAccent, new Color4(1f, 1f, 1f, 1f), 0.35f);
             rt.DrawText("‹  Focused — show all", _uiSmall, new Rect(12f, y, _sidebarW - 20f, rowH), brush);
             _sidebarRows.Add((y, y + rowH, false, _showAllMarker));
             y += rowH;
@@ -3431,9 +3450,9 @@ internal static class Program
     // ---- Command palette (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention) ----
 
     private static readonly Color4 PalScrim = new(0f, 0f, 0f, 0.45f);
-    private static readonly Color4 PalBg = new(0.11f, 0.12f, 0.145f, 1f);
-    private static readonly Color4 PalBorder = new(0.30f, 0.34f, 0.42f, 1f);
-    private static readonly Color4 PalSel = new(0.20f, 0.30f, 0.46f, 1f);
+    private static Color4 PalBg = new(0.11f, 0.12f, 0.145f, 1f);
+    private static Color4 PalBorder = new(0.30f, 0.34f, 0.42f, 1f);
+    private static Color4 PalSel = new(0.20f, 0.30f, 0.46f, 1f);
 
     private static void TogglePalette(PaletteKind kind)
     {
@@ -3499,6 +3518,7 @@ internal static class Program
                 A("Scratch Terminal", "Ctrl+J", () => { if (_active is not null) ScratchOp(_active, "toggle"); });
                 A("Quick Terminal", "Ctrl+`", () => QuickOp("toggle"));
                 A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
+                A("Settings…", "", OpenSettingsWindow);
                 A("Custom Commands…", "Ctrl+Shift+O", () => TogglePalette(PaletteKind.Custom));
                 A("Install Shell Integration", "", InstallShellIntegration);
                 A("Reload Keymap", "", ReloadKeymap);
@@ -3650,7 +3670,7 @@ internal static class Program
             brush.Color = ChromeText;
             rt.DrawLine(new System.Numerics.Vector2(qx, py + 11f), new System.Numerics.Vector2(qx, py + queryH - 10f), brush, 1.2f);
         }
-        brush.Color = new Color4(0.22f, 0.24f, 0.28f, 1f);
+        brush.Color = ChromeBorder;
         rt.DrawLine(new System.Numerics.Vector2(px + 8f, py + queryH), new System.Numerics.Vector2(px + pw - 8f, py + queryH), brush, 1f);
 
         int start = _palSel >= maxRows ? _palSel - maxRows + 1 : 0;
@@ -3664,7 +3684,7 @@ internal static class Program
             float tx = px + 16f;
             if (it.Dot is AgentStatus ds) { brush.Color = StatusDot(ds); rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(px + 16f, ry + rowH / 2f), 4.5f, 4.5f), brush); tx = px + 30f; }
             bool hasSub = it.Secondary.Length > 0;
-            brush.Color = it.Run is null ? ChromeDim : (idx == _palSel ? new Color4(1f, 1f, 1f, 1f) : ChromeText);
+            brush.Color = it.Run is null ? ChromeDim : (idx == _palSel ? SbActiveText : ChromeText);
             rt.DrawText(it.Label, _uiFont, new Rect(tx, ry + (hasSub ? 3f : 0f), pw - (tx - px) - 80f, hasSub ? 20f : rowH), brush);
             if (hasSub) { brush.Color = ChromeDim; rt.DrawText(it.Secondary, _uiSmall, new Rect(tx, ry + 20f, pw - (tx - px) - 20f, 16f), brush); }
             if (it.Hint.Length > 0) { brush.Color = ChromeDim; float hw = MeasureText(it.Hint, _uiSmall); rt.DrawText(it.Hint, _uiSmall, new Rect(px + pw - 16f - hw, ry + (rowH - 16f) / 2f, hw + 2f, 16f), brush); }
@@ -3674,9 +3694,52 @@ internal static class Program
 
     // ---- Custom title bar / status bar (frameless chrome) ----
 
-    private static readonly Color4 ChromeBg = new(0.043f, 0.051f, 0.059f, 1f);
-    private static readonly Color4 ChromeText = new(0.92f, 0.93f, 0.95f, 1f);
-    private static readonly Color4 ChromeDim = new(0.55f, 0.58f, 0.62f, 1f);
+    private static Color4 ChromeBg = new(0.043f, 0.051f, 0.059f, 1f);
+    private static Color4 ChromeText = new(0.92f, 0.93f, 0.95f, 1f);
+    private static Color4 ChromeDim = new(0.55f, 0.58f, 0.62f, 1f);
+    private static Color4 ChromeAccent = new(0.30f, 0.55f, 0.95f, 1f);   // theme accent (selection, active markers, focus)
+    private static Color4 ChromeBorder = new(0.22f, 0.24f, 0.28f, 1f);   // dividers / separators
+
+    // ---- Chrome palette derivation (all chrome colours track the active theme) ----
+
+    private static float Lum(Color4 c) => 0.299f * c.R + 0.587f * c.G + 0.114f * c.B;
+    private static Color4 Mix(Color4 a, Color4 b, float t)
+        => new(a.R + (b.R - a.R) * t, a.G + (b.G - a.G) * t, a.B + (b.B - a.B) * t, 1f);
+    private static Color4 WithA(Color4 c, float a) => new(c.R, c.G, c.B, a);
+    /// <summary>amt &gt; 0 lightens (toward white), amt &lt; 0 darkens (toward black).</summary>
+    private static Color4 Shade(Color4 c, float amt)
+        => amt >= 0 ? Mix(c, new Color4(1f, 1f, 1f, 1f), amt) : Mix(c, new Color4(0f, 0f, 0f, 1f), -amt);
+
+    /// <summary>Recompute all chrome colours from the active theme + sidebar-tint. Called on load and every theme/config change.</summary>
+    private static void RecomputeChrome()
+    {
+        var bg = C4(_theme.DefaultBackground);
+        var fg = C4(_theme.DefaultForeground);
+        bool dark = Lum(bg) < 0.5f;
+
+        // Panels sit at distinct luminance layers relative to the terminal background.
+        ChromeBg = Shade(bg, dark ? -0.42f : -0.06f);   // title bar + footer toolbar
+        var sidebar = Shade(bg, dark ? -0.28f : -0.09f);
+        float tint = System.Math.Clamp(_config.SidebarTint, -100, 100) / 100f;
+        SbBg = Shade(sidebar, tint * (dark ? 0.6f : 0.4f)); // sidebar-tint nudges the shade
+        PalBg = Shade(bg, dark ? 0.07f : -0.04f);         // overlays/HUD pop slightly above the terminal
+
+        // Accent: the theme's bright-blue (index 12), falling back to blue (4) then a safe blue, kept vivid.
+        var accent = C4(_theme.Palette.Length > 12 ? _theme.Palette[12] : _theme.DefaultForeground);
+        if (Lum(accent) < 0.22f && _theme.Palette.Length > 4) accent = C4(_theme.Palette[4]);
+        if (Lum(accent) < 0.18f) accent = new Color4(0.30f, 0.55f, 0.95f, 1f);
+        ChromeAccent = accent;
+
+        ChromeText = Mix(fg, bg, 0.04f);
+        ChromeDim = Mix(fg, bg, dark ? 0.42f : 0.40f);
+        SbActiveText = fg;
+        SbHeaderText = Mix(fg, bg, 0.20f);
+        SbDimText = ChromeDim;
+        SbHighlight = Mix(SbBg, fg, dark ? 0.14f : 0.14f);
+        ChromeBorder = Mix(bg, fg, dark ? 0.20f : 0.26f);
+        PalBorder = Mix(PalBg, fg, dark ? 0.28f : 0.30f);
+        PalSel = Mix(PalBg, accent, dark ? 0.45f : 0.32f);
+    }
 
     private static int ClientW() { GetClientRect(_hwnd, out RECT rc); return rc.right - rc.left; }
     private static int ClientH() { GetClientRect(_hwnd, out RECT rc); return rc.bottom - rc.top; }
@@ -3759,6 +3822,7 @@ internal static class Program
             case "split": SplitActivePane(); break;
             case "quick terminal": QuickOp("toggle"); break;
             case "flag": ToggleFlaggedView(); break;   // footer flag button toggles the flagged working-set view
+            case "settings": OpenSettingsWindow(); break;
             default: ShowToast(a + " not implemented yet"); break;
         }
     }
@@ -3876,7 +3940,7 @@ internal static class Program
         // Title + subtitle (native Segoe UI), stacked when a cwd is known.
         string title = _active?.Name ?? "agwinterm";
         string subtitle = _active is not null ? PrettyCwd(SafeCwd(_active)) : "";
-        float actGroupX = cw - 3 * CaptionBtnW - 4 * 40f; // reserve bell + 3 action icons
+        float actGroupX = cw - 3 * CaptionBtnW - 5 * 40f; // reserve bell + 4 action icons
         float textW = MathF.Max(80f, actGroupX - 8f - 48f);
         brush.Color = ChromeText;
         if (subtitle.Length > 0)
@@ -3890,11 +3954,11 @@ internal static class Program
         // Action buttons (icon glyphs), right-aligned before the caption buttons.
         (string glyph, string action)[] acts =
         {
-            ("", "overlay"), ("", "split"), ("", "quick terminal"),
+            ("", "overlay"), ("", "split"), ("", "quick terminal"), ("", "settings"),
         };
         float bw = 40f, startX = actGroupX;
         // Thin separator before the action group.
-        brush.Color = new Color4(0.22f, 0.24f, 0.28f, 1f);
+        brush.Color = ChromeBorder;
         rt.DrawLine(new System.Numerics.Vector2(startX - 8f, 11f), new System.Numerics.Vector2(startX - 8f, TitleBarH - 11f), brush, 1f);
         // Attention bell: dim = nothing, plain = active/completed, amber = any blocked.
         var (bellBlocked, bellActive) = AttentionState();
@@ -3908,7 +3972,8 @@ internal static class Program
         {
             float x = startX + (i + 1) * bw;
             brush.Color = ChromeDim;
-            rt.DrawText(acts[i].glyph, _iconFont, new Rect(x, 0, bw, TitleBarH), brush);
+            string glyph = acts[i].action == "settings" ? "" : acts[i].glyph; // gear (Segoe Fluent Setting)
+            rt.DrawText(glyph, _iconFont, new Rect(x, 0, bw, TitleBarH), brush);
             _titleButtons.Add((x, x + bw, acts[i].action));
         }
 
@@ -3924,7 +3989,7 @@ internal static class Program
             bool hot = _hoverCaption == i || pressedIdx == i;
             if (hot)
             {
-                brush.Color = i == 3 ? new Color4(0.86f, 0.15f, 0.18f, 1f) : new Color4(0.20f, 0.22f, 0.26f, 1f);
+                brush.Color = i == 3 ? new Color4(0.86f, 0.15f, 0.18f, 1f) : SbHighlight;
                 rt.FillRectangle(new Rect(x0, 0, CaptionBtnW, TitleBarH), brush);
             }
             brush.Color = ((_hoverCaption == 3 || pressedIdx == 3) && i == 3) ? new Color4(1f, 1f, 1f, 1f) : ChromeText;
@@ -3958,7 +4023,7 @@ internal static class Program
         float cx = _sidebarW + ((cw - _sidebarW) - tw) / 2f;
         float ty = ch - th - 24f;
         _toastRect = new Rect(cx, ty, tw, th);   // recorded for click-to-jump hit-testing
-        brush.Color = new Color4(0.13f, 0.15f, 0.18f, 1f);
+        brush.Color = Mix(ChromeBg, ChromeText, 0.14f);
         rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx, ty, tw, th), RadiusX = 8f, RadiusY = 8f }, brush);
         brush.Color = ChromeText;
         rt.DrawText(_toastText, _uiFont, new Rect(cx + 16f, ty, tw - 24f, th), brush);
@@ -3973,7 +4038,7 @@ internal static class Program
         float x = _sidebarW + 24f, y = ClientH() - th - 24f;
         brush.Color = new Color4(0.22f, 0.17f, 0.33f, 1f);   // purple-ish so it reads distinctly from a toast
         rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, y, tw, th), RadiusX = 8f, RadiusY = 8f }, brush);
-        brush.Color = ChromeText;
+        brush.Color = new Color4(1f, 1f, 1f, 1f);             // fixed light text (pill bg is always dark)
         rt.DrawText(txt, _uiFont, new Rect(x + 16f, y, tw - 24f, th), brush);
     }
 
@@ -3981,7 +4046,22 @@ internal static class Program
 
     // ---- Theming ----
 
-    private static void ApplyTheme(Theme t) { _theme = t; RequestRedraw(); }
+    private static void ApplyTheme(Theme t) { _theme = t; RecomputeChrome(); RequestRedraw(); }
+
+    /// <summary>Apply the window-opacity config via a layered window (LWA_ALPHA). 100% removes the layered style.</summary>
+    private static void ApplyWindowOpacity()
+    {
+        if (_hwnd == IntPtr.Zero) return;
+        int pct = System.Math.Clamp(_config.WindowOpacity, 30, 100);
+        long ex = (long)GetWindowLongPtrW(_hwnd, GWL_EXSTYLE);
+        if (pct >= 100)
+        {
+            if ((ex & WS_EX_LAYERED) != 0) SetWindowLongPtrW(_hwnd, GWL_EXSTYLE, (IntPtr)(ex & ~WS_EX_LAYERED));
+            return;
+        }
+        if ((ex & WS_EX_LAYERED) == 0) SetWindowLongPtrW(_hwnd, GWL_EXSTYLE, (IntPtr)(ex | WS_EX_LAYERED));
+        SetLayeredWindowAttributes(_hwnd, 0, (byte)(pct * 255 / 100), LWA_ALPHA);
+    }
 
     private static void CommitTheme(Theme t)
     {
@@ -4002,16 +4082,73 @@ internal static class Program
         => _allThemes.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase)) ?? Theme.Default;
 
     /// <summary>Persist the chosen theme by rewriting (or appending) the `theme =` line in the config.</summary>
-    private static void SaveThemeConfig(string name)
+    private static void SaveThemeConfig(string name) => WriteConfigKey("theme", name);
+
+    /// <summary>All config keys the Settings window / config verbs manage.</summary>
+    private static readonly string[] ConfigKeys =
+    {
+        "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
+        "scrollback-lines", "inactive-pane-dim", "window-opacity", "sidebar-tint", "scroll-speed",
+        "new-session-dir", "right-click-paste", "desktop-notifications", "shell-integration",
+        "restore-commands", "blocked-sound",
+    };
+
+    /// <summary>Rewrite (or append) a single `key = value` line in agwinterm.conf, preserving the rest.</summary>
+    private static void WriteConfigKey(string key, string value)
     {
         string path = ConfigPath;
         string text = File.Exists(path) ? File.ReadAllText(path) : TerminalConfig.DefaultText;
         var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
-        int idx = lines.FindIndex(l => { var t = l.TrimStart(); return !t.StartsWith("#") && t.StartsWith("theme", StringComparison.OrdinalIgnoreCase) && l.Contains('='); });
-        string ln = $"theme = {name}";
-        if (idx >= 0) lines[idx] = ln; else { lines.Add(""); lines.Add(ln); }
+        int idx = lines.FindIndex(l =>
+        {
+            var t = l.TrimStart();
+            int eq = l.IndexOf('=');
+            return !t.StartsWith("#") && eq > 0 && string.Equals(l[..eq].Trim(), key, StringComparison.OrdinalIgnoreCase);
+        });
+        string ln = $"{key} = {value}";
+        if (idx >= 0) lines[idx] = ln; else { lines.Add(ln); }
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, string.Join(Environment.NewLine, lines));
+    }
+
+    /// <summary>Current value of a config key as a string (for config get/list + the Settings window).</summary>
+    private static string ConfigValue(string key) => key switch
+    {
+        "font-family" => _config.FontFamily,
+        "font-size" => _config.FontSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        "cursor-style" => _config.CursorStyle.ToString().ToLowerInvariant(),
+        "cursor-blink" => _config.CursorBlink ? "true" : "false",
+        "cursor-blink-ms" => _config.CursorBlinkMs.ToString(),
+        "theme" => _config.Theme,
+        "scrollback-lines" => _config.Scrollback.ToString(),
+        "inactive-pane-dim" => _config.InactivePaneDim.ToString(),
+        "window-opacity" => _config.WindowOpacity.ToString(),
+        "sidebar-tint" => _config.SidebarTint.ToString(),
+        "scroll-speed" => _config.ScrollSpeed.ToString(),
+        "new-session-dir" => _config.NewSessionDir,
+        "right-click-paste" => _config.RightClickPaste ? "true" : "false",
+        "desktop-notifications" => _config.DesktopNotifications ? "true" : "false",
+        "shell-integration" => _config.ShellIntegration ? "true" : "false",
+        "restore-commands" => _config.RestoreCommands ? "true" : "false",
+        "blocked-sound" => _config.BlockedSound,
+        _ => "",
+    };
+
+    /// <summary>Persist + apply a config key live. Runs on the UI thread. Returns an ack string.</summary>
+    private static string ConfigSetInternal(string key, string value)
+    {
+        key = key.Trim().ToLowerInvariant();
+        if (Array.IndexOf(ConfigKeys, key) < 0) return "error: unknown key '" + key + "'";
+        WriteConfigKey(key, value.Trim());
+        _config = TerminalConfig.Load(ConfigPath);       // reparse so clamping/validation is centralized
+        if (key == "theme") _theme = FindTheme(_config.Theme);
+        if (key == "cursor-blink-ms" && _hwnd != IntPtr.Zero) SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
+        RecomputeChrome();
+        ApplyWindowOpacity();
+        RequestRedraw();
+        RefreshSettingsControls();                        // keep an open Settings window in sync
+        bool deferred = key is "font-family" or "font-size" or "scrollback-lines" or "shell-integration" or "restore-commands";
+        return $"{key} = {ConfigValue(key)}" + (deferred ? "  (applies to new sessions)" : "");
     }
 
     /// <summary>Built-in themes plus any ghostty-format files in %LOCALAPPDATA%\agwinterm\themes\.</summary>

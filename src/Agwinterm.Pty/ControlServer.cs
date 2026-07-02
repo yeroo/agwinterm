@@ -125,6 +125,10 @@ public sealed class ControlServer : IDisposable
                 case "theme.set": return _host.ThemeSet(GetString(args, "name") ?? "") ? Ok("theme set") : Err("theme not found");
                 case "keymap.reload": return Ok(_host.KeymapReload());
                 case "restore.clear": return Ok(_host.RestoreClear());
+                case "config.set": return Ok(_host.ConfigSet(GetString(args, "key") ?? "", GetString(args, "value") ?? ""));
+                case "config.get": return Ok(_host.ConfigGet(GetString(args, "key") ?? ""));
+                case "config.list": return Ok(_host.ConfigList());
+                case "settings.open": return Ok(_host.SettingsOpen());
                 case "sidebar": _host.SidebarOp(GetString(args, "op") ?? "toggle"); return Ok("sidebar");
                 case "session.copy": return Ok(_host.SessionCopy(target)); // selection text (host-side), "" if none
                 case "session.search": return Ok(_host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));

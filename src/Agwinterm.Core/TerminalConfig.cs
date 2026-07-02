@@ -43,6 +43,21 @@ public sealed class TerminalConfig
     /// (e.g. "SystemNotification"), or a full path to a .wav file.</summary>
     public string BlockedSound { get; set; } = "";
 
+    /// <summary>How much to dim non-active panes in a split (0 = no dimming, 100 = fully dark). Default 35.</summary>
+    public int InactivePaneDim { get; set; } = 35;
+
+    /// <summary>Whole-window opacity, 30–100 (%). 100 = opaque. Clamped so the window never disappears.</summary>
+    public int WindowOpacity { get; set; } = 100;
+
+    /// <summary>Shifts the themed sidebar shade relative to the theme base: -100 (darker) … +100 (lighter). Default 0.</summary>
+    public int SidebarTint { get; set; } = 0;
+
+    /// <summary>Default working directory for newly created sessions (empty = inherit current behavior).</summary>
+    public string NewSessionDir { get; set; } = "";
+
+    /// <summary>Scrollback wheel speed: lines scrolled per wheel notch, 1–10. Default 3.</summary>
+    public int ScrollSpeed { get; set; } = 3;
+
     /// <summary>Default config file contents (also used to seed the file on first run).</summary>
     public const string DefaultText =
         """
@@ -83,6 +98,21 @@ public sealed class TerminalConfig
         # Restore running commands: on restart, re-run each pane's foreground command (agterm's
         # opt-in restore-on-restart). Off by default. Edit restore-denylist.conf to exclude commands.
         restore-commands = false
+
+        # Dim non-active panes in a split (0 = off, 100 = fully dark).
+        inactive-pane-dim = 35
+
+        # Whole-window opacity, 30-100 (%). 100 = opaque.
+        window-opacity = 100
+
+        # Sidebar tint relative to the theme: -100 (darker) .. +100 (lighter).
+        sidebar-tint = 0
+
+        # Default directory for new sessions (empty = current behavior).
+        new-session-dir =
+
+        # Scrollback wheel speed: lines per wheel notch (1-10).
+        scroll-speed = 3
         """;
 
     public static TerminalConfig Parse(string text)
@@ -111,6 +141,11 @@ public sealed class TerminalConfig
                 case "right-click-paste": cfg.RightClickPaste = ParseBool(val, cfg.RightClickPaste); break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;
+                case "inactive-pane-dim": if (int.TryParse(val, out var ipd)) cfg.InactivePaneDim = System.Math.Clamp(ipd, 0, 100); break;
+                case "window-opacity": if (int.TryParse(val, out var wo)) cfg.WindowOpacity = System.Math.Clamp(wo, 30, 100); break;
+                case "sidebar-tint": if (int.TryParse(val, out var st)) cfg.SidebarTint = System.Math.Clamp(st, -100, 100); break;
+                case "new-session-dir": cfg.NewSessionDir = val; break;
+                case "scroll-speed": if (int.TryParse(val, out var ss)) cfg.ScrollSpeed = System.Math.Clamp(ss, 1, 10); break;
             }
         }
         return cfg;
