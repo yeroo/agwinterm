@@ -97,6 +97,15 @@ internal static partial class Program
     private const int DragThreshold = 5;
     private static int _hoverCaption; // 0 none, 1 min, 2 max, 3 close (for hover paint)
     private static int _capPressed;   // HT* of a pressed caption button (for click + pressed paint)
+
+    // Custom chrome buttons: hover/press states + fade animation (so our buttons feel like the caption buttons).
+    private static string? _hotBtn;   // chrome button id currently under the cursor
+    private static string? _hotPaint; // button being painted with the hover fill (lingers during fade-out)
+    private static float _hotAlpha;   // 0..1 hover-fill alpha (eased by the fade timer)
+    private static string? _pressBtn; // chrome button id pressed (fires on release over the same button)
+    private static bool _mouseTracking; // TrackMouseEvent armed (for WM_MOUSELEAVE)
+    private const int HoverTimer = 8;   // WM_TIMER id for the hover fade
+    private static bool _chromeDark = true; // active theme is dark (set by RecomputeChrome)
     private static string? _toastText;
     private static Ses? _toastTarget;   // when the toast is a notification banner: click it to jump to this session
     private static Rect _toastRect;     // last-drawn banner rect (for click-to-jump hit-testing)
@@ -277,6 +286,20 @@ internal static partial class Program
                 CW_USEDEFAULT, CW_USEDEFAULT, 1040, 660, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
         if (_hwnd == IntPtr.Zero)
             throw new InvalidOperationException("CreateWindowExW failed: " + System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+
+        // App icon for the window (taskbar + alt-tab); the exe icon comes from <ApplicationIcon>.
+        try
+        {
+            string icoPath = System.IO.Path.Combine(AppContext.BaseDirectory, "assets", "agwinterm.ico");
+            if (System.IO.File.Exists(icoPath))
+            {
+                IntPtr hIconBig = LoadImageW(IntPtr.Zero, icoPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
+                IntPtr hIconSm = LoadImageW(IntPtr.Zero, icoPath, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
+                if (hIconBig != IntPtr.Zero) SendMessageW(_hwnd, WM_SETICON, (IntPtr)ICON_BIG, hIconBig);
+                if (hIconSm != IntPtr.Zero) SendMessageW(_hwnd, WM_SETICON, (IntPtr)ICON_SMALL, hIconSm);
+            }
+        }
+        catch { /* icon is cosmetic; ignore load failures */ }
 
         // Direct2D / DirectWrite.
         _d2d = D2D1.D2D1CreateFactory<ID2D1Factory>(Vortice.Direct2D1.FactoryType.SingleThreaded);
@@ -1462,6 +1485,11 @@ internal static partial class Program
                 if (_hoverCaption != 0) { _hoverCaption = 0; RequestRedraw(); }
                 break;
 
+            case WM_MOUSELEAVE:
+                _mouseTracking = false;
+                if (_hotBtn is not null) { _hotBtn = null; SetTimer(hwnd, (IntPtr)HoverTimer, 15, IntPtr.Zero); RequestRedraw(); }
+                return IntPtr.Zero;
+
             case WM_NCLBUTTONDOWN:
                 {
                     int ht = (int)wParam;
@@ -1534,6 +1562,7 @@ internal static partial class Program
             case WM_TIMER:
                 if ((int)wParam == 2) { _toastText = null; _toastTarget = null; KillTimer(hwnd, (IntPtr)2); InvalidateRect(hwnd, IntPtr.Zero, false); return IntPtr.Zero; }
                 if ((int)wParam == SelAutoTimer) { SelAutoscrollTick(); return IntPtr.Zero; }
+                if ((int)wParam == HoverTimer) { HoverTick(); return IntPtr.Zero; }
                 _cursorOn = !_cursorOn;
                 InvalidateRect(hwnd, IntPtr.Zero, false);
                 return IntPtr.Zero;
@@ -1605,10 +1634,20 @@ internal static partial class Program
                         SetActive(t);
                         return IntPtr.Zero;
                     }
-                    if (my < (int)TitleBarH) { HitChrome(_titleButtons, mx); return IntPtr.Zero; }
+                    if (my < (int)TitleBarH)
+                    {
+                        string? id = ChromeHit(_titleButtons, mx);
+                        if (id is not null) { _pressBtn = id; _hotBtn = id; _hotPaint = id; SetCapture(hwnd); RequestRedraw(); }
+                        return IntPtr.Zero;
+                    }
                     if (mx < (int)_sidebarW)
                     {
-                        if (my >= ClientH() - (int)FooterH) { HitChrome(_footerButtons, mx); return IntPtr.Zero; }
+                        if (my >= ClientH() - (int)FooterH)
+                        {
+                            string? id = ChromeHit(_footerButtons, mx);
+                            if (id is not null) { _pressBtn = id; _hotBtn = id; _hotPaint = id; SetCapture(hwnd); RequestRedraw(); }
+                            return IntPtr.Zero;
+                        }
                         // List row: begin click-vs-drag (act on release). Skip while renaming.
                         if (_editHwnd == IntPtr.Zero)
                         {
@@ -1638,6 +1677,16 @@ internal static partial class Program
                     return IntPtr.Zero;
                 }
             case WM_LBUTTONUP:
+                if (_pressBtn is not null)
+                {
+                    ReleaseCapture();
+                    int ux = LoWord(lParam), uy = HiWord(lParam);
+                    string? over = uy < (int)TitleBarH ? ChromeHit(_titleButtons, ux)
+                        : (ux < (int)_sidebarW && uy >= ClientH() - (int)FooterH ? ChromeHit(_footerButtons, ux) : null);
+                    string fired = _pressBtn; _pressBtn = null; RequestRedraw();
+                    if (over == fired) ChromeAction(fired);
+                    return IntPtr.Zero;
+                }
                 if (_divDragging) { _divDragging = false; ReleaseCapture(); RequestRedraw(); return IntPtr.Zero; }
                 if (_sbPress)
                 {
@@ -1693,6 +1742,12 @@ internal static partial class Program
 
             case WM_MOUSEMOVE:
                 {
+                    if (!_mouseTracking)
+                    {
+                        var tme = new TRACKMOUSEEVENT { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<TRACKMOUSEEVENT>(), dwFlags = TME_LEAVE, hwndTrack = hwnd, dwHoverTime = 0 };
+                        TrackMouseEvent(ref tme); _mouseTracking = true;
+                    }
+                    if (!_divDragging && !_sbPress && !_selecting) UpdateChromeHover(LoWord(lParam), HiWord(lParam));
                     if (_divDragging && ((long)wParam & MK_LBUTTON) != 0) { DragDivider(LoWord(lParam)); return IntPtr.Zero; }
                     if (_sbPress && ((long)wParam & MK_LBUTTON) != 0)
                     {
@@ -3174,24 +3229,54 @@ internal static partial class Program
         _sidebarRows.Add((y, y + rowH, false, s));
     }
 
-    /// <summary>Toolbar at the bottom of the sidebar: new-workspace, new-session (left), flag (right).</summary>
+    /// <summary>Sidebar footer (agterm layout): new-workspace, add-session menu | spacer | focus pill, flag toggle.</summary>
     private static void DrawSidebarFooter(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         float y = ClientH() - FooterH;
         brush.Color = ChromeBg;
         rt.FillRectangle(new Rect(0, y, _sidebarW, FooterH), brush);
 
-        float bx = 6f, bwid = 34f;
-        brush.Color = ChromeDim;
-        rt.DrawText("", _iconFont, new Rect(bx, y, bwid, FooterH), brush);         // new workspace
-        _footerButtons.Add((bx, bx + bwid, "new-workspace")); bx += bwid;
-        rt.DrawText("", _iconFont, new Rect(bx, y, bwid, FooterH), brush);         // new session
-        _footerButtons.Add((bx, bx + bwid, "new-session"));
+        float bwid = 34f, bx = 6f;
+        // New Workspace (vector card + plus)
+        {
+            var c = ChromeBtnBg(rt, brush, bx, y, bwid, FooterH, "new-workspace", _footerButtons, ChromeDim);
+            DrawNewWorkspaceGlyph(rt, brush, bx + bwid / 2f, y + FooterH / 2f, c);
+        }
+        bx += bwid;
+        // Add Session (opens a menu: New Session / Open Directory…)
+        {
+            var c = ChromeBtnBg(rt, brush, bx, y, bwid, FooterH, "add-session", _footerButtons, ChromeDim);
+            brush.Color = c;
+            rt.DrawText(GlyphAdd, _iconFont, new Rect(bx, y, bwid, FooterH), brush);
+        }
 
-        float fx = _sidebarW - bwid - 4f;                                             // flag (flagged-view toggle) on the right
-        brush.Color = _sidebarMode == SidebarMode.Flagged ? new Color4(0.96f, 0.76f, 0.26f, 1f) : ChromeDim; // amber when active
-        rt.DrawText("", _iconFont, new Rect(fx, y, bwid, FooterH), brush);
-        _footerButtons.Add((fx, fx + bwid, "flag"));
+        // Flag / flagged-view toggle (far right)
+        float fx = _sidebarW - bwid - 4f;
+        bool flagged = _sidebarMode == SidebarMode.Flagged;
+        {
+            var baseC = flagged ? new Color4(0.96f, 0.76f, 0.26f, 1f) : ChromeDim; // amber when active
+            var c = ChromeBtnBg(rt, brush, fx, y, bwid, FooterH, "flag", _footerButtons, baseC);
+            DrawFlagGlyph(rt, brush, fx + bwid / 2f, y + FooterH / 2f, c, flagged);
+        }
+
+        // Focus pill (only when a workspace is focused): shows its name + ✕, click clears focus.
+        if (_focusedWorkspaceId is not null)
+        {
+            Workspace? fw; lock (_workspaces) fw = _workspaces.FirstOrDefault(w => w.Id == _focusedWorkspaceId);
+            if (fw is not null)
+            {
+                string label = fw.Name.Length > 12 ? fw.Name[..12] + "…" : fw.Name;
+                float tw = MeasureText(label, _uiSmall);
+                float pw = tw + 34f, ph = 20f;
+                float px = MathF.Max(bx + bwid + 6f, fx - pw - 8f), py = y + (FooterH - ph) / 2f;
+                var c = ChromeBtnBg(rt, brush, px, py - (FooterH - ph) / 2f + 0f, pw, FooterH, "unfocus", _footerButtons, ChromeDim);
+                brush.Color = WithA(ChromeAccent, 0.22f);
+                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(px, py, pw, ph), RadiusX = 10f, RadiusY = 10f }, brush);
+                brush.Color = c;
+                rt.DrawText(label, _uiSmall, new Rect(px + 10f, py, tw + 4f, ph), brush);
+                rt.DrawText(GlyphClose, _iconFont, new Rect(px + pw - 20f, py, 18f, ph), brush); // ChromeClose (✕)
+            }
+        }
     }
 
     // DrawText layout rect is Left/Top/Right/Bottom; vertically centre the glyph cell in the row.
@@ -3354,6 +3439,23 @@ internal static partial class Program
             }
         }
         else DestroyMenu(menu);
+    }
+
+    /// <summary>Footer add-session button: popup menu (New Session / Open Directory…) above the button.</summary>
+    private static void ShowAddSessionMenu()
+    {
+        float bx0 = 6f;
+        foreach (var b in _footerButtons) if (b.action == "add-session") { bx0 = b.x0; break; }
+        var pt = new POINT { x = (int)bx0, y = ClientH() - (int)FooterH };
+        ClientToScreen(_hwnd, ref pt);
+        IntPtr menu = CreatePopupMenu();
+        AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
+        AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
+        int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, _hwnd, IntPtr.Zero);
+        DestroyMenu(menu);
+        var ws = ActiveWorkspace();
+        if (cmd == (int)IDM_NEW_SESSION) CreateSession(Guid.NewGuid().ToString(), null, null, ws, true);
+        else if (cmd == (int)IDM_OPEN_DIR) { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ws, true); }
     }
 
     private static void MoveSession(Ses ses, Workspace target)
@@ -3852,6 +3954,7 @@ internal static partial class Program
         var bg = C4(_theme.DefaultBackground);
         var fg = C4(_theme.DefaultForeground);
         bool dark = Lum(bg) < 0.5f;
+        _chromeDark = dark;
 
         // Panels sit at distinct luminance layers relative to the terminal background.
         ChromeBg = Shade(bg, dark ? -0.42f : -0.06f);   // title bar + footer toolbar
@@ -3942,9 +4045,57 @@ internal static partial class Program
         return 0;
     }
 
-    private static void HitChrome(List<(float x0, float x1, string action)> buttons, int mx)
+    private static string? ChromeHit(List<(float x0, float x1, string action)> buttons, int mx)
     {
-        foreach (var b in buttons) if (mx >= b.x0 && mx < b.x1) { ChromeAction(b.action); return; }
+        foreach (var b in buttons) if (mx >= b.x0 && mx < b.x1) return b.action;
+        return null;
+    }
+
+    /// <summary>Update the hovered chrome button from a client-area move; arms the fade timer on change.</summary>
+    private static void UpdateChromeHover(int mx, int my)
+    {
+        string? hit = null;
+        if (my < (int)TitleBarH) hit = ChromeHit(_titleButtons, mx);
+        else if (mx < (int)_sidebarW && my >= ClientH() - (int)FooterH) hit = ChromeHit(_footerButtons, mx);
+        if (hit == _hotBtn) return;
+        _hotBtn = hit;
+        if (hit is not null) { _hotPaint = hit; _hotAlpha = 1f; }   // light instantly on hover-in
+        else SetTimer(_hwnd, (IntPtr)HoverTimer, 15, IntPtr.Zero);  // fade out when leaving
+        RequestRedraw();
+    }
+
+    /// <summary>Ease the hover-fill alpha toward the target; stop the timer once settled.</summary>
+    private static void HoverTick()
+    {
+        float target = _hotBtn is not null ? 1f : 0f;
+        const float step = 0.20f;
+        if (_hotAlpha < target) _hotAlpha = MathF.Min(target, _hotAlpha + step);
+        else if (_hotAlpha > target) _hotAlpha = MathF.Max(target, _hotAlpha - step);
+        if (_hotAlpha == target) { KillTimer(_hwnd, (IntPtr)HoverTimer); if (target == 0f) _hotPaint = null; }
+        RequestRedraw();
+    }
+
+    /// <summary>Paint a chrome button's hover/press background + record its hit-box; returns the tinted icon colour.</summary>
+    private static Color4 ChromeBtnBg(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush,
+        float x, float y, float w, float h, string id, List<(float x0, float x1, string action)> list, Color4 baseColor)
+    {
+        list.Add((x, x + w, id));
+        float a = id == _hotPaint ? _hotAlpha : 0f;
+        bool pressed = _pressBtn == id && _hotBtn == id;
+        const float padY = 5f;
+        var r = new Rect(x + 3f, y + padY, w - 6f, h - 2f * padY); // XYWH
+        if (pressed)
+        {
+            brush.Color = WithA(ChromeText, _chromeDark ? 0.30f : 0.22f);
+            rt.FillRoundedRectangle(new RoundedRectangle { Rect = r, RadiusX = 6f, RadiusY = 6f }, brush);
+        }
+        else if (a > 0.01f)
+        {
+            brush.Color = WithA(ChromeText, (_chromeDark ? 0.20f : 0.14f) * a);
+            rt.FillRoundedRectangle(new RoundedRectangle { Rect = r, RadiusX = 6f, RadiusY = 6f }, brush);
+        }
+        float bright = pressed ? 1f : a;
+        return bright > 0f ? Mix(baseColor, ChromeText, bright * 0.85f) : baseColor;
     }
 
     private static void ChromeAction(string a)
@@ -3952,12 +4103,14 @@ internal static partial class Program
         switch (a)
         {
             case "toggle": ToggleSidebar(); break;
-            case "new-session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true); break;
+            case "add-session": ShowAddSessionMenu(); break;   // menu: New Session / Open Directory…
             case "new-workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
             case "attention": GoToNextAttention(1); break;
+            case "scratch": if (_active is not null) ScratchOp(_active, "toggle"); break;
             case "split": SplitActivePane(); break;
             case "quick terminal": QuickOp("toggle"); break;
             case "flag": ToggleFlaggedView(); break;   // footer flag button toggles the flagged working-set view
+            case "unfocus": _focusedWorkspaceId = null; RequestRedraw(); SaveState(); break;
             case "settings": OpenSettingsWindow(); break;
             default: ShowToast(a + " not implemented yet"); break;
         }
@@ -4060,6 +4213,14 @@ internal static partial class Program
         return tl.Metrics.Width;
     }
 
+    // Segoe Fluent Icons glyphs (present on Win11).
+    private const string GlyphSidebar = "";  // GlobalNavButton (hamburger)
+    private const string GlyphBell = "";     // Ringer
+    private const string GlyphTerminal = ""; // CommandPrompt (quick terminal)
+    private const string GlyphGear = "";     // Settings
+    private static readonly string GlyphAdd = ((char)0xE710).ToString();   // Add (add-session)
+    private static readonly string GlyphClose = ((char)0xE8BB).ToString(); // ChromeClose (pill x)
+
     private static void DrawTitleBar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         _titleButtons.Clear();
@@ -4067,53 +4228,147 @@ internal static partial class Program
         brush.Color = ChromeBg;
         rt.FillRectangle(new Rect(0, 0, cw, TitleBarH), brush);
 
-        // Sidebar toggle (hamburger) at far left.
-        brush.Color = ChromeText;
-        for (int i = -1; i <= 1; i++)
-            rt.DrawLine(new System.Numerics.Vector2(13f, TitleBarH / 2f + i * 5f), new System.Numerics.Vector2(27f, TitleBarH / 2f + i * 5f), brush, 1.4f);
-        _titleButtons.Add((0, 40, "toggle"));
+        // 1. App-mark logo at the far left (vector rendition of the app icon).
+        DrawLogo(rt, brush, 10f, TitleBarH / 2f);
 
-        // Title + subtitle (native Segoe UI), stacked when a cwd is known.
+        // 2. Sidebar toggle at the sidebar column's right edge (tracks _sidebarW), or right of the logo when hidden.
+        float togW = 36f;
+        float togX = _sidebarW > 0 ? MathF.Max(34f, _sidebarW - togW - 2f) : 34f;
+        {
+            var c = ChromeBtnBg(rt, brush, togX, 0, togW, TitleBarH, "toggle", _titleButtons, ChromeText);
+            brush.Color = c;
+            rt.DrawText(GlyphSidebar, _iconFont, new Rect(togX, 0, togW, TitleBarH), brush);
+        }
+
+        // 6. Right group (pinned left of the caption buttons): scratch, split, | , quick-terminal, gear.
+        float bw = 38f;
+        float rgRight = cw - 3 * CaptionBtnW - 6f;   // right edge of the gear
+        float gearX = rgRight - bw;
+        float quickX = gearX - bw;
+        float divX = quickX - 5f;                    // hairline divider in the gap
+        float splitX = quickX - 10f - bw;
+        float scratchX = splitX - bw;
+
+        // 3. Title + subtitle at the terminal's leading edge (right of the sidebar).
         string title = _active?.Name ?? "agwinterm";
         string subtitle = _active is not null ? PrettyCwd(SafeCwd(_active)) : "";
-        float actGroupX = cw - 3 * CaptionBtnW - 5 * 40f; // reserve bell + 4 action icons
-        float textW = MathF.Max(80f, actGroupX - 8f - 48f);
+        float titleX = _sidebarW > 0 ? _sidebarW + 10f : togX + togW + 8f;
+        float bellW = 34f, bellGap = 8f;
+        float titleAvail = scratchX - 14f - bellW - bellGap - titleX;
+        float titleMeasured = MeasureText(title, _uiFont);
+        float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail));
         brush.Color = ChromeText;
         if (subtitle.Length > 0)
         {
-            rt.DrawText(title, _uiFont, new Rect(48f, 3f, textW, 19f), brush);
+            rt.DrawText(title, _uiFont, new Rect(titleX, 3f, titleW, 19f), brush);
             brush.Color = ChromeDim;
-            rt.DrawText(subtitle, _uiSmall, new Rect(48f, 21f, textW, 16f), brush);
+            rt.DrawText(subtitle, _uiSmall, new Rect(titleX, 21f, MathF.Max(titleW, titleAvail), 16f), brush);
         }
-        else rt.DrawText(title, _uiFont, new Rect(48f, 0f, textW, TitleBarH), brush);
+        else rt.DrawText(title, _uiFont, new Rect(titleX, 0f, titleW, TitleBarH), brush);
 
-        // Action buttons (icon glyphs), right-aligned before the caption buttons.
-        (string glyph, string action)[] acts =
-        {
-            ("", "overlay"), ("", "split"), ("", "quick terminal"), ("", "settings"),
-        };
-        float bw = 40f, startX = actGroupX;
-        // Thin separator before the action group.
-        brush.Color = ChromeBorder;
-        rt.DrawLine(new System.Numerics.Vector2(startX - 8f, 11f), new System.Numerics.Vector2(startX - 8f, TitleBarH - 11f), brush, 1f);
-        // Attention bell: dim = nothing, plain = active/completed, amber = any blocked.
+        // 4. Attention bell, hugging the title. dim = nothing, plain = active/completed, amber = any blocked.
+        float bellX = MathF.Min(titleX + titleW + bellGap, scratchX - bellW - 14f);
         var (bellBlocked, bellActive) = AttentionState();
-        var bellColor = bellBlocked ? new Color4(240 / 255f, 160 / 255f, 40 / 255f, 1f) : (bellActive ? ChromeText : ChromeDim);
+        var bellBase = bellBlocked ? new Color4(240 / 255f, 160 / 255f, 40 / 255f, 1f) : (bellActive ? ChromeText : ChromeDim);
         if ((bellBlocked || bellActive) && !_cursorOn && AnyBlinkAttention())
-            bellColor = new Color4(bellColor.R, bellColor.G, bellColor.B, 0.30f); // pulse when a blinking session needs attention
-        brush.Color = bellColor;
-        rt.DrawText("", _iconFont, new Rect(startX, 0, bw, TitleBarH), brush); // Ringer glyph
-        _titleButtons.Add((startX, startX + bw, "attention"));
-        for (int i = 0; i < acts.Length; i++)
+            bellBase = new Color4(bellBase.R, bellBase.G, bellBase.B, 0.30f); // pulse when a blinking session needs attention
         {
-            float x = startX + (i + 1) * bw;
-            brush.Color = ChromeDim;
-            string glyph = acts[i].action == "settings" ? "" : acts[i].glyph; // gear (Segoe Fluent Setting)
-            rt.DrawText(glyph, _iconFont, new Rect(x, 0, bw, TitleBarH), brush);
-            _titleButtons.Add((x, x + bw, acts[i].action));
+            var c = ChromeBtnBg(rt, brush, bellX, 0, bellW, TitleBarH, "attention", _titleButtons, bellBase);
+            brush.Color = c;
+            rt.DrawText(GlyphBell, _iconFont, new Rect(bellX, 0, bellW, TitleBarH), brush);
+        }
+
+        // scratch (rounded rectangle; filled when active)
+        bool scratchOn = _coverKind == 1;
+        {
+            var c = ChromeBtnBg(rt, brush, scratchX, 0, bw, TitleBarH, "scratch", _titleButtons, scratchOn ? ChromeAccent : ChromeDim);
+            DrawScratchGlyph(rt, brush, scratchX + bw / 2f, TitleBarH / 2f, c, scratchOn);
+        }
+        // split (two panes, reflects split state)
+        bool splitOn = _active is not null && _active.Panes.Count > 1;
+        {
+            var c = ChromeBtnBg(rt, brush, splitX, 0, bw, TitleBarH, "split", _titleButtons, splitOn ? ChromeAccent : ChromeDim);
+            DrawSplitGlyph(rt, brush, splitX + bw / 2f, TitleBarH / 2f, c, splitOn);
+        }
+        // hairline divider between per-session toggles and the window-level quick terminal
+        brush.Color = WithA(ChromeText, 0.25f);
+        rt.DrawLine(new System.Numerics.Vector2(divX, 12f), new System.Numerics.Vector2(divX, TitleBarH - 12f), brush, 1f);
+        // quick terminal (accent when active)
+        bool quickOn = _coverKind == 2;
+        {
+            var c = ChromeBtnBg(rt, brush, quickX, 0, bw, TitleBarH, "quick terminal", _titleButtons, quickOn ? ChromeAccent : ChromeDim);
+            brush.Color = c;
+            rt.DrawText(GlyphTerminal, _iconFont, new Rect(quickX, 0, bw, TitleBarH), brush);
+        }
+        // gear (settings) — kept per user's choice
+        {
+            var c = ChromeBtnBg(rt, brush, gearX, 0, bw, TitleBarH, "settings", _titleButtons, ChromeDim);
+            brush.Color = c;
+            rt.DrawText(GlyphGear, _iconFont, new Rect(gearX, 0, bw, TitleBarH), brush);
         }
 
         DrawCaption(rt, brush, cw);
+    }
+
+    /// <summary>Vector app-mark: cyan terminal chevron + block cursor + green agent-status dot (matches the app icon).</summary>
+    private static void DrawLogo(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float x, float cy)
+    {
+        var cyan = new Color4(0x38 / 255f, 0xD7 / 255f, 0xF0 / 255f, 1f);
+        var cyanLt = new Color4(0x8A / 255f, 0xE2 / 255f, 0xF2 / 255f, 1f);
+        var green = new Color4(0x3D / 255f, 0xDC / 255f, 0x84 / 255f, 1f);
+        brush.Color = cyan;
+        float top = cy - 6f, mid = cy, bot = cy + 6f, lx = x + 1f, rx = x + 7f;
+        rt.DrawLine(new System.Numerics.Vector2(lx, top), new System.Numerics.Vector2(rx, mid), brush, 2.2f);
+        rt.DrawLine(new System.Numerics.Vector2(rx, mid), new System.Numerics.Vector2(lx, bot), brush, 2.2f);
+        brush.Color = cyanLt;
+        rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(x + 10f, cy + 1f, 7f, 4.5f), RadiusX = 1.5f, RadiusY = 1.5f }, brush);
+        brush.Color = green;
+        rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(x + 15.5f, cy - 5f), 2.6f, 2.6f), brush);
+    }
+
+    /// <summary>Scratch glyph: a rounded rectangle (outline, or filled when active).</summary>
+    private static void DrawScratchGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool filled)
+    {
+        brush.Color = color;
+        var r = new RoundedRectangle { Rect = new Rect(cx - 7f, cy - 5.5f, 14f, 11f), RadiusX = 2.5f, RadiusY = 2.5f };
+        if (filled) rt.FillRoundedRectangle(r, brush); else rt.DrawRoundedRectangle(r, brush, 1.4f);
+    }
+
+    /// <summary>Split glyph: two side-by-side panes (right pane filled when split is active).</summary>
+    private static void DrawSplitGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool active)
+    {
+        brush.Color = color;
+        rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx - 7f, cy - 5.5f, 14f, 11f), RadiusX = 2.5f, RadiusY = 2.5f }, brush, 1.4f);
+        rt.DrawLine(new System.Numerics.Vector2(cx, cy - 5.5f), new System.Numerics.Vector2(cx, cy + 5.5f), brush, 1.2f);
+        if (active) rt.FillRectangle(new Rect(cx + 1f, cy - 4f, 5f, 8f), brush);
+    }
+
+    /// <summary>New-workspace glyph: a card with a plus.</summary>
+    private static void DrawNewWorkspaceGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color)
+    {
+        brush.Color = color;
+        rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx - 7f, cy - 6f, 10f, 10f), RadiusX = 2f, RadiusY = 2f }, brush, 1.3f);
+        rt.DrawLine(new System.Numerics.Vector2(cx - 3.5f, cy + 5.5f), new System.Numerics.Vector2(cx + 4.5f, cy + 5.5f), brush, 1.3f);
+        rt.DrawLine(new System.Numerics.Vector2(cx + 4.5f, cy - 3f), new System.Numerics.Vector2(cx + 4.5f, cy + 1f), brush, 1.4f);
+        rt.DrawLine(new System.Numerics.Vector2(cx + 2.5f, cy - 1f), new System.Numerics.Vector2(cx + 6.5f, cy - 1f), brush, 1.4f);
+    }
+
+    /// <summary>Flag glyph (pennant); filled when the flagged view is active.</summary>
+    private static void DrawFlagGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool filled)
+    {
+        brush.Color = color;
+        rt.DrawLine(new System.Numerics.Vector2(cx - 5f, cy - 6f), new System.Numerics.Vector2(cx - 5f, cy + 6f), brush, 1.4f);
+        var g = _d2d.CreatePathGeometry();
+        using (var sink = g.Open())
+        {
+            sink.BeginFigure(new System.Numerics.Vector2(cx - 5f, cy - 6f), filled ? FigureBegin.Filled : FigureBegin.Hollow);
+            sink.AddLine(new System.Numerics.Vector2(cx + 6f, cy - 4f));
+            sink.AddLine(new System.Numerics.Vector2(cx - 5f, cy - 1f));
+            sink.EndFigure(FigureEnd.Closed);
+            sink.Close();
+        }
+        if (filled) rt.FillGeometry(g, brush); else rt.DrawGeometry(g, brush, 1.3f);
+        g.Dispose();
     }
 
     private static void DrawCaption(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, int cw)

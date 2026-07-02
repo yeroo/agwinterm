@@ -8,12 +8,19 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <ApplicationIcon>assets\agwinterm.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Vortice.Direct2D1" Version="3.8.3" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.9" />
     <ProjectReference Include="../Agwinterm.Core/Agwinterm.Core.csproj" />
     <ProjectReference Include="../Agwinterm.Pty/Agwinterm.Pty.csproj" />
+  </ItemGroup>
+  <!-- Ship the app icon next to the exe (loaded at runtime for the window/taskbar icon). -->
+  <ItemGroup>
+    <None Include="assets\agwinterm.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
   <!-- Bundle the curated ghostty theme files next to the exe (output themes/ dir). -->
   <ItemGroup>

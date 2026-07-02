@@ -19,6 +19,11 @@ internal static class Win32
     public const uint WM_SYSCHAR = 0x0106;
     public const uint WM_TIMER = 0x0113;
     public const uint WM_MOUSEMOVE = 0x0200;
+    public const uint WM_MOUSELEAVE = 0x02A3;
+    public const uint WM_SETICON = 0x0080;
+    public const int ICON_SMALL = 0, ICON_BIG = 1;
+    public const uint IMAGE_ICON = 1;
+    public const uint LR_LOADFROMFILE = 0x0010, LR_DEFAULTSIZE = 0x0040, LR_SHARED = 0x8000;
     public const uint WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202;
     public const uint WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205;
     public const uint WM_MBUTTONDOWN = 0x0207, WM_MBUTTONUP = 0x0208;
@@ -92,7 +97,7 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
-    public const uint TPM_RETURNCMD = 0x0100, TPM_RIGHTBUTTON = 0x0002, TPM_LEFTALIGN = 0x0000;
+    public const uint TPM_RETURNCMD = 0x0100, TPM_RIGHTBUTTON = 0x0002, TPM_LEFTALIGN = 0x0000, TPM_BOTTOMALIGN = 0x0020;
     public const uint MF_STRING = 0x0000, MF_POPUP = 0x0010, MF_SEPARATOR = 0x0800, MF_GRAYED = 0x0001;
     public const uint BIF_RETURNONLYFSDIRS = 0x0001, BIF_NEWDIALOGSTYLE = 0x0040;
 
@@ -147,6 +152,16 @@ internal static class Win32
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr LoadIconW(IntPtr hInstance, IntPtr lpIconName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadImageW(IntPtr hInst, string name, uint type, int cx, int cy, uint fuLoad);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TRACKMOUSEEVENT { public uint cbSize; public uint dwFlags; public IntPtr hwndTrack; public uint dwHoverTime; }
+    public const uint TME_LEAVE = 0x00000002;
+
+    [DllImport("user32.dll")]
+    public static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT lpEventTrack);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int left, top, right, bottom; }
