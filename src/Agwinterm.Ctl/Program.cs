@@ -74,6 +74,11 @@ switch (area)
                 break;
             case "delete": cmd = "workspace.delete"; break;
             case "select": cmd = "workspace.select"; break;
+            case "focus":
+                cmd = "workspace.focus";
+                cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; // on|off|toggle (focuses the active workspace)
+                target = null;
+                break;
             case "move":
                 cmd = "workspace.move";
                 cargs["dir"] = Opt("to") ?? (rest.Count > 0 ? rest[0] : "down");
@@ -138,6 +143,7 @@ switch (area)
                 if (options.ContainsKey("block")) cargs["block"] = true;
                 break;
             case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
+            case "flag": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|clear
             case "resize":
                 if (double.TryParse(Opt("split-ratio"), System.Globalization.CultureInfo.InvariantCulture, out var sr)) cargs["ratio"] = sr;
                 if (int.TryParse(Opt("grow-left"), out var gl)) cargs["grow-left"] = gl;
@@ -157,7 +163,10 @@ switch (area)
     case "restore" when sub == "clear": cmd = "restore.clear"; break;
     case "sidebar":
         cmd = "sidebar";
-        cargs["op"] = sub.Length > 0 ? sub : "toggle";
+        // `sidebar mode tree|flagged|toggle` switches the view mode; otherwise show|hide|toggle|expand|collapse.
+        cargs["op"] = sub == "mode"
+            ? "mode:" + (rest.Count > 0 ? rest[0] : "toggle")
+            : (sub.Length > 0 ? sub : "toggle");
         break;
     case "quick":
         cmd = "quick";

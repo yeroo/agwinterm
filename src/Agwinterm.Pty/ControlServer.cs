@@ -137,6 +137,9 @@ public sealed class ControlServer : IDisposable
                 case "notify":
                     return _host.Notify(target, GetString(args, "title"), GetString(args, "body") ?? "")
                         ? Ok("notified") : Err("session not found");
+                case "session.flag":
+                    return _host.SessionFlag(target, GetString(args, "op") ?? "toggle") ? Ok("flag") : Err("session not found");
+                case "workspace.focus": _host.WorkspaceFocus(GetString(args, "op") ?? "toggle"); return Ok("focus");
             }
 
             // Session-targeted commands.
@@ -179,6 +182,7 @@ public sealed class ControlServer : IDisposable
                   .Append(",\"active\":").Append(n.Active ? "true" : "false")
                   .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()));
                 if (n.Overlay) sb.Append(",\"overlay\":true");
+                if (n.Flagged) sb.Append(",\"flagged\":true");
                 if (n.Notifications > 0) sb.Append(",\"notifications\":").Append(n.Notifications);
                 sb.Append('}');
             }

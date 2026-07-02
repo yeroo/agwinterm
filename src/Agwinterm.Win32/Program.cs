@@ -70,6 +70,14 @@ internal static class Program
     private const float CaptionBtnW = 46f;   // native min/max/close hit width
     private static float _sidebarW = SidebarWFull;            // 0 when collapsed
 
+    // Sidebar view mode + workspace focus (Wave D1). Tree = the normal workspace→session outline;
+    // Flagged = a flat working-set of every flagged session across all workspaces. Focus (tree only)
+    // shows just one workspace. The two are independent and both persist.
+    private enum SidebarMode { Tree, Flagged }
+    private static SidebarMode _sidebarMode = SidebarMode.Tree;
+    private static string? _focusedWorkspaceId;               // when set (tree mode), render only this workspace
+    private static readonly object _showAllMarker = new();    // sidebar row sentinel: click clears workspace focus
+
     private static float ContentX => _sidebarW + PadX;        // terminal's left origin
     private static float ContentY => TitleBarH + PadY;        // terminal's top origin (below the title bar)
 
@@ -153,6 +161,7 @@ internal static class Program
     private static IDWriteTextFormat _uiFont = null!;
     private static IDWriteTextFormat _uiSmall = null!;
     private static IDWriteTextFormat _iconFont = null!;
+    private static IDWriteTextFormat _iconSmall = null!;   // small Fluent glyphs (e.g. the row flag marker)
 
     /// <summary>One terminal surface within a session. A session is a left→right row of panes.</summary>
     private sealed class Pane
@@ -177,6 +186,7 @@ internal static class Program
         public required Workspace Ws;
         public readonly List<Pane> Panes = new();
         public int Active;         // index of the focused pane
+        public bool Flagged;       // durable working-set flag (survives moves; persisted; drives flagged sidebar mode)
         public Pane? Scratch;      // per-session scratch terminal (lazy; kept alive when hidden; not restored)
         public Pane? Overlay;      // ephemeral overlay terminal running a program over this session (Wave B3)
         public int OverlaySizePercent; // 0 = full content region; 1..100 = centered floating panel
@@ -253,6 +263,7 @@ internal static class Program
         _uiFont = NewChromeFormat("Segoe UI", 13f, center: false);
         _uiSmall = NewChromeFormat("Segoe UI", 11.5f, center: false);
         _iconFont = NewChromeFormat("Segoe Fluent Icons", 14f, center: true);
+        _iconSmall = NewChromeFormat("Segoe Fluent Icons", 10.5f, center: true);
         MeasureCell();
 
         CreateRenderTarget();
@@ -894,7 +905,49 @@ internal static class Program
             case "toggle": ToggleSidebar(); break;
             case "expand": lock (_workspaces) foreach (var w in _workspaces) w.Expanded = true; RequestRedraw(); SaveState(); break;
             case "collapse": lock (_workspaces) foreach (var w in _workspaces) w.Expanded = false; RequestRedraw(); SaveState(); break;
+            case "mode:tree": SetSidebarMode(SidebarMode.Tree); break;
+            case "mode:flagged": SetSidebarMode(SidebarMode.Flagged); break;
+            case "mode:toggle": ToggleFlaggedView(); break;
         }
+    }
+
+    /// <summary>Set the sidebar view mode (tree/flagged) and repaint + persist.</summary>
+    private static void SetSidebarMode(SidebarMode mode)
+    {
+        if (_sidebarMode == mode) return;
+        _sidebarMode = mode;
+        RequestRedraw(); SaveState();
+    }
+
+    /// <summary>Toggle between the tree outline and the flat flagged working-set view.</summary>
+    private static void ToggleFlaggedView()
+        => SetSidebarMode(_sidebarMode == SidebarMode.Flagged ? SidebarMode.Tree : SidebarMode.Flagged);
+
+    /// <summary>Flag operation on a session (or all): op = on|off|toggle|clear (clear unflags every session).</summary>
+    private static void FlagOp(Ses? s, string op)
+    {
+        switch (op)
+        {
+            case "clear": foreach (var x in AllSessions()) x.Flagged = false; break;
+            case "on": if (s is not null) s.Flagged = true; break;
+            case "off": if (s is not null) s.Flagged = false; break;
+            default: if (s is not null) s.Flagged = !s.Flagged; break; // toggle
+        }
+        RequestRedraw(); SaveState();
+    }
+
+    /// <summary>Focus a single workspace (the active one) or clear focus: op = on|off|toggle. Tree mode only.</summary>
+    private static void WorkspaceFocusOp(string op)
+    {
+        string? wsId = ActiveWorkspace().Id;
+        bool on = _focusedWorkspaceId is not null;
+        _focusedWorkspaceId = op switch
+        {
+            "on" => wsId,
+            "off" => null,
+            _ => on ? null : wsId, // toggle
+        };
+        RequestRedraw(); SaveState();
     }
 
     private static Ses? Find(string? target)
@@ -950,7 +1003,7 @@ internal static class Program
             lock (_workspaces)
                 return _workspaces.Select(w => new WorkspaceSnapshot(
                     w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
-                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), s.S.Status, s.Overlay is not null, UnreadOf(s))).ToList()
+                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), s.S.Status, s.Overlay is not null, UnreadOf(s), s.Flagged)).ToList()
                 )).ToList();
         }
 
@@ -1167,6 +1220,17 @@ internal static class Program
             Post(() => OnNotified(ses.ActivePane, title ?? "", body));
             return true;
         }
+
+        public bool SessionFlag(string? target, string op)
+        {
+            if (op == "clear") { Post(() => FlagOp(null, "clear")); return true; } // clear is global; no target needed
+            var ses = FindSesForTarget(target);
+            if (ses is null) return false;
+            Post(() => FlagOp(ses, op));
+            return true;
+        }
+
+        public void WorkspaceFocus(string op) => Post(() => WorkspaceFocusOp(op));
     }
 
     /// <summary>Resolve a control-API target ("active"/null/id/prefix) to its owning session.</summary>
@@ -1551,6 +1615,9 @@ internal static class Program
             case "decrease_font_size": ChangeFontSize(-1); break;
             case "reset_font_size": ChangeFontSize(0); break;
             case "install_shell_integration": InstallShellIntegration(); break;
+            case "toggle_flag": if (_active is not null) FlagOp(_active, "toggle"); break;
+            case "toggle_flagged_view": ToggleFlaggedView(); break;
+            case "focus_workspace": WorkspaceFocusOp("toggle"); break;
         }
     }
 
@@ -2495,8 +2562,31 @@ internal static class Program
         float rowH = _cellH + 8f;
         float y = TitleBarH + PadY;
 
+        if (_sidebarMode == SidebarMode.Flagged) { DrawFlaggedList(rt, brush, ref y, rowH, rowsBottom); }
+        else { DrawTreeList(rt, brush, ref y, rowH, rowsBottom); }
+
+        if (_dragging && _dragItem is not null) DrawDropIndicator(rt, brush);
+        DrawSidebarFooter(rt, brush);
+    }
+
+    /// <summary>Tree mode: the workspace→session outline (or, when a workspace is focused, only that one + a "show all" banner).</summary>
+    private static void DrawTreeList(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, ref float y, float rowH, float rowsBottom)
+    {
         List<Workspace> wss;
         lock (_workspaces) wss = _workspaces.ToList();
+
+        Workspace? focused = _focusedWorkspaceId is null ? null : wss.FirstOrDefault(w => w.Id == _focusedWorkspaceId);
+        if (focused is not null)
+        {
+            // "Focused" banner: a full-width accent strip; clicking it clears the focus (back to all workspaces).
+            brush.Color = new Color4(0.14f, 0.22f, 0.34f, 1f);
+            rt.FillRectangle(new Rect(0, y, _sidebarW, rowH), brush);
+            brush.Color = new Color4(0.55f, 0.75f, 1f, 1f);
+            rt.DrawText("‹  Focused — show all", _uiSmall, new Rect(12f, y, _sidebarW - 20f, rowH), brush);
+            _sidebarRows.Add((y, y + rowH, false, _showAllMarker));
+            y += rowH;
+            wss = new List<Workspace> { focused };
+        }
 
         foreach (var ws in wss)
         {
@@ -2517,38 +2607,71 @@ internal static class Program
             foreach (var s in sessions)
             {
                 if (y + rowH > rowsBottom) break;
-                bool active = ReferenceEquals(_active, s);
-                if (active)
-                {
-                    brush.Color = SbHighlight;
-                    rt.FillRectangle(new Rect(0, y, _sidebarW, rowH), brush);
-                }
-                bool isDrag = _dragging && ReferenceEquals(s, _dragItem);
-                brush.Color = isDrag ? new Color4(0.5f, 0.53f, 0.57f, 0.45f) : (active ? SbActiveText : SbDimText);
-                if (!ReferenceEquals(_editing, s)) // the rename box covers the name while editing
-                    rt.DrawText(s.Name, _uiFont, new Rect(26f, y, _sidebarW - 26f - 22f, rowH), brush);
-                // Unread-notification count badge, just left of the status circle.
-                int unread = UnreadOf(s);
-                if (unread > 0)
-                {
-                    string bn = unread > 99 ? "99+" : unread.ToString();
-                    float bw = MeasureText(bn, _uiSmall) + 10f, bx = _sidebarW - 30f - bw;
-                    brush.Color = new Color4(0.90f, 0.30f, 0.24f, 1f); // notification red pill
-                    rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(bx, y + rowH / 2f - 8f, bw, 16f), RadiusX = 8f, RadiusY = 8f }, brush);
-                    brush.Color = new Color4(1f, 1f, 1f, 1f);
-                    rt.DrawText(bn, _uiSmall, new Rect(bx + 5f, y + rowH / 2f - 8f, bw - 8f, 16f), brush);
-                }
-                // Status circle right-aligned in the row (agterm layout); pulse it if blink was requested.
-                var dot = StatusDot(s.S.Status);
-                if (s.S.Blink && !_cursorOn) dot = new Color4(dot.R, dot.G, dot.B, 0.22f);
-                brush.Color = dot;
-                rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(_sidebarW - 16f, y + rowH / 2f), 4.5f, 4.5f), brush);
-                _sidebarRows.Add((y, y + rowH, false, s));
+                DrawSessionRow(rt, brush, s, y, rowH);
                 y += rowH;
             }
         }
-        if (_dragging && _dragItem is not null) DrawDropIndicator(rt, brush);
-        DrawSidebarFooter(rt, brush);
+    }
+
+    /// <summary>Flagged mode: a flat working-set of every flagged session across all workspaces (no headers).</summary>
+    private static void DrawFlaggedList(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, ref float y, float rowH, float rowsBottom)
+    {
+        brush.Color = SbHeaderText;
+        rt.DrawText("FLAGGED", _uiSmall, new Rect(12f, y, _sidebarW - 20f, rowH), brush);
+        y += rowH;
+
+        var flagged = AllSessions().Where(s => s.Flagged).ToList();
+        if (flagged.Count == 0)
+        {
+            brush.Color = SbDimText;
+            rt.DrawText("No flagged sessions", _uiSmall, new Rect(16f, y, _sidebarW - 24f, rowH), brush); y += rowH;
+            if (y + rowH <= rowsBottom) rt.DrawText("Ctrl+Shift+F flags the active one", _uiSmall, new Rect(16f, y, _sidebarW - 24f, rowH), brush);
+            return;
+        }
+        foreach (var s in flagged)
+        {
+            if (y + rowH > rowsBottom) break;
+            DrawSessionRow(rt, brush, s, y, rowH);
+            y += rowH;
+        }
+    }
+
+    /// <summary>Draw one session row (shared by tree + flagged modes): highlight, flag marker, name, unread badge, status dot.</summary>
+    private static void DrawSessionRow(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, Ses s, float y, float rowH)
+    {
+        bool active = ReferenceEquals(_active, s);
+        if (active)
+        {
+            brush.Color = SbHighlight;
+            rt.FillRectangle(new Rect(0, y, _sidebarW, rowH), brush);
+        }
+        // Flag marker in the left gutter (before the name, which starts at x=26).
+        if (s.Flagged)
+        {
+            brush.Color = new Color4(0.96f, 0.76f, 0.26f, 1f); // amber flag
+            rt.DrawText("", _iconSmall, new Rect(6f, y, 18f, rowH), brush);
+        }
+        bool isDrag = _dragging && ReferenceEquals(s, _dragItem);
+        brush.Color = isDrag ? new Color4(0.5f, 0.53f, 0.57f, 0.45f) : (active ? SbActiveText : SbDimText);
+        if (!ReferenceEquals(_editing, s)) // the rename box covers the name while editing
+            rt.DrawText(s.Name, _uiFont, new Rect(26f, y, _sidebarW - 26f - 22f, rowH), brush);
+        // Unread-notification count badge, just left of the status circle.
+        int unread = UnreadOf(s);
+        if (unread > 0)
+        {
+            string bn = unread > 99 ? "99+" : unread.ToString();
+            float bw = MeasureText(bn, _uiSmall) + 10f, bx = _sidebarW - 30f - bw;
+            brush.Color = new Color4(0.90f, 0.30f, 0.24f, 1f); // notification red pill
+            rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(bx, y + rowH / 2f - 8f, bw, 16f), RadiusX = 8f, RadiusY = 8f }, brush);
+            brush.Color = new Color4(1f, 1f, 1f, 1f);
+            rt.DrawText(bn, _uiSmall, new Rect(bx + 5f, y + rowH / 2f - 8f, bw - 8f, 16f), brush);
+        }
+        // Status circle right-aligned in the row (agterm layout); pulse it if blink was requested.
+        var dot = StatusDot(s.S.Status);
+        if (s.S.Blink && !_cursorOn) dot = new Color4(dot.R, dot.G, dot.B, 0.22f);
+        brush.Color = dot;
+        rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(_sidebarW - 16f, y + rowH / 2f), 4.5f, 4.5f), brush);
+        _sidebarRows.Add((y, y + rowH, false, s));
     }
 
     /// <summary>Toolbar at the bottom of the sidebar: new-workspace, new-session (left), flag (right).</summary>
@@ -2565,7 +2688,8 @@ internal static class Program
         rt.DrawText("", _iconFont, new Rect(bx, y, bwid, FooterH), brush);         // new session
         _footerButtons.Add((bx, bx + bwid, "new-session"));
 
-        float fx = _sidebarW - bwid - 4f;                                             // flag on the right
+        float fx = _sidebarW - bwid - 4f;                                             // flag (flagged-view toggle) on the right
+        brush.Color = _sidebarMode == SidebarMode.Flagged ? new Color4(0.96f, 0.76f, 0.26f, 1f) : ChromeDim; // amber when active
         rt.DrawText("", _iconFont, new Rect(fx, y, bwid, FooterH), brush);
         _footerButtons.Add((fx, fx + bwid, "flag"));
     }
@@ -2579,7 +2703,8 @@ internal static class Program
         foreach (var (y0, y1, isWs, item) in _sidebarRows)
         {
             if (my < y0 || my >= y1) continue;
-            if (isWs && item is Workspace ws) { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); SaveState(); }
+            if (ReferenceEquals(item, _showAllMarker)) { _focusedWorkspaceId = null; RequestRedraw(); SaveState(); }
+            else if (isWs && item is Workspace ws) { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); SaveState(); }
             else if (!isWs && item is Ses s) SetActive(s);
             return;
         }
@@ -2597,6 +2722,7 @@ internal static class Program
 
     private static void StartRename(object item)
     {
+        if (item is not (Ses or Workspace)) return; // e.g. the "show all" focus banner isn't renamable
         if (_editHwnd != IntPtr.Zero) CommitRename();
         bool isWs = item is Workspace;
         float ry0 = -1, ry1 = -1;
@@ -2674,7 +2800,7 @@ internal static class Program
 
     // ---- Context menus (native Win32 popup) ----
 
-    private const uint IDM_NEW_SESSION = 1, IDM_OPEN_DIR = 2, IDM_RENAME = 3, IDM_CLOSE = 4, IDM_CLEAR = 5, IDM_DELETE_WS = 6;
+    private const uint IDM_NEW_SESSION = 1, IDM_OPEN_DIR = 2, IDM_RENAME = 3, IDM_CLOSE = 4, IDM_CLEAR = 5, IDM_DELETE_WS = 6, IDM_FLAG = 7;
     private const uint IDM_MOVE_BASE = 1000;
 
     private static void ShowContextMenu(object item, int sx, int sy)
@@ -2685,6 +2811,7 @@ internal static class Program
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_RENAME, "Rename");
+            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_FLAG, ses.Flagged ? "Unflag Session" : "Flag Session");
             List<Workspace> targets;
             lock (_workspaces) targets = _workspaces.Where(w => !ReferenceEquals(w, ses.Ws)).ToList();
             IntPtr sub = CreatePopupMenu();
@@ -2700,6 +2827,7 @@ internal static class Program
                 case IDM_NEW_SESSION: CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true); break;
                 case IDM_OPEN_DIR: { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ses.Ws, true); break; }
                 case IDM_RENAME: StartRename(ses); break;
+                case IDM_FLAG: FlagOp(ses, "toggle"); break;
                 case IDM_CLEAR: ses.S.SetStatus(AgentStatus.Idle); RequestRedraw(); break;
                 case IDM_CLOSE: CloseSessionInternal(ses); break;
                 default:
@@ -3009,6 +3137,9 @@ internal static class Program
                 A("Focus Left Pane", "Ctrl+Alt+Left", () => FocusPane(-1));
                 A("Focus Right Pane", "Ctrl+Alt+Right", () => FocusPane(1));
                 A("Delete Active Workspace", "", () => { if (_active is not null) DeleteWorkspace(_active.Ws); });
+                A("Flag / Unflag Session", "Ctrl+Shift+F", () => { if (_active is not null) FlagOp(_active, "toggle"); });
+                A("Show Flagged / All Sessions", "", ToggleFlaggedView);
+                A("Focus Workspace", "", () => WorkspaceFocusOp("toggle"));
                 A("Toggle Sidebar", "", ToggleSidebar);
                 A("Next Session", "Ctrl+Tab", () => CycleSession(1));
                 A("Previous Session", "Ctrl+Shift+Tab", () => CycleSession(-1));
@@ -3278,6 +3409,7 @@ internal static class Program
             case "attention": GoToNextAttention(1); break;
             case "split": SplitActivePane(); break;
             case "quick terminal": QuickOp("toggle"); break;
+            case "flag": ToggleFlaggedView(); break;   // footer flag button toggles the flagged working-set view
             default: ShowToast(a + " not implemented yet"); break;
         }
     }
@@ -3610,7 +3742,7 @@ internal static class Program
 
     private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
-    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public int Active { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; } }
+    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; } }
     private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
     private sealed class AppState
     {
@@ -3624,6 +3756,9 @@ internal static class Program
         public int WindowWidth { get; set; }
         public int WindowHeight { get; set; }
         public bool WindowMaximized { get; set; }
+        // Wave D1: sidebar view mode ("tree"|"flagged") + focused workspace id (null = show all).
+        public string SidebarMode { get; set; } = "tree";
+        public string? FocusedWorkspaceId { get; set; }
     }
 
     private static readonly JsonSerializerOptions _stateJson = new() { WriteIndented = true };
@@ -3742,6 +3877,8 @@ internal static class Program
                 ActiveId = activeId,
                 SidebarWidth = _sidebarW > 0 ? _sidebarW : SidebarWFull,
                 SidebarVisible = _sidebarW > 0,
+                SidebarMode = _sidebarMode == SidebarMode.Flagged ? "flagged" : "tree",
+                FocusedWorkspaceId = _focusedWorkspaceId,
             };
             CaptureGeometry(st);
             foreach (var (id, name, expanded, sessions) in rows)
@@ -3749,7 +3886,7 @@ internal static class Program
                 var wss = new WorkspaceState { Id = id, Name = name, Expanded = expanded };
                 foreach (var s in sessions)
                 {
-                    var ss = new SessionState { Id = s.Id, Name = s.Name, Active = s.Active };
+                    var ss = new SessionState { Id = s.Id, Name = s.Name, Active = s.Active, Flagged = s.Flagged };
                     List<Pane> panes;
                     lock (_workspaces) panes = s.Panes.ToList();
                     foreach (var p in panes)
@@ -3868,6 +4005,7 @@ internal static class Program
                             ses.Panes[i].Ratio = pl[i].Ratio > 0 ? pl[i].Ratio : 1f;
                         ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
                     }
+                    ses.Flagged = s.Flagged;
                     if (ReferenceEquals(_active, ses)) _session = ses.S;
                     RegridSession(ses);
 
@@ -3897,6 +4035,12 @@ internal static class Program
             }
         }
         finally { _restoring = false; }
+
+        // Restore sidebar mode + workspace focus (Wave D1). Focus that no longer resolves is dropped.
+        _sidebarMode = string.Equals(st.SidebarMode, "flagged", StringComparison.OrdinalIgnoreCase) ? SidebarMode.Flagged : SidebarMode.Tree;
+        _focusedWorkspaceId = st.FocusedWorkspaceId;
+        if (_focusedWorkspaceId is not null)
+            lock (_workspaces) if (!_workspaces.Any(w => w.Id == _focusedWorkspaceId)) _focusedWorkspaceId = null;
 
         if (_active is null) { var f = AllSessions().FirstOrDefault(); if (f is not null) SetActive(f); }
         if (AllSessions().Count == 0) return false; // nothing usable came back -> default

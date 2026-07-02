@@ -3,7 +3,7 @@ using Agwinterm.Core;
 namespace Agwinterm.Pty;
 
 /// <summary>A session's metadata for the control-API tree.</summary>
-public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status, bool Overlay = false, int Notifications = 0);
+public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status, bool Overlay = false, int Notifications = 0, bool Flagged = false);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -92,6 +92,13 @@ public interface ISessionHost
     /// <summary>Raise a desktop notification against a session (in-app banner + sidebar badge + OS tray balloon).
     /// Returns false if the target isn't found.</summary>
     bool Notify(string? target, string? title, string body);
+
+    /// <summary>Flag/unflag a session (durable working-set flag): op = on|off|toggle|clear (clear unflags every session).
+    /// Returns false if a per-session op targets a session that isn't found; "clear" always succeeds.</summary>
+    bool SessionFlag(string? target, string op);
+
+    /// <summary>Focus/unfocus the active workspace (hide the others in the sidebar tree): op = on|off|toggle.</summary>
+    void WorkspaceFocus(string op);
 }
 
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
@@ -133,4 +140,6 @@ public sealed class SingleSessionHost : ISessionHost
     public void Quick(string op) { }
     public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block) => "no overlay";
     public bool Notify(string? target, string? title, string body) => false;
+    public bool SessionFlag(string? target, string op) => false;
+    public void WorkspaceFocus(string op) { }
 }

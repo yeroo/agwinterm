@@ -91,6 +91,15 @@ public static class AgentSkill
           You can also emit it straight from the shell with an OSC sequence: `printf '\e]9;%s\a' "message"`
           (or OSC 777: `\e]777;notify;Title;Body\a`).
 
+        ## Flag sessions & focus a workspace
+        - `agwintermctl session flag on|off|toggle|clear [--target <id>]` — flag a session (a durable working-set
+          mark shown as a flag on its sidebar row; survives moves; persists). `clear` unflags every session.
+        - `agwintermctl sidebar mode tree|flagged|toggle`        — switch the sidebar between the workspace tree
+          and a flat list of just the flagged sessions (great for a curated working set across workspaces).
+        - `agwintermctl workspace focus on|off|toggle`           — show only the active workspace in the tree
+          (hide the rest); a "show all" banner / this verb brings the others back.
+        - `agwintermctl tree --json` reports `"flagged":true` per flagged session.
+
         ## Splits, font, sidebar, theme
         - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
         - `agwintermctl font inc|dec|reset [--target <id>]`      — per-session font zoom
