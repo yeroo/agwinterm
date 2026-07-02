@@ -42,7 +42,7 @@ Highest leverage: unblocks agent scripting and fixes core holes.
 - **E3 · Theme library** — S–M. Bundle the ghostty theme set (≈512) as theme files so the picker has the full catalog; `theme list`/`theme set` (from A1).
 
 ## Wave F — Big architecture + niche
-- **F1 · Multi-window** — L (largest single item). A window library of named, reopenable windows, each its own top-level `HWND` + workspace/session tree; frames restored on launch; `window new|list|select|rename|close|delete|zoom|resize|move` + a global `--window <id>` targeting option; control routing per window. Touches nearly everything, so it goes last. *(Alternative if you want to skip: multiple app instances already give separate windows — decide before starting.)*
+- **F1 · Multi-window** — L (largest single item). A window library of named, reopenable windows, each its own top-level `HWND` + workspace/session tree; frames restored on launch; `window new|list|select|rename|close|delete|zoom|resize|move` + a global `--window <id>` targeting option; control routing per window. Touches nearly everything, so it goes last. **In scope (full parity)** — decided over relying on multiple app instances.
 - **F2 · Session background watermark** — M, niche. Per-session background image / rasterized text / solid color behind the terminal, auto-fit, persisted (text watermark re-rendered on restore); `session background image|text|color|clear`.
 
 ---

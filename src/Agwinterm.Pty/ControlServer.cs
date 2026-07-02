@@ -94,11 +94,38 @@ public sealed class ControlServer : IDisposable
                 case "install.skill": return Ok(AgentSkill.Install());
                 case "install.shell": return Ok(ShellIntegrationInstaller.Install());
                 case "tree": return HandleTree();
-                case "session.new": return Ok(_host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace")));
+                case "session.new": return Ok(_host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace"),
+                    GetString(args, "command"), GetString(args, "workspace-name"), GetBool(args, "create-workspace")));
                 case "session.select": return _host.SelectSession(target ?? "active") ? Ok("selected") : Err("session not found");
                 case "session.close": return _host.CloseSession(target ?? "active") ? Ok("closed") : Err("session not found");
                 case "workspace.new": return Ok(_host.NewWorkspace(GetString(args, "name")));
                 case "font": return _host.SetFontSize(target, GetString(args, "op") ?? "") ? Ok("font") : Err("session not found");
+
+                // ---- Wave A1: verb parity ----
+                case "session.go": _host.SessionGo(GetString(args, "dir") ?? "next"); return Ok("go");
+                case "session.move":
+                    return (GetString(args, "workspace") is { } wsMove
+                        ? _host.SessionToWorkspace(target, wsMove)
+                        : _host.SessionReorder(target, GetString(args, "dir") ?? "down"))
+                        ? Ok("moved") : Err("not found");
+                case "workspace.rename": return _host.WorkspaceRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("workspace not found");
+                case "workspace.delete": return _host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found");
+                case "workspace.select": return _host.WorkspaceSelect(target) ? Ok("selected") : Err("workspace not found");
+                case "workspace.move": return _host.WorkspaceReorder(target, GetString(args, "dir") ?? "down") ? Ok("moved") : Err("workspace not found");
+                case "session.split": _host.Split(GetString(args, "op") ?? "toggle"); return Ok("split");
+                case "session.focus": _host.FocusPaneDir(GetString(args, "dir") ?? "right"); return Ok("focus");
+                case "session.resize":
+                    {
+                        double? ratio = null;
+                        if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("ratio", out var rv) && rv.TryGetDouble(out var rd)) ratio = rd;
+                        _host.ResizeSplit(ratio, GetInt(args, "grow-left", 0), GetInt(args, "grow-right", 0));
+                        return Ok("resized");
+                    }
+                case "theme.list": return Ok(string.Join("\n", _host.ThemeList()));
+                case "theme.set": return _host.ThemeSet(GetString(args, "name") ?? "") ? Ok("theme set") : Err("theme not found");
+                case "keymap.reload": return Ok(_host.KeymapReload());
+                case "restore.clear": return Ok(_host.RestoreClear());
+                case "sidebar": _host.SidebarOp(GetString(args, "op") ?? "toggle"); return Ok("sidebar");
             }
 
             // Session-targeted commands.
@@ -108,6 +135,7 @@ public sealed class ControlServer : IDisposable
             {
                 "session.write" => HandleWrite(s, args),
                 "session.type" => HandleType(s, args),
+                "session.text" => HandleText(s),
                 "session.status" => HandleStatus(s, args),
                 "image.show" => HandleImageShow(s, args),
                 "image.clear" => HandleImageClear(s),
@@ -158,6 +186,18 @@ public sealed class ControlServer : IDisposable
         string text = (GetString(args, "text") ?? "").Replace("\r\n", "\r").Replace('\n', '\r');
         s.Write(Encoding.UTF8.GetBytes(text));
         return Ok("typed");
+    }
+
+    /// <summary>Dump the target session's active-pane buffer as plain text (trailing blank lines trimmed).</summary>
+    private static string HandleText(TerminalSession s)
+    {
+        var sb = new StringBuilder();
+        lock (s.SyncRoot)
+        {
+            var em = s.Emulator;
+            for (int r = 0; r < em.Screen.Rows; r++) sb.Append(em.DumpRow(r)).Append('\n');
+        }
+        return Ok(sb.ToString().TrimEnd('\n'));
     }
 
     private static string HandleStatus(TerminalSession s, JsonElement args)
@@ -272,6 +312,10 @@ public sealed class ControlServer : IDisposable
 
     private static int GetInt(JsonElement args, string key, int def)
         => args.ValueKind == JsonValueKind.Object && args.TryGetProperty(key, out var v) && v.TryGetInt32(out var n) ? n : def;
+
+    private static bool GetBool(JsonElement args, string key)
+        => args.ValueKind == JsonValueKind.Object && args.TryGetProperty(key, out var v)
+           && (v.ValueKind == JsonValueKind.True || (v.ValueKind == JsonValueKind.String && v.GetString() is "true" or "1"));
 
     private static string Ok(string result) => $"{{\"ok\":true,\"result\":{JsonSerializer.Serialize(result)}}}";
     private static string OkRaw(string rawResult) => $"{{\"ok\":true,\"result\":{rawResult}}}";

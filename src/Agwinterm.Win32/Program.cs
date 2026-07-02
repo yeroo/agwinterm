@@ -383,8 +383,9 @@ internal static class Program
         return ws;
     }
 
-    /// <summary>Create one terminal pane (its own ConPTY, env, wiring) sized for the given font.</summary>
-    private static Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize)
+    /// <summary>Create one terminal pane (its own ConPTY, env, wiring) sized for the given font.
+    /// When <paramref name="command"/> is set, that argv runs as the pane's process instead of the shell.</summary>
+    private static Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null)
     {
         var (cols, rows) = GridSizeFor(fontSize);
         var session = new TerminalSession(cols, rows);
@@ -400,8 +401,32 @@ internal static class Program
             ["AGWINTERM_WORKSPACE_ID"] = ws.Id,
             ["AGWINTERM_WINDOW_ID"] = _windowId,
         };
-        _ = session.StartAsync("powershell.exe", ShellArgs(), extraEnv: env, cwd: cwd);
+        if (!string.IsNullOrWhiteSpace(command))
+        {
+            var argv = ParseArgv(command);
+            if (argv.Length > 0)
+                _ = session.StartAsync(argv[0], argv[1..], extraEnv: env, cwd: cwd);
+            else
+                _ = session.StartAsync("powershell.exe", ShellArgs(), extraEnv: env, cwd: cwd);
+        }
+        else _ = session.StartAsync("powershell.exe", ShellArgs(), extraEnv: env, cwd: cwd);
         return pane;
+    }
+
+    /// <summary>Minimal argv split (whitespace-separated, double-quotes group). For session --command.</summary>
+    private static string[] ParseArgv(string s)
+    {
+        var args = new List<string>();
+        var cur = new StringBuilder();
+        bool inQuote = false, has = false;
+        foreach (char ch in s)
+        {
+            if (ch == '"') { inQuote = !inQuote; has = true; }
+            else if (char.IsWhiteSpace(ch) && !inQuote) { if (has) { args.Add(cur.ToString()); cur.Clear(); has = false; } }
+            else { cur.Append(ch); has = true; }
+        }
+        if (has) args.Add(cur.ToString());
+        return args.ToArray();
     }
 
     /// <summary>
@@ -412,13 +437,13 @@ internal static class Program
     /// </summary>
     private static string[] ShellArgs() => new[] { "-NoLogo" };
 
-    private static Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null)
+    private static Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null, string? command = null)
     {
         float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws };
-        ses.Panes.Add(CreatePane(id, ws, cwd, fs));   // first pane shares the session id (control-API back-compat)
+        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command));   // first pane shares the session id (control-API back-compat)
         ses.Active = 0;
 
         lock (_workspaces) { ws.Sessions.Add(ses); ws.Expanded = true; }
@@ -572,6 +597,99 @@ internal static class Program
         SetActive(all[((i + dir) % all.Count + all.Count) % all.Count]);
     }
 
+    // ---- Wave A1 internal helpers (called on the UI thread via Host/Post) ----
+
+    private static void SessionGoInternal(string dir)
+    {
+        switch (dir)
+        {
+            case "next": CycleSession(1); break;
+            case "prev": case "previous": CycleSession(-1); break;
+            case "first": { var f = AllSessions().FirstOrDefault(); if (f is not null) SetActive(f); break; }
+            case "last": { var l = AllSessions().LastOrDefault(); if (l is not null) SetActive(l); break; }
+            case "next-attention": GoToNextAttention(1); break;
+            case "prev-attention": case "previous-attention": GoToNextAttention(-1); break;
+        }
+    }
+
+    /// <summary>Move an item within its list: dir = up|down|top|bottom (caller holds any needed lock).</summary>
+    private static void ReorderInList<T>(List<T> list, T item, string dir)
+    {
+        int i = list.IndexOf(item);
+        if (i < 0) return;
+        list.RemoveAt(i);
+        int j = dir switch { "up" => i - 1, "down" => i + 1, "top" => 0, "bottom" => list.Count, _ => i };
+        list.Insert(Math.Clamp(j, 0, list.Count), item);
+    }
+
+    private static Workspace? FindWs(string? target)
+    {
+        lock (_workspaces)
+        {
+            if (string.IsNullOrEmpty(target) || target == "active") return _active?.Ws ?? _workspaces.FirstOrDefault();
+            return _workspaces.FirstOrDefault(w => w.Id == target) ?? _workspaces.FirstOrDefault(w => w.Id.StartsWith(target));
+        }
+    }
+
+    private static void SplitOp(string op)
+    {
+        int panes = _active?.Panes.Count ?? 1;
+        switch (op)
+        {
+            case "on": if (panes <= 1) SplitActivePane(); break;
+            case "off": if (panes > 1) CollapseToSinglePane(); break;
+            default: if (panes > 1) CollapseToSinglePane(); else SplitActivePane(); break; // toggle
+        }
+    }
+
+    /// <summary>Collapse the active session to just its focused pane (dispose the rest).</summary>
+    private static void CollapseToSinglePane()
+    {
+        var ses = _active;
+        if (ses is null || ses.Panes.Count <= 1) return;
+        var keep = ses.ActivePane;
+        foreach (var p in ses.Panes) if (!ReferenceEquals(p, keep)) { try { p.S.Dispose(); } catch { } }
+        ses.Panes.Clear(); ses.Panes.Add(keep); keep.Ratio = 1f; ses.Active = 0;
+        _session = ses.S;
+        RegridSession(ses); RequestRedraw(); SaveState();
+    }
+
+    /// <summary>Set the split boundary next to the active pane: an absolute left ratio, or grow by columns.</summary>
+    private static void ResizeActiveSplitInternal(double? ratio, int growLeft, int growRight)
+    {
+        var ses = _active;
+        if (ses is null || ses.Panes.Count < 2) return;
+        int i = Math.Min(ses.Active, ses.Panes.Count - 2); // boundary between pane i and i+1
+        var a = ses.Panes[i]; var b = ses.Panes[i + 1];
+        float total = a.Ratio + b.Ratio;
+        if (ratio is double r)
+        {
+            float ra = (float)Math.Clamp(r, 0.05, 0.95) * total;
+            a.Ratio = ra; b.Ratio = total - ra;
+        }
+        else
+        {
+            var (_, _, totalW, _) = ContentArea();
+            var (_, cw, _) = Metrics(a.FontSize);
+            float shift = ((growRight - growLeft) * cw / MathF.Max(1f, totalW)) * total;
+            float ra = Math.Clamp(a.Ratio + shift, 0.05f * total, 0.95f * total);
+            a.Ratio = ra; b.Ratio = total - ra;
+        }
+        RegridSession(ses); RequestRedraw(); SaveState();
+    }
+
+    private static void SidebarOpInternal(string op)
+    {
+        switch (op)
+        {
+            case "show": if (_sidebarW <= 0) ToggleSidebar(); break;
+            case "hide": if (_sidebarW > 0) ToggleSidebar(); break;
+            case "toggle": ToggleSidebar(); break;
+            case "expand": lock (_workspaces) foreach (var w in _workspaces) w.Expanded = true; RequestRedraw(); SaveState(); break;
+            case "collapse": lock (_workspaces) foreach (var w in _workspaces) w.Expanded = false; RequestRedraw(); SaveState(); break;
+        }
+    }
+
     private static Ses? Find(string? target)
     {
         lock (_workspaces)
@@ -613,7 +731,8 @@ internal static class Program
                 )).ToList();
         }
 
-        public string NewSession(string? name, string? cwd, string? workspace)
+        public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
+            string? workspaceName = null, bool createWorkspace = false)
         {
             string id = Guid.NewGuid().ToString();
             Post(() =>
@@ -623,8 +742,14 @@ internal static class Program
                     lock (_workspaces)
                         ws = _workspaces.FirstOrDefault(w => w.Id == workspace)
                              ?? _workspaces.FirstOrDefault(w => w.Id.StartsWith(workspace)) ?? ActiveWorkspace();
+                else if (!string.IsNullOrEmpty(workspaceName))
+                {
+                    Workspace? byName;
+                    lock (_workspaces) byName = _workspaces.FirstOrDefault(w => string.Equals(w.Name, workspaceName, StringComparison.OrdinalIgnoreCase));
+                    ws = byName ?? (createWorkspace ? CreateWorkspace(Guid.NewGuid().ToString(), workspaceName) : ActiveWorkspace());
+                }
                 else ws = ActiveWorkspace();
-                CreateSession(id, name, cwd, ws, makeActive: true);
+                CreateSession(id, name, cwd, ws, makeActive: true, command: command);
             });
             return id;
         }
@@ -660,6 +785,92 @@ internal static class Program
             Post(() => ChangeFontSizeOf(ses, delta));
             return true;
         }
+
+        // ---- Wave A1 verbs ----
+        public void SessionGo(string dir) => Post(() => SessionGoInternal(dir));
+
+        public bool SessionReorder(string? target, string dir)
+        {
+            var s = Find(target);
+            if (s is null) return false;
+            Post(() => { lock (_workspaces) ReorderInList(s.Ws.Sessions, s, dir); RequestRedraw(); SaveState(); });
+            return true;
+        }
+
+        public bool SessionToWorkspace(string? target, string workspace)
+        {
+            var s = Find(target); var ws = FindWs(workspace);
+            if (s is null || ws is null) return false;
+            Post(() => MoveSession(s, ws));
+            return true;
+        }
+
+        public bool WorkspaceRename(string? target, string name)
+        {
+            var ws = FindWs(target);
+            if (ws is null || string.IsNullOrWhiteSpace(name)) return false;
+            Post(() => { ws.Name = name; RequestRedraw(); SaveState(); });
+            return true;
+        }
+
+        public bool WorkspaceDelete(string? target)
+        {
+            var ws = FindWs(target);
+            if (ws is null) return false;
+            Post(() => DeleteWorkspace(ws));
+            return true;
+        }
+
+        public bool WorkspaceSelect(string? target)
+        {
+            var ws = FindWs(target);
+            if (ws is null) return false;
+            Post(() => { var s = ws.Sessions.FirstOrDefault(); if (s is not null) SetActive(s); });
+            return true;
+        }
+
+        public bool WorkspaceReorder(string? target, string dir)
+        {
+            var ws = FindWs(target);
+            if (ws is null) return false;
+            Post(() => { lock (_workspaces) ReorderInList(_workspaces, ws, dir); RequestRedraw(); SaveState(); });
+            return true;
+        }
+
+        public void Split(string op) => Post(() => SplitOp(op));
+
+        public void FocusPaneDir(string dir)
+        {
+            int delta = dir switch
+            {
+                "left" => -1,
+                "right" => 1,
+                _ => (_active is not null && _active.Active == 0) ? 1 : -1, // "other"
+            };
+            Post(() => FocusPane(delta));
+        }
+
+        public void ResizeSplit(double? ratio, int growLeft, int growRight)
+            => Post(() => ResizeActiveSplitInternal(ratio, growLeft, growRight));
+
+        public IReadOnlyList<string> ThemeList() => _allThemes.Select(t => t.Name).ToList();
+
+        public bool ThemeSet(string name)
+        {
+            if (!_allThemes.Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase))) return false;
+            Post(() => CommitTheme(FindTheme(name)));
+            return true;
+        }
+
+        public string KeymapReload() { Post(ReloadKeymap); return "keymap reload requested"; }
+
+        public string RestoreClear()
+        {
+            try { if (File.Exists(StatePath)) { File.Delete(StatePath); return "restore state cleared"; } return "no restore state"; }
+            catch (Exception ex) { return "error: " + ex.Message; }
+        }
+
+        public void SidebarOp(string op) => Post(() => SidebarOpInternal(op));
     }
 
     private static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)

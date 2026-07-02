@@ -41,14 +41,32 @@ public static class AgentSkill
         Better: run `agwintermctl install hooks` once. It wires Claude Code hooks so your status
         updates automatically (active while working, blocked on permission prompts, completed on stop).
 
-        ## Manage sessions
-        - `agwintermctl tree --json`                              — list sessions (id, name, active, status)
-        - `agwintermctl session new --name "tests" --cwd C:\repo` — create one (prints its id)
-        - `agwintermctl session select <id>`                     — switch to it
-        - `agwintermctl session close <id>`                      — close it
+        ## Manage sessions & workspaces
+        - `agwintermctl tree --json`                              — list workspaces+sessions (id, name, active, status)
+        - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"]`
+          — create a session (prints its id). `--command` runs that program as the session process (argv-style, no shell) instead of the shell.
+        - `agwintermctl session select <id>` / `session close <id>`
+        - `agwintermctl session go next|prev|first|last|next-attention|prev-attention` — move the active session
+        - `agwintermctl session move --to up|down|top|bottom`     — reorder within its workspace
+        - `agwintermctl session move <workspace-id>`             — relocate to another workspace
+        - `agwintermctl workspace new [name]` / `workspace rename <name> [--target WS]` / `workspace select [--target WS]` / `workspace move --to <dir> [--target WS]` / `workspace delete [--target WS]`
+
+        ## Read a session's output
+        - `agwintermctl session text [--target <id>]`            — dump the session's visible buffer as plain text (great for reading command output)
 
         ## Type into a session
         - `agwintermctl session type "npm test" --target <id>`   — send keystrokes (newline = Enter)
+
+        ## Splits, font, sidebar, theme
+        - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
+        - `agwintermctl font inc|dec|reset [--target <id>]`      — per-session font zoom
+        - `agwintermctl sidebar show|hide|toggle|expand|collapse`
+        - `agwintermctl theme list` · `agwintermctl theme set "Solarized Light"`
+
+        ## Config / restore
+        - `agwintermctl keymap reload`                           — re-parse keymap.conf (reports diagnostics)
+        - `agwintermctl restore clear`                           — clear the saved session-tree state
+        - `agwintermctl install hooks|skill|shell`               — install agent-status hooks / this skill / shell-integration (live cwd)
 
         ## Show an image inline
         - `agwintermctl image show C:\path\pic.png --row 2 --col 4`

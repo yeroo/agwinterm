@@ -57,9 +57,29 @@ switch (area)
     case "install" when sub == "hooks": cmd = "install.hooks"; break;
     case "install" when sub == "skill": cmd = "install.skill"; break;
     case "install" when sub == "shell": cmd = "install.shell"; break;
-    case "workspace" when sub == "new":
-        cmd = "workspace.new";
-        if (Opt("name") is { } wsname) cargs["name"] = wsname;
+    case "workspace":
+        target = Opt("target") ?? "active";
+        switch (sub)
+        {
+            case "new":
+                cmd = "workspace.new";
+                if (Opt("name") is { } wsname) cargs["name"] = wsname;
+                else if (rest.Count > 0) cargs["name"] = rest[0];
+                target = null;
+                break;
+            case "rename":
+                cmd = "workspace.rename";
+                if (rest.Count == 0) { Console.Error.WriteLine("workspace rename needs a name"); return 2; }
+                cargs["name"] = string.Join(' ', rest);
+                break;
+            case "delete": cmd = "workspace.delete"; break;
+            case "select": cmd = "workspace.select"; break;
+            case "move":
+                cmd = "workspace.move";
+                cargs["dir"] = Opt("to") ?? (rest.Count > 0 ? rest[0] : "down");
+                break;
+            default: Console.Error.WriteLine($"unknown workspace command '{sub}'"); return 2;
+        }
         break;
     case "session":
         cmd = "session." + sub;
@@ -70,6 +90,9 @@ switch (area)
                 if (Opt("cwd") is { } cwd) cargs["cwd"] = cwd;
                 if (Opt("name") is { } name) cargs["name"] = name;
                 if (Opt("workspace") is { } wsp) cargs["workspace"] = wsp;
+                if (Opt("command") is { } command) cargs["command"] = command;
+                if (Opt("workspace-name") is { } wsn) cargs["workspace-name"] = wsn;
+                if (options.ContainsKey("create-workspace")) cargs["create-workspace"] = true;
                 target = null; // new isn't targeted
                 break;
             case "select":
@@ -84,9 +107,37 @@ switch (area)
             case "write":
                 cargs["text"] = string.Join(' ', rest);
                 break;
+            case "text": break; // dump the buffer; target only
+            case "go":
+                if (rest.Count == 0) { Console.Error.WriteLine("session go needs a direction (next|prev|first|last|next-attention|prev-attention)"); return 2; }
+                cargs["dir"] = rest[0]; target = null;
+                break;
+            case "move":
+                if (rest.Count > 0 && Opt("to") is null) cargs["workspace"] = rest[0]; // relocate to workspace
+                else cargs["dir"] = Opt("to") ?? "down";                                // reorder within workspace
+                break;
+            case "split": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break;
+            case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
+            case "resize":
+                if (double.TryParse(Opt("split-ratio"), System.Globalization.CultureInfo.InvariantCulture, out var sr)) cargs["ratio"] = sr;
+                if (int.TryParse(Opt("grow-left"), out var gl)) cargs["grow-left"] = gl;
+                if (int.TryParse(Opt("grow-right"), out var gr)) cargs["grow-right"] = gr;
+                break;
             default:
                 Console.Error.WriteLine($"unknown session command '{sub}'"); return 2;
         }
+        break;
+    case "theme" when sub == "list": cmd = "theme.list"; break;
+    case "theme" when sub == "set":
+        cmd = "theme.set";
+        if (rest.Count == 0) { Console.Error.WriteLine("theme set needs a name"); return 2; }
+        cargs["name"] = string.Join(' ', rest);
+        break;
+    case "keymap" when sub == "reload": cmd = "keymap.reload"; break;
+    case "restore" when sub == "clear": cmd = "restore.clear"; break;
+    case "sidebar":
+        cmd = "sidebar";
+        cargs["op"] = sub.Length > 0 ? sub : "toggle";
         break;
     case "font":
         cmd = "font";

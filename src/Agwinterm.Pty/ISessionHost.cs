@@ -21,8 +21,14 @@ public interface ISessionHost
     /// <summary>The full workspace→session tree.</summary>
     IReadOnlyList<WorkspaceSnapshot> Tree();
 
-    /// <summary>Create a session (optionally in a given workspace); returns its id.</summary>
-    string NewSession(string? name, string? cwd, string? workspace);
+    /// <summary>
+    /// Create a session; returns its id. Optionally in a workspace (by id/prefix via
+    /// <paramref name="workspace"/>, or by sidebar label via <paramref name="workspaceName"/> +
+    /// <paramref name="createWorkspace"/>), running <paramref name="command"/> as its process
+    /// instead of the shell.
+    /// </summary>
+    string NewSession(string? name, string? cwd, string? workspace, string? command = null,
+        string? workspaceName = null, bool createWorkspace = false);
 
     bool SelectSession(string target);
     bool CloseSession(string target);
@@ -32,6 +38,35 @@ public interface ISessionHost
 
     /// <summary>Adjust a session's font zoom: op = "inc" | "dec" | "reset". Returns false if the target isn't found.</summary>
     bool SetFontSize(string? target, string op);
+
+    // ---- Wave A1: verb parity for existing features (all marshal to the UI thread) ----
+
+    /// <summary>Move the active session: dir = next|prev|first|last|next-attention|prev-attention.</summary>
+    void SessionGo(string dir);
+    /// <summary>Reorder a session within its workspace: dir = up|down|top|bottom.</summary>
+    bool SessionReorder(string? target, string dir);
+    /// <summary>Relocate a session to another workspace (by id/prefix/active), appending.</summary>
+    bool SessionToWorkspace(string? target, string workspace);
+
+    bool WorkspaceRename(string? target, string name);
+    bool WorkspaceDelete(string? target);
+    bool WorkspaceSelect(string? target);
+    /// <summary>Reorder a workspace among its siblings: dir = up|down|top|bottom.</summary>
+    bool WorkspaceReorder(string? target, string dir);
+
+    /// <summary>Split the active session: op = on|off|toggle.</summary>
+    void Split(string op);
+    /// <summary>Move pane focus in the active session: dir = left|right|other.</summary>
+    void FocusPaneDir(string dir);
+    /// <summary>Set the active session's split: an absolute left ratio (0..1) or grow left/right by N columns.</summary>
+    void ResizeSplit(double? ratio, int growLeft, int growRight);
+
+    IReadOnlyList<string> ThemeList();
+    bool ThemeSet(string name);
+    string KeymapReload();
+    string RestoreClear();
+    /// <summary>Sidebar: op = show|hide|toggle|expand|collapse.</summary>
+    void SidebarOp(string op);
 }
 
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
@@ -44,9 +79,27 @@ public sealed class SingleSessionHost : ISessionHost
     public IReadOnlyList<WorkspaceSnapshot> Tree() =>
         new[] { new WorkspaceSnapshot("ws", "workspace", true,
             new[] { new SessionSnapshot("single", "session", true, _session.Status) }) };
-    public string NewSession(string? name, string? cwd, string? workspace) => "single";
+    public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
+        string? workspaceName = null, bool createWorkspace = false) => "single";
     public bool SelectSession(string target) => true;
     public bool CloseSession(string target) => false;
     public string NewWorkspace(string? name) => "ws";
     public bool SetFontSize(string? target, string op) => false; // no per-session font zoom in the single-session host
+
+    // Wave A1 verbs — no-ops for the single-session test adapter.
+    public void SessionGo(string dir) { }
+    public bool SessionReorder(string? target, string dir) => false;
+    public bool SessionToWorkspace(string? target, string workspace) => false;
+    public bool WorkspaceRename(string? target, string name) => false;
+    public bool WorkspaceDelete(string? target) => false;
+    public bool WorkspaceSelect(string? target) => false;
+    public bool WorkspaceReorder(string? target, string dir) => false;
+    public void Split(string op) { }
+    public void FocusPaneDir(string dir) { }
+    public void ResizeSplit(double? ratio, int growLeft, int growRight) { }
+    public IReadOnlyList<string> ThemeList() => Array.Empty<string>();
+    public bool ThemeSet(string name) => false;
+    public string KeymapReload() => "";
+    public string RestoreClear() => "";
+    public void SidebarOp(string op) { }
 }
