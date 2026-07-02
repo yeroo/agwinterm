@@ -20,7 +20,7 @@ namespace Agwinterm.Win32;
 /// the PTY, with no framework focus model in the way. Rendering mirrors the WinUI
 /// OnDraw path but on an ID2D1HwndRenderTarget.
 /// </summary>
-internal static partial class Program
+internal partial class Program : ISessionHost
 {
     private const float PadX = 8f;
     private const float PadY = 6f;
@@ -29,95 +29,102 @@ internal static partial class Program
     // Kept alive for the lifetime of the process so the GC never collects the thunk.
     private static WndProc _wndProc = null!;
 
-    private static IntPtr _hwnd;
+    // Per-window instance routing. WindowProc is a static trampoline that resolves the owning
+    // Program instance by HWND and dispatches to its instance handler. Frontmost is the instance
+    // un-scoped control verbs act on (single window today; the seam for future --window targeting).
+    private static readonly Dictionary<IntPtr, Program> _registry = new();
+    private static Program? _creating;   // instance whose window is mid-CreateWindowExW (pre-registry)
+    internal static Program Frontmost = null!;
+
+    private IntPtr _hwnd;
     private static ID2D1Factory _d2d = null!;
     private static IDWriteFactory _dwrite = null!;
     private static IDWriteTextFormat _format = null!;
-    private static ID2D1HwndRenderTarget? _rt;
-    private static ID2D1SolidColorBrush? _brush;
+    private ID2D1HwndRenderTarget? _rt;
+    private ID2D1SolidColorBrush? _brush;
 
     private static TerminalConfig _config = new();
     private static Theme _theme = Theme.Default;                 // active colour theme (renderer resolves through it)
     private static Theme? _themeBeforePreview;                   // saved when the theme picker opens (Esc reverts)
     private static List<Theme> _allThemes = new();
-    private static TerminalSession? _session;   // mirrors the ACTIVE SURFACE (active pane, or a shown cover)
+    private TerminalSession? _session;   // mirrors the ACTIVE SURFACE (active pane, or a shown cover)
     // Auxiliary "cover" terminal drawn over the content region: scratch (per-session) or quick (per-app).
-    private static Pane? _cover;                // the shown cover, or null
-    private static int _coverKind;              // 0 none, 1 scratch, 2 quick, 3 overlay
-    private static Pane? _quick;                // the single per-app quick terminal (lazy; kept alive)
+    private Pane? _cover;                // the shown cover, or null
+    private int _coverKind;              // 0 none, 1 scratch, 2 quick, 3 overlay
+    private Pane? _quick;                // the single per-app quick terminal (lazy; kept alive)
     // Overlays (Wave B3): an ephemeral program run over a session; vanishes when the program exits.
-    private static Ses? _ovlOwner;              // the session whose overlay is the current cover (kind 3)
-    private static string _lastOverlayExit = "no overlay"; // "exit N" once an overlay's program has exited
-    private static int _overlayExitCode;        // the last overlay program's exit code
-    private static readonly System.Threading.ManualResetEventSlim _overlayDone = new(false); // signalled on overlay exit (for --block)
+    private Ses? _ovlOwner;              // the session whose overlay is the current cover (kind 3)
+    private string _lastOverlayExit = "no overlay"; // "exit N" once an overlay's program has exited
+    private int _overlayExitCode;        // the last overlay program's exit code
+    private readonly System.Threading.ManualResetEventSlim _overlayDone = new(false); // signalled on overlay exit (for --block)
     private static ControlServer? _control;
 
     // ---- Multi-session model (agterm workspaces -> sessions), mirrors the WinUI shell ----
     private static readonly string _windowId = Guid.NewGuid().ToString();
-    private static readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock(_workspaces)
-    private static bool _restoring;                              // suppress SaveState while rebuilding from disk
-    private static Ses? _active;
+    private readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock(_workspaces)
+    private bool _restoring;                              // suppress SaveState while rebuilding from disk
+    private Ses? _active;
     private const float DividerW = 6f;                       // gutter between panes
-    private static bool _divDragging;                        // dragging a pane divider
-    private static int _divLeft;                             // left-pane index of the divider being dragged
+    private bool _divDragging;                        // dragging a pane divider
+    private int _divLeft;                             // left-pane index of the divider being dragged
     // Actions queued from the pipe (background) thread to run on the UI thread.
-    private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
 
     // Chrome geometry (custom title bar + status bar, drawn in Direct2D).
     private const float TitleBarH = 40f;
     private const float FooterH = 34f;       // toolbar at the bottom of the sidebar
     private const float SidebarWFull = 220f;
     private const float CaptionBtnW = 46f;   // native min/max/close hit width
-    private static float _sidebarW = SidebarWFull;            // 0 when collapsed
+    private float _sidebarW = SidebarWFull;            // 0 when collapsed
 
     // Sidebar view mode + workspace focus (Wave D1). Tree = the normal workspace→session outline;
     // Flagged = a flat working-set of every flagged session across all workspaces. Focus (tree only)
     // shows just one workspace. The two are independent and both persist.
     private enum SidebarMode { Tree, Flagged }
-    private static SidebarMode _sidebarMode = SidebarMode.Tree;
-    private static string? _focusedWorkspaceId;               // when set (tree mode), render only this workspace
+    private SidebarMode _sidebarMode = SidebarMode.Tree;
+    private string? _focusedWorkspaceId;               // when set (tree mode), render only this workspace
     private static readonly object _showAllMarker = new();    // sidebar row sentinel: click clears workspace focus
 
-    private static float ContentX => _sidebarW + PadX;        // terminal's left origin
-    private static float ContentY => TitleBarH + PadY;        // terminal's top origin (below the title bar)
+    private float ContentX => _sidebarW + PadX;        // terminal's left origin
+    private float ContentY => TitleBarH + PadY;        // terminal's top origin (below the title bar)
 
     // Row hit-boxes rebuilt each paint: (top, bottom, isWorkspace, item(Workspace|Ses)).
-    private static readonly List<(float y0, float y1, bool isWs, object item)> _sidebarRows = new();
+    private readonly List<(float y0, float y1, bool isWs, object item)> _sidebarRows = new();
     // Chrome button hit-boxes rebuilt each paint: (x0, x1, action).
-    private static readonly List<(float x0, float x1, string action)> _titleButtons = new();
-    private static readonly List<(float x0, float x1, string action)> _footerButtons = new();
+    private readonly List<(float x0, float x1, string action)> _titleButtons = new();
+    private readonly List<(float x0, float x1, string action)> _footerButtons = new();
 
     // Sidebar drag-reorder (in-memory only; the shell has no persistence yet).
-    private static bool _sbPress;         // left button pressed on a sidebar list row (click-vs-drag pending)
-    private static object? _pressItem;    // row under the press (Ses|Workspace|null)
-    private static int _pressX, _pressY;  // press point (client px)
-    private static bool _dragging;        // past the threshold -> reordering
-    private static object? _dragItem;     // Ses or Workspace being dragged
-    private static int _dragX, _dragY;    // current cursor (client px) while dragging
+    private bool _sbPress;         // left button pressed on a sidebar list row (click-vs-drag pending)
+    private object? _pressItem;    // row under the press (Ses|Workspace|null)
+    private int _pressX, _pressY;  // press point (client px)
+    private bool _dragging;        // past the threshold -> reordering
+    private object? _dragItem;     // Ses or Workspace being dragged
+    private int _dragX, _dragY;    // current cursor (client px) while dragging
     private const int DragThreshold = 5;
-    private static int _hoverCaption; // 0 none, 1 min, 2 max, 3 close (for hover paint)
-    private static int _capPressed;   // HT* of a pressed caption button (for click + pressed paint)
+    private int _hoverCaption; // 0 none, 1 min, 2 max, 3 close (for hover paint)
+    private int _capPressed;   // HT* of a pressed caption button (for click + pressed paint)
 
     // Custom chrome buttons: hover/press states + fade animation (so our buttons feel like the caption buttons).
-    private static string? _hotBtn;   // chrome button id currently under the cursor
-    private static string? _hotPaint; // button being painted with the hover fill (lingers during fade-out)
-    private static float _hotAlpha;   // 0..1 hover-fill alpha (eased by the fade timer)
-    private static string? _pressBtn; // chrome button id pressed (fires on release over the same button)
-    private static bool _mouseTracking; // TrackMouseEvent armed (for WM_MOUSELEAVE)
+    private string? _hotBtn;   // chrome button id currently under the cursor
+    private string? _hotPaint; // button being painted with the hover fill (lingers during fade-out)
+    private float _hotAlpha;   // 0..1 hover-fill alpha (eased by the fade timer)
+    private string? _pressBtn; // chrome button id pressed (fires on release over the same button)
+    private bool _mouseTracking; // TrackMouseEvent armed (for WM_MOUSELEAVE)
     private const int HoverTimer = 8;   // WM_TIMER id for the hover fade
-    private static bool _chromeDark = true; // active theme is dark (set by RecomputeChrome)
-    private static string? _toastText;
-    private static Ses? _toastTarget;   // when the toast is a notification banner: click it to jump to this session
-    private static Rect _toastRect;     // last-drawn banner rect (for click-to-jump hit-testing)
-    private static bool _trayAdded;     // whether the Shell_NotifyIcon tray icon has been created (for OS balloons)
+    private bool _chromeDark = true; // active theme is dark (set by RecomputeChrome)
+    private string? _toastText;
+    private Ses? _toastTarget;   // when the toast is a notification banner: click it to jump to this session
+    private Rect _toastRect;     // last-drawn banner rect (for click-to-jump hit-testing)
+    private bool _trayAdded;     // whether the Shell_NotifyIcon tray icon has been created (for OS balloons)
 
     // Terminal text selection drag + multi-click (word/line) tracking.
-    private static bool _selecting;       // left-drag selecting text in the content region
-    private static bool _selMoved;        // moved past a cell during the drag (distinguishes click from select)
-    private static int _lastClickMs, _clickCount, _lastClickLine, _lastClickCol;
-    private static Pane? _selPane;        // pane the current selection drag belongs to (locked at press)
-    private static int _selAutoDir;       // drag-autoscroll: -1 mouse above pane, +1 below, 0 in-bounds
-    private static int _selMouseX;        // last drag X (client px) for column tracking during autoscroll
+    private bool _selecting;       // left-drag selecting text in the content region
+    private bool _selMoved;        // moved past a cell during the drag (distinguishes click from select)
+    private int _lastClickMs, _clickCount, _lastClickLine, _lastClickCol;
+    private Pane? _selPane;        // pane the current selection drag belongs to (locked at press)
+    private int _selAutoDir;       // drag-autoscroll: -1 mouse above pane, +1 below, 0 in-bounds
+    private int _selMouseX;        // last drag X (client px) for column tracking during autoscroll
     private const int SelAutoTimer = 7;   // WM_TIMER id for drag-autoscroll ticks
 
     // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
@@ -132,13 +139,13 @@ internal static partial class Program
         public object? Data;          // e.g. the Theme for live-preview
         public Action? Run;           // null = non-actionable placeholder
     }
-    private static PaletteKind _palette = PaletteKind.None;
+    private PaletteKind _palette = PaletteKind.None;
 
     // In-terminal search (find bar over the active pane's buffer + scrollback).
-    private static bool _searchActive;
-    private static string _searchQuery = "";
-    private static readonly List<(int Line, int Col0, int Col1)> _searchMatches = new(); // absolute line index (history ++ live)
-    private static int _searchCur;
+    private bool _searchActive;
+    private string _searchQuery = "";
+    private readonly List<(int Line, int Col0, int Col1)> _searchMatches = new(); // absolute line index (history ++ live)
+    private int _searchCur;
 
     // Keymap: chord (canonical string) -> action id or "command:<Label>"; custom commands from keymap.conf.
     private static Dictionary<string, string> _keymap = new(StringComparer.OrdinalIgnoreCase);
@@ -147,38 +154,38 @@ internal static partial class Program
 
     // Leader/prefix chord (tmux-style): press the leader, then a second chord resolves against
     // _leaderBindings. While pending we paint a hint and swallow keys; Esc / timeout cancels.
-    private static string? _leader;
+    private static string? _leader;   // configured leader chord (from keymap.conf; app-global config)
     private static Dictionary<string, string> _leaderBindings = new(StringComparer.OrdinalIgnoreCase);
-    private static bool _leaderPending;
-    private static long _leaderAtMs;
+    private bool _leaderPending;
+    private long _leaderAtMs;
     private const long LeaderTimeoutMs = 3000;
 
     // MRU (most-recently-used) session switcher — Ctrl+Tab walks the recency stack (Alt+Tab semantics).
     // _mru holds session ids, front = most recently active. During a walk we preview-select the target
     // but suppress recency updates; releasing Ctrl commits (fronts the target); Esc cancels back to start.
-    private static readonly List<string> _mru = new();
-    private static bool _mruWalking;
-    private static List<Ses> _mruSnapshot = new();  // recency-ordered sessions captured at walk start
-    private static int _mruIdx;                      // current target index into _mruSnapshot
-    private static Ses? _mruStart;                   // session active when the walk began (for Esc cancel)
+    private readonly List<string> _mru = new();
+    private bool _mruWalking;
+    private List<Ses> _mruSnapshot = new();  // recency-ordered sessions captured at walk start
+    private int _mruIdx;                      // current target index into _mruSnapshot
+    private Ses? _mruStart;                   // session active when the walk began (for Esc cancel)
 
-    private static string _palQuery = "";
-    private static int _palSel;
-    private static readonly List<PalItem> _palAll = new();
-    private static readonly List<PalItem> _palItems = new();
-    private static readonly List<(float y0, float y1, int idx)> _palRows = new();
-    private static Rect _palPanel;    // panel bounds (for click-outside-to-close)
+    private string _palQuery = "";
+    private int _palSel;
+    private readonly List<PalItem> _palAll = new();
+    private readonly List<PalItem> _palItems = new();
+    private readonly List<(float y0, float y1, int idx)> _palRows = new();
+    private Rect _palPanel;    // panel bounds (for click-outside-to-close)
 
     // Inline rename (native child EDIT overlaid on the row being renamed).
     private const int EDIT_ID = 101;
-    private static IntPtr _editHwnd;
-    private static object? _editing;         // Ses or Workspace currently being renamed
+    private IntPtr _editHwnd;
+    private object? _editing;         // Ses or Workspace currently being renamed
     private static WndProc _editProc = null!; // kept alive; subclasses the EDIT to catch Enter/Esc
-    private static IntPtr _editOrigProc;
+    private IntPtr _editOrigProc;
     private static IntPtr _editFont;          // cached HFONT for the rename box (matches the sidebar)
     private static IntPtr _editBrush;         // cached dark background brush (WM_CTLCOLOREDIT)
 
-    private static void EnsureEditGdi()
+    private void EnsureEditGdi()
     {
         // Segoe UI ~13px to match the sidebar row text; ClearType; dark bg like the sidebar.
         if (_editFont == IntPtr.Zero)
@@ -238,28 +245,28 @@ internal static partial class Program
         public bool Expanded = true;
     }
 
-    private static float _cellW = 8, _cellH = 16;
-    private static bool _cursorOn = true;
-    private static readonly StringBuilder _run = new(256);   // reused per text run (no per-cell alloc)
-    private static int _redrawPending;                       // coalesces redraw requests into one paint
+    private float _cellW = 8, _cellH = 16;
+    private bool _cursorOn = true;
+    private readonly StringBuilder _run = new(256);   // reused per text run (no per-cell alloc)
+    private int _redrawPending;                       // coalesces redraw requests into one paint
 
     // Decoded Kitty images, keyed by the current KittyImage instance so a retransmit
     // (new bytes, same id) re-decodes and the stale texture is pruned/disposed.
-    private static readonly Dictionary<KittyImage, ID2D1Bitmap> _imageCache = new();
-    private static readonly HashSet<KittyImage> _decoding = new();               // decode in flight (UI-thread set)
+    private readonly Dictionary<KittyImage, ID2D1Bitmap> _imageCache = new();
+    private readonly HashSet<KittyImage> _decoding = new();               // decode in flight (UI-thread set)
     // Background-decoded pixels waiting to be uploaded to a GPU texture on the UI thread.
     // bgra == null signals a decode failure (so we can drop it from _decoding without retrying forever).
-    private static readonly System.Collections.Concurrent.ConcurrentQueue<(KittyImage img, byte[]? bgra, int w, int h)> _decoded = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(KittyImage img, byte[]? bgra, int w, int h)> _decoded = new();
     private static readonly bool _noImages = Environment.GetEnvironmentVariable("AGWINTERM_NOIMG") == "1";
 
     [STAThread]
     private static void Main()
     {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        // Process-global setup (config/themes/keymap + window class + shared D2D/DWrite objects).
         _config = LoadOrCreateConfig();
         _allThemes = LoadThemes();
         _theme = FindTheme(_config.Theme);
-        RecomputeChrome();
         LoadKeymap();
 
         IntPtr hInstance = GetModuleHandleW(null);
@@ -277,15 +284,46 @@ internal static partial class Program
         if (RegisterClassExW(ref wc) == 0)
             throw new InvalidOperationException("RegisterClassExW failed: " + System.Runtime.InteropServices.Marshal.GetLastWin32Error());
 
+        // Direct2D / DirectWrite (shared across windows; DWrite objects are device-independent).
+        _d2d = D2D1.D2D1CreateFactory<ID2D1Factory>(Vortice.Direct2D1.FactoryType.SingleThreaded);
+        _dwrite = DWrite.DWriteCreateFactory<IDWriteFactory>();
+        _format = CreateTextFormat(_config);
+        _uiFont = NewChromeFormat("Segoe UI", 13f, center: false);
+        _uiSmall = NewChromeFormat("Segoe UI", 11.5f, center: false);
+        _iconFont = NewChromeFormat("Segoe Fluent Icons", 14f, center: true);
+        _iconSmall = NewChromeFormat("Segoe Fluent Icons", 10.5f, center: true);
+
+        // The single window (its own instance, routed by HWND). Frontmost is what un-scoped
+        // control verbs act on; the registry maps HWND -> instance for the WindowProc trampoline.
+        var win = new Program();
+        Frontmost = win;
+        win.Boot(hInstance);
+
+        while (GetMessageW(out MSG msg, IntPtr.Zero, 0, 0) > 0)
+        {
+            TranslateMessage(ref msg);
+            DispatchMessageW(ref msg);
+        }
+    }
+
+    /// <summary>Per-window bootstrap: create the HWND, its render target, and the initial session.</summary>
+    private void Boot(IntPtr hInstance)
+    {
+        RecomputeChrome();
+        MeasureCell();
+
         LoadGeometry(); // restore saved window size/position (applied at creation; shown below)
         // Created hidden (no WS_VISIBLE) so we can position it before the first paint; shown at the end.
+        _creating = this;                    // so the WindowProc trampoline can resolve us during CreateWindowExW
         _hwnd = _geoValid
             ? CreateWindowExW(0, ClassName, "agwinterm", WS_OVERLAPPEDWINDOW,
                 _geoX, _geoY, _geoW, _geoH, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero)
             : CreateWindowExW(0, ClassName, "agwinterm", WS_OVERLAPPEDWINDOW,
                 CW_USEDEFAULT, CW_USEDEFAULT, 1040, 660, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
+        _creating = null;
         if (_hwnd == IntPtr.Zero)
             throw new InvalidOperationException("CreateWindowExW failed: " + System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+        _registry[_hwnd] = this;
 
         // App icon for the window (taskbar + alt-tab); the exe icon comes from <ApplicationIcon>.
         try
@@ -301,16 +339,6 @@ internal static partial class Program
         }
         catch { /* icon is cosmetic; ignore load failures */ }
 
-        // Direct2D / DirectWrite.
-        _d2d = D2D1.D2D1CreateFactory<ID2D1Factory>(Vortice.Direct2D1.FactoryType.SingleThreaded);
-        _dwrite = DWrite.DWriteCreateFactory<IDWriteFactory>();
-        _format = CreateTextFormat(_config);
-        _uiFont = NewChromeFormat("Segoe UI", 13f, center: false);
-        _uiSmall = NewChromeFormat("Segoe UI", 11.5f, center: false);
-        _iconFont = NewChromeFormat("Segoe Fluent Icons", 14f, center: true);
-        _iconSmall = NewChromeFormat("Segoe Fluent Icons", 10.5f, center: true);
-        MeasureCell();
-
         CreateRenderTarget();
         StartSession();
 
@@ -325,12 +353,6 @@ internal static partial class Program
         _wasMaximized = IsZoomed(_hwnd);
         ApplyWindowOpacity();
         UpdateWindow(_hwnd);
-
-        while (GetMessageW(out MSG msg, IntPtr.Zero, 0, 0) > 0)
-        {
-            TranslateMessage(ref msg);
-            DispatchMessageW(ref msg);
-        }
     }
 
     private static IDWriteTextFormat CreateTextFormat(TerminalConfig cfg)
@@ -360,7 +382,7 @@ internal static partial class Program
         return f;
     }
 
-    private static void MeasureCell()
+    private void MeasureCell()
     {
         using var run = _dwrite.CreateTextLayout(new string('M', 10), _format, 4096f, 4096f);
         using var one = _dwrite.CreateTextLayout("M", _format, 4096f, 4096f);
@@ -394,10 +416,10 @@ internal static partial class Program
         return m;
     }
 
-    private static float ActiveFontSize() => _active is { FontSize: > 0 } a ? a.FontSize : (float)_config.FontSize;
-    private static (IDWriteTextFormat Fmt, float CellW, float CellH) CurrentMetrics() => Metrics(ActiveFontSize());
+    private float ActiveFontSize() => _active is { FontSize: > 0 } a ? a.FontSize : (float)_config.FontSize;
+    private (IDWriteTextFormat Fmt, float CellW, float CellH) CurrentMetrics() => Metrics(ActiveFontSize());
 
-    private static void CreateRenderTarget()
+    private void CreateRenderTarget()
     {
         GetClientRect(_hwnd, out RECT rc);
         int w = Math.Max(1, rc.right - rc.left);
@@ -424,7 +446,7 @@ internal static partial class Program
     }
 
     /// <summary>Grid size for the content region using the given font size's cell metrics.</summary>
-    private static (int cols, int rows) GridSizeFor(float px)
+    private (int cols, int rows) GridSizeFor(float px)
     {
         var (_, cw, ch) = Metrics(px);
         GetClientRect(_hwnd, out RECT rc);
@@ -434,11 +456,11 @@ internal static partial class Program
         return (cols, rows);
     }
 
-    private static (int cols, int rows) GridSize() => GridSizeFor(ActiveFontSize());
+    private (int cols, int rows) GridSize() => GridSizeFor(ActiveFontSize());
 
-    private static void StartSession()
+    private void StartSession()
     {
-        _control = new ControlServer(new Host(), "agwinterm");
+        _control = new ControlServer(this, "agwinterm");
         _control.Start();
         if (TryRestoreState()) return;
         var ws = CreateWorkspace(Guid.NewGuid().ToString(), null);
@@ -447,12 +469,12 @@ internal static partial class Program
 
     // ---- Session/workspace management (UI thread) ----
 
-    private static List<Ses> AllSessions()
+    private List<Ses> AllSessions()
     {
         lock (_workspaces) return _workspaces.SelectMany(w => w.Sessions).ToList();
     }
 
-    private static Workspace ActiveWorkspace()
+    private Workspace ActiveWorkspace()
     {
         lock (_workspaces)
         {
@@ -462,7 +484,7 @@ internal static partial class Program
         }
     }
 
-    private static Workspace CreateWorkspace(string id, string? name)
+    private Workspace CreateWorkspace(string id, string? name)
     {
         Workspace ws;
         lock (_workspaces)
@@ -477,7 +499,7 @@ internal static partial class Program
 
     /// <summary>Create one terminal pane (its own ConPTY, env, wiring) sized for the given font.
     /// When <paramref name="command"/> is set, that argv runs as the pane's process instead of the shell.</summary>
-    private static Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null,
+    private Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null,
         bool shellWrap = false, bool interactive = false, Dictionary<string, string>? extraEnv = null)
     {
         var (cols, rows) = GridSizeFor(fontSize);
@@ -554,7 +576,7 @@ internal static partial class Program
     /// </summary>
     private static string[] ShellArgs() => new[] { "-NoLogo" };
 
-    private static Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
+    private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null)
     {
         float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
@@ -576,7 +598,7 @@ internal static partial class Program
     }
 
     /// <summary>Append an extra pane to an existing session (used by split-layout restore).</summary>
-    private static Pane AppendPane(Ses ses, string paneId, string? cwd, float fontSize)
+    private Pane AppendPane(Ses ses, string paneId, string? cwd, float fontSize)
     {
         var p = CreatePane(paneId, ses.Ws, cwd, fontSize);
         lock (_workspaces) ses.Panes.Add(p);
@@ -586,7 +608,7 @@ internal static partial class Program
     // ---- Pane layout ----
 
     /// <summary>Content region (px) available to the terminal, right of the sidebar and below the title bar.</summary>
-    private static (float x0, float y0, float w, float h) ContentArea()
+    private (float x0, float y0, float w, float h) ContentArea()
     {
         float x0 = _sidebarW + PadX, y0 = TitleBarH + PadY;
         float w = MathF.Max(1f, ClientW() - _sidebarW - 2 * PadX);
@@ -595,7 +617,7 @@ internal static partial class Program
     }
 
     /// <summary>Lay out a session's panes as columns (px) by ratio, with a divider gutter between.</summary>
-    private static List<(Pane pane, float x, float y, float w, float h)> PaneLayout(Ses ses)
+    private List<(Pane pane, float x, float y, float w, float h)> PaneLayout(Ses ses)
     {
         var (x0, y0, totalW, totalH) = ContentArea();
         int n = ses.Panes.Count;
@@ -614,7 +636,7 @@ internal static partial class Program
     }
 
     /// <summary>Resize every pane's PTY grid to fit its column using the pane's own font metrics.</summary>
-    private static void RegridSession(Ses ses)
+    private void RegridSession(Ses ses)
     {
         foreach (var (pane, _, _, w, h) in PaneLayout(ses))
         {
@@ -625,7 +647,7 @@ internal static partial class Program
         }
     }
 
-    private static void SetActive(Ses ses)
+    private void SetActive(Ses ses)
     {
         _active = ses;
         ClearUnread(ses);   // visiting a session clears its notification badge (agterm's "cleared when seen")
@@ -649,7 +671,7 @@ internal static partial class Program
 
     /// <summary>Move a session to the front of the recency stack. No-op while a walk is in progress
     /// (preview-selects during a walk must not rewrite the stack — only the commit does).</summary>
-    private static void TouchMru(Ses ses)
+    private void TouchMru(Ses ses)
     {
         if (_mruWalking) return;
         _mru.Remove(ses.Id);
@@ -657,21 +679,21 @@ internal static partial class Program
     }
 
     /// <summary>Drop dead ids and append any live session not yet tracked (unseen go to the back).</summary>
-    private static void EnsureMru()
+    private void EnsureMru()
     {
         var live = AllSessions();
         _mru.RemoveAll(id => !live.Any(s => s.Id == id));
         foreach (var s in live) if (!_mru.Contains(s.Id)) _mru.Add(s.Id);
     }
 
-    private static Ses? FindSes(string id)
+    private Ses? FindSes(string id)
     {
         lock (_workspaces) return _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Id == id);
     }
 
     /// <summary>Begin a walk: snapshot the recency order and park the cursor on the active session.
     /// Returns false (no walk) when fewer than 2 sessions exist.</summary>
-    private static bool StartWalk()
+    private bool StartWalk()
     {
         EnsureMru();
         var order = _mru.Select(FindSes).Where(s => s is not null).Cast<Ses>().ToList();
@@ -685,7 +707,7 @@ internal static partial class Program
 
     /// <summary>Advance the Ctrl+Tab walk by dir (+1 = older/next, -1 = newer/prev), previewing the target.
     /// Starting a walk (first tap) snapshots the recency order and lands on the previous session.</summary>
-    private static void MruWalk(int dir)
+    private void MruWalk(int dir)
     {
         if (!_mruWalking && !StartWalk()) return;
         int n = _mruSnapshot.Count;
@@ -695,7 +717,7 @@ internal static partial class Program
     }
 
     /// <summary>Ctrl released: finalize the walk — the highlighted session becomes active + MRU front.</summary>
-    private static void MruCommit()
+    private void MruCommit()
     {
         if (!_mruWalking) return;
         _mruWalking = false;
@@ -706,7 +728,7 @@ internal static partial class Program
     }
 
     /// <summary>Esc during a walk: return to the session that was active when the walk began; no MRU change.</summary>
-    private static void MruCancel()
+    private void MruCancel()
     {
         if (!_mruWalking) return;
         _mruWalking = false;
@@ -719,7 +741,7 @@ internal static partial class Program
     /// <summary>Drive the MRU walk state machine directly (same methods the Ctrl+Tab keys call).
     /// Exists so the control API / tests can exercise begin→advance→commit deterministically with
     /// zero global key injection. Returns the current active session name (or a short status).</summary>
-    private static string SwitchOp(string op)
+    private string SwitchOp(string op)
     {
         switch (op)
         {
@@ -736,20 +758,20 @@ internal static partial class Program
     // ---- Cover terminals (scratch / quick) ----
 
     /// <summary>The surface that receives input/render focus: a shown cover, else the active pane.</summary>
-    private static Pane? ActiveSurface() => _cover ?? _active?.ActivePane;
+    private Pane? ActiveSurface() => _cover ?? _active?.ActivePane;
 
-    private static void SyncSession() => _session = ActiveSurface()?.S;
+    private void SyncSession() => _session = ActiveSurface()?.S;
 
     /// <summary>A real filesystem cwd for a session (OSC 7 if reported, else the pane's launch dir).</summary>
-    private static string? CwdOf(Ses ses)
+    private string? CwdOf(Ses ses)
     {
         string raw = SafeCwd(ses);
         return string.IsNullOrWhiteSpace(raw) ? ses.StartCwd : PrettyCwd(raw);
     }
 
-    private static void ShowCover(Pane p, int kind) { _cover = p; _coverKind = kind; SyncSession(); RegridCover(); RequestRedraw(); }
+    private void ShowCover(Pane p, int kind) { _cover = p; _coverKind = kind; SyncSession(); RegridCover(); RequestRedraw(); }
 
-    private static void HideCover()
+    private void HideCover()
     {
         _cover = null; _coverKind = 0; SyncSession();
         if (_active is not null) RegridSession(_active);
@@ -757,7 +779,7 @@ internal static partial class Program
     }
 
     /// <summary>The rect (px) the current cover occupies: the full content region, or — for a floating overlay — a centered panel sized by percent.</summary>
-    private static (float x, float y, float w, float h) CoverRect()
+    private (float x, float y, float w, float h) CoverRect()
     {
         var (x0, y0, w, h) = ContentArea();
         if (_coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 and <= 100 } o)
@@ -769,7 +791,7 @@ internal static partial class Program
     }
 
     /// <summary>Resize the shown cover's PTY to fill its cover rect using its own metrics.</summary>
-    private static void RegridCover()
+    private void RegridCover()
     {
         if (_cover is null) return;
         var (_, _, w, h) = CoverRect();
@@ -780,13 +802,13 @@ internal static partial class Program
     }
 
     /// <summary>Show a session's scratch terminal (creating it lazily in the session's cwd).</summary>
-    private static void ShowScratch(Ses ses)
+    private void ShowScratch(Ses ses)
     {
         ses.Scratch ??= CreatePane(ses.Id + ":scratch:" + Guid.NewGuid().ToString("N")[..6], ses.Ws, CwdOf(ses), ses.FontSize);
         ShowCover(ses.Scratch, 1);
     }
 
-    private static void ShowQuick()
+    private void ShowQuick()
     {
         _quick ??= CreatePane("quick:" + Guid.NewGuid().ToString("N")[..6], ActiveWorkspace(),
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), (float)_config.FontSize);
@@ -794,7 +816,7 @@ internal static partial class Program
     }
 
     /// <summary>scratch op on|off|toggle for a session's scratch cover.</summary>
-    private static void ScratchOp(Ses ses, string op)
+    private void ScratchOp(Ses ses, string op)
     {
         bool showing = _coverKind == 1 && ReferenceEquals(_cover, ses.Scratch) && ses.Scratch is not null;
         if (op == "off") { if (showing) HideCover(); return; }
@@ -802,7 +824,7 @@ internal static partial class Program
         if (showing) HideCover(); else ShowScratch(ses); // toggle
     }
 
-    private static void QuickOp(string op)
+    private void QuickOp(string op)
     {
         bool showing = _coverKind == 2;
         if (op == "off") { if (showing) HideCover(); return; }
@@ -814,7 +836,7 @@ internal static partial class Program
 
     /// <summary>Open an overlay on a session: run <paramref name="command"/> in an ephemeral terminal over it.
     /// sizePercent 0 = full content region; 1..100 = a centered floating panel. Returns "id PID".</summary>
-    private static string OverlayOpen(Ses ses, string command, int sizePercent, bool wait, Dictionary<string, string>? extraEnv = null)
+    private string OverlayOpen(Ses ses, string command, int sizePercent, bool wait, Dictionary<string, string>? extraEnv = null)
     {
         CloseOverlayOf(ses);                    // one overlay per session; replace any existing one
         _overlayDone.Reset();
@@ -832,7 +854,7 @@ internal static partial class Program
     }
 
     /// <summary>Tear down a session's overlay (hiding its cover if shown, disposing its PTY).</summary>
-    private static void CloseOverlayOf(Ses ses)
+    private void CloseOverlayOf(Ses ses)
     {
         var pane = ses.Overlay;
         if (pane is null) return;
@@ -843,10 +865,10 @@ internal static partial class Program
     }
 
     /// <summary>Close the currently-shown overlay cover (from a keystroke / close verb).</summary>
-    private static void CloseActiveOverlay() { if (_ovlOwner is not null) CloseOverlayOf(_ovlOwner); }
+    private void CloseActiveOverlay() { if (_ovlOwner is not null) CloseOverlayOf(_ovlOwner); }
 
     /// <summary>When an overlay's program exits, record its code and either close the overlay or (with --wait) mark it exited.</summary>
-    private static void WatchOverlayExit(Ses ses, Pane pane)
+    private void WatchOverlayExit(Ses ses, Pane pane)
     {
         void OnExit(int code)
         {
@@ -865,11 +887,11 @@ internal static partial class Program
     }
 
     /// <summary>Change one pane's font zoom (delta 0 = reset to the config default). Caller reflows.</summary>
-    private static void ChangeFontSizeOfPane(Pane p, int delta)
+    private void ChangeFontSizeOfPane(Pane p, int delta)
         => p.FontSize = delta == 0 ? (float)_config.FontSize : Math.Clamp(p.FontSize + delta, 6f, 48f);
 
     /// <summary>Change the active pane's font zoom (delta 0 = reset to config default), reflow + repaint.</summary>
-    private static void ChangeFontSizeOf(Ses ses, int delta)
+    private void ChangeFontSizeOf(Ses ses, int delta)
     {
         float cur = ses.FontSize;
         float ns = delta == 0 ? (float)_config.FontSize : Math.Clamp(cur + delta, 6f, 48f);
@@ -880,7 +902,7 @@ internal static partial class Program
         SaveState();
     }
 
-    private static void ChangeFontSize(int delta)
+    private void ChangeFontSize(int delta)
     {
         if (_cover is not null) { ChangeFontSizeOfPane(_cover, delta); RegridCover(); RequestRedraw(); }
         else if (_active is not null) ChangeFontSizeOf(_active, delta);
@@ -888,7 +910,7 @@ internal static partial class Program
 
     // ---- Splits ----
 
-    private static void SplitActivePane()
+    private void SplitActivePane()
     {
         var ses = _active;
         if (ses is null) return;
@@ -906,7 +928,7 @@ internal static partial class Program
         SaveState();
     }
 
-    private static void FocusPane(int dir)
+    private void FocusPane(int dir)
     {
         var ses = _active;
         if (ses is null || ses.Panes.Count < 2) return;
@@ -916,7 +938,7 @@ internal static partial class Program
     }
 
     /// <summary>Close the focused pane; if it's the last pane, close the whole session.</summary>
-    private static void CloseActivePane()
+    private void CloseActivePane()
     {
         var ses = _active;
         if (ses is null) return;
@@ -934,7 +956,7 @@ internal static partial class Program
         SaveState();
     }
 
-    private static void CloseSessionInternal(Ses ses)
+    private void CloseSessionInternal(Ses ses)
     {
         foreach (var p in ses.Panes) { try { p.S.Dispose(); } catch { } }
         // Dismiss + dispose this session's scratch cover if it belongs here.
@@ -953,7 +975,7 @@ internal static partial class Program
         SaveState();
     }
 
-    private static void CycleSession(int dir)
+    private void CycleSession(int dir)
     {
         var all = AllSessions();
         if (all.Count < 2) return;
@@ -963,7 +985,7 @@ internal static partial class Program
 
     // ---- Wave A1 internal helpers (called on the UI thread via Host/Post) ----
 
-    private static void SessionGoInternal(string dir)
+    private void SessionGoInternal(string dir)
     {
         switch (dir)
         {
@@ -986,7 +1008,7 @@ internal static partial class Program
         list.Insert(Math.Clamp(j, 0, list.Count), item);
     }
 
-    private static Workspace? FindWs(string? target)
+    private Workspace? FindWs(string? target)
     {
         lock (_workspaces)
         {
@@ -995,7 +1017,7 @@ internal static partial class Program
         }
     }
 
-    private static void SplitOp(string op)
+    private void SplitOp(string op)
     {
         int panes = _active?.Panes.Count ?? 1;
         switch (op)
@@ -1007,7 +1029,7 @@ internal static partial class Program
     }
 
     /// <summary>Collapse the active session to just its focused pane (dispose the rest).</summary>
-    private static void CollapseToSinglePane()
+    private void CollapseToSinglePane()
     {
         var ses = _active;
         if (ses is null || ses.Panes.Count <= 1) return;
@@ -1019,7 +1041,7 @@ internal static partial class Program
     }
 
     /// <summary>Set the split boundary next to the active pane: an absolute left ratio, or grow by columns.</summary>
-    private static void ResizeActiveSplitInternal(double? ratio, int growLeft, int growRight)
+    private void ResizeActiveSplitInternal(double? ratio, int growLeft, int growRight)
     {
         var ses = _active;
         if (ses is null || ses.Panes.Count < 2) return;
@@ -1042,7 +1064,7 @@ internal static partial class Program
         RegridSession(ses); RequestRedraw(); SaveState();
     }
 
-    private static void SidebarOpInternal(string op)
+    private void SidebarOpInternal(string op)
     {
         switch (op)
         {
@@ -1058,7 +1080,7 @@ internal static partial class Program
     }
 
     /// <summary>Set the sidebar view mode (tree/flagged) and repaint + persist.</summary>
-    private static void SetSidebarMode(SidebarMode mode)
+    private void SetSidebarMode(SidebarMode mode)
     {
         if (_sidebarMode == mode) return;
         _sidebarMode = mode;
@@ -1066,11 +1088,11 @@ internal static partial class Program
     }
 
     /// <summary>Toggle between the tree outline and the flat flagged working-set view.</summary>
-    private static void ToggleFlaggedView()
+    private void ToggleFlaggedView()
         => SetSidebarMode(_sidebarMode == SidebarMode.Flagged ? SidebarMode.Tree : SidebarMode.Flagged);
 
     /// <summary>Flag operation on a session (or all): op = on|off|toggle|clear (clear unflags every session).</summary>
-    private static void FlagOp(Ses? s, string op)
+    private void FlagOp(Ses? s, string op)
     {
         switch (op)
         {
@@ -1083,7 +1105,7 @@ internal static partial class Program
     }
 
     /// <summary>Focus a single workspace (the active one) or clear focus: op = on|off|toggle. Tree mode only.</summary>
-    private static void WorkspaceFocusOp(string op)
+    private void WorkspaceFocusOp(string op)
     {
         string? wsId = ActiveWorkspace().Id;
         bool on = _focusedWorkspaceId is not null;
@@ -1096,7 +1118,7 @@ internal static partial class Program
         RequestRedraw(); SaveState();
     }
 
-    private static Ses? Find(string? target)
+    private Ses? Find(string? target)
     {
         lock (_workspaces)
         {
@@ -1107,7 +1129,7 @@ internal static partial class Program
     }
 
     /// <summary>Run an action on the UI thread (pipe callbacks arrive on a background thread).</summary>
-    private static void Post(Action a)
+    private void Post(Action a)
     {
         _uiActions.Enqueue(a);
         PostMessageW(_hwnd, WM_APP_ACTION, IntPtr.Zero, IntPtr.Zero);
@@ -1115,10 +1137,10 @@ internal static partial class Program
 
     // Synchronous UI-thread invoke (for control verbs that mutate UI state AND return a value,
     // e.g. session.search). SendMessageW blocks the caller until the UI thread runs the func.
-    private static Func<string>? _syncFn;
-    private static string _syncResult = "";
-    private static readonly object _syncLock = new();
-    private static string InvokeOnUi(Func<string> fn)
+    private Func<string>? _syncFn;
+    private string _syncResult = "";
+    private readonly object _syncLock = new();
+    private string InvokeOnUi(Func<string> fn)
     {
         lock (_syncLock)
         {
@@ -1129,9 +1151,8 @@ internal static partial class Program
         }
     }
 
-    /// <summary>ISessionHost bridge so the control server / agwintermctl drive this window.</summary>
-    private sealed class Host : ISessionHost
-    {
+    // ---- ISessionHost bridge (Program is the host) so the control server / agwintermctl drive
+    // this window. Un-scoped verbs act on this instance; the seam for future --window targeting. ----
         public TerminalSession? Resolve(string? target)
         {
             if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface()?.S;
@@ -1433,12 +1454,11 @@ internal static partial class Program
         public string CommandList() => InvokeOnUi(CommandListText);
 
         public string CommandLeader(string op) => InvokeOnUi(() => LeaderOp(op));
-    }
 
     /// <summary>Resolve a control-API target ("active"/null/id/prefix) to its owning session.</summary>
     /// <summary>Resolve a control-API target to a specific pane: the active surface for "active"/empty,
     /// else a pane by (prefix) id, else the target session's active pane.</summary>
-    private static Pane? PaneForTarget(string? target)
+    private Pane? PaneForTarget(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface();
         lock (_workspaces)
@@ -1450,7 +1470,7 @@ internal static partial class Program
         return FindSesForTarget(target)?.ActivePane;
     }
 
-    private static Ses? FindSesForTarget(string? target)
+    private Ses? FindSesForTarget(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return _active;
         lock (_workspaces)
@@ -1466,11 +1486,24 @@ internal static partial class Program
 
     private static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
-        try { return WindowProcCore(hwnd, msg, wParam, lParam); }
+        // Resolve the owning instance by HWND; during CreateWindowExW it isn't registered yet, so
+        // fall back to the instance currently booting (and register it on the first message).
+        if (!_registry.TryGetValue(hwnd, out Program? inst))
+        {
+            inst = _creating;
+            if (inst is not null) { inst._hwnd = hwnd; _registry[hwnd] = inst; }
+        }
+        if (inst is null) return DefWindowProcW(hwnd, msg, wParam, lParam);
+        try
+        {
+            IntPtr r = inst.WindowProcCore(hwnd, msg, wParam, lParam);
+            if (msg == 0x0082 /* WM_NCDESTROY */) _registry.Remove(hwnd);
+            return r;
+        }
         catch (Exception ex) { Perf($"wndproc ex msg=0x{msg:X}: {ex.GetType().Name} {ex.Message}"); return DefWindowProcW(hwnd, msg, wParam, lParam); }
     }
 
-    private static IntPtr WindowProcCore(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
+    private IntPtr WindowProcCore(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
         switch (msg)
         {
@@ -1826,7 +1859,7 @@ internal static partial class Program
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 
-    private static void Send(string s)
+    private void Send(string s)
     {
         var surf = ActiveSurface();
         if (surf is not null) { surf.ScrollOffset = 0; surf.ClearSel(); } // typing snaps to bottom, clears selection
@@ -1835,7 +1868,7 @@ internal static partial class Program
     }
 
     /// <summary>Scroll the active pane's scrollback by delta lines (or to top/bottom for ±int.MaxValue).</summary>
-    private static bool ScrollActivePane(int deltaLines)
+    private bool ScrollActivePane(int deltaLines)
     {
         var p = ActiveSurface();
         if (p is null) return false;
@@ -1847,7 +1880,7 @@ internal static partial class Program
     }
 
     /// <summary>Dispatch a keymap action id (or "command:&lt;Label&gt;") to the matching behavior.</summary>
-    private static void RunAction(string action)
+    private void RunAction(string action)
     {
         if (action.StartsWith("command:", StringComparison.OrdinalIgnoreCase))
         {
@@ -1894,7 +1927,7 @@ internal static partial class Program
     }
 
     /// <summary>Install the $PROFILE OSC-7 shell integration off the UI thread, then toast the result.</summary>
-    private static void InstallShellIntegration()
+    private void InstallShellIntegration()
         => System.Threading.Tasks.Task.Run(() =>
         {
             string result = Agwinterm.Pty.ShellIntegrationInstaller.Install();
@@ -1902,11 +1935,11 @@ internal static partial class Program
         });
 
     /// <summary>Run a configured custom command per its mode (send|new|overlay|detached), expanding {AGW_*}.</summary>
-    private static void RunCustomCommand(Keymap.CmdDef cmd) => RunCommandText(cmd.Text, cmd.Mode);
+    private void RunCustomCommand(Keymap.CmdDef cmd) => RunCommandText(cmd.Text, cmd.Mode);
 
     /// <summary>Run an arbitrary command string in a mode, expanding {AGW_*} tokens and injecting $AGW_*
     /// env from the active session. Returns the expanded command line (for the control API / observability).</summary>
-    private static string RunCommandText(string text, string? mode)
+    private string RunCommandText(string text, string? mode)
     {
         var ctx = _active;
         string expanded = ExpandAgwTokens(text, ctx);
@@ -1976,7 +2009,7 @@ internal static partial class Program
 
     /// <summary>Detached run: an independent OS process (no PTY, not tied to a session), via cmd /c so
     /// shell syntax (redirection, `start &lt;url&gt;`) works. Non-blocking; inherits the $AGW_* context + cwd.</summary>
-    private static void RunDetached(string command, string? cwd, Dictionary<string, string> env)
+    private void RunDetached(string command, string? cwd, Dictionary<string, string> env)
     {
         try
         {
@@ -1996,11 +2029,11 @@ internal static partial class Program
 
     // ---- Leader/prefix chord state machine (used by OnKeyDown + the command.leader control verb) ----
 
-    private static void BeginLeader() { _leaderPending = true; _leaderAtMs = Environment.TickCount64; RequestRedraw(); }
-    private static void CancelLeader() { if (_leaderPending) { _leaderPending = false; RequestRedraw(); } }
+    private void BeginLeader() { _leaderPending = true; _leaderAtMs = Environment.TickCount64; RequestRedraw(); }
+    private void CancelLeader() { if (_leaderPending) { _leaderPending = false; RequestRedraw(); } }
 
     /// <summary>Resolve a second chord against the leader bindings (runs it or toasts); clears pending.</summary>
-    private static string ResolveLeader(string chord)
+    private string ResolveLeader(string chord)
     {
         _leaderPending = false; RequestRedraw();
         if (_leaderBindings.TryGetValue(chord, out var action)) { RunAction(action); return "ran " + action; }
@@ -2027,7 +2060,7 @@ internal static partial class Program
     }
 
     /// <summary>UI-thread driver for the command.leader control verb (state|begin|cancel|key:&lt;chord&gt;).</summary>
-    private static string LeaderOp(string op)
+    private string LeaderOp(string op)
     {
         if (op == "begin") { if (_leader is null) return "no leader configured"; BeginLeader(); return "pending"; }
         if (op == "cancel") { CancelLeader(); return "idle"; }
@@ -2070,30 +2103,30 @@ internal static partial class Program
             _leaderBindings = new(StringComparer.OrdinalIgnoreCase);
             _keymapDiag = Array.Empty<string>();
         }
-        _leaderPending = false;
     }
 
-    private static void ReloadKeymap()
+    private void ReloadKeymap()
     {
         LoadKeymap();
+        _leaderPending = false;   // any in-progress leader sequence is abandoned on reload
         ShowToast(_keymapDiag.Length == 0
             ? "keymap reloaded"
             : $"keymap: {_keymapDiag.Length} issue(s) — {_keymapDiag[0]}");
     }
 
     /// <summary>Coalesce many output/decode notifications into a single pending repaint.</summary>
-    private static void RequestRedraw()
+    private void RequestRedraw()
     {
         if (System.Threading.Interlocked.Exchange(ref _redrawPending, 1) == 0)
             PostMessageW(_hwnd, WM_APP_REDRAW, IntPtr.Zero, IntPtr.Zero);
     }
 
     /// <summary>Report a mouse event given raw client pixels packed in lParam (button code already encoded).</summary>
-    private static void SendMousePx(int btn, IntPtr lParam, bool press)
+    private void SendMousePx(int btn, IntPtr lParam, bool press)
         => SendMouse(btn, LoWord(lParam), HiWord(lParam), press);
 
     /// <summary>Origin (px) + metrics of the ACTIVE pane, for mouse→cell mapping.</summary>
-    private static (float ox, float oy, float cw, float ch) ActivePaneView()
+    private (float ox, float oy, float cw, float ch) ActivePaneView()
     {
         if (_active is not null)
             foreach (var (pane, x, y, _, _) in PaneLayout(_active))
@@ -2103,7 +2136,7 @@ internal static partial class Program
     }
 
     /// <summary>Focus the pane of the active session under client-x (no-op if single pane / no session).</summary>
-    private static void FocusPaneAtX(int px)
+    private void FocusPaneAtX(int px)
     {
         if (_active is null || _active.Panes.Count < 2) return;
         foreach (var (pane, x, _, w, _) in PaneLayout(_active))
@@ -2111,7 +2144,7 @@ internal static partial class Program
     }
 
     /// <summary>Left-pane index of the divider gutter under client-(x,y), or -1.</summary>
-    private static int DividerAtX(int px, int py)
+    private int DividerAtX(int px, int py)
     {
         if (_active is null || _active.Panes.Count < 2) return -1;
         var lay = PaneLayout(_active);
@@ -2125,7 +2158,7 @@ internal static partial class Program
     }
 
     /// <summary>Drag a divider: shift width between the two adjacent panes (clamped).</summary>
-    private static void DragDivider(int px)
+    private void DragDivider(int px)
     {
         if (_active is null || _divLeft < 0 || _divLeft + 1 >= _active.Panes.Count) return;
         var (x0, _, totalW, _) = ContentArea();
@@ -2143,7 +2176,7 @@ internal static partial class Program
     }
 
     /// <summary>Encode a mouse event (SGR or legacy) and send it to the child. Mirrors the WinUI shell.</summary>
-    private static void SendMouse(int btn, int pxX, int pxY, bool press)
+    private void SendMouse(int btn, int pxX, int pxY, bool press)
     {
         var em = _session?.Emulator;
         if (em is null || !em.MouseReporting) return;
@@ -2159,7 +2192,7 @@ internal static partial class Program
     // ---- Text selection + clipboard ----
 
     /// <summary>Pane of the active session under a client point + its origin/metrics, or null.</summary>
-    private static (Pane pane, float ox, float oy, float cw, float ch)? PaneAt(int px, int py)
+    private (Pane pane, float ox, float oy, float cw, float ch)? PaneAt(int px, int py)
     {
         if (px < (int)_sidebarW || py < (int)TitleBarH || py >= ClientH() - (int)FooterH) return null;
         if (_cover is not null) { var (cx, cy, _, _) = CoverRect(); var (_, ccw, cch) = Metrics(_cover.FontSize); return (_cover, cx, cy, ccw, cch); }
@@ -2174,7 +2207,7 @@ internal static partial class Program
     }
 
     /// <summary>Origin/cell-size/row-count of a specific pane (for drag-autoscroll), or null if not laid out.</summary>
-    private static (float ox, float oy, float cw, float ch, int rows)? PaneBox(Pane pane)
+    private (float ox, float oy, float cw, float ch, int rows)? PaneBox(Pane pane)
     {
         if (_cover is not null && ReferenceEquals(pane, _cover))
         {
@@ -2193,7 +2226,7 @@ internal static partial class Program
     }
 
     /// <summary>Map a client point to an ABSOLUTE (line,col) in the pane (history + live grid).</summary>
-    private static (int line, int col) CellAtPx(Pane pane, float ox, float oy, float cw, float ch, int px, int py)
+    private (int line, int col) CellAtPx(Pane pane, float ox, float oy, float cw, float ch, int px, int py)
     {
         var em = pane.S.Emulator;
         int cols, rows, hist;
@@ -2247,18 +2280,18 @@ internal static partial class Program
         return sb.ToString();
     }
 
-    private static void BeginSelect(Pane p, int line, int col, bool extend)
+    private void BeginSelect(Pane p, int line, int col, bool extend)
     {
         if (extend && p.HasSel) { p.SelFocLine = line; p.SelFocCol = col; _selMoved = true; }
         else { p.SelAncLine = p.SelFocLine = line; p.SelAncCol = p.SelFocCol = col; p.HasSel = false; _selMoved = false; }
     }
 
-    private static void UpdateSelect(Pane p, int line, int col)
+    private void UpdateSelect(Pane p, int line, int col)
     {
         p.SelFocLine = line; p.SelFocCol = col; p.HasSel = true; _selMoved = true;
     }
 
-    private static void SelectWord(Pane p, int line, int col)
+    private void SelectWord(Pane p, int line, int col)
     {
         var em = p.S.Emulator;
         lock (p.S.SyncRoot)
@@ -2273,13 +2306,13 @@ internal static partial class Program
         }
     }
 
-    private static void SelectLine(Pane p, int line)
+    private void SelectLine(Pane p, int line)
     {
         int cols; lock (p.S.SyncRoot) cols = p.S.Emulator.Screen.Cols;
         p.SelAncLine = p.SelFocLine = line; p.SelAncCol = 0; p.SelFocCol = cols - 1; p.HasSel = true;
     }
 
-    private static void CopySelection(Pane pane, bool clear = true)
+    private void CopySelection(Pane pane, bool clear = true)
     {
         string t = SelectionText(pane);
         if (t.Length > 0) ClipboardSet(t);
@@ -2288,7 +2321,7 @@ internal static partial class Program
     }
 
     /// <summary>Select the pane's entire buffer — all scrollback history through the last live row.</summary>
-    private static void SelectAll(Pane p)
+    private void SelectAll(Pane p)
     {
         var em = p.S.Emulator;
         int cols, rows, hist;
@@ -2301,19 +2334,19 @@ internal static partial class Program
 
     /// <summary>Called when a selection is finished (drag mouse-up / word / line select). Honors copy-on-select
     /// by copying to the clipboard without clearing the highlight.</summary>
-    private static void FinalizeSelection(Pane p)
+    private void FinalizeSelection(Pane p)
     {
         if (_config.CopyOnSelect && p.HasSel) CopySelection(p, clear: false);
     }
 
-    private static void StopSelAutoscroll()
+    private void StopSelAutoscroll()
     {
         if (_selAutoDir != 0) { _selAutoDir = 0; KillTimer(_hwnd, (IntPtr)SelAutoTimer); }
     }
 
     /// <summary>Drag-autoscroll tick: while the mouse is held above/below the selection pane, scroll its
     /// scrollback one line toward the cursor and extend the selection to the newly-revealed edge.</summary>
-    private static void SelAutoscrollTick()
+    private void SelAutoscrollTick()
     {
         if (!_selecting || _selAutoDir == 0 || _selPane is not { } sp || PaneBox(sp) is not { } bx) { StopSelAutoscroll(); return; }
         int cols, rows, hist;
@@ -2328,10 +2361,10 @@ internal static partial class Program
         RequestRedraw();
     }
 
-    private static void PasteInto(Pane pane) => PasteTextInto(pane, ClipboardGet());
+    private void PasteInto(Pane pane) => PasteTextInto(pane, ClipboardGet());
 
     /// <summary>Paste literal text into a pane, honoring bracketed-paste mode (shared by Ctrl+V and the API).</summary>
-    private static void PasteTextInto(Pane pane, string t)
+    private void PasteTextInto(Pane pane, string t)
     {
         if (t.Length == 0) return;
         t = t.Replace("\r\n", "\r").Replace("\n", "\r");
@@ -2343,17 +2376,17 @@ internal static partial class Program
 
     // ---- In-terminal search (find bar over the active pane's buffer + scrollback) ----
 
-    private static void ToggleSearch()
+    private void ToggleSearch()
     {
         if (_searchActive) { CloseSearch(); return; }
         _searchActive = true; _searchQuery = ""; _searchMatches.Clear(); _searchCur = 0;
         RequestRedraw();
     }
 
-    private static void CloseSearch() { _searchActive = false; _searchMatches.Clear(); RequestRedraw(); }
+    private void CloseSearch() { _searchActive = false; _searchMatches.Clear(); RequestRedraw(); }
 
     /// <summary>Recompute all case-insensitive matches for _searchQuery over the active pane's history + live grid.</summary>
-    private static void RecomputeSearch()
+    private void RecomputeSearch()
     {
         _searchMatches.Clear();
         var ap = ActiveSurface();
@@ -2384,7 +2417,7 @@ internal static partial class Program
         if (_searchCur >= _searchMatches.Count) _searchCur = 0;
     }
 
-    private static void SearchStep(int dir)
+    private void SearchStep(int dir)
     {
         if (_searchMatches.Count == 0) return;
         int n = _searchMatches.Count;
@@ -2392,7 +2425,7 @@ internal static partial class Program
         ScrollToMatch(); RequestRedraw();
     }
 
-    private static void ScrollToMatch()
+    private void ScrollToMatch()
     {
         var ap = ActiveSurface();
         if (ap is null || _searchCur < 0 || _searchCur >= _searchMatches.Count) return;
@@ -2402,11 +2435,11 @@ internal static partial class Program
         ap.ScrollOffset = Math.Clamp(hist - ml + rows / 2, 0, hist); // centre the match; live grid => snaps to 0
     }
 
-    private static string SearchStatus()
+    private string SearchStatus()
         => _searchMatches.Count == 0 ? (_searchQuery.Length == 0 ? "" : "no matches")
            : $"{_searchCur + 1} of {_searchMatches.Count}";
 
-    private static bool SearchKeyDown(int vk)
+    private bool SearchKeyDown(int vk)
     {
         bool shift = KeyDown(VK_SHIFT);
         switch (vk)
@@ -2421,7 +2454,7 @@ internal static partial class Program
         return true; // consume all keys while the find bar is open
     }
 
-    private static void ClipboardSet(string text)
+    private void ClipboardSet(string text)
     {
         if (!OpenClipboard(_hwnd)) return;
         try
@@ -2439,7 +2472,7 @@ internal static partial class Program
         finally { CloseClipboard(); }
     }
 
-    private static string ClipboardGet()
+    private string ClipboardGet()
     {
         if (!OpenClipboard(_hwnd)) return "";
         try
@@ -2458,7 +2491,7 @@ internal static partial class Program
     private static string SessionSelectionText(Ses s) => SelectionText(s.ActivePane);
 
     /// <summary>Returns true if the key was consumed (matches the WinUI key table).</summary>
-    private static bool OnKeyDown(int vk)
+    private bool OnKeyDown(int vk)
     {
         bool ctrl = KeyDown(VK_CONTROL), shift = KeyDown(VK_SHIFT), alt = KeyDown(VK_MENU);
 
@@ -2604,15 +2637,15 @@ internal static partial class Program
 
     private static readonly string? _perfLog = Environment.GetEnvironmentVariable("AGWINTERM_PERF");
     private static void Perf(string m) { if (_perfLog is not null) try { File.AppendAllText(_perfLog, m + "\n"); } catch { } }
-    private static int _uploadCount;
-    private static double _uploadMs;
+    private int _uploadCount;
+    private double _uploadMs;
 
     /// <summary>
     /// Draw current image placements. Decoding (PNG decompress) happens on a background
     /// thread so the UI never blocks; only the cheap GPU upload runs here. An image simply
     /// appears on the next redraw once its pixels are ready. Called under the session lock.
     /// </summary>
-    private static void DrawImages(TerminalEmulator em, float ox, float oy, float cw, float ch)
+    private void DrawImages(TerminalEmulator em, float ox, float oy, float cw, float ch)
     {
         if (_rt is null) return;
 
@@ -2673,7 +2706,7 @@ internal static partial class Program
         new(new PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, AlphaMode.Premultiplied), 96f, 96f);
 
     /// <summary>Background: decode to premultiplied BGRA pixels (no D2D), enqueue for UI upload, ask for a redraw.</summary>
-    private static void DecodePixelsAsync(KittyImage img)
+    private void DecodePixelsAsync(KittyImage img)
     {
         try
         {
@@ -2740,7 +2773,7 @@ internal static partial class Program
     }
 
     /// <summary>Dispose the device-bound render target + textures and rebuild them (after a device/GPU reset).</summary>
-    private static void RecreateTarget()
+    private void RecreateTarget()
     {
         foreach (var b in _imageCache.Values) { try { b.Dispose(); } catch { } }
         _imageCache.Clear();
@@ -2756,7 +2789,7 @@ internal static partial class Program
     // D2DERR_RECREATE_TARGET: the device is lost and every device-bound resource must be rebuilt.
     private const int D2DERR_RECREATE_TARGET = unchecked((int)0x8899000C);
 
-    private static void Render()
+    private void Render()
     {
         if (_rt is null || _brush is null) return;
         long tStart = Stopwatch.GetTimestamp();
@@ -2786,7 +2819,7 @@ internal static partial class Program
     }
 
     /// <summary>Draw one terminal surface (cells, images, cursor) at origin (ox,oy) with its font metrics.</summary>
-    private static void RenderTerminal(TerminalSession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch, int scrollOffset, Pane? selPane = null)
+    private void RenderTerminal(TerminalSession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch, int scrollOffset, Pane? selPane = null)
     {
         var rt = _rt!;
         var brush = _brush!;
@@ -2925,7 +2958,7 @@ internal static partial class Program
         }
     }
 
-    private static void RenderBody()
+    private void RenderBody()
     {
         var rt = _rt!;
         var brush = _brush!;
@@ -2971,7 +3004,7 @@ internal static partial class Program
 
     /// <summary>The Ctrl+Tab switcher HUD: a centered panel listing sessions in recency order with the
     /// current walk target highlighted. Painted only while a walk is in progress; never takes focus.</summary>
-    private static void DrawSwitcher(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    private void DrawSwitcher(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         if (!_mruWalking || _mruSnapshot.Count < 2) return;
         int cw = ClientW(), ch = ClientH();
@@ -3009,7 +3042,7 @@ internal static partial class Program
     }
 
     /// <summary>Render a session's pane grid (terminals + split dividers + focused-pane accent).</summary>
-    private static void RenderPanes(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, Ses ses)
+    private void RenderPanes(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, Ses ses)
     {
         var layout = PaneLayout(ses);
         foreach (var (pane, ox, oy, pw, ph) in layout)
@@ -3038,7 +3071,7 @@ internal static partial class Program
     }
 
     /// <summary>Corner badge naming the current cover (scratch / quick / overlay); rightX/topY = cover top-right.</summary>
-    private static void DrawCoverBadge(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float rightX, float topY)
+    private void DrawCoverBadge(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float rightX, float topY)
     {
         string badge = _coverKind switch { 1 => "scratch", 2 => "quick", 3 => "overlay", _ => "" };
         if (badge.Length == 0) return;
@@ -3050,7 +3083,7 @@ internal static partial class Program
     }
 
     /// <summary>When a --wait overlay's program has exited, a footer banner in the cover inviting a key to close.</summary>
-    private static void DrawOverlayFooter(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    private void DrawOverlayFooter(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         if (_coverKind != 3 || _ovlOwner is not { OverlayExited: true }) return;
         var (fx, fy, fw, fh) = CoverRect();
@@ -3063,7 +3096,7 @@ internal static partial class Program
     }
 
     /// <summary>Find bar (top-right of the content region) shown while search is active.</summary>
-    private static void DrawSearchBar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    private void DrawSearchBar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         if (!_searchActive) return;
         float barW = 340f, barH = 30f;
@@ -3090,13 +3123,13 @@ internal static partial class Program
 
     // Chrome colours are DERIVED from the active theme (see RecomputeChrome), so a theme switch
     // recolours the whole window, not just the terminal cells. Defaults match the old dark chrome.
-    private static Color4 SbBg = new(0.055f, 0.063f, 0.071f, 1f);
-    private static Color4 SbHighlight = new(0.16f, 0.20f, 0.25f, 1f);
-    private static Color4 SbHeaderText = new(0.75f, 0.78f, 0.82f, 1f);
-    private static Color4 SbActiveText = new(1f, 1f, 1f, 1f);
-    private static Color4 SbDimText = new(0.60f, 0.63f, 0.67f, 1f);
+    private Color4 SbBg = new(0.055f, 0.063f, 0.071f, 1f);
+    private Color4 SbHighlight = new(0.16f, 0.20f, 0.25f, 1f);
+    private Color4 SbHeaderText = new(0.75f, 0.78f, 0.82f, 1f);
+    private Color4 SbActiveText = new(1f, 1f, 1f, 1f);
+    private Color4 SbDimText = new(0.60f, 0.63f, 0.67f, 1f);
 
-    private static Color4 StatusDot(AgentStatus s) => s switch
+    private Color4 StatusDot(AgentStatus s) => s switch
     {
         AgentStatus.Active => new(60 / 255f, 140 / 255f, 255 / 255f, 1f),
         AgentStatus.Blocked => new(240 / 255f, 160 / 255f, 40 / 255f, 1f),
@@ -3104,7 +3137,7 @@ internal static partial class Program
         _ => new(90 / 255f, 96 / 255f, 102 / 255f, 1f),
     };
 
-    private static void DrawSidebar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    private void DrawSidebar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         _sidebarRows.Clear();
         _footerButtons.Clear();
@@ -3125,7 +3158,7 @@ internal static partial class Program
     }
 
     /// <summary>Tree mode: the workspace→session outline (or, when a workspace is focused, only that one + a "show all" banner).</summary>
-    private static void DrawTreeList(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, ref float y, float rowH, float rowsBottom)
+    private void DrawTreeList(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, ref float y, float rowH, float rowsBottom)
     {
         List<Workspace> wss;
         lock (_workspaces) wss = _workspaces.ToList();
@@ -3169,7 +3202,7 @@ internal static partial class Program
     }
 
     /// <summary>Flagged mode: a flat working-set of every flagged session across all workspaces (no headers).</summary>
-    private static void DrawFlaggedList(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, ref float y, float rowH, float rowsBottom)
+    private void DrawFlaggedList(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, ref float y, float rowH, float rowsBottom)
     {
         brush.Color = SbHeaderText;
         rt.DrawText("FLAGGED", _uiSmall, new Rect(12f, y, _sidebarW - 20f, rowH), brush);
@@ -3192,7 +3225,7 @@ internal static partial class Program
     }
 
     /// <summary>Draw one session row (shared by tree + flagged modes): highlight, flag marker, name, unread badge, status dot.</summary>
-    private static void DrawSessionRow(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, Ses s, float y, float rowH)
+    private void DrawSessionRow(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, Ses s, float y, float rowH)
     {
         bool active = ReferenceEquals(_active, s);
         if (active)
@@ -3230,7 +3263,7 @@ internal static partial class Program
     }
 
     /// <summary>Sidebar footer (agterm layout): new-workspace, add-session menu | spacer | focus pill, flag toggle.</summary>
-    private static void DrawSidebarFooter(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    private void DrawSidebarFooter(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         float y = ClientH() - FooterH;
         brush.Color = ChromeBg;
@@ -3280,10 +3313,10 @@ internal static partial class Program
     }
 
     // DrawText layout rect is Left/Top/Right/Bottom; vertically centre the glyph cell in the row.
-    private static Rect TextRect(float x, float y, float w, float rowH)
+    private Rect TextRect(float x, float y, float w, float rowH)
         => new(x, y + (rowH - _cellH) / 2f, x + w, y + (rowH + _cellH) / 2f);
 
-    private static void SidebarClick(int mx, int my)
+    private void SidebarClick(int mx, int my)
     {
         foreach (var (y0, y1, isWs, item) in _sidebarRows)
         {
@@ -3295,7 +3328,7 @@ internal static partial class Program
         }
     }
 
-    private static object? RowAt(int my)
+    private object? RowAt(int my)
     {
         foreach (var (y0, y1, _, item) in _sidebarRows) if (my >= y0 && my < y1) return item;
         return null;
@@ -3305,7 +3338,7 @@ internal static partial class Program
 
     // ---- Inline rename (native child EDIT overlaid on the sidebar row) ----
 
-    private static void StartRename(object item)
+    private void StartRename(object item)
     {
         if (item is not (Ses or Workspace)) return; // e.g. the "show all" focus banner isn't renamable
         if (_editHwnd != IntPtr.Zero) CommitRename();
@@ -3337,20 +3370,21 @@ internal static partial class Program
     // Subclass of the EDIT: commit on Enter, cancel on Escape, and swallow those chars (no beep).
     private static IntPtr EditProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        var w = Frontmost; // the rename EDIT belongs to the frontmost window
         if (msg == WM_KEYDOWN)
         {
-            if ((int)wParam == VK_RETURN) { CommitRename(); return IntPtr.Zero; }
-            if ((int)wParam == VK_ESCAPE) { CancelRename(); return IntPtr.Zero; }
+            if ((int)wParam == VK_RETURN) { w.CommitRename(); return IntPtr.Zero; }
+            if ((int)wParam == VK_ESCAPE) { w.CancelRename(); return IntPtr.Zero; }
         }
         else if (msg == WM_CHAR)
         {
             int c = (int)wParam;
             if (c == VK_RETURN || c == VK_ESCAPE || c == '\t') return IntPtr.Zero;
         }
-        return CallWindowProcW(_editOrigProc, hwnd, msg, wParam, lParam);
+        return CallWindowProcW(w._editOrigProc, hwnd, msg, wParam, lParam);
     }
 
-    private static void CommitRename()
+    private void CommitRename()
     {
         if (_editHwnd == IntPtr.Zero) return;
         var h = _editHwnd; var item = _editing;
@@ -3368,7 +3402,7 @@ internal static partial class Program
         SaveState();
     }
 
-    private static void CancelRename()
+    private void CancelRename()
     {
         if (_editHwnd == IntPtr.Zero) return;
         var h = _editHwnd; _editHwnd = IntPtr.Zero; _editing = null;
@@ -3376,7 +3410,7 @@ internal static partial class Program
         RequestRedraw();
     }
 
-    private static void DestroyEditWindow(IntPtr h)
+    private void DestroyEditWindow(IntPtr h)
     {
         if (_editOrigProc != IntPtr.Zero) { SetWindowLongPtrW(h, GWLP_WNDPROC, _editOrigProc); _editOrigProc = IntPtr.Zero; }
         DestroyWindow(h);
@@ -3388,7 +3422,7 @@ internal static partial class Program
     private const uint IDM_NEW_SESSION = 1, IDM_OPEN_DIR = 2, IDM_RENAME = 3, IDM_CLOSE = 4, IDM_CLEAR = 5, IDM_DELETE_WS = 6, IDM_FLAG = 7;
     private const uint IDM_MOVE_BASE = 1000;
 
-    private static void ShowContextMenu(object item, int sx, int sy)
+    private void ShowContextMenu(object item, int sx, int sy)
     {
         IntPtr menu = CreatePopupMenu();
         if (item is Ses ses)
@@ -3442,7 +3476,7 @@ internal static partial class Program
     }
 
     /// <summary>Footer add-session button: popup menu (New Session / Open Directory…) above the button.</summary>
-    private static void ShowAddSessionMenu()
+    private void ShowAddSessionMenu()
     {
         float bx0 = 6f;
         foreach (var b in _footerButtons) if (b.action == "add-session") { bx0 = b.x0; break; }
@@ -3458,7 +3492,7 @@ internal static partial class Program
         else if (cmd == (int)IDM_OPEN_DIR) { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ws, true); }
     }
 
-    private static void MoveSession(Ses ses, Workspace target)
+    private void MoveSession(Ses ses, Workspace target)
     {
         lock (_workspaces) { ses.Ws.Sessions.Remove(ses); target.Sessions.Add(ses); ses.Ws = target; target.Expanded = true; }
         SetActive(ses);
@@ -3466,14 +3500,14 @@ internal static partial class Program
 
     // ---- Sidebar drag-reorder (in-memory) ----
 
-    private static void DropDrag(object item, int my)
+    private void DropDrag(object item, int my)
     {
         if (item is Ses s) DropSession(s, my);
         else if (item is Workspace w) DropWorkspace(w, my);
     }
 
     /// <summary>The workspace whose region contains <paramref name="my"/> (last header at/above it; first if above all).</summary>
-    private static Workspace? TargetWorkspaceAt(int my)
+    private Workspace? TargetWorkspaceAt(int my)
     {
         Workspace? cur = null;
         foreach (var (y0, _, isWs, it) in _sidebarRows)
@@ -3485,7 +3519,7 @@ internal static partial class Program
         return cur;
     }
 
-    private static void DropSession(Ses drag, int my)
+    private void DropSession(Ses drag, int my)
     {
         lock (_workspaces)
         {
@@ -3505,7 +3539,7 @@ internal static partial class Program
         SetActive(drag);
     }
 
-    private static void DropWorkspace(Workspace drag, int my)
+    private void DropWorkspace(Workspace drag, int my)
     {
         lock (_workspaces)
         {
@@ -3521,7 +3555,7 @@ internal static partial class Program
     }
 
     /// <summary>Pixel Y of the insertion line for the in-progress drag (-1 if none).</summary>
-    private static float DropIndicatorY()
+    private float DropIndicatorY()
     {
         if (_dragItem is Workspace)
         {
@@ -3553,7 +3587,7 @@ internal static partial class Program
         return -1;
     }
 
-    private static void DrawDropIndicator(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    private void DrawDropIndicator(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         float lineY = DropIndicatorY();
         if (lineY >= 0)
@@ -3569,7 +3603,7 @@ internal static partial class Program
         }
     }
 
-    private static void DeleteWorkspace(Workspace ws)
+    private void DeleteWorkspace(Workspace ws)
     {
         List<Ses> sessions;
         bool hadActive = _active is not null && ReferenceEquals(_active.Ws, ws);
@@ -3592,7 +3626,7 @@ internal static partial class Program
     }
 
     /// <summary>Modal folder picker (native shell). Returns the chosen path or null.</summary>
-    private static string? PickFolder()
+    private string? PickFolder()
     {
         var bi = new BROWSEINFO
         {
@@ -3610,7 +3644,7 @@ internal static partial class Program
 
     // ---- Agent attention (title-bar bell + jump-to-next) ----
 
-    private static (bool blocked, bool active) AttentionState()
+    private (bool blocked, bool active) AttentionState()
     {
         bool blocked = false, active = false;
         foreach (var s in AllSessions())
@@ -3622,7 +3656,7 @@ internal static partial class Program
         return (blocked, active);
     }
 
-    private static void GoToNextAttention(int dir)
+    private void GoToNextAttention(int dir)
     {
         var list = AllSessions().Where(s => s.S.Status is AgentStatus.Blocked or AgentStatus.Completed).ToList();
         if (list.Count == 0) { ShowToast("no sessions need attention"); return; }
@@ -3632,7 +3666,7 @@ internal static partial class Program
     }
 
     /// <summary>True if any attention-worthy session has its blink flag set (drives the bell pulse).</summary>
-    private static bool AnyBlinkAttention()
+    private bool AnyBlinkAttention()
     {
         foreach (var s in AllSessions())
             if (s.S.Blink && s.S.Status is AgentStatus.Blocked or AgentStatus.Active or AgentStatus.Completed) return true;
@@ -3685,11 +3719,11 @@ internal static partial class Program
     // ---- Command palette (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention) ----
 
     private static readonly Color4 PalScrim = new(0f, 0f, 0f, 0.45f);
-    private static Color4 PalBg = new(0.11f, 0.12f, 0.145f, 1f);
-    private static Color4 PalBorder = new(0.30f, 0.34f, 0.42f, 1f);
-    private static Color4 PalSel = new(0.20f, 0.30f, 0.46f, 1f);
+    private Color4 PalBg = new(0.11f, 0.12f, 0.145f, 1f);
+    private Color4 PalBorder = new(0.30f, 0.34f, 0.42f, 1f);
+    private Color4 PalSel = new(0.20f, 0.30f, 0.46f, 1f);
 
-    private static void TogglePalette(PaletteKind kind)
+    private void TogglePalette(PaletteKind kind)
     {
         if (_palette == kind) { ClosePalette(); return; }
         if (kind == PaletteKind.Themes) _themeBeforePreview = _theme;
@@ -3699,14 +3733,14 @@ internal static partial class Program
         RequestRedraw();
     }
 
-    private static void ClosePalette()
+    private void ClosePalette()
     {
         _palette = PaletteKind.None;
         _palAll.Clear(); _palItems.Clear(); _palRows.Clear();
         RequestRedraw();
     }
 
-    private static void BuildPaletteItems()
+    private void BuildPaletteItems()
     {
         _palAll.Clear();
         switch (_palette)
@@ -3809,7 +3843,7 @@ internal static partial class Program
         }
     }
 
-    private static void FilterPalette()
+    private void FilterPalette()
     {
         _palItems.Clear();
         if (_palQuery.Length == 0) { _palItems.AddRange(_palAll); }
@@ -3842,7 +3876,7 @@ internal static partial class Program
         return score + Math.Max(0, 12 - first);
     }
 
-    private static bool PaletteKeyDown(int vk)
+    private bool PaletteKeyDown(int vk)
     {
         switch (vk)
         {
@@ -3857,14 +3891,14 @@ internal static partial class Program
         return true; // swallow everything else from the terminal; printable arrives via WM_CHAR
     }
 
-    private static void RunPaletteSelection()
+    private void RunPaletteSelection()
     {
         Action? run = (_palSel >= 0 && _palSel < _palItems.Count) ? _palItems[_palSel].Run : null;
         ClosePalette();
         run?.Invoke();
     }
 
-    private static void PaletteClick(int mx, int my)
+    private void PaletteClick(int mx, int my)
     {
         foreach (var r in _palRows)
             if (my >= r.y0 && my < r.y1) { _palSel = r.idx; RunPaletteSelection(); return; }
@@ -3876,7 +3910,7 @@ internal static partial class Program
         }
     }
 
-    private static void DrawPalette(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    private void DrawPalette(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         if (_palette == PaletteKind.None) return;
         _palRows.Clear();
@@ -3932,11 +3966,11 @@ internal static partial class Program
 
     // ---- Custom title bar / status bar (frameless chrome) ----
 
-    private static Color4 ChromeBg = new(0.043f, 0.051f, 0.059f, 1f);
-    private static Color4 ChromeText = new(0.92f, 0.93f, 0.95f, 1f);
-    private static Color4 ChromeDim = new(0.55f, 0.58f, 0.62f, 1f);
-    private static Color4 ChromeAccent = new(0.30f, 0.55f, 0.95f, 1f);   // theme accent (selection, active markers, focus)
-    private static Color4 ChromeBorder = new(0.22f, 0.24f, 0.28f, 1f);   // dividers / separators
+    private Color4 ChromeBg = new(0.043f, 0.051f, 0.059f, 1f);
+    private Color4 ChromeText = new(0.92f, 0.93f, 0.95f, 1f);
+    private Color4 ChromeDim = new(0.55f, 0.58f, 0.62f, 1f);
+    private Color4 ChromeAccent = new(0.30f, 0.55f, 0.95f, 1f);   // theme accent (selection, active markers, focus)
+    private Color4 ChromeBorder = new(0.22f, 0.24f, 0.28f, 1f);   // dividers / separators
 
     // ---- Chrome palette derivation (all chrome colours track the active theme) ----
 
@@ -3949,7 +3983,7 @@ internal static partial class Program
         => amt >= 0 ? Mix(c, new Color4(1f, 1f, 1f, 1f), amt) : Mix(c, new Color4(0f, 0f, 0f, 1f), -amt);
 
     /// <summary>Recompute all chrome colours from the active theme + sidebar-tint. Called on load and every theme/config change.</summary>
-    private static void RecomputeChrome()
+    private void RecomputeChrome()
     {
         var bg = C4(_theme.DefaultBackground);
         var fg = C4(_theme.DefaultForeground);
@@ -3980,17 +4014,17 @@ internal static partial class Program
         PalSel = Mix(PalBg, accent, dark ? 0.45f : 0.32f);
     }
 
-    private static int ClientW() { GetClientRect(_hwnd, out RECT rc); return rc.right - rc.left; }
-    private static int ClientH() { GetClientRect(_hwnd, out RECT rc); return rc.bottom - rc.top; }
+    private int ClientW() { GetClientRect(_hwnd, out RECT rc); return rc.right - rc.left; }
+    private int ClientH() { GetClientRect(_hwnd, out RECT rc); return rc.bottom - rc.top; }
 
-    private static bool InContent(IntPtr lParam)
+    private bool InContent(IntPtr lParam)
     {
         int x = LoWord(lParam), y = HiWord(lParam);
         return x >= (int)_sidebarW && y >= (int)TitleBarH;
     }
 
     /// <summary>WM_NCCALCSIZE: reclaim the OS caption into the client so we draw our own title bar.</summary>
-    private static void AdjustClientRect(IntPtr hwnd, IntPtr lParam)
+    private void AdjustClientRect(IntPtr hwnd, IntPtr lParam)
     {
         // When maximized, inset by the frame so content isn't pushed off-screen / under the taskbar.
         if (IsZoomed(hwnd))
@@ -4005,7 +4039,7 @@ internal static partial class Program
     }
 
     /// <summary>WM_NCHITTEST: resize borders, caption buttons (system-handled), draggable caption, else client.</summary>
-    private static int HitTest(IntPtr hwnd, int sx, int sy)
+    private int HitTest(IntPtr hwnd, int sx, int sy)
     {
         var pt = new POINT { x = sx, y = sy };
         ScreenToClient(hwnd, ref pt);
@@ -4037,7 +4071,7 @@ internal static partial class Program
         return HTCLIENT;
     }
 
-    private static int CaptionButtonAt(int x, int cw)
+    private int CaptionButtonAt(int x, int cw)
     {
         if (x >= cw - (int)CaptionBtnW) return 3;              // close
         if (x >= cw - 2 * (int)CaptionBtnW) return 2;         // max/restore
@@ -4045,14 +4079,14 @@ internal static partial class Program
         return 0;
     }
 
-    private static string? ChromeHit(List<(float x0, float x1, string action)> buttons, int mx)
+    private string? ChromeHit(List<(float x0, float x1, string action)> buttons, int mx)
     {
         foreach (var b in buttons) if (mx >= b.x0 && mx < b.x1) return b.action;
         return null;
     }
 
     /// <summary>Update the hovered chrome button from a client-area move; arms the fade timer on change.</summary>
-    private static void UpdateChromeHover(int mx, int my)
+    private void UpdateChromeHover(int mx, int my)
     {
         string? hit = null;
         if (my < (int)TitleBarH) hit = ChromeHit(_titleButtons, mx);
@@ -4065,7 +4099,7 @@ internal static partial class Program
     }
 
     /// <summary>Ease the hover-fill alpha toward the target; stop the timer once settled.</summary>
-    private static void HoverTick()
+    private void HoverTick()
     {
         float target = _hotBtn is not null ? 1f : 0f;
         const float step = 0.20f;
@@ -4076,7 +4110,7 @@ internal static partial class Program
     }
 
     /// <summary>Paint a chrome button's hover/press background + record its hit-box; returns the tinted icon colour.</summary>
-    private static Color4 ChromeBtnBg(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush,
+    private Color4 ChromeBtnBg(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush,
         float x, float y, float w, float h, string id, List<(float x0, float x1, string action)> list, Color4 baseColor)
     {
         list.Add((x, x + w, id));
@@ -4098,7 +4132,7 @@ internal static partial class Program
         return bright > 0f ? Mix(baseColor, ChromeText, bright * 0.85f) : baseColor;
     }
 
-    private static void ChromeAction(string a)
+    private void ChromeAction(string a)
     {
         switch (a)
         {
@@ -4116,7 +4150,7 @@ internal static partial class Program
         }
     }
 
-    private static void ToggleSidebar()
+    private void ToggleSidebar()
     {
         _sidebarW = _sidebarW > 0 ? 0 : SidebarWFull;
         if (_active is not null) RegridSession(_active);
@@ -4125,7 +4159,7 @@ internal static partial class Program
         SaveState();
     }
 
-    private static void ShowToast(string text)
+    private void ShowToast(string text)
     {
         _toastText = text;
         _toastTarget = null;
@@ -4136,7 +4170,7 @@ internal static partial class Program
     // ---- Notifications (OSC 9 / OSC 777 / notify) ----
 
     /// <summary>Find the session that owns a pane (any pane, its scratch, or its overlay; or the quick cover).</summary>
-    private static Ses? OwningSes(Pane p)
+    private Ses? OwningSes(Pane p)
     {
         lock (_workspaces)
             foreach (var w in _workspaces)
@@ -4147,7 +4181,7 @@ internal static partial class Program
     }
 
     /// <summary>A pane raised a desktop notification. Runs on the UI thread (marshaled from the pump).</summary>
-    private static void OnNotified(Pane p, string title, string body)
+    private void OnNotified(Pane p, string title, string body)
     {
         var ses = OwningSes(p);
         // Count it against the session unless that pane is the surface you're looking at right now.
@@ -4166,7 +4200,7 @@ internal static partial class Program
     private static void ClearUnread(Ses s) { foreach (var p in s.Panes) p.Unread = 0; if (s.Scratch is not null) s.Scratch.Unread = 0; if (s.Overlay is not null) s.Overlay.Unread = 0; }
 
     /// <summary>Show an OS desktop notification via a Shell_NotifyIcon tray balloon (no AUMID/shortcut needed).</summary>
-    private static void TrayNotify(string title, string body)
+    private void TrayNotify(string title, string body)
     {
         try
         {
@@ -4188,7 +4222,7 @@ internal static partial class Program
         catch { /* balloon is best-effort; the in-app banner + badge are the reliable surface */ }
     }
 
-    private static void RemoveTrayIcon()
+    private void RemoveTrayIcon()
     {
         if (!_trayAdded) return;
         try { var d = new NOTIFYICONDATAW { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NOTIFYICONDATAW>(), hWnd = _hwnd, uID = 1 }; Shell_NotifyIconW(NIM_DELETE, ref d); } catch { }
@@ -4221,7 +4255,7 @@ internal static partial class Program
     private static readonly string GlyphAdd = ((char)0xE710).ToString();   // Add (add-session)
     private static readonly string GlyphClose = ((char)0xE8BB).ToString(); // ChromeClose (pill x)
 
-    private static void DrawTitleBar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    private void DrawTitleBar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         _titleButtons.Clear();
         int cw = ClientW();
@@ -4311,7 +4345,7 @@ internal static partial class Program
     }
 
     /// <summary>Vector app-mark: cyan terminal chevron + block cursor + green agent-status dot (matches the app icon).</summary>
-    private static void DrawLogo(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float x, float cy)
+    private void DrawLogo(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float x, float cy)
     {
         var cyan = new Color4(0x38 / 255f, 0xD7 / 255f, 0xF0 / 255f, 1f);
         var cyanLt = new Color4(0x8A / 255f, 0xE2 / 255f, 0xF2 / 255f, 1f);
@@ -4327,7 +4361,7 @@ internal static partial class Program
     }
 
     /// <summary>Scratch glyph: a rounded rectangle (outline, or filled when active).</summary>
-    private static void DrawScratchGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool filled)
+    private void DrawScratchGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool filled)
     {
         brush.Color = color;
         var r = new RoundedRectangle { Rect = new Rect(cx - 7f, cy - 5.5f, 14f, 11f), RadiusX = 2.5f, RadiusY = 2.5f };
@@ -4335,7 +4369,7 @@ internal static partial class Program
     }
 
     /// <summary>Split glyph: two side-by-side panes (right pane filled when split is active).</summary>
-    private static void DrawSplitGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool active)
+    private void DrawSplitGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool active)
     {
         brush.Color = color;
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx - 7f, cy - 5.5f, 14f, 11f), RadiusX = 2.5f, RadiusY = 2.5f }, brush, 1.4f);
@@ -4344,7 +4378,7 @@ internal static partial class Program
     }
 
     /// <summary>New-workspace glyph: a card with a plus.</summary>
-    private static void DrawNewWorkspaceGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color)
+    private void DrawNewWorkspaceGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color)
     {
         brush.Color = color;
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx - 7f, cy - 6f, 10f, 10f), RadiusX = 2f, RadiusY = 2f }, brush, 1.3f);
@@ -4354,7 +4388,7 @@ internal static partial class Program
     }
 
     /// <summary>Flag glyph (pennant); filled when the flagged view is active.</summary>
-    private static void DrawFlagGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool filled)
+    private void DrawFlagGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool filled)
     {
         brush.Color = color;
         rt.DrawLine(new System.Numerics.Vector2(cx - 5f, cy - 6f), new System.Numerics.Vector2(cx - 5f, cy + 6f), brush, 1.4f);
@@ -4371,7 +4405,7 @@ internal static partial class Program
         g.Dispose();
     }
 
-    private static void DrawCaption(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, int cw)
+    private void DrawCaption(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, int cw)
     {
         int pressedIdx = _capPressed == HTMINBUTTON ? 1 : _capPressed == HTMAXBUTTON ? 2 : _capPressed == HTCLOSE ? 3 : 0;
         for (int i = 1; i <= 3; i++) // 1 min, 2 max/restore, 3 close (left to right)
@@ -4406,7 +4440,7 @@ internal static partial class Program
         }
     }
 
-    private static void DrawToast(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    private void DrawToast(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         if (_toastText is null) return;
         int cw = ClientW(), ch = ClientH();
@@ -4421,7 +4455,7 @@ internal static partial class Program
     }
 
     /// <summary>While a leader sequence is pending, a small pill hint (bottom-left of the content region).</summary>
-    private static void DrawLeaderHint(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    private void DrawLeaderHint(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         if (!_leaderPending) return;
         string txt = $"leader  {_leader}  —  press a key…";
@@ -4437,10 +4471,10 @@ internal static partial class Program
 
     // ---- Theming ----
 
-    private static void ApplyTheme(Theme t) { _theme = t; RecomputeChrome(); RequestRedraw(); }
+    private void ApplyTheme(Theme t) { _theme = t; RecomputeChrome(); RequestRedraw(); }
 
     /// <summary>Apply the window-opacity config via a layered window (LWA_ALPHA). 100% removes the layered style.</summary>
-    private static void ApplyWindowOpacity()
+    private void ApplyWindowOpacity()
     {
         if (_hwnd == IntPtr.Zero) return;
         int pct = System.Math.Clamp(_config.WindowOpacity, 30, 100);
@@ -4454,7 +4488,7 @@ internal static partial class Program
         SetLayeredWindowAttributes(_hwnd, 0, (byte)(pct * 255 / 100), LWA_ALPHA);
     }
 
-    private static void CommitTheme(Theme t)
+    private void CommitTheme(Theme t)
     {
         ApplyTheme(t);
         _config.Theme = t.Name;
@@ -4463,7 +4497,7 @@ internal static partial class Program
     }
 
     /// <summary>Live-preview the theme under the selection while the theme picker is open.</summary>
-    private static void PreviewSelectedTheme()
+    private void PreviewSelectedTheme()
     {
         if (_palette != PaletteKind.Themes) return;
         if (_palSel >= 0 && _palSel < _palItems.Count && _palItems[_palSel].Data is Theme th) ApplyTheme(th);
@@ -4527,7 +4561,7 @@ internal static partial class Program
     };
 
     /// <summary>Persist + apply a config key live. Runs on the UI thread. Returns an ack string.</summary>
-    private static string ConfigSetInternal(string key, string value)
+    private string ConfigSetInternal(string key, string value)
     {
         key = key.Trim().ToLowerInvariant();
         if (Array.IndexOf(ConfigKeys, key) < 0) return "error: unknown key '" + key + "'";
@@ -4674,7 +4708,7 @@ internal static partial class Program
     private static string StatePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "state.json");
 
-    private static List<Pane> PanesOf(Ses s) { lock (_workspaces) return s.Panes.ToList(); }
+    private List<Pane> PanesOf(Ses s) { lock (_workspaces) return s.Panes.ToList(); }
 
     private static string DenylistPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "restore-denylist.conf");
@@ -4762,7 +4796,7 @@ internal static partial class Program
 
     /// <summary>Snapshot the tree/selection/sidebar to disk atomically. No-op while restoring; ignores IO errors.
     /// <paramref name="captureCommands"/> (quit only) captures each pane's foreground command when restore-commands is on.</summary>
-    private static void SaveState(bool captureCommands = false)
+    private void SaveState(bool captureCommands = false)
     {
         if (_restoring) return;
         try
@@ -4819,13 +4853,13 @@ internal static partial class Program
     }
 
     // Window geometry loaded from state.json at startup (applied at window creation).
-    private static bool _geoValid;
-    private static int _geoX, _geoY, _geoW, _geoH;
-    private static bool _geoMax;
-    private static bool _wasMaximized;
+    private bool _geoValid;
+    private int _geoX, _geoY, _geoW, _geoH;
+    private bool _geoMax;
+    private bool _wasMaximized;
 
     /// <summary>Fill AppState with the window's restore rect + maximized flag (GetWindowPlacement).</summary>
-    private static void CaptureGeometry(AppState st)
+    private void CaptureGeometry(AppState st)
     {
         try
         {
@@ -4841,7 +4875,7 @@ internal static partial class Program
     }
 
     /// <summary>Read saved window geometry (best-effort, no side effects) and clamp it onto the visible desktop.</summary>
-    private static void LoadGeometry()
+    private void LoadGeometry()
     {
         try
         {
@@ -4865,7 +4899,7 @@ internal static partial class Program
     }
 
     /// <summary>Rebuild the tree from state.json via the normal Create* paths. Returns false to fall back to a default.</summary>
-    private static bool TryRestoreState()
+    private bool TryRestoreState()
     {
         AppState? st;
         try

@@ -12,7 +12,7 @@ namespace Agwinterm.Win32;
 /// <c>config.set</c> control verb — so changes persist to agwinterm.conf and apply live.
 /// Opened from the title-bar gear, the action palette ("Settings…"), or <c>settings.open</c>.
 /// </summary>
-internal static partial class Program
+internal partial class Program
 {
     private const string SettingsClass = "AgwintermSettings";
     private static IntPtr _settingsHwnd;
@@ -52,7 +52,7 @@ internal static partial class Program
         ("Restore running commands *", "restore-commands", SKind.Check, new string[0], false),
     };
 
-    private static void OpenSettingsWindow()
+    private void OpenSettingsWindow()
     {
         if (_settingsHwnd != IntPtr.Zero) { SetForegroundWindow(_settingsHwnd); return; }
         IntPtr hInst = GetModuleHandleW(null);
@@ -88,7 +88,7 @@ internal static partial class Program
         SetForegroundWindow(_settingsHwnd);
     }
 
-    private static void BuildSettingsControls(IntPtr hInst)
+    private void BuildSettingsControls(IntPtr hInst)
     {
         _settingsCtls.Clear();
         int id = 1000, y = 12;
@@ -146,7 +146,7 @@ internal static partial class Program
     }
 
     /// <summary>Push current config values into the open Settings controls (no-op when closed).</summary>
-    private static void RefreshSettingsControls()
+    private void RefreshSettingsControls()
     {
         if (_settingsHwnd == IntPtr.Zero) return;
         _settingsSyncing = true;
@@ -184,18 +184,18 @@ internal static partial class Program
                 if (c.Kind == SKind.Check && code == BN_CLICKED)
                 {
                     bool on = SendMessageW(c.Hwnd, BM_GETCHECK, IntPtr.Zero, IntPtr.Zero) != IntPtr.Zero;
-                    ConfigSetInternal(c.Key, on ? "true" : "false");
+                    Frontmost.ConfigSetInternal(c.Key, on ? "true" : "false");
                 }
                 else if (c.Kind == SKind.Combo && code == CBN_SELCHANGE)
                 {
                     int sel = (int)SendMessageW(c.Hwnd, CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero);
-                    if (sel >= 0 && sel < c.Options.Length) ConfigSetInternal(c.Key, c.Options[sel]);
+                    if (sel >= 0 && sel < c.Options.Length) Frontmost.ConfigSetInternal(c.Key, c.Options[sel]);
                 }
                 else if (c.Kind == SKind.Edit && code == EN_KILLFOCUS)
                 {
                     var sb = new StringBuilder(512);
                     GetWindowTextW(c.Hwnd, sb, sb.Capacity);
-                    ConfigSetInternal(c.Key, sb.ToString());
+                    Frontmost.ConfigSetInternal(c.Key, sb.ToString());
                 }
                 return IntPtr.Zero;
             }
