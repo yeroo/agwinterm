@@ -1570,10 +1570,10 @@ internal static class Program
         EnsureEditGdi();
         // Fill the whole row (matches the highlight band); a left text-margin puts the text exactly
         // where the row name is drawn, so nothing shifts when editing starts.
-        int leftMargin = isWs ? 24 : 26;
-        // +3px: the single-line EDIT centres its text a few px higher than DirectWrite's
-        // ParagraphAlignment.Center, so nudge down to line up with the row name exactly.
-        int ey = (int)ry0 + 3, eh = (int)(ry1 - ry0);
+        // The single-line EDIT centres its text ~1px higher and its glyph sits ~1px right of the
+        // margin vs DirectWrite; offsets tuned by pixel-measuring the box against an unedited row.
+        int leftMargin = isWs ? 23 : 25;
+        int ey = (int)ry0 + 4, eh = (int)(ry1 - ry0);
         _editHwnd = CreateWindowExW(0, "EDIT", name, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
             0, ey, (int)_sidebarW, eh, _hwnd, (IntPtr)EDIT_ID, GetModuleHandleW(null), IntPtr.Zero);
         if (_editHwnd == IntPtr.Zero) return;
