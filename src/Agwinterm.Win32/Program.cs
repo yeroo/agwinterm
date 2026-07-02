@@ -1571,7 +1571,9 @@ internal static class Program
         // Fill the whole row (matches the highlight band); a left text-margin puts the text exactly
         // where the row name is drawn, so nothing shifts when editing starts.
         int leftMargin = isWs ? 24 : 26;
-        int ey = (int)ry0, eh = (int)(ry1 - ry0);
+        // +3px: the single-line EDIT centres its text a few px higher than DirectWrite's
+        // ParagraphAlignment.Center, so nudge down to line up with the row name exactly.
+        int ey = (int)ry0 + 3, eh = (int)(ry1 - ry0);
         _editHwnd = CreateWindowExW(0, "EDIT", name, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
             0, ey, (int)_sidebarW, eh, _hwnd, (IntPtr)EDIT_ID, GetModuleHandleW(null), IntPtr.Zero);
         if (_editHwnd == IntPtr.Zero) return;
