@@ -261,8 +261,9 @@ internal static class Program
         // Apply the custom frame (WM_NCCALCSIZE strips the OS title bar) before showing.
         SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 
-        if (_config.CursorBlink)
-            SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
+        // Drives the cursor pulse (when cursor-blink is on) AND the agent-status blink pulse, so it
+        // runs unconditionally; the cursor render itself stays solid when cursor-blink is disabled.
+        SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
 
         ShowWindow(_hwnd, _geoValid && _geoMax ? SW_MAXIMIZE : SW_SHOW);
         _wasMaximized = IsZoomed(_hwnd);
@@ -428,7 +429,17 @@ internal static class Program
         // New output snaps this pane back to the live bottom (so output jumps you out of scrollback)
         // and clears any selection (its absolute coordinates would otherwise shift under new history).
         session.OutputReceived += () => { pane.ScrollOffset = 0; pane.ClearSel(); RequestRedraw(); };
-        session.StatusChanged += RequestRedraw;
+        // On a transition INTO blocked, play the configured blocked-sound (best-effort, off the UI thread).
+        AgentStatus lastStatus = session.Status;
+        session.StatusChanged += () =>
+        {
+            var now = session.Status;
+            if (now == AgentStatus.Blocked && lastStatus != AgentStatus.Blocked) PlayBlockedSound();
+            lastStatus = now;
+            RequestRedraw();
+        };
+        // An explicit --sound on session.status: play its spec (null => default alert).
+        session.SoundRequested += PlayStatusSound;
         session.Emulator.Notified += (title, body) => Post(() => OnNotified(pane, title, body));
         var env = new Dictionary<string, string>
         {
@@ -551,6 +562,10 @@ internal static class Program
     {
         _active = ses;
         ClearUnread(ses);   // visiting a session clears its notification badge (agterm's "cleared when seen")
+        // Auto-reset-on-select: a status marked auto-reset clears to idle once the user looks at the session.
+        foreach (var p in ses.Panes)
+            if (p.S.AutoReset && p.S.Status is AgentStatus.Completed or AgentStatus.Blocked)
+                p.S.SetStatus(AgentStatus.Idle);
         // A scratch/overlay cover belongs to the previous session; drop it (quick is per-app, kept).
         if (_coverKind is 1 or 3) { _cover = null; _coverKind = 0; _ovlOwner = null; }
         // If the newly-active session has an overlay up, re-show it as the cover.
@@ -2523,8 +2538,10 @@ internal static class Program
                     brush.Color = new Color4(1f, 1f, 1f, 1f);
                     rt.DrawText(bn, _uiSmall, new Rect(bx + 5f, y + rowH / 2f - 8f, bw - 8f, 16f), brush);
                 }
-                // Status circle right-aligned in the row (agterm layout).
-                brush.Color = StatusDot(s.S.Status);
+                // Status circle right-aligned in the row (agterm layout); pulse it if blink was requested.
+                var dot = StatusDot(s.S.Status);
+                if (s.S.Blink && !_cursorOn) dot = new Color4(dot.R, dot.G, dot.B, 0.22f);
+                brush.Color = dot;
                 rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(_sidebarW - 16f, y + rowH / 2f), 4.5f, 4.5f), brush);
                 _sidebarRows.Add((y, y + rowH, false, s));
                 y += rowH;
@@ -2882,6 +2899,57 @@ internal static class Program
         int idx = _active is not null ? list.IndexOf(_active) : -1;
         int next = idx < 0 ? (dir > 0 ? 0 : list.Count - 1) : ((idx + dir) % list.Count + list.Count) % list.Count;
         SetActive(list[next]);
+    }
+
+    /// <summary>True if any attention-worthy session has its blink flag set (drives the bell pulse).</summary>
+    private static bool AnyBlinkAttention()
+    {
+        foreach (var s in AllSessions())
+            if (s.S.Blink && s.S.Status is AgentStatus.Blocked or AgentStatus.Active or AgentStatus.Completed) return true;
+        return false;
+    }
+
+    // ---- Agent-status sounds (winmm / System.Media; all playback is async / off the UI thread) ----
+
+    [System.Runtime.InteropServices.DllImport("winmm.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern bool PlaySound(string? pszSound, IntPtr hmod, uint fdwSound);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool MessageBeep(uint uType);
+    private const uint SND_ASYNC = 0x0001, SND_NODEFAULT = 0x0002, SND_ALIAS = 0x00010000, SND_FILENAME = 0x00020000;
+    // MessageBeep types (standard system-sound events; async, no extra assembly needed).
+    private const uint MB_OK = 0x0, MB_ICONHAND = 0x10, MB_ICONQUESTION = 0x20, MB_ICONEXCLAMATION = 0x30, MB_ICONASTERISK = 0x40;
+
+    /// <summary>Play the config's blocked-sound (silent when unset / "off" / "none").</summary>
+    private static void PlayBlockedSound()
+    {
+        string bs = _config.BlockedSound;
+        if (string.IsNullOrWhiteSpace(bs) || bs.Equals("off", StringComparison.OrdinalIgnoreCase)
+            || bs.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
+        PlayStatusSound(bs);
+    }
+
+    /// <summary>Play a sound spec: null/"default" => system alert; a known system-sound name; a .wav path;
+    /// otherwise a Windows sound-event alias. Never throws.</summary>
+    private static void PlayStatusSound(string? spec)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(spec) || spec.Equals("default", StringComparison.OrdinalIgnoreCase))
+            { MessageBeep(MB_ICONASTERISK); return; }
+            switch (spec.ToLowerInvariant())
+            {
+                case "beep": MessageBeep(MB_OK); return;
+                case "asterisk": MessageBeep(MB_ICONASTERISK); return;
+                case "exclamation": MessageBeep(MB_ICONEXCLAMATION); return;
+                case "hand" or "error" or "critical": MessageBeep(MB_ICONHAND); return;
+                case "question": MessageBeep(MB_ICONQUESTION); return;
+            }
+            if (spec.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) && System.IO.File.Exists(spec))
+            { PlaySound(spec, IntPtr.Zero, SND_ASYNC | SND_FILENAME | SND_NODEFAULT); return; }
+            // Treat anything else as a Windows sound-event alias (e.g. "SystemNotification").
+            PlaySound(spec, IntPtr.Zero, SND_ASYNC | SND_ALIAS | SND_NODEFAULT);
+        }
+        catch { /* audio is best-effort */ }
     }
 
     // ---- Command palette (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention) ----
@@ -3349,7 +3417,10 @@ internal static class Program
         rt.DrawLine(new System.Numerics.Vector2(startX - 8f, 11f), new System.Numerics.Vector2(startX - 8f, TitleBarH - 11f), brush, 1f);
         // Attention bell: dim = nothing, plain = active/completed, amber = any blocked.
         var (bellBlocked, bellActive) = AttentionState();
-        brush.Color = bellBlocked ? new Color4(240 / 255f, 160 / 255f, 40 / 255f, 1f) : (bellActive ? ChromeText : ChromeDim);
+        var bellColor = bellBlocked ? new Color4(240 / 255f, 160 / 255f, 40 / 255f, 1f) : (bellActive ? ChromeText : ChromeDim);
+        if ((bellBlocked || bellActive) && !_cursorOn && AnyBlinkAttention())
+            bellColor = new Color4(bellColor.R, bellColor.G, bellColor.B, 0.30f); // pulse when a blinking session needs attention
+        brush.Color = bellColor;
         rt.DrawText("", _iconFont, new Rect(startX, 0, bw, TitleBarH), brush); // Ringer glyph
         _titleButtons.Add((startX, startX + bw, "attention"));
         for (int i = 0; i < acts.Length; i++)

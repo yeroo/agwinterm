@@ -224,7 +224,22 @@ public sealed class ControlServer : IDisposable
             "completed" or "complete" or "done" => AgentStatus.Completed,
             _ => AgentStatus.Idle,
         };
-        s.SetStatus(status);
+        bool blink = GetBool(args, "blink");
+        bool autoReset = GetBool(args, "auto-reset");
+        // `sound` may be a bool (play the default alert) or a string (a system-sound name / .wav path).
+        bool sound = false;
+        string? soundName = null;
+        if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("sound", out var sv))
+        {
+            if (sv.ValueKind == JsonValueKind.True) sound = true;
+            else if (sv.ValueKind == JsonValueKind.String)
+            {
+                string raw = sv.GetString() ?? "";
+                if (raw is "false" or "off" or "no" or "0") { sound = false; }
+                else { sound = true; if (raw is not ("" or "true" or "yes" or "1" or "default")) soundName = raw; }
+            }
+        }
+        s.SetStatus(status, blink, autoReset, sound, soundName);
         return Ok(status.ToString().ToLowerInvariant());
     }
 

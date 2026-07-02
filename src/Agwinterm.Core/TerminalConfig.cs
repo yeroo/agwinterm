@@ -38,6 +38,11 @@ public sealed class TerminalConfig
     /// <summary>Show OS desktop notifications (tray balloon) for OSC 9/777 / notify. Off → in-app banner + badge only.</summary>
     public bool DesktopNotifications { get; set; } = true;
 
+    /// <summary>Sound played whenever a session enters the "blocked" agent status (empty / "off" / "none" = silent).
+    /// May be a system-sound name (beep, asterisk, exclamation, hand, question), a Windows sound-event alias
+    /// (e.g. "SystemNotification"), or a full path to a .wav file.</summary>
+    public string BlockedSound { get; set; } = "";
+
     /// <summary>Default config file contents (also used to seed the file on first run).</summary>
     public const string DefaultText =
         """
@@ -64,6 +69,11 @@ public sealed class TerminalConfig
         # Desktop notifications: show an OS tray-balloon for OSC 9/777 / `agwintermctl notify`
         # (the in-app banner + sidebar badge always show regardless). Set false to suppress the OS toast.
         desktop-notifications = true
+
+        # Blocked sound: play a sound whenever a session enters the "blocked" agent status (needs
+        # your attention). Empty / off / none = silent. Accepts a system-sound name (beep, asterisk,
+        # exclamation, hand, question), a Windows sound-event alias, or a path to a .wav file.
+        blocked-sound =
 
         # Shell integration: inject a pwsh prompt hook (OSC 7) to track the live working
         # directory so it persists/restores accurately. Off by default because the hook can
@@ -100,6 +110,7 @@ public sealed class TerminalConfig
                 case "restore-commands": cfg.RestoreCommands = ParseBool(val, cfg.RestoreCommands); break;
                 case "right-click-paste": cfg.RightClickPaste = ParseBool(val, cfg.RightClickPaste); break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
+                case "blocked-sound": cfg.BlockedSound = val; break;
             }
         }
         return cfg;

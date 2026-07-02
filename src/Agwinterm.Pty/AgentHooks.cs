@@ -18,6 +18,33 @@ public static class AgentHooks
 
     public static string WrapperPath => Path.Combine(LocalAppData, "agwinterm", "agwinterm-agent-status.ps1");
     public static string ClaudeSettingsPath => Path.Combine(Home, ".claude", "settings.json");
+    public static string CodexNotifyPath => Path.Combine(LocalAppData, "agwinterm", "agwinterm-codex-notify.ps1");
+    public static string CodexConfigPath => Path.Combine(Home, ".codex", "config.toml");
+
+    /// <summary>Codex `notify` program: receives the event JSON as argv[0], maps it to a session status.</summary>
+    public const string CodexNotifyScript =
+        """
+        param([string]$Json)
+        # agwinterm Codex notify hook: map Codex events to session status. No-op outside agwinterm.
+        if (-not $env:AGWINTERM_SESSION_ID) { exit 0 }
+        $state = 'completed'
+        try {
+          $o = $Json | ConvertFrom-Json
+          switch ($o.type) {
+            'agent-turn-complete' { $state = 'completed' }
+            default { $state = 'completed' }
+          }
+        } catch { }
+        $pipe = if ($env:AGWINTERM_PIPE) { $env:AGWINTERM_PIPE } else { 'agwinterm' }
+        try {
+          $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe, [System.IO.Pipes.PipeDirection]::InOut)
+          $c.Connect(1000)
+          $w = New-Object System.IO.StreamWriter($c); $w.AutoFlush = $true
+          $w.WriteLine('{"cmd":"session.status","args":{"status":"' + $state + '"}}')
+          $c.Dispose()
+        } catch { }
+        exit 0
+        """;
 
     public const string WrapperScript =
         """
@@ -111,19 +138,42 @@ public static class AgentHooks
         return false;
     }
 
-    /// <summary>Write the wrapper + merge the hooks. Returns a human-readable summary.</summary>
+    /// <summary>Write the wrappers, merge the Claude hooks, install the generic bridge, and print the
+    /// Codex config line. Returns a multi-line human-readable summary covering every agent.</summary>
     public static string Install()
     {
+        var lines = new List<string>();
+
+        // --- Claude Code: wrapper + settings.json hooks (fully automatic) ---
         Directory.CreateDirectory(Path.GetDirectoryName(WrapperPath)!);
         File.WriteAllText(WrapperPath, WrapperScript);
 
         string? existing = File.Exists(ClaudeSettingsPath) ? File.ReadAllText(ClaudeSettingsPath) : null;
         string? merged = MergeClaudeSettings(existing, WrapperPath);
         if (merged is null)
-            return "refused: ~/.claude/settings.json exists but isn't valid JSON; left untouched";
+            lines.Add("Claude: refused — ~/.claude/settings.json exists but isn't valid JSON; left untouched");
+        else
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(ClaudeSettingsPath)!);
+            File.WriteAllText(ClaudeSettingsPath, merged);
+            lines.Add("Claude Code: status hooks -> " + ClaudeSettingsPath);
+        }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(ClaudeSettingsPath)!);
-        File.WriteAllText(ClaudeSettingsPath, merged);
-        return "installed Claude Code status hooks -> " + ClaudeSettingsPath;
+        // --- Codex: notify script (config line must be added by the user; we don't rewrite TOML) ---
+        try
+        {
+            File.WriteAllText(CodexNotifyPath, CodexNotifyScript);
+            string tomlLine = "notify = [\"powershell\",\"-NoProfile\",\"-ExecutionPolicy\",\"Bypass\",\"-File\",\""
+                + CodexNotifyPath.Replace("\\", "\\\\") + "\"]";
+            lines.Add("Codex: wrote " + CodexNotifyPath);
+            lines.Add("  add this line to " + CodexConfigPath + " :");
+            lines.Add("    " + tomlLine);
+        }
+        catch (Exception ex) { lines.Add("Codex: failed to write notify script: " + ex.Message); }
+
+        // --- Generic agents: PowerShell-profile bridge keyed off $env:AGWINTERM_AGENT_RE ---
+        lines.Add("Generic: " + GenericAgentInstaller.Install());
+
+        return string.Join("\n", lines);
     }
 }

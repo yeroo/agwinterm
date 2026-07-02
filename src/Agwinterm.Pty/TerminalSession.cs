@@ -27,11 +27,30 @@ public sealed class TerminalSession : IDisposable
     public AgentStatus Status { get; private set; } = AgentStatus.Idle;
     public event Action? StatusChanged;
 
-    public void SetStatus(AgentStatus status)
+    /// <summary>Pulse the status dot (and title-bar bell) while this status is live (agterm's blinking attention).</summary>
+    public bool Blink { get; private set; }
+
+    /// <summary>Clear the status back to idle when the session is next selected (agterm's auto-reset-on-select).</summary>
+    public bool AutoReset { get; private set; }
+
+    /// <summary>Raised (background thread) when a status change requests an audible cue. The argument is the
+    /// requested sound spec (a system-sound name or a .wav path); null means "use the default alert sound".</summary>
+    public event Action<string?>? SoundRequested;
+
+    /// <summary>Set the agent status, optionally with a blink pulse, auto-reset-on-select, and an audible cue.</summary>
+    public void SetStatus(AgentStatus status, bool blink = false, bool autoReset = false,
+        bool sound = false, string? soundName = null)
     {
-        if (Status == status) return;
+        // Blink / auto-reset only make sense for a live (non-idle) status.
+        bool newBlink = blink && status != AgentStatus.Idle;
+        bool newAuto = autoReset && status != AgentStatus.Idle;
+        bool changed = Status != status || Blink != newBlink || AutoReset != newAuto;
         Status = status;
-        StatusChanged?.Invoke();
+        Blink = newBlink;
+        AutoReset = newAuto;
+        if (sound && status != AgentStatus.Idle)
+            try { SoundRequested?.Invoke(soundName); } catch { /* playback is best-effort */ }
+        if (changed) StatusChanged?.Invoke();
     }
 
     /// <summary>User activity (typing/focus) clears a blocked/completed status, matching agterm.</summary>

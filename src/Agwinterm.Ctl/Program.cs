@@ -9,7 +9,7 @@ using System.Text.Json;
 //   agwintermctl session new [--cwd DIR] [--name NAME]
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
-//   agwintermctl session status <idle|active|blocked|completed> [--target ID]
+//   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
 //   agwintermctl session type <text...> [--target ID]
 //   agwintermctl session write <text...> [--target ID]
 //   agwintermctl image show <path> [--row R] [--col C] [--id N] [--target ID]
@@ -102,6 +102,9 @@ switch (area)
             case "status":
                 if (rest.Count == 0) { Console.Error.WriteLine("session status needs a state"); return 2; }
                 cargs["status"] = rest[0];
+                if (options.ContainsKey("blink")) cargs["blink"] = true;
+                if (options.ContainsKey("auto-reset")) cargs["auto-reset"] = true;
+                if (options.TryGetValue("sound", out var sndOpt)) cargs["sound"] = sndOpt; // "true" (default alert) or a name/.wav path
                 break;
             case "type":
             case "write":

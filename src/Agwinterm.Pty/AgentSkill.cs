@@ -38,8 +38,17 @@ public static class AgentSkill
         - `agwintermctl session status completed`  — finished
         - `agwintermctl session status idle`       — clear it
 
-        Better: run `agwintermctl install hooks` once. It wires Claude Code hooks so your status
-        updates automatically (active while working, blocked on permission prompts, completed on stop).
+        Flags (any status): `--sound [name]` plays a cue (default alert, a system-sound name
+        `beep|asterisk|exclamation|hand|question`, a Windows sound-event alias, or a `.wav` path);
+        `--blink` pulses the sidebar dot + title-bar bell until cleared; `--auto-reset` clears the
+        status back to idle the moment the user selects the session. Example, when you need attention:
+        `agwintermctl session status blocked --sound --blink`.
+        (A default blocked cue can also be set once via `blocked-sound =` in the config.)
+
+        Better: run `agwintermctl install hooks` once. It wires Claude Code hooks so your status updates
+        automatically (active while working, blocked on permission prompts, completed on stop); writes a
+        Codex `notify` script (prints the one config.toml line to add); and installs a generic
+        PowerShell-profile bridge that marks any command matching `$env:AGWINTERM_AGENT_RE` active/completed.
 
         ## Manage sessions & workspaces
         - `agwintermctl tree --json`                              — list workspaces+sessions (id, name, active, status)
