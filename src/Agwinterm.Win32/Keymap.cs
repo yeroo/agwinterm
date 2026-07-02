@@ -41,6 +41,7 @@ internal static class Keymap
         ("ctrl+j", "toggle_scratch"),
         ("ctrl+shift+f", "toggle_flag"),
         ("ctrl+shift+a", "select_all"),
+        ("ctrl+alt+n", "new_window"),
     };
 
     public static readonly HashSet<string> ValidActions = new(StringComparer.OrdinalIgnoreCase)
@@ -52,6 +53,7 @@ internal static class Keymap
         "toggle_search", "toggle_scratch", "quick_terminal",
         "toggle_flag", "toggle_flagged_view", "focus_workspace",
         "select_all", "copy_selection", "paste",
+        "new_window", "close_window", "switch_window",
     };
 
     public const string StarterText =

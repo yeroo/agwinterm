@@ -15,6 +15,7 @@ namespace Agwinterm.Pty;
 public sealed class ControlServer : IDisposable
 {
     private readonly ISessionHost _host;
+    private readonly IWindowHost? _windows;   // multi-window: resolves --window + serves window.* verbs (null = single-window)
     private readonly string _pipeName;
     private CancellationTokenSource? _cts;
 
@@ -25,6 +26,14 @@ public sealed class ControlServer : IDisposable
     public ControlServer(ISessionHost host, string pipeName = "agwinterm")
     {
         _host = host;
+        _pipeName = pipeName;
+    }
+
+    /// <summary>Multi-window server: content verbs resolve through <paramref name="windows"/> (--window), window.* act on it.</summary>
+    public ControlServer(ISessionHost host, IWindowHost windows, string pipeName = "agwinterm")
+    {
+        _host = host;
+        _windows = windows;
         _pipeName = pipeName;
     }
 
@@ -86,82 +95,104 @@ public sealed class ControlServer : IDisposable
             string cmd = root.TryGetProperty("cmd", out var c) ? c.GetString() ?? "" : "";
             string? target = root.TryGetProperty("target", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
             JsonElement args = root.TryGetProperty("args", out var a) ? a : default;
+            // --window <id|prefix|active>: content verbs act on the resolved window (default = frontmost).
+            string? windowSel = root.TryGetProperty("window", out var wv) && wv.ValueKind == JsonValueKind.String ? wv.GetString() : null;
 
+            // App-level, window-agnostic verbs first.
             switch (cmd)
             {
                 case "ping": return Ok("agwinterm");
                 case "install.hooks": return Ok(AgentHooks.Install());
                 case "install.skill": return Ok(AgentSkill.Install());
                 case "install.shell": return Ok(ShellIntegrationInstaller.Install());
-                case "tree": return HandleTree();
-                case "session.new": return Ok(_host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace"),
+                // ---- Wave F1b: window management (target = the window selector) ----
+                case "window.new": return _windows is null ? Err("multi-window unavailable") : Ok(_windows.WindowNew(GetString(args, "name") ?? target));
+                case "window.list": return _windows is null ? Err("multi-window unavailable") : HandleWindowList();
+                case "window.select": return _windows is null ? Err("multi-window unavailable") : (_windows.WindowSelect(target) ? Ok("selected") : Err("window not found"));
+                case "window.close": return _windows is null ? Err("multi-window unavailable") : (_windows.WindowClose(target) ? Ok("closed") : Err("window not found"));
+                case "window.delete": return _windows is null ? Err("multi-window unavailable") : (_windows.WindowDelete(target) ? Ok("deleted") : Err("window not found / last window"));
+                case "window.rename": return _windows is null ? Err("multi-window unavailable") : (_windows.WindowRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("window not found / blank name"));
+                case "window.resize": return _windows is null ? Err("multi-window unavailable") : (_windows.WindowResize(target, GetInt(args, "w", 0), GetInt(args, "h", 0)) ? Ok("resized") : Err("window not found"));
+                case "window.move": return _windows is null ? Err("multi-window unavailable") : (_windows.WindowMove(target, GetInt(args, "x", 0), GetInt(args, "y", 0)) ? Ok("moved") : Err("window not found"));
+                case "window.zoom": return _windows is null ? Err("multi-window unavailable") : (_windows.WindowZoom(target) ? Ok("zoomed") : Err("window not found"));
+            }
+
+            // Content verbs act on the target window's host (default = frontmost).
+            ISessionHost host = _windows is null ? _host : (_windows.ResolveWindow(windowSel) ?? _host);
+            if (windowSel is not null && _windows is not null && _windows.ResolveWindow(windowSel) is null)
+                return Err("window not found: " + windowSel);
+
+            switch (cmd)
+            {
+                case "tree": return HandleTree(host);
+                case "session.new": return Ok(host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace"),
                     GetString(args, "command"), GetString(args, "workspace-name"), GetBool(args, "create-workspace")));
-                case "session.select": return _host.SelectSession(target ?? "active") ? Ok("selected") : Err("session not found");
-                case "session.close": return _host.CloseSession(target ?? "active") ? Ok("closed") : Err("session not found");
-                case "workspace.new": return Ok(_host.NewWorkspace(GetString(args, "name")));
-                case "font": return _host.SetFontSize(target, GetString(args, "op") ?? "") ? Ok("font") : Err("session not found");
+                case "session.select": return host.SelectSession(target ?? "active") ? Ok("selected") : Err("session not found");
+                case "session.close": return host.CloseSession(target ?? "active") ? Ok("closed") : Err("session not found");
+                case "workspace.new": return Ok(host.NewWorkspace(GetString(args, "name")));
+                case "font": return host.SetFontSize(target, GetString(args, "op") ?? "") ? Ok("font") : Err("session not found");
 
                 // ---- Wave A1: verb parity ----
-                case "session.go": _host.SessionGo(GetString(args, "dir") ?? "next"); return Ok("go");
+                case "session.go": host.SessionGo(GetString(args, "dir") ?? "next"); return Ok("go");
                 case "session.move":
                     return (GetString(args, "workspace") is { } wsMove
-                        ? _host.SessionToWorkspace(target, wsMove)
-                        : _host.SessionReorder(target, GetString(args, "dir") ?? "down"))
+                        ? host.SessionToWorkspace(target, wsMove)
+                        : host.SessionReorder(target, GetString(args, "dir") ?? "down"))
                         ? Ok("moved") : Err("not found");
-                case "workspace.rename": return _host.WorkspaceRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("workspace not found");
-                case "workspace.delete": return _host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found");
-                case "workspace.select": return _host.WorkspaceSelect(target) ? Ok("selected") : Err("workspace not found");
-                case "workspace.move": return _host.WorkspaceReorder(target, GetString(args, "dir") ?? "down") ? Ok("moved") : Err("workspace not found");
-                case "session.split": _host.Split(GetString(args, "op") ?? "toggle"); return Ok("split");
-                case "session.focus": _host.FocusPaneDir(GetString(args, "dir") ?? "right"); return Ok("focus");
+                case "workspace.rename": return host.WorkspaceRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("workspace not found");
+                case "workspace.delete": return host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found");
+                case "workspace.select": return host.WorkspaceSelect(target) ? Ok("selected") : Err("workspace not found");
+                case "workspace.move": return host.WorkspaceReorder(target, GetString(args, "dir") ?? "down") ? Ok("moved") : Err("workspace not found");
+                case "session.split": host.Split(GetString(args, "op") ?? "toggle"); return Ok("split");
+                case "session.focus": host.FocusPaneDir(GetString(args, "dir") ?? "right"); return Ok("focus");
                 case "session.resize":
                     {
                         double? ratio = null;
                         if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("ratio", out var rv) && rv.TryGetDouble(out var rd)) ratio = rd;
-                        _host.ResizeSplit(ratio, GetInt(args, "grow-left", 0), GetInt(args, "grow-right", 0));
+                        host.ResizeSplit(ratio, GetInt(args, "grow-left", 0), GetInt(args, "grow-right", 0));
                         return Ok("resized");
                     }
-                case "theme.list": return Ok(string.Join("\n", _host.ThemeList()));
-                case "theme.set": return _host.ThemeSet(GetString(args, "name") ?? "") ? Ok("theme set") : Err("theme not found");
-                case "keymap.reload": return Ok(_host.KeymapReload());
-                case "restore.clear": return Ok(_host.RestoreClear());
-                case "config.set": return Ok(_host.ConfigSet(GetString(args, "key") ?? "", GetString(args, "value") ?? ""));
-                case "config.get": return Ok(_host.ConfigGet(GetString(args, "key") ?? ""));
-                case "config.list": return Ok(_host.ConfigList());
-                case "settings.open": return Ok(_host.SettingsOpen());
-                case "sidebar": _host.SidebarOp(GetString(args, "op") ?? "toggle"); return Ok("sidebar");
-                case "session.copy": return Ok(_host.SessionCopy(target)); // selection text (host-side), "" if none
-                case "selection.all": return Ok(_host.SelectionAll(target));
-                case "selection.copy": return Ok(_host.SelectionCopy(target));      // -> Windows clipboard
-                case "selection.clear": return Ok(_host.SelectionClear(target));
-                case "selection.finalize": return Ok(_host.SelectionFinalize(target)); // copy-on-select path (testing)
-                case "session.paste": return Ok(_host.SessionPaste(target, GetString(args, "text")));
-                case "session.search": return Ok(_host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
-                case "session.scratch": return _host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
-                case "quick": _host.Quick(GetString(args, "op") ?? "toggle"); return Ok("quick");
+                case "theme.list": return Ok(string.Join("\n", host.ThemeList()));
+                case "theme.set": return host.ThemeSet(GetString(args, "name") ?? "") ? Ok("theme set") : Err("theme not found");
+                case "keymap.reload": return Ok(host.KeymapReload());
+                case "restore.clear": return Ok(host.RestoreClear());
+                case "config.set": return Ok(host.ConfigSet(GetString(args, "key") ?? "", GetString(args, "value") ?? ""));
+                case "config.get": return Ok(host.ConfigGet(GetString(args, "key") ?? ""));
+                case "config.list": return Ok(host.ConfigList());
+                case "settings.open": return Ok(host.SettingsOpen());
+                case "sidebar": host.SidebarOp(GetString(args, "op") ?? "toggle"); return Ok("sidebar");
+                case "session.copy": return Ok(host.SessionCopy(target)); // selection text (host-side), "" if none
+                case "selection.all": return Ok(host.SelectionAll(target));
+                case "selection.copy": return Ok(host.SelectionCopy(target));      // -> Windows clipboard
+                case "selection.clear": return Ok(host.SelectionClear(target));
+                case "selection.finalize": return Ok(host.SelectionFinalize(target)); // copy-on-select path (testing)
+                case "session.paste": return Ok(host.SessionPaste(target, GetString(args, "text")));
+                case "session.search": return Ok(host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
+                case "session.scratch": return host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
+                case "quick": host.Quick(GetString(args, "op") ?? "toggle"); return Ok("quick");
                 case "session.overlay":
-                    return Ok(_host.SessionOverlay(target, GetString(args, "action") ?? "open",
+                    return Ok(host.SessionOverlay(target, GetString(args, "action") ?? "open",
                         GetString(args, "command"), GetInt(args, "size-percent", 0),
                         GetBool(args, "wait"), GetBool(args, "block")));
                 case "notify":
-                    return _host.Notify(target, GetString(args, "title"), GetString(args, "body") ?? "")
+                    return host.Notify(target, GetString(args, "title"), GetString(args, "body") ?? "")
                         ? Ok("notified") : Err("session not found");
                 case "session.flag":
-                    return _host.SessionFlag(target, GetString(args, "op") ?? "toggle") ? Ok("flag") : Err("session not found");
-                case "workspace.focus": _host.WorkspaceFocus(GetString(args, "op") ?? "toggle"); return Ok("focus");
-                case "session.switch": return Ok(_host.SessionSwitch(GetString(args, "op") ?? "advance"));
+                    return host.SessionFlag(target, GetString(args, "op") ?? "toggle") ? Ok("flag") : Err("session not found");
+                case "workspace.focus": host.WorkspaceFocus(GetString(args, "op") ?? "toggle"); return Ok("focus");
+                case "session.switch": return Ok(host.SessionSwitch(GetString(args, "op") ?? "advance"));
                 case "command.run":
                 {
                     string? nameOrCmd = GetString(args, "name") ?? GetString(args, "command");
                     if (string.IsNullOrWhiteSpace(nameOrCmd)) return Err("command.run needs args.name or args.command");
-                    return Ok(_host.CommandRun(nameOrCmd!, GetString(args, "mode")));
+                    return Ok(host.CommandRun(nameOrCmd!, GetString(args, "mode")));
                 }
-                case "command.list": return Ok(_host.CommandList());
-                case "command.leader": return Ok(_host.CommandLeader(GetString(args, "op") ?? "state"));
+                case "command.list": return Ok(host.CommandList());
+                case "command.leader": return Ok(host.CommandLeader(GetString(args, "op") ?? "state"));
             }
 
             // Session-targeted commands.
-            var s = _host.Resolve(target);
+            var s = host.Resolve(target);
             if (s is null) return Err("no session");
             return cmd switch
             {
@@ -179,10 +210,27 @@ public sealed class ControlServer : IDisposable
         catch (Exception ex) { return Err(ex.Message); }
     }
 
-    private string HandleTree()
+    private string HandleWindowList()
+    {
+        var sb = new StringBuilder("{\"windows\":[");
+        var wins = _windows!.Windows();
+        for (int i = 0; i < wins.Count; i++)
+        {
+            var w = wins[i];
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"id\":").Append(JsonSerializer.Serialize(w.Id))
+              .Append(",\"name\":").Append(JsonSerializer.Serialize(w.Name))
+              .Append(",\"open\":").Append(w.Open ? "true" : "false")
+              .Append(",\"active\":").Append(w.Active ? "true" : "false").Append('}');
+        }
+        sb.Append("]}");
+        return OkRaw(sb.ToString());
+    }
+
+    private string HandleTree(ISessionHost host)
     {
         var sb = new StringBuilder("{\"workspaces\":[");
-        var tree = _host.Tree();
+        var tree = host.Tree();
         for (int w = 0; w < tree.Count; w++)
         {
             var ws = tree[w];

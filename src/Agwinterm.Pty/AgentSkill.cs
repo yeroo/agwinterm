@@ -111,6 +111,18 @@ public static class AgentSkill
           recency switcher programmatically (advance previews the next recent session; commit lands it). The
           interactive equivalent is holding Ctrl and tapping Tab (Shift+Tab walks back, Esc cancels).
 
+        ## Windows (multi-window)
+        Each window is independent: its own workspace/session tree + sidebar. Sessions never move
+        between windows — instead you TARGET a window.
+        - `agwintermctl window list`                             — id (short), name, whether open + which is active.
+        - `agwintermctl window new [--name <name>]`              — open a new window (seeded with 1 workspace + 1 session).
+        - `agwintermctl window select|close|delete|rename <w> [name]` · `window resize <w> W H` · `window move <w> X Y` · `window zoom <w>`
+          (`<w>` = a window id, a unique id prefix, or `active`; the last window can't be deleted).
+        - `--window <id|prefix|active>` targets a specific window on ANY content verb, e.g.
+          `agwintermctl session new --window <prefix> --name build` or `agwintermctl tree --window active`.
+          Omit it to act on the frontmost window. Your own window is `AGWINTERM_WINDOW_ID`.
+        - App-global verbs ignore `--window`: `config`, `theme`, `settings`, `keymap`, `install`.
+
         ## Custom commands (keymap.conf) & the launcher
         Define commands in keymap.conf, then run them by chord (Ctrl+Shift+O palette) or the control API:
         - `command <Label> = <text>`                    — default "send" mode: types the text into the active session

@@ -229,6 +229,36 @@ switch (area)
         if (sub is not ("inc" or "dec" or "reset")) { Console.Error.WriteLine("usage: agwintermctl font inc|dec|reset [--target ID]"); return 2; }
         cargs["op"] = sub;
         break;
+    case "window":
+        // agwintermctl window new|list|select|close|delete|rename|resize|move|zoom [<window>] ...
+        cmd = "window." + sub;
+        switch (sub)
+        {
+            case "new":
+                if (Opt("name") is { } wn) cargs["name"] = wn;
+                else if (rest.Count > 0) cargs["name"] = string.Join(' ', rest);
+                break;
+            case "list": break;
+            case "select": case "close": case "delete": case "zoom":
+                target = rest.Count > 0 ? rest[0] : (Opt("target") ?? "active");
+                break;
+            case "rename":
+                if (rest.Count < 2) { Console.Error.WriteLine("window rename needs <window> <name>"); return 2; }
+                target = rest[0]; cargs["name"] = string.Join(' ', rest.Skip(1));
+                break;
+            case "resize":
+                target = rest.Count > 0 ? rest[0] : "active";
+                if (int.TryParse(rest.Count > 1 ? rest[1] : Opt("w"), out var rw)) cargs["w"] = rw;
+                if (int.TryParse(rest.Count > 2 ? rest[2] : Opt("h"), out var rh)) cargs["h"] = rh;
+                break;
+            case "move":
+                target = rest.Count > 0 ? rest[0] : "active";
+                if (int.TryParse(rest.Count > 1 ? rest[1] : Opt("x"), out var mx)) cargs["x"] = mx;
+                if (int.TryParse(rest.Count > 2 ? rest[2] : Opt("y"), out var my)) cargs["y"] = my;
+                break;
+            default: Console.Error.WriteLine($"unknown window command '{sub}'"); return 2;
+        }
+        break;
     case "image" when sub == "show":
         cmd = "image.show";
         target = DefaultTarget();
@@ -244,6 +274,8 @@ switch (area)
 
 var req = new Dictionary<string, object?> { ["cmd"] = cmd };
 if (!string.IsNullOrEmpty(target)) req["target"] = target;
+// --window <id|prefix|active> targets a specific window for content verbs (window.* use the positional target).
+if (area != "window" && Opt("window") is { } winSel) req["window"] = winSel;
 if (cargs.Count > 0) req["args"] = cargs;
 string requestJson = JsonSerializer.Serialize(req);
 

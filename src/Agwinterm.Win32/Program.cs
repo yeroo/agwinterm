@@ -20,7 +20,7 @@ namespace Agwinterm.Win32;
 /// the PTY, with no framework focus model in the way. Rendering mirrors the WinUI
 /// OnDraw path but on an ID2D1HwndRenderTarget.
 /// </summary>
-internal partial class Program : ISessionHost
+internal partial class Program : ISessionHost, IWindowHost
 {
     private const float PadX = 8f;
     private const float PadY = 6f;
@@ -35,6 +35,33 @@ internal partial class Program : ISessionHost
     private static readonly Dictionary<IntPtr, Program> _registry = new();
     private static Program? _creating;   // instance whose window is mid-CreateWindowExW (pre-registry)
     internal static Program Frontmost = null!;
+
+    // ---- Multi-window (Wave F1b): each open window is one Program instance with its own tree.
+    // The WindowLibrary is the app-scope index (all windows, open + closed) + the frontmost id.
+    private static IntPtr _hInstance;
+    private sealed class WinMeta
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public bool IsOpen { get; set; }
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int W { get; set; }
+        public int H { get; set; }
+        public bool Max { get; set; }
+    }
+    private sealed class WindowsIndexFile
+    {
+        public int Version { get; set; } = 1;
+        public string? Frontmost { get; set; }
+        public List<WinMeta> Windows { get; set; } = new();
+    }
+    private static readonly List<WinMeta> _windowIndex = new();      // guarded by lock(_windowIndex)
+    private static readonly Dictionary<string, Program> _byId = new();
+    private static string? _frontmostId;
+
+    internal string Id { get; set; } = Guid.NewGuid().ToString();    // this window's stable id
+    internal string WinName { get; set; } = "";                      // this window's custom name (shows in the title)
 
     private IntPtr _hwnd;
     private static ID2D1Factory _d2d = null!;
@@ -60,7 +87,6 @@ internal partial class Program : ISessionHost
     private static ControlServer? _control;
 
     // ---- Multi-session model (agterm workspaces -> sessions), mirrors the WinUI shell ----
-    private static readonly string _windowId = Guid.NewGuid().ToString();
     private readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock(_workspaces)
     private bool _restoring;                              // suppress SaveState while rebuilding from disk
     private Ses? _active;
@@ -128,7 +154,7 @@ internal partial class Program : ISessionHost
     private const int SelAutoTimer = 7;   // WM_TIMER id for drag-autoscroll ticks
 
     // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
-    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom }
+    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom, Windows }
     private sealed class PalItem
     {
         public required string Label;
@@ -293,11 +319,25 @@ internal partial class Program : ISessionHost
         _iconFont = NewChromeFormat("Segoe Fluent Icons", 14f, center: true);
         _iconSmall = NewChromeFormat("Segoe Fluent Icons", 10.5f, center: true);
 
-        // The single window (its own instance, routed by HWND). Frontmost is what un-scoped
-        // control verbs act on; the registry maps HWND -> instance for the WindowProc trampoline.
-        var win = new Program();
-        Frontmost = win;
-        win.Boot(hInstance);
+        // Multi-window: load the window library (migrating a legacy state.json), then open every
+        // window that was open at last quit. Each open window is its own Program instance routed by
+        // HWND; Frontmost is what un-scoped control verbs act on.
+        _hInstance = hInstance;
+        LoadOrMigrateIndex();
+        List<WinMeta> toOpen;
+        lock (_windowIndex)
+        {
+            toOpen = _windowIndex.Where(m => m.IsOpen).ToList();
+            if (toOpen.Count == 0 && _windowIndex.Count > 0) { _windowIndex[0].IsOpen = true; toOpen.Add(_windowIndex[0]); }
+        }
+        Program? front = null;
+        foreach (var m in toOpen)
+        {
+            var w = CreateWindowInstance(m);
+            if (m.Id == _frontmostId) front = w;
+            front ??= w;
+        }
+        Frontmost = front!;
 
         while (GetMessageW(out MSG msg, IntPtr.Zero, 0, 0) > 0)
         {
@@ -312,7 +352,8 @@ internal partial class Program : ISessionHost
         RecomputeChrome();
         MeasureCell();
 
-        LoadGeometry(); // restore saved window size/position (applied at creation; shown below)
+        // Window size/position comes from the WindowLibrary entry (set by CreateWindowInstance);
+        // _geoValid/_geo* are already populated for a restored/positioned window.
         // Created hidden (no WS_VISIBLE) so we can position it before the first paint; shown at the end.
         _creating = this;                    // so the WindowProc trampoline can resolve us during CreateWindowExW
         _hwnd = _geoValid
@@ -460,8 +501,12 @@ internal partial class Program : ISessionHost
 
     private void StartSession()
     {
-        _control = new ControlServer(this, "agwinterm");
-        _control.Start();
+        // One control server for the whole app (one pipe); it resolves --window through the library.
+        if (_control is null)
+        {
+            _control = new ControlServer(this, this, "agwinterm");
+            _control.Start();
+        }
         if (TryRestoreState()) return;
         var ws = CreateWorkspace(Guid.NewGuid().ToString(), null);
         CreateSession(Guid.NewGuid().ToString(), null, null, ws, makeActive: true);
@@ -528,7 +573,7 @@ internal partial class Program : ISessionHost
             ["AGWINTERM_PIPE"] = _control!.PipeName,
             ["AGWINTERM_SESSION_ID"] = paneId,       // each pane is independently targetable
             ["AGWINTERM_WORKSPACE_ID"] = ws.Id,
-            ["AGWINTERM_WINDOW_ID"] = _windowId,
+            ["AGWINTERM_WINDOW_ID"] = Id,
         };
         if (extraEnv is not null) foreach (var kv in extraEnv) env[kv.Key] = kv.Value; // custom-command $AGW_* context
         if (!string.IsNullOrWhiteSpace(command) && interactive)
@@ -1149,6 +1194,145 @@ internal partial class Program : ISessionHost
             _syncFn = null;
             return _syncResult;
         }
+    }
+
+    // ---- IWindowHost bridge (Wave F1b): app-level window management for the control API. Content
+    // verbs resolve through ResolveWindow(--window); window.* verbs act on the library. These use
+    // static library state + Frontmost, so they work regardless of which instance the server holds. ----
+    public ISessionHost? ResolveWindow(string? selector)
+    {
+        if (string.IsNullOrEmpty(selector) || selector == "active") return Frontmost;
+        return ResolveOpen(selector);
+    }
+
+    public IReadOnlyList<WindowSnapshot> Windows()
+    {
+        lock (_windowIndex)
+            return _windowIndex.Select(m => new WindowSnapshot(m.Id, m.Name, m.IsOpen, m.Id == _frontmostId)).ToList();
+    }
+
+    public string WindowNew(string? name)
+    {
+        string id = Guid.NewGuid().ToString();
+        Frontmost.Post(() =>
+        {
+            var m = new WinMeta { Id = id, Name = name ?? "", IsOpen = true };
+            CascadeGeometry(m);
+            lock (_windowIndex) _windowIndex.Add(m);
+            var win = CreateWindowInstance(m);
+            // The new window becomes frontmost; set both the static instance and the id together so the
+            // library's "active" flag and un-scoped (--window active) content verbs stay consistent even
+            // if the OS doesn't deliver WM_ACTIVATE (e.g. created while another process holds foreground).
+            Frontmost = win; _frontmostId = id;
+            SetForegroundWindow(win._hwnd);
+            SaveIndex();
+        });
+        return id;
+    }
+
+    public bool WindowSelect(string? selector)
+    {
+        var p = ResolveOpen(selector);
+        if (p is null) return false;
+        Frontmost.Post(() => { if (IsIconic(p._hwnd)) ShowWindow(p._hwnd, SW_RESTORE); SetForegroundWindow(p._hwnd); });
+        return true;
+    }
+
+    public bool WindowClose(string? selector)
+    {
+        var p = ResolveOpen(selector);
+        if (p is null) return false;
+        Frontmost.Post(() => DestroyWindow(p._hwnd)); // WM_DESTROY does teardown + index bookkeeping
+        return true;
+    }
+
+    public bool WindowDelete(string? selector)
+    {
+        var target = ResolveMeta(selector);
+        if (target is null) return false;
+        lock (_windowIndex) if (_windowIndex.Count <= 1) return false; // never delete the last window
+        Frontmost.Post(() =>
+        {
+            Program? open; lock (_windowIndex) _byId.TryGetValue(target.Id, out open);
+            if (open is not null) DestroyWindow(open._hwnd);
+            lock (_windowIndex)
+            {
+                _windowIndex.RemoveAll(m => m.Id == target.Id);
+                if (_frontmostId == target.Id) _frontmostId = _windowIndex.FirstOrDefault(m => m.IsOpen)?.Id ?? _windowIndex.FirstOrDefault()?.Id;
+            }
+            try { File.Delete(Path.Combine(AppDir, "windows", target.Id + ".json")); } catch { }
+            SaveIndex();
+        });
+        return true;
+    }
+
+    public bool WindowRename(string? selector, string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        var target = ResolveMeta(selector);
+        if (target is null) return false;
+        Frontmost.Post(() =>
+        {
+            lock (_windowIndex) target.Name = name;
+            if (_byId.TryGetValue(target.Id, out var p)) { p.WinName = name; p.RequestRedraw(); }
+            SaveIndex();
+        });
+        return true;
+    }
+
+    public bool WindowResize(string? selector, int w, int h)
+    {
+        var p = ResolveOpen(selector);
+        if (p is null || w <= 0 || h <= 0) return false;
+        Frontmost.Post(() => { SetWindowPos(p._hwnd, IntPtr.Zero, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
+        return true;
+    }
+
+    public bool WindowMove(string? selector, int x, int y)
+    {
+        var p = ResolveOpen(selector);
+        if (p is null) return false;
+        Frontmost.Post(() => { SetWindowPos(p._hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
+        return true;
+    }
+
+    public bool WindowZoom(string? selector)
+    {
+        var p = ResolveOpen(selector);
+        if (p is null) return false;
+        Frontmost.Post(() => { ShowWindow(p._hwnd, IsZoomed(p._hwnd) ? SW_RESTORE : SW_MAXIMIZE); p.SaveState(); });
+        return true;
+    }
+
+    private static Program? ResolveOpen(string? selector)
+    {
+        lock (_windowIndex)
+        {
+            if (string.IsNullOrEmpty(selector) || selector == "active") return Frontmost;
+            if (_byId.TryGetValue(selector, out var exact)) return exact;
+            foreach (var kv in _byId) if (kv.Key.StartsWith(selector)) return kv.Value;
+        }
+        return null;
+    }
+
+    private static WinMeta? ResolveMeta(string? selector)
+    {
+        lock (_windowIndex)
+        {
+            if (string.IsNullOrEmpty(selector) || selector == "active")
+                return _windowIndex.FirstOrDefault(m => m.Id == _frontmostId) ?? _windowIndex.FirstOrDefault();
+            return _windowIndex.FirstOrDefault(m => m.Id == selector) ?? _windowIndex.FirstOrDefault(m => m.Id.StartsWith(selector));
+        }
+    }
+
+    private static void CascadeGeometry(WinMeta m)
+    {
+        try
+        {
+            if (Frontmost is not null && GetWindowRect(Frontmost._hwnd, out RECT r))
+            { m.X = r.left + 32; m.Y = r.top + 32; m.W = Math.Max(400, r.right - r.left); m.H = Math.Max(300, r.bottom - r.top); }
+        }
+        catch { }
     }
 
     // ---- ISessionHost bridge (Program is the host) so the control server / agwintermctl drive
@@ -1848,12 +2032,36 @@ internal partial class Program : ISessionHost
                     return IntPtr.Zero;
                 }
 
+            case WM_ACTIVATE:
+                if (LoWord(wParam) != 0 && _frontmostId != Id) // WA_ACTIVE/WA_CLICKACTIVE -> this window is frontmost
+                {
+                    Frontmost = this; _frontmostId = Id; SaveIndex();
+                }
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
+
             case WM_DESTROY:
                 RemoveTrayIcon();                 // drop the shell tray balloon icon
-                SaveState(captureCommands: true); // persist the tree (+ foreground commands) before tearing down sessions
+                SaveState(captureCommands: true); // persist this window's tree before tearing down its sessions
                 foreach (var s in AllSessions()) { foreach (var p in s.Panes) { try { p.S.Dispose(); } catch { } } try { s.Scratch?.S.Dispose(); } catch { } try { s.Overlay?.S.Dispose(); } catch { } }
                 try { _quick?.S.Dispose(); } catch { }
-                PostQuitMessage(0);
+                bool lastWindow;
+                lock (_windowIndex)
+                {
+                    _byId.Remove(Id);
+                    int otherOpen = _windowIndex.Count(m => m.IsOpen && m.Id != Id);
+                    lastWindow = otherOpen == 0;
+                    var meta = _windowIndex.FirstOrDefault(m => m.Id == Id);
+                    // Explicit close (others remain) -> mark closed so it won't auto-reopen. App quit
+                    // (this was the last open window) -> keep IsOpen=true so it reopens next launch.
+                    if (meta is not null && !lastWindow) meta.IsOpen = false;
+                    if (ReferenceEquals(Frontmost, this))
+                    {
+                        var nf = _byId.Values.FirstOrDefault();
+                        if (nf is not null) { Frontmost = nf; _frontmostId = nf.Id; }
+                    }
+                }
+                SaveIndex();
+                if (lastWindow) PostQuitMessage(0);
                 return IntPtr.Zero;
         }
         return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -1909,6 +2117,9 @@ internal partial class Program : ISessionHost
             case "action_palette": TogglePalette(PaletteKind.Actions); break;
             case "attention_list": TogglePalette(PaletteKind.Attention); break;
             case "custom_palette": TogglePalette(PaletteKind.Custom); break;
+            case "new_window": WindowNew(null); break;
+            case "close_window": DestroyWindow(_hwnd); break; // WM_DESTROY tears down + updates the library
+            case "switch_window": TogglePalette(PaletteKind.Windows); break;
             case "next_attention": GoToNextAttention(1); break;
             case "previous_attention": GoToNextAttention(-1); break;
             case "reload_keymap": ReloadKeymap(); break;
@@ -3745,6 +3956,23 @@ internal partial class Program : ISessionHost
         _palAll.Clear();
         switch (_palette)
         {
+            case PaletteKind.Windows:
+            {
+                foreach (var w in Windows())
+                {
+                    var sel = w.Id;
+                    string label = string.IsNullOrEmpty(w.Name) ? w.Id[..Math.Min(8, w.Id.Length)] : w.Name;
+                    _palAll.Add(new PalItem
+                    {
+                        Label = label + (w.Active ? "  (active)" : ""),
+                        Secondary = (w.Open ? "open" : "closed") + "  ·  " + w.Id[..Math.Min(8, w.Id.Length)],
+                        Search = $"{label} {w.Id}",
+                        Run = () => WindowSelect(sel),
+                    });
+                }
+                if (_palAll.Count == 0) _palAll.Add(new PalItem { Label = "No windows", Run = null });
+                break;
+            }
             case PaletteKind.Sessions:
             {
                 foreach (var s in AllSessions())
@@ -3767,6 +3995,9 @@ internal partial class Program : ISessionHost
                 void A(string label, string hint, Action run) => _palAll.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
                 A("New Session", "Ctrl+Shift+T", () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true));
                 A("New Workspace", "Ctrl+Shift+N", () => CreateWorkspace(Guid.NewGuid().ToString(), null));
+                A("New Window", "Ctrl+Alt+N", () => WindowNew(null));
+                A("Close Window", "", () => DestroyWindow(_hwnd));
+                A("Switch Window…", "", () => TogglePalette(PaletteKind.Windows));
                 A("Rename Active Session", "F2", () => { if (_active is not null) StartRename(_active); });
                 A("Close Pane / Session", "Ctrl+Shift+W", CloseActivePane);
                 A("Split Pane", "Ctrl+D", SplitActivePane);
@@ -3933,7 +4164,7 @@ internal partial class Program : ISessionHost
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = _palPanel, RadiusX = 10f, RadiusY = 10f }, brush, 1f);
 
         // Query line (placeholder when empty) + blinking caret.
-        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Custom => "Run command…", _ => "Attention" };
+        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Custom => "Run command…", PaletteKind.Windows => "Switch window…", _ => "Attention" };
         brush.Color = _palQuery.Length > 0 ? ChromeText : ChromeDim;
         rt.DrawText(_palQuery.Length > 0 ? _palQuery : placeholder, _uiFont, new Rect(px + 16f, py + 9f, pw - 32f, queryH - 10f), brush);
         if (_cursorOn && _palQuery.Length > 0)
@@ -4705,8 +4936,86 @@ internal partial class Program : ISessionHost
 
     private static readonly JsonSerializerOptions _stateJson = new() { WriteIndented = true };
 
-    private static string StatePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "state.json");
+    private static string AppDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm");
+    private static string WindowsIndexPath => Path.Combine(AppDir, "windows.json");
+    private static string LegacyStatePath => Path.Combine(AppDir, "state.json");
+    // Per-window tree snapshot. Multi-window (F1b): each window persists to windows/<id>.json.
+    private string StatePath => Path.Combine(AppDir, "windows", Id + ".json");
+
+    /// <summary>Load the window library index; migrate a legacy single-window state.json; ensure it's non-empty.</summary>
+    private static void LoadOrMigrateIndex()
+    {
+        lock (_windowIndex)
+        {
+            _windowIndex.Clear();
+            try
+            {
+                if (File.Exists(WindowsIndexPath))
+                {
+                    var idx = JsonSerializer.Deserialize<WindowsIndexFile>(File.ReadAllText(WindowsIndexPath));
+                    if (idx?.Windows is { Count: > 0 })
+                    {
+                        _windowIndex.AddRange(idx.Windows.Where(m => !string.IsNullOrEmpty(m.Id)));
+                        _frontmostId = idx.Frontmost;
+                    }
+                }
+            }
+            catch { _windowIndex.Clear(); }
+
+            if (_windowIndex.Count == 0)
+            {
+                // Migrate a legacy state.json into windows/<id>.json, or seed a fresh window.
+                var m = new WinMeta { Id = Guid.NewGuid().ToString(), Name = "", IsOpen = true };
+                try
+                {
+                    if (File.Exists(LegacyStatePath))
+                    {
+                        var st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(LegacyStatePath));
+                        if (st is not null)
+                        {
+                            m.X = st.WindowX; m.Y = st.WindowY; m.W = st.WindowWidth; m.H = st.WindowHeight; m.Max = st.WindowMaximized;
+                        }
+                        Directory.CreateDirectory(Path.Combine(AppDir, "windows"));
+                        File.Copy(LegacyStatePath, Path.Combine(AppDir, "windows", m.Id + ".json"), overwrite: true);
+                        try { File.Move(LegacyStatePath, LegacyStatePath + ".migrated", overwrite: true); } catch { }
+                    }
+                }
+                catch { }
+                _windowIndex.Add(m);
+                _frontmostId = m.Id;
+            }
+            if (!_windowIndex.Any(w => w.IsOpen)) _windowIndex[0].IsOpen = true;
+            if (_frontmostId is null || !_windowIndex.Any(w => w.Id == _frontmostId))
+                _frontmostId = _windowIndex.First(w => w.IsOpen).Id;
+        }
+    }
+
+    /// <summary>Persist the window library index (atomic). Best-effort.</summary>
+    private static void SaveIndex()
+    {
+        try
+        {
+            List<WinMeta> copy;
+            lock (_windowIndex) copy = _windowIndex.Select(m => new WinMeta { Id = m.Id, Name = m.Name, IsOpen = m.IsOpen, X = m.X, Y = m.Y, W = m.W, H = m.H, Max = m.Max }).ToList();
+            var idx = new WindowsIndexFile { Version = 1, Frontmost = _frontmostId, Windows = copy };
+            Directory.CreateDirectory(AppDir);
+            string tmp = WindowsIndexPath + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(idx, _stateJson));
+            File.Move(tmp, WindowsIndexPath, overwrite: true);
+        }
+        catch { }
+    }
+
+    /// <summary>Create a Program instance for a library entry and boot its window (UI thread). Seeds if no tree file exists.</summary>
+    private static Program CreateWindowInstance(WinMeta m)
+    {
+        var win = new Program { Id = m.Id, WinName = m.Name };
+        if (m.W > 0 && m.H > 0) { win._geoX = m.X; win._geoY = m.Y; win._geoW = m.W; win._geoH = m.H; win._geoMax = m.Max; win._geoValid = true; }
+        lock (_windowIndex) { _byId[m.Id] = win; if (!_windowIndex.Any(x => x.Id == m.Id)) _windowIndex.Add(m); m.IsOpen = true; }
+        win.Boot(_hInstance);
+        return win;
+    }
 
     private List<Pane> PanesOf(Ses s) { lock (_workspaces) return s.Panes.ToList(); }
 
@@ -4848,6 +5157,19 @@ internal partial class Program : ISessionHost
             string tmp = path + ".tmp";
             File.WriteAllText(tmp, JsonSerializer.Serialize(st, _stateJson));
             File.Move(tmp, path, overwrite: true); // atomic replace so a crash never leaves a truncated file
+
+            // Mirror name + geometry into the window-library entry so windows.json can position the
+            // window at next launch without loading the per-window tree first.
+            lock (_windowIndex)
+            {
+                var meta = _windowIndex.FirstOrDefault(m => m.Id == Id);
+                if (meta is not null)
+                {
+                    meta.Name = WinName;
+                    if (st.WindowWidth > 0) { meta.X = st.WindowX; meta.Y = st.WindowY; meta.W = st.WindowWidth; meta.H = st.WindowHeight; meta.Max = st.WindowMaximized; }
+                }
+            }
+            SaveIndex();
         }
         catch { /* persistence is best-effort */ }
     }
@@ -4870,30 +5192,6 @@ internal partial class Program : ISessionHost
             st.WindowX = r.left; st.WindowY = r.top;
             st.WindowWidth = r.right - r.left; st.WindowHeight = r.bottom - r.top;
             st.WindowMaximized = wp.showCmd == SW_MAXIMIZE; // SW_SHOWMAXIMIZED == 3
-        }
-        catch { }
-    }
-
-    /// <summary>Read saved window geometry (best-effort, no side effects) and clamp it onto the visible desktop.</summary>
-    private void LoadGeometry()
-    {
-        try
-        {
-            string path = StatePath;
-            if (!File.Exists(path)) return;
-            var st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(path));
-            if (st is null || st.WindowWidth <= 0 || st.WindowHeight <= 0) return;
-            int w = Math.Max(400, st.WindowWidth), h = Math.Max(300, st.WindowHeight);
-            int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-            int x = st.WindowX, y = st.WindowY;
-            if (vw > 0 && vh > 0)
-            {
-                w = Math.Min(w, vw); h = Math.Min(h, vh);
-                x = Math.Clamp(x, vx, vx + vw - 100);   // keep at least a sliver on-screen
-                y = Math.Clamp(y, vy, vy + vh - 100);
-            }
-            _geoX = x; _geoY = y; _geoW = w; _geoH = h; _geoMax = st.WindowMaximized; _geoValid = true;
         }
         catch { }
     }
