@@ -82,6 +82,11 @@ internal static class Program
     private static int _capPressed;   // HT* of a pressed caption button (for click + pressed paint)
     private static string? _toastText;
 
+    // Terminal text selection drag + multi-click (word/line) tracking.
+    private static bool _selecting;       // left-drag selecting text in the content region
+    private static bool _selMoved;        // moved past a cell during the drag (distinguishes click from select)
+    private static int _lastClickMs, _clickCount, _lastClickLine, _lastClickCol;
+
     // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
     private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom }
     private sealed class PalItem
@@ -140,6 +145,10 @@ internal static class Program
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
+        // Text selection (absolute line index: [0..HistoryCount) history, then the live grid rows).
+        public bool HasSel;
+        public int SelAncLine, SelAncCol, SelFocLine, SelFocCol;
+        public void ClearSel() => HasSel = false;
     }
 
     private sealed class Ses
@@ -392,8 +401,9 @@ internal static class Program
         var session = new TerminalSession(cols, rows);
         session.Emulator.ScrollbackMax = _config.Scrollback;
         var pane = new Pane { Id = paneId, S = session, StartCwd = cwd, FontSize = fontSize };
-        // New output snaps this pane back to the live bottom (so output jumps you out of scrollback).
-        session.OutputReceived += () => { pane.ScrollOffset = 0; RequestRedraw(); };
+        // New output snaps this pane back to the live bottom (so output jumps you out of scrollback)
+        // and clears any selection (its absolute coordinates would otherwise shift under new history).
+        session.OutputReceived += () => { pane.ScrollOffset = 0; pane.ClearSel(); RequestRedraw(); };
         session.StatusChanged += RequestRedraw;
         var env = new Dictionary<string, string>
         {
@@ -875,6 +885,17 @@ internal static class Program
         }
 
         public void SidebarOp(string op) => Post(() => SidebarOpInternal(op));
+
+        public string SessionCopy(string? target)
+        {
+            var s = Resolve(target);
+            if (s is null) return "";
+            Pane? pane;
+            lock (_workspaces)
+                pane = _workspaces.SelectMany(w => w.Sessions).SelectMany(x => x.Panes)
+                                  .FirstOrDefault(p => ReferenceEquals(p.S, s));
+            return pane is not null ? SelectionText(pane) : ""; // reads under the session lock; safe off-UI-thread
+        }
     }
 
     private static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -1030,7 +1051,20 @@ internal static class Program
                     int di = DividerAtX(mx, my);
                     if (di >= 0) { _divDragging = true; _divLeft = di; SetCapture(hwnd); return IntPtr.Zero; }
                     FocusPaneAtX(mx);
-                    SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero;
+                    bool shiftDn = KeyDown(VK_SHIFT);
+                    var em0 = _session?.Emulator;
+                    if (em0 is not null && em0.MouseReporting && !shiftDn) { SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero; }
+                    // Text selection (app not grabbing the mouse, or Shift held to override).
+                    if (PaneAt(mx, my) is { } h0)
+                    {
+                        var (line, col) = CellAtPx(h0.pane, h0.ox, h0.oy, h0.cw, h0.ch, mx, my);
+                        if (Environment.TickCount - _lastClickMs < 400 && _clickCount >= 2)  // triple-click -> line
+                        { SelectLine(h0.pane, line); _clickCount = 3; _selMoved = true; }
+                        else { BeginSelect(h0.pane, line, col, shiftDn); _clickCount = 1; }
+                        _lastClickMs = Environment.TickCount;
+                        _selecting = true; SetCapture(hwnd); RequestRedraw();
+                    }
+                    return IntPtr.Zero;
                 }
             case WM_LBUTTONUP:
                 if (_divDragging) { _divDragging = false; ReleaseCapture(); RequestRedraw(); return IntPtr.Zero; }
@@ -1044,6 +1078,12 @@ internal static class Program
                     RequestRedraw();
                     return IntPtr.Zero;
                 }
+                if (_selecting)
+                {
+                    _selecting = false; ReleaseCapture();
+                    if (!_selMoved && _active is not null) { _active.ActivePane.ClearSel(); RequestRedraw(); } // plain click clears
+                    return IntPtr.Zero;
+                }
                 if (InContent(lParam)) { SendMousePx(0, lParam, false); }
                 ReleaseCapture(); return IntPtr.Zero;
 
@@ -1055,11 +1095,26 @@ internal static class Program
                         var item = RowAt(my);
                         if (item is not null) { StartRename(item); return IntPtr.Zero; }
                     }
+                    else if (PaneAt(mx, my) is { } h0)  // double-click selects the word
+                    {
+                        var (line, col) = CellAtPx(h0.pane, h0.ox, h0.oy, h0.cw, h0.ch, mx, my);
+                        SelectWord(h0.pane, line, col);
+                        _clickCount = 2; _lastClickMs = Environment.TickCount; _selMoved = true; _selecting = false;
+                        RequestRedraw();
+                    }
                     return IntPtr.Zero;
                 }
             case WM_MBUTTONDOWN: if (InContent(lParam)) SendMousePx(1, lParam, true); return IntPtr.Zero;
             case WM_MBUTTONUP: if (InContent(lParam)) SendMousePx(1, lParam, false); return IntPtr.Zero;
-            case WM_RBUTTONDOWN: if (InContent(lParam)) SendMousePx(2, lParam, true); return IntPtr.Zero;
+            case WM_RBUTTONDOWN:
+                if (InContent(lParam))
+                {
+                    var em2 = _session?.Emulator;
+                    if (em2 is not null && em2.MouseReporting) SendMousePx(2, lParam, true);
+                    else if (_config.RightClickPaste && _active is not null)
+                        PasteInto(PaneAt(LoWord(lParam), HiWord(lParam))?.pane ?? _active.ActivePane);
+                }
+                return IntPtr.Zero;
             case WM_RBUTTONUP: if (InContent(lParam)) SendMousePx(2, lParam, false); return IntPtr.Zero;
 
             case WM_MOUSEMOVE:
@@ -1072,6 +1127,15 @@ internal static class Program
                             Math.Abs(mx - _pressX) + Math.Abs(my - _pressY) > DragThreshold)
                         { _dragging = true; _dragItem = _pressItem; }
                         if (_dragging) { _dragX = mx; _dragY = my; RequestRedraw(); }
+                        return IntPtr.Zero;
+                    }
+                    if (_selecting && ((long)wParam & MK_LBUTTON) != 0)
+                    {
+                        if (PaneAt(LoWord(lParam), HiWord(lParam)) is { } h0)
+                        {
+                            var (line, col) = CellAtPx(h0.pane, h0.ox, h0.oy, h0.cw, h0.ch, LoWord(lParam), HiWord(lParam));
+                            UpdateSelect(h0.pane, line, col); RequestRedraw();
+                        }
                         return IntPtr.Zero;
                     }
                     var em = _session?.Emulator;
@@ -1116,7 +1180,7 @@ internal static class Program
 
     private static void Send(string s)
     {
-        if (_active is not null) _active.ActivePane.ScrollOffset = 0; // typing snaps back to the live bottom
+        if (_active is not null) { _active.ActivePane.ScrollOffset = 0; _active.ActivePane.ClearSel(); } // typing snaps to bottom, clears selection
         _session?.NotifyActivity();
         _session?.Write(Encoding.UTF8.GetBytes(s));
     }
@@ -1293,6 +1357,162 @@ internal static class Program
         _session?.Write(Encoding.UTF8.GetBytes(seq));
     }
 
+    // ---- Text selection + clipboard ----
+
+    /// <summary>Pane of the active session under a client point + its origin/metrics, or null.</summary>
+    private static (Pane pane, float ox, float oy, float cw, float ch)? PaneAt(int px, int py)
+    {
+        if (_active is null || px < (int)_sidebarW || py < (int)TitleBarH || py >= ClientH() - (int)FooterH) return null;
+        foreach (var (pane, x, y, w, _) in PaneLayout(_active))
+            if (px >= x && px < x + w + DividerW)
+            {
+                var (_, cw, ch) = Metrics(pane.FontSize);
+                return (pane, x, y, cw, ch);
+            }
+        return null;
+    }
+
+    /// <summary>Map a client point to an ABSOLUTE (line,col) in the pane (history + live grid).</summary>
+    private static (int line, int col) CellAtPx(Pane pane, float ox, float oy, float cw, float ch, int px, int py)
+    {
+        var em = pane.S.Emulator;
+        int cols, rows, hist;
+        lock (pane.S.SyncRoot) { cols = em.Screen.Cols; rows = em.Screen.Rows; hist = em.HistoryCount; }
+        int off = Math.Clamp(pane.ScrollOffset, 0, hist);
+        int vr = Math.Clamp((int)((py - oy) / ch), 0, rows - 1);
+        int col = Math.Clamp((int)((px - ox) / cw), 0, cols - 1);
+        int line = Math.Clamp(hist - off + vr, 0, hist + rows - 1);
+        return (line, col);
+    }
+
+    private static Cell CellAbs(TerminalEmulator em, int hist, int rows, int cols, int line, int col)
+    {
+        col = Math.Clamp(col, 0, cols - 1);
+        if (line < hist) return em.GetHistoryCell(line, col);
+        int live = line - hist;
+        return (live >= 0 && live < rows) ? em.Screen[live, col] : Cell.Empty;
+    }
+
+    private static void NormSel(Pane p, out int l0, out int c0, out int l1, out int c1)
+    {
+        bool ancFirst = p.SelAncLine < p.SelFocLine || (p.SelAncLine == p.SelFocLine && p.SelAncCol <= p.SelFocCol);
+        (l0, c0) = ancFirst ? (p.SelAncLine, p.SelAncCol) : (p.SelFocLine, p.SelFocCol);
+        (l1, c1) = ancFirst ? (p.SelFocLine, p.SelFocCol) : (p.SelAncLine, p.SelAncCol);
+    }
+
+    private static string SelectionText(Pane pane)
+    {
+        if (!pane.HasSel) return "";
+        var em = pane.S.Emulator;
+        var sb = new StringBuilder();
+        lock (pane.S.SyncRoot)
+        {
+            int cols = em.Screen.Cols, rows = em.Screen.Rows, hist = em.HistoryCount;
+            NormSel(pane, out int l0, out int c0, out int l1, out int c1);
+            for (int line = l0; line <= l1; line++)
+            {
+                int from = line == l0 ? c0 : 0;
+                int to = (line == l1 ? c1 : cols - 1) + 1; // inclusive end col
+                var row = new StringBuilder();
+                for (int c = Math.Max(0, from); c < Math.Min(cols, to); c++)
+                {
+                    Cell cell = CellAbs(em, hist, rows, cols, line, c);
+                    if (cell.Width == 0) continue; // trailing spacer of a wide glyph
+                    row.Append(cell.Rune == '\0' ? ' ' : cell.Rune);
+                }
+                sb.Append(row.ToString().TrimEnd(' '));
+                if (line != l1) sb.Append("\r\n");
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static void BeginSelect(Pane p, int line, int col, bool extend)
+    {
+        if (extend && p.HasSel) { p.SelFocLine = line; p.SelFocCol = col; _selMoved = true; }
+        else { p.SelAncLine = p.SelFocLine = line; p.SelAncCol = p.SelFocCol = col; p.HasSel = false; _selMoved = false; }
+    }
+
+    private static void UpdateSelect(Pane p, int line, int col)
+    {
+        p.SelFocLine = line; p.SelFocCol = col; p.HasSel = true; _selMoved = true;
+    }
+
+    private static void SelectWord(Pane p, int line, int col)
+    {
+        var em = p.S.Emulator;
+        lock (p.S.SyncRoot)
+        {
+            int cols = em.Screen.Cols, rows = em.Screen.Rows, hist = em.HistoryCount;
+            bool Word(int c) { char ch = CellAbs(em, hist, rows, cols, line, c).Rune; return ch != ' ' && ch != '\0'; }
+            if (col < 0 || col >= cols || !Word(col)) return;
+            int a = col, b = col;
+            while (a > 0 && Word(a - 1)) a--;
+            while (b < cols - 1 && Word(b + 1)) b++;
+            p.SelAncLine = p.SelFocLine = line; p.SelAncCol = a; p.SelFocCol = b; p.HasSel = true;
+        }
+    }
+
+    private static void SelectLine(Pane p, int line)
+    {
+        int cols; lock (p.S.SyncRoot) cols = p.S.Emulator.Screen.Cols;
+        p.SelAncLine = p.SelFocLine = line; p.SelAncCol = 0; p.SelFocCol = cols - 1; p.HasSel = true;
+    }
+
+    private static void CopySelection(Pane pane)
+    {
+        string t = SelectionText(pane);
+        if (t.Length > 0) ClipboardSet(t);
+        pane.ClearSel(); RequestRedraw();
+    }
+
+    private static void PasteInto(Pane pane)
+    {
+        string t = ClipboardGet();
+        if (t.Length == 0) return;
+        t = t.Replace("\r\n", "\r").Replace("\n", "\r");
+        if (pane.S.Emulator.BracketedPaste) t = "\x1b[200~" + t + "\x1b[201~";
+        pane.ScrollOffset = 0; pane.S.NotifyActivity();
+        pane.S.Write(Encoding.UTF8.GetBytes(t));
+        RequestRedraw();
+    }
+
+    private static void ClipboardSet(string text)
+    {
+        if (!OpenClipboard(_hwnd)) return;
+        try
+        {
+            EmptyClipboard();
+            byte[] buf = Encoding.Unicode.GetBytes(text + "\0");
+            IntPtr h = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)(uint)buf.Length);
+            if (h == IntPtr.Zero) return;
+            IntPtr p = GlobalLock(h);
+            if (p == IntPtr.Zero) return;
+            Marshal.Copy(buf, 0, p, buf.Length);
+            GlobalUnlock(h);
+            SetClipboardData(CF_UNICODETEXT, h); // clipboard takes ownership of h
+        }
+        finally { CloseClipboard(); }
+    }
+
+    private static string ClipboardGet()
+    {
+        if (!OpenClipboard(_hwnd)) return "";
+        try
+        {
+            IntPtr h = GetClipboardData(CF_UNICODETEXT);
+            if (h == IntPtr.Zero) return "";
+            IntPtr p = GlobalLock(h);
+            if (p == IntPtr.Zero) return "";
+            try { return Marshal.PtrToStringUni(p) ?? ""; }
+            finally { GlobalUnlock(h); }
+        }
+        finally { CloseClipboard(); }
+    }
+
+    /// <summary>Selection text of the target session's active pane (for the control API).</summary>
+    private static string SessionSelectionText(Ses s) => SelectionText(s.ActivePane);
+
     /// <summary>Returns true if the key was consumed (matches the WinUI key table).</summary>
     private static bool OnKeyDown(int vk)
     {
@@ -1324,6 +1544,19 @@ internal static class Program
                 case 0xBD: case 0x6D: ChangeFontSize(-1); return true;  // Ctrl+- / Ctrl+numpad-minus
                 case 0x30: case 0x60: ChangeFontSize(0); return true;   // Ctrl+0 / Ctrl+numpad-0
             }
+        }
+
+        // Clipboard: Ctrl+Shift+C / Ctrl+C-with-selection copies; Ctrl+V / Ctrl+Shift+V pastes.
+        if (ctrl && !alt && _active is not null)
+        {
+            var ap = _active.ActivePane;
+            if (vk == 0x43) // C
+            {
+                if (ap.HasSel) { CopySelection(ap); return true; }
+                if (shift) return true;   // Ctrl+Shift+C, no selection: consume (don't send ^C)
+                // plain Ctrl+C with no selection falls through to the interrupt below
+            }
+            else if (vk == 0x56) { PasteInto(ap); return true; } // Ctrl+V / Ctrl+Shift+V
         }
 
         // Keymap dispatch: build the chord and run its bound action (defaults overlaid by keymap.conf).
@@ -1573,7 +1806,7 @@ internal static class Program
     }
 
     /// <summary>Draw one terminal surface (cells, images, cursor) at origin (ox,oy) with its font metrics.</summary>
-    private static void RenderTerminal(TerminalSession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch, int scrollOffset)
+    private static void RenderTerminal(TerminalSession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch, int scrollOffset, Pane? selPane = null)
     {
         var rt = _rt!;
         var brush = _brush!;
@@ -1584,6 +1817,9 @@ internal static class Program
             int cols = screen.Cols, rows = screen.Rows;
             int hist = em.HistoryCount;
             int off = em.IsAltScreen ? 0 : Math.Clamp(scrollOffset, 0, hist);
+            bool hasSel = selPane is { HasSel: true };
+            int sl0 = 0, sc0 = 0, sl1 = 0, sc1 = 0;
+            if (hasSel) NormSel(selPane!, out sl0, out sc0, out sl1, out sc1);
             // Visible row r maps into [history ++ live grid], shifted up by `off`.
             Cell CellAt(int r, int c)
             {
@@ -1612,6 +1848,20 @@ internal static class Program
                     }
                     brush.Color = C4(bg);
                     rt.FillRectangle(new Rect(ox + start * cw, y, (c - start) * cw, ch), brush);
+                }
+                if (hasSel)  // selection highlight for this row (behind the text)
+                {
+                    int abs = hist - off + r;
+                    if (abs >= sl0 && abs <= sl1)
+                    {
+                        int from = Math.Clamp(abs == sl0 ? sc0 : 0, 0, cols - 1);
+                        int to = Math.Clamp(abs == sl1 ? sc1 : cols - 1, 0, cols - 1);
+                        if (to >= from)
+                        {
+                            brush.Color = new Color4(40 / 255f, 90 / 255f, 150 / 255f, 1f);
+                            rt.FillRectangle(new Rect(ox + from * cw, y, (to - from + 1) * cw, ch), brush);
+                        }
+                    }
                 }
                 c = 0;
                 while (c < cols)  // Pass 2: coalesced same-colour text runs
@@ -1698,7 +1948,7 @@ internal static class Program
             foreach (var (pane, ox, oy, pw, ph) in layout)
             {
                 var (fmt, cw, ch) = Metrics(pane.FontSize);
-                RenderTerminal(pane.S, ox, oy, fmt, cw, ch, pane.ScrollOffset);
+                RenderTerminal(pane.S, ox, oy, fmt, cw, ch, pane.ScrollOffset, pane);
             }
             if (layout.Count > 1)
             {

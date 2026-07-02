@@ -126,6 +126,7 @@ public sealed class ControlServer : IDisposable
                 case "keymap.reload": return Ok(_host.KeymapReload());
                 case "restore.clear": return Ok(_host.RestoreClear());
                 case "sidebar": _host.SidebarOp(GetString(args, "op") ?? "toggle"); return Ok("sidebar");
+                case "session.copy": return Ok(_host.SessionCopy(target)); // selection text (host-side), "" if none
             }
 
             // Session-targeted commands.

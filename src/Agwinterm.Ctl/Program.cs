@@ -105,9 +105,11 @@ switch (area)
                 break;
             case "type":
             case "write":
-                cargs["text"] = string.Join(' ', rest);
+                // --select <text> (agterm parity): text may come via --select instead of positionals.
+                cargs["text"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("select") ?? "");
                 break;
             case "text": break; // dump the buffer; target only
+            case "copy": break;  // return the target's selection text; target only
             case "go":
                 if (rest.Count == 0) { Console.Error.WriteLine("session go needs a direction (next|prev|first|last|next-attention|prev-attention)"); return 2; }
                 cargs["dir"] = rest[0]; target = null;

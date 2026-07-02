@@ -67,6 +67,9 @@ public interface ISessionHost
     string RestoreClear();
     /// <summary>Sidebar: op = show|hide|toggle|expand|collapse.</summary>
     void SidebarOp(string op);
+
+    /// <summary>Current text selection of the target session's active pane ("" if none).</summary>
+    string SessionCopy(string? target);
 }
 
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
@@ -102,4 +105,5 @@ public sealed class SingleSessionHost : ISessionHost
     public string KeymapReload() => "";
     public string RestoreClear() => "";
     public void SidebarOp(string op) { }
+    public string SessionCopy(string? target) => "";
 }

@@ -32,6 +32,9 @@ public sealed class TerminalConfig
     /// Off by default; honors restore-denylist.conf. Best-effort (Windows foreground-command capture).</summary>
     public bool RestoreCommands { get; set; } = false;
 
+    /// <summary>Paste the clipboard on a right-click in the terminal (when the app isn't grabbing the mouse).</summary>
+    public bool RightClickPaste { get; set; } = true;
+
     /// <summary>Default config file contents (also used to seed the file on first run).</summary>
     public const string DefaultText =
         """
@@ -51,6 +54,9 @@ public sealed class TerminalConfig
 
         # Scrollback: rows of history to keep per pane (0 disables). Scroll with the wheel or Shift+PgUp/PgDn.
         scrollback-lines = 5000
+
+        # Paste the clipboard on right-click in the terminal (when the app isn't using the mouse).
+        right-click-paste = true
 
         # Shell integration: inject a pwsh prompt hook (OSC 7) to track the live working
         # directory so it persists/restores accurately. Off by default because the hook can
@@ -85,6 +91,7 @@ public sealed class TerminalConfig
                 case "theme": if (val.Length > 0) cfg.Theme = val; break;
                 case "shell-integration": cfg.ShellIntegration = ParseBool(val, cfg.ShellIntegration); break;
                 case "restore-commands": cfg.RestoreCommands = ParseBool(val, cfg.RestoreCommands); break;
+                case "right-click-paste": cfg.RightClickPaste = ParseBool(val, cfg.RightClickPaste); break;
             }
         }
         return cfg;

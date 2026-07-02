@@ -324,6 +324,19 @@ internal static class Win32
     [DllImport("ole32.dll")]
     public static extern void CoTaskMemFree(IntPtr pv);
 
+    // ---- Clipboard ----
+    public const uint CF_UNICODETEXT = 13;
+    public const uint GMEM_MOVEABLE = 0x0002;
+
+    [DllImport("user32.dll")] public static extern bool OpenClipboard(IntPtr hWndNewOwner);
+    [DllImport("user32.dll")] public static extern bool CloseClipboard();
+    [DllImport("user32.dll")] public static extern bool EmptyClipboard();
+    [DllImport("user32.dll")] public static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+    [DllImport("user32.dll")] public static extern IntPtr GetClipboardData(uint uFormat);
+    [DllImport("kernel32.dll")] public static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+    [DllImport("kernel32.dll")] public static extern IntPtr GlobalLock(IntPtr hMem);
+    [DllImport("kernel32.dll")] public static extern bool GlobalUnlock(IntPtr hMem);
+
     public static bool KeyDown(int vk) => (GetKeyState(vk) & 0x8000) != 0;
 
     public static int LoWord(IntPtr l) => unchecked((short)(long)l);

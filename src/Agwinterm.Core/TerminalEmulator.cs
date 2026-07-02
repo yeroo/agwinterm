@@ -36,6 +36,9 @@ public sealed class TerminalEmulator : IParserPerformer
     /// <summary>True if the app requested SGR (?1006) mouse encoding.</summary>
     public bool MouseSgr => _mouseSgr;
 
+    /// <summary>Bracketed paste mode (DECSET 2004): wrap pasted text in ESC[200~ … ESC[201~.</summary>
+    public bool BracketedPaste { get; private set; }
+
     private int _scrollTop;
     private int _scrollBottom;
 
@@ -216,6 +219,7 @@ public sealed class TerminalEmulator : IParserPerformer
                 case 1002: _mouseDrag = set; break;    // button-event (drag) tracking
                 case 1003: _mouseMotion = set; break;  // any-motion tracking
                 case 1006: _mouseSgr = set; break;     // SGR extended mouse encoding
+                case 2004: BracketedPaste = set; break; // bracketed paste
             }
         }
     }
