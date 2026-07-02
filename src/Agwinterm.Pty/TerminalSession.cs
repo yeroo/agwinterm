@@ -129,8 +129,24 @@ public sealed class TerminalSession : IDisposable
         }
 
         _connection = await PtyProvider.SpawnAsync(options, ct).ConfigureAwait(false);
-        _ = Task.Run(() => InteractivePumpAsync(_connection.ReaderStream), ct);
+        var conn = _connection;
+        _ = Task.Run(() => InteractivePumpAsync(conn.ReaderStream), ct);
+        // Watch for the child exiting so overlays (and anyone else) get the real ConPTY exit code,
+        // reliably even for programs that finish faster than a PID poll could catch them.
+        _ = Task.Run(() =>
+        {
+            try { conn.WaitForExit(Timeout.Infinite); } catch { }
+            int code = 0; try { code = conn.ExitCode; } catch { }
+            ExitCode = code; HasExited = true;
+            try { Exited?.Invoke(code); } catch { }
+        }, ct);
     }
+
+    /// <summary>The child's exit code once <see cref="HasExited"/> is true (null while still running).</summary>
+    public int? ExitCode { get; private set; }
+    public bool HasExited { get; private set; }
+    /// <summary>Raised (on a background thread) when the child process exits, with its exit code.</summary>
+    public event Action<int>? Exited;
 
     private static readonly string? DumpPath =
         Environment.GetEnvironmentVariable("AGWINTERM_DUMP") is { Length: > 0 } d ? d : null;

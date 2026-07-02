@@ -43,8 +43,13 @@ internal static class Program
     private static TerminalSession? _session;   // mirrors the ACTIVE SURFACE (active pane, or a shown cover)
     // Auxiliary "cover" terminal drawn over the content region: scratch (per-session) or quick (per-app).
     private static Pane? _cover;                // the shown cover, or null
-    private static int _coverKind;              // 0 none, 1 scratch, 2 quick
+    private static int _coverKind;              // 0 none, 1 scratch, 2 quick, 3 overlay
     private static Pane? _quick;                // the single per-app quick terminal (lazy; kept alive)
+    // Overlays (Wave B3): an ephemeral program run over a session; vanishes when the program exits.
+    private static Ses? _ovlOwner;              // the session whose overlay is the current cover (kind 3)
+    private static string _lastOverlayExit = "no overlay"; // "exit N" once an overlay's program has exited
+    private static int _overlayExitCode;        // the last overlay program's exit code
+    private static readonly System.Threading.ManualResetEventSlim _overlayDone = new(false); // signalled on overlay exit (for --block)
     private static ControlServer? _control;
 
     // ---- Multi-session model (agterm workspaces -> sessions), mirrors the WinUI shell ----
@@ -169,6 +174,10 @@ internal static class Program
         public readonly List<Pane> Panes = new();
         public int Active;         // index of the focused pane
         public Pane? Scratch;      // per-session scratch terminal (lazy; kept alive when hidden; not restored)
+        public Pane? Overlay;      // ephemeral overlay terminal running a program over this session (Wave B3)
+        public int OverlaySizePercent; // 0 = full content region; 1..100 = centered floating panel
+        public bool OverlayWait;   // keep the overlay after its program exits (press a key to close)
+        public bool OverlayExited; // the overlay's program has exited and it's awaiting a key
         public Pane ActivePane => Panes[Math.Clamp(Active, 0, Panes.Count - 1)];
         // Back-compat shims: existing code that said ses.S / ses.FontSize / ses.StartCwd
         // now refers to the ACTIVE PANE, so most single-pane logic is unchanged.
@@ -406,7 +415,7 @@ internal static class Program
 
     /// <summary>Create one terminal pane (its own ConPTY, env, wiring) sized for the given font.
     /// When <paramref name="command"/> is set, that argv runs as the pane's process instead of the shell.</summary>
-    private static Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null)
+    private static Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null, bool shellWrap = false)
     {
         var (cols, rows) = GridSizeFor(fontSize);
         var session = new TerminalSession(cols, rows);
@@ -425,7 +434,12 @@ internal static class Program
             ["AGWINTERM_WORKSPACE_ID"] = ws.Id,
             ["AGWINTERM_WINDOW_ID"] = _windowId,
         };
-        if (!string.IsNullOrWhiteSpace(command))
+        if (!string.IsNullOrWhiteSpace(command) && shellWrap)
+            // Run the whole command line through cmd so shell syntax works AND the child's exit code
+            // propagates. Verbatim so it becomes exactly `cmd.exe /c <command>` (no extra quoting,
+            // which cmd's /c quote-stripping rules would otherwise mangle).
+            _ = session.StartAsync("cmd.exe", new[] { "/c", command! }, verbatimCommandLine: true, extraEnv: env, cwd: cwd);
+        else if (!string.IsNullOrWhiteSpace(command))
         {
             var argv = ParseArgv(command);
             if (argv.Length > 0)
@@ -531,7 +545,10 @@ internal static class Program
     private static void SetActive(Ses ses)
     {
         _active = ses;
-        if (_coverKind == 1) { _cover = null; _coverKind = 0; } // a scratch cover belonged to the previous session
+        // A scratch/overlay cover belongs to the previous session; drop it (quick is per-app, kept).
+        if (_coverKind is 1 or 3) { _cover = null; _coverKind = 0; _ovlOwner = null; }
+        // If the newly-active session has an overlay up, re-show it as the cover.
+        if (ses.Overlay is not null) { _cover = ses.Overlay; _coverKind = 3; _ovlOwner = ses; }
         _session = ActiveSurface()?.S;                          // a quick cover (if any) keeps input; else the new pane
         RegridSession(ses);
         if (_cover is not null) RegridCover();
@@ -562,11 +579,23 @@ internal static class Program
         RequestRedraw();
     }
 
-    /// <summary>Resize the shown cover's PTY to fill the whole content region using its own metrics.</summary>
+    /// <summary>The rect (px) the current cover occupies: the full content region, or — for a floating overlay — a centered panel sized by percent.</summary>
+    private static (float x, float y, float w, float h) CoverRect()
+    {
+        var (x0, y0, w, h) = ContentArea();
+        if (_coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 and <= 100 } o)
+        {
+            float fw = w * o.OverlaySizePercent / 100f, fh = h * o.OverlaySizePercent / 100f;
+            return (x0 + (w - fw) / 2f, y0 + (h - fh) / 2f, fw, fh);
+        }
+        return (x0, y0, w, h);
+    }
+
+    /// <summary>Resize the shown cover's PTY to fill its cover rect using its own metrics.</summary>
     private static void RegridCover()
     {
         if (_cover is null) return;
-        var (_, _, w, h) = ContentArea();
+        var (_, _, w, h) = CoverRect();
         var (_, cw, ch) = Metrics(_cover.FontSize);
         int cols = Math.Max(1, (int)(w / cw)), rows = Math.Max(1, (int)(h / ch));
         if (_cover.S.Cols != cols || _cover.S.Rows != rows) _cover.S.Resize(cols, rows);
@@ -602,6 +631,60 @@ internal static class Program
         if (op == "off") { if (showing) HideCover(); return; }
         if (op == "on") { if (!showing) ShowQuick(); return; }
         if (showing) HideCover(); else ShowQuick(); // toggle
+    }
+
+    // ---- Overlays (Wave B3): an ephemeral program run over a session ----
+
+    /// <summary>Open an overlay on a session: run <paramref name="command"/> in an ephemeral terminal over it.
+    /// sizePercent 0 = full content region; 1..100 = a centered floating panel. Returns "id PID".</summary>
+    private static string OverlayOpen(Ses ses, string command, int sizePercent, bool wait)
+    {
+        CloseOverlayOf(ses);                    // one overlay per session; replace any existing one
+        _overlayDone.Reset();
+        _lastOverlayExit = "no overlay"; _overlayExitCode = 0;
+        string id = ses.Id + ":overlay:" + Guid.NewGuid().ToString("N")[..6];
+        var pane = CreatePane(id, ses.Ws, CwdOf(ses), ses.FontSize, command, shellWrap: true);
+        ses.Overlay = pane;
+        ses.OverlaySizePercent = Math.Clamp(sizePercent, 0, 100);
+        ses.OverlayWait = wait;
+        ses.OverlayExited = false;
+        if (ReferenceEquals(ses, _active)) { _cover = pane; _coverKind = 3; _ovlOwner = ses; SyncSession(); RegridCover(); }
+        RequestRedraw();
+        WatchOverlayExit(ses, pane);
+        return id;
+    }
+
+    /// <summary>Tear down a session's overlay (hiding its cover if shown, disposing its PTY).</summary>
+    private static void CloseOverlayOf(Ses ses)
+    {
+        var pane = ses.Overlay;
+        if (pane is null) return;
+        if (_coverKind == 3 && ReferenceEquals(_cover, pane)) { _cover = null; _coverKind = 0; _ovlOwner = null; SyncSession(); if (_active is not null) RegridSession(_active); }
+        ses.Overlay = null; ses.OverlayExited = false; ses.OverlaySizePercent = 0; ses.OverlayWait = false;
+        try { pane.S.Dispose(); } catch { }
+        RequestRedraw();
+    }
+
+    /// <summary>Close the currently-shown overlay cover (from a keystroke / close verb).</summary>
+    private static void CloseActiveOverlay() { if (_ovlOwner is not null) CloseOverlayOf(_ovlOwner); }
+
+    /// <summary>When an overlay's program exits, record its code and either close the overlay or (with --wait) mark it exited.</summary>
+    private static void WatchOverlayExit(Ses ses, Pane pane)
+    {
+        void OnExit(int code)
+        {
+            _overlayExitCode = code;
+            _lastOverlayExit = $"exit {code}";
+            _overlayDone.Set();
+            Post(() =>
+            {
+                if (!ReferenceEquals(ses.Overlay, pane)) return;   // already replaced/closed
+                if (ses.OverlayWait) { ses.OverlayExited = true; RequestRedraw(); }
+                else CloseOverlayOf(ses);
+            });
+        }
+        pane.S.Exited += OnExit;
+        if (pane.S.HasExited) OnExit(pane.S.ExitCode ?? 0);        // already gone before we subscribed
     }
 
     /// <summary>Change one pane's font zoom (delta 0 = reset to the config default). Caller reflows.</summary>
@@ -679,6 +762,7 @@ internal static class Program
         foreach (var p in ses.Panes) { try { p.S.Dispose(); } catch { } }
         // Dismiss + dispose this session's scratch cover if it belongs here.
         if (ses.Scratch is not null) { if (_coverKind == 1 && ReferenceEquals(_cover, ses.Scratch)) HideCover(); try { ses.Scratch.S.Dispose(); } catch { } ses.Scratch = null; }
+        if (ses.Overlay is not null) CloseOverlayOf(ses); // dismiss + dispose this session's overlay
         bool wasActive = ReferenceEquals(_active, ses);
         lock (_workspaces) ses.Ws.Sessions.Remove(ses);
         if (wasActive)
@@ -845,7 +929,7 @@ internal static class Program
             lock (_workspaces)
                 return _workspaces.Select(w => new WorkspaceSnapshot(
                     w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
-                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), s.S.Status)).ToList()
+                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), s.S.Status, s.Overlay is not null)).ToList()
                 )).ToList();
         }
 
@@ -1026,6 +1110,34 @@ internal static class Program
         }
 
         public void Quick(string op) => Post(() => QuickOp(op));
+
+        public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
+        {
+            switch (action)
+            {
+                case "result":
+                    return _lastOverlayExit;
+                case "close":
+                {
+                    var ses = FindSesForTarget(target);
+                    if (ses?.Overlay is null) return "no overlay";
+                    Post(() => CloseOverlayOf(ses));
+                    return "closed";
+                }
+                default: // "open"
+                {
+                    if (string.IsNullOrWhiteSpace(command)) return "no command";
+                    if (block)
+                    {
+                        // Open on the UI thread, then wait (on this pipe thread) for the program to exit.
+                        InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? "no session" : OverlayOpen(s, command!, sizePercent, false); });
+                        _overlayDone.Wait();
+                        return _lastOverlayExit;   // "exit N"
+                    }
+                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? "no session" : OverlayOpen(s, command!, sizePercent, wait); });
+                }
+            }
+        }
     }
 
     /// <summary>Resolve a control-API target ("active"/null/id/prefix) to its owning session.</summary>
@@ -1172,6 +1284,7 @@ internal static class Program
             case WM_CHAR:
                 {
                     char c = (char)wParam;
+                    if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return IntPtr.Zero; }
                     if (_palette != PaletteKind.None)
                     {
                         if (c >= 0x20 && c != 0x7f) { _palQuery += c; _palSel = 0; FilterPalette(); RequestRedraw(); }
@@ -1333,7 +1446,7 @@ internal static class Program
 
             case WM_DESTROY:
                 SaveState(captureCommands: true); // persist the tree (+ foreground commands) before tearing down sessions
-                foreach (var s in AllSessions()) { foreach (var p in s.Panes) { try { p.S.Dispose(); } catch { } } try { s.Scratch?.S.Dispose(); } catch { } }
+                foreach (var s in AllSessions()) { foreach (var p in s.Panes) { try { p.S.Dispose(); } catch { } } try { s.Scratch?.S.Dispose(); } catch { } try { s.Overlay?.S.Dispose(); } catch { } }
                 try { _quick?.S.Dispose(); } catch { }
                 PostQuitMessage(0);
                 return IntPtr.Zero;
@@ -1376,7 +1489,7 @@ internal static class Program
         {
             case "new_session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true); break;
             case "new_workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
-            case "close_session": case "close_pane": if (_cover is not null) HideCover(); else CloseActivePane(); break;
+            case "close_session": case "close_pane": if (_coverKind == 3) CloseActiveOverlay(); else if (_cover is not null) HideCover(); else CloseActivePane(); break;
             case "split_pane": SplitActivePane(); break;
             case "toggle_scratch": if (_active is not null) ScratchOp(_active, "toggle"); break;
             case "quick_terminal": QuickOp("toggle"); break;
@@ -1530,7 +1643,7 @@ internal static class Program
     private static (Pane pane, float ox, float oy, float cw, float ch)? PaneAt(int px, int py)
     {
         if (px < (int)_sidebarW || py < (int)TitleBarH || py >= ClientH() - (int)FooterH) return null;
-        if (_cover is not null) { var (cx, cy, _, _) = ContentArea(); var (_, ccw, cch) = Metrics(_cover.FontSize); return (_cover, cx, cy, ccw, cch); }
+        if (_cover is not null) { var (cx, cy, _, _) = CoverRect(); var (_, ccw, cch) = Metrics(_cover.FontSize); return (_cover, cx, cy, ccw, cch); }
         if (_active is null) return null;
         foreach (var (pane, x, y, w, _) in PaneLayout(_active))
             if (px >= x && px < x + w + DividerW)
@@ -1766,6 +1879,9 @@ internal static class Program
     private static bool OnKeyDown(int vk)
     {
         bool ctrl = KeyDown(VK_CONTROL), shift = KeyDown(VK_SHIFT), alt = KeyDown(VK_MENU);
+
+        // A --wait overlay whose program has exited hangs around; any key dismisses it.
+        if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return true; }
 
         // While a palette is open it owns the keyboard (nav here, typing via WM_CHAR).
         if (_palette != PaletteKind.None) return PaletteKeyDown(vk);
@@ -2204,38 +2320,32 @@ internal static class Program
         rt.BeginDraw();
         rt.Clear(C4(_theme.DefaultBackground));
 
-        if (_cover is not null)
+        bool floatingOverlay = _cover is not null && _coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 };
+        if (_cover is not null && !floatingOverlay)
         {
-            var (ox, oy, cw0, ch0) = ContentArea();
+            var (ox, oy, cw0, _) = ContentArea();
             var (fmt, cw, ch) = Metrics(_cover.FontSize);
             RenderTerminal(_cover.S, ox, oy, fmt, cw, ch, _cover.ScrollOffset, _cover);
-            // Corner badge so it's obvious a cover is up.
-            string badge = _coverKind == 1 ? "scratch" : "quick";
-            float bw = MeasureText(badge, _uiSmall) + 16f;
-            brush.Color = new Color4(0.16f, 0.20f, 0.25f, 0.92f);
-            rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(ox + cw0 - bw - 6f, oy + 4f, bw, 20f), RadiusX = 5f, RadiusY = 5f }, brush);
-            brush.Color = ChromeText;
-            rt.DrawText(badge, _uiSmall, new Rect(ox + cw0 - bw + 2f, oy + 4f, bw - 8f, 20f), brush);
+            DrawCoverBadge(rt, brush, ox + cw0, oy);
+            DrawOverlayFooter(rt, brush);
         }
-        else if (_active is not null)
+        else
         {
-            var layout = PaneLayout(_active);
-            foreach (var (pane, ox, oy, pw, ph) in layout)
+            if (_active is not null) RenderPanes(rt, brush, _active);
+            if (floatingOverlay)
             {
-                var (fmt, cw, ch) = Metrics(pane.FontSize);
-                RenderTerminal(pane.S, ox, oy, fmt, cw, ch, pane.ScrollOffset, pane);
-            }
-            if (layout.Count > 1)
-            {
-                for (int i = 0; i < layout.Count - 1; i++)
-                {
-                    float dx = layout[i].x + layout[i].w + DividerW / 2f;
-                    brush.Color = new Color4(0.28f, 0.31f, 0.36f, 1f);
-                    rt.FillRectangle(new Rect(dx - 0.5f, layout[i].y, 1f, layout[i].h), brush);
-                }
-                var ap = layout.First(l => ReferenceEquals(l.pane, _active.ActivePane));
-                brush.Color = new Color4(0.30f, 0.55f, 0.95f, 1f);
-                rt.FillRectangle(new Rect(ap.x, TitleBarH + 1f, ap.w, 2f), brush); // accent marks the focused pane
+                var (cx0, cy0, cw0, ch0) = ContentArea();
+                brush.Color = new Color4(0f, 0f, 0f, 0.45f);                 // dim scrim over the session
+                rt.FillRectangle(new Rect(cx0, cy0, cw0, ch0), brush);
+                var (fx, fy, fw, fh) = CoverRect();
+                brush.Color = C4(_theme.DefaultBackground);                  // opaque panel
+                rt.FillRectangle(new Rect(fx, fy, fw, fh), brush);
+                var (fmt, cw, ch) = Metrics(_cover!.FontSize);
+                RenderTerminal(_cover.S, fx, fy, fmt, cw, ch, _cover.ScrollOffset, _cover);
+                brush.Color = new Color4(0.35f, 0.55f, 0.9f, 1f);            // 1px frame
+                rt.DrawRectangle(new Rect(fx - 1f, fy - 1f, fw + 2f, fh + 2f), brush, 1f);
+                DrawCoverBadge(rt, brush, fx + fw, fy);
+                DrawOverlayFooter(rt, brush);
             }
         }
         DrawSidebar(rt, brush);
@@ -2243,6 +2353,54 @@ internal static class Program
         DrawSearchBar(rt, brush);
         DrawToast(rt, brush);
         DrawPalette(rt, brush);
+    }
+
+    /// <summary>Render a session's pane grid (terminals + split dividers + focused-pane accent).</summary>
+    private static void RenderPanes(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, Ses ses)
+    {
+        var layout = PaneLayout(ses);
+        foreach (var (pane, ox, oy, pw, ph) in layout)
+        {
+            var (fmt, cw, ch) = Metrics(pane.FontSize);
+            RenderTerminal(pane.S, ox, oy, fmt, cw, ch, pane.ScrollOffset, pane);
+        }
+        if (layout.Count > 1)
+        {
+            for (int i = 0; i < layout.Count - 1; i++)
+            {
+                float dx = layout[i].x + layout[i].w + DividerW / 2f;
+                brush.Color = new Color4(0.28f, 0.31f, 0.36f, 1f);
+                rt.FillRectangle(new Rect(dx - 0.5f, layout[i].y, 1f, layout[i].h), brush);
+            }
+            var ap = layout.First(l => ReferenceEquals(l.pane, ses.ActivePane));
+            brush.Color = new Color4(0.30f, 0.55f, 0.95f, 1f);
+            rt.FillRectangle(new Rect(ap.x, TitleBarH + 1f, ap.w, 2f), brush); // accent marks the focused pane
+        }
+    }
+
+    /// <summary>Corner badge naming the current cover (scratch / quick / overlay); rightX/topY = cover top-right.</summary>
+    private static void DrawCoverBadge(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float rightX, float topY)
+    {
+        string badge = _coverKind switch { 1 => "scratch", 2 => "quick", 3 => "overlay", _ => "" };
+        if (badge.Length == 0) return;
+        float bw = MeasureText(badge, _uiSmall) + 16f;
+        brush.Color = new Color4(0.16f, 0.20f, 0.25f, 0.92f);
+        rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(rightX - bw - 6f, topY + 4f, bw, 20f), RadiusX = 5f, RadiusY = 5f }, brush);
+        brush.Color = ChromeText;
+        rt.DrawText(badge, _uiSmall, new Rect(rightX - bw + 2f, topY + 4f, bw - 8f, 20f), brush);
+    }
+
+    /// <summary>When a --wait overlay's program has exited, a footer banner in the cover inviting a key to close.</summary>
+    private static void DrawOverlayFooter(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        if (_coverKind != 3 || _ovlOwner is not { OverlayExited: true }) return;
+        var (fx, fy, fw, fh) = CoverRect();
+        string msg = $"  exited ({_overlayExitCode}) — press any key to close  ";
+        float bh = 22f;
+        brush.Color = new Color4(0.30f, 0.55f, 0.95f, 0.95f);
+        rt.FillRectangle(new Rect(fx, fy + fh - bh, fw, bh), brush);
+        brush.Color = new Color4(1f, 1f, 1f, 1f);
+        rt.DrawText(msg, _uiSmall, new Rect(fx + 4f, fy + fh - bh, fw - 8f, bh), brush);
     }
 
     /// <summary>Find bar (top-right of the content region) shown while search is active.</summary>

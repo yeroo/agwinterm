@@ -126,6 +126,14 @@ switch (area)
                 break;
             case "split": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break;
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
+            case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay result
+                cargs["action"] = rest.Count > 0 ? rest[0] : "open";
+                if (rest.Count > 1) cargs["command"] = string.Join(' ', rest.Skip(1));
+                else if (Opt("command") is { } ovcmd) cargs["command"] = ovcmd;
+                if (int.TryParse(Opt("size-percent"), out var sp)) cargs["size-percent"] = sp;
+                if (options.ContainsKey("wait")) cargs["wait"] = true;
+                if (options.ContainsKey("block")) cargs["block"] = true;
+                break;
             case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
             case "resize":
                 if (double.TryParse(Opt("split-ratio"), System.Globalization.CultureInfo.InvariantCulture, out var sr)) cargs["ratio"] = sr;

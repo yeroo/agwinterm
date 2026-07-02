@@ -3,7 +3,7 @@ using Agwinterm.Core;
 namespace Agwinterm.Pty;
 
 /// <summary>A session's metadata for the control-API tree.</summary>
-public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status);
+public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status, bool Overlay = false);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -79,6 +79,15 @@ public interface ISessionHost
 
     /// <summary>Toggle/show/hide the window's quick terminal: op = on|off|toggle.</summary>
     void Quick(string op);
+
+    /// <summary>
+    /// Overlay control. action = open|close|result. For open: run <paramref name="command"/> in an
+    /// ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
+    /// floating panel; wait = keep it after the program exits (press a key to close); block = wait for
+    /// the program to exit and return its status. Returns the session id (open), "exit N" (block/result),
+    /// "closed", or "no overlay".
+    /// </summary>
+    string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block);
 }
 
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
@@ -118,4 +127,5 @@ public sealed class SingleSessionHost : ISessionHost
     public string SessionSearch(string? target, string? query, string? action) => "";
     public bool SessionScratch(string? target, string op) => false;
     public void Quick(string op) { }
+    public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block) => "no overlay";
 }

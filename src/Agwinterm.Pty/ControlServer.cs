@@ -130,6 +130,10 @@ public sealed class ControlServer : IDisposable
                 case "session.search": return Ok(_host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
                 case "session.scratch": return _host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
                 case "quick": _host.Quick(GetString(args, "op") ?? "toggle"); return Ok("quick");
+                case "session.overlay":
+                    return Ok(_host.SessionOverlay(target, GetString(args, "action") ?? "open",
+                        GetString(args, "command"), GetInt(args, "size-percent", 0),
+                        GetBool(args, "wait"), GetBool(args, "block")));
             }
 
             // Session-targeted commands.
@@ -170,8 +174,9 @@ public sealed class ControlServer : IDisposable
                 sb.Append("{\"id\":").Append(JsonSerializer.Serialize(n.Id))
                   .Append(",\"name\":").Append(JsonSerializer.Serialize(n.Name))
                   .Append(",\"active\":").Append(n.Active ? "true" : "false")
-                  .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()))
-                  .Append('}');
+                  .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()));
+                if (n.Overlay) sb.Append(",\"overlay\":true");
+                sb.Append('}');
             }
             sb.Append("]}");
         }
