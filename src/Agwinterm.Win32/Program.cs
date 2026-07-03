@@ -223,6 +223,8 @@ internal partial class Program : ISessionHost, IWindowHost
     // Chrome fonts (native Segoe UI for text, icon font for glyphs).
     private static IDWriteTextFormat _uiFont = null!;
     private static IDWriteTextFormat _uiSmall = null!;
+    private static IDWriteTextFormat _uiTitle = null!;      // single centered title-bar line (vertically centered + ellipsized)
+    private static IDWriteInlineObject _ellipsis = null!;   // "…" trimming sign for the title (kept alive)
     private static IDWriteTextFormat _iconFont = null!;
     private static IDWriteTextFormat _iconSmall = null!;   // small Fluent glyphs (e.g. the row flag marker)
 
@@ -250,6 +252,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public readonly List<Pane> Panes = new();
         public int Active;         // index of the focused pane
         public bool Flagged;       // durable working-set flag (survives moves; persisted; drives flagged sidebar mode)
+        public string? CustomName; // user-renamed title (null = show the cwd/OSC title in the title bar, agterm-style)
         public Pane? Scratch;      // per-session scratch terminal (lazy; kept alive when hidden; not restored)
         public Pane? Overlay;      // ephemeral overlay terminal running a program over this session (Wave B3)
         public int OverlaySizePercent; // 0 = full content region; 1..100 = centered floating panel
@@ -327,6 +330,9 @@ internal partial class Program : ISessionHost, IWindowHost
         _format = CreateTextFormat(_config);
         _uiFont = NewChromeFormat("Segoe UI", 13f, center: false);
         _uiSmall = NewChromeFormat("Segoe UI", 11.5f, center: false);
+        _uiTitle = NewChromeFormat("Segoe UI", 13f, center: true); // vertically centered single line
+        _ellipsis = _dwrite.CreateEllipsisTrimmingSign(_uiTitle);
+        _uiTitle.SetTrimming(new Trimming { Granularity = TrimmingGranularity.Character }, _ellipsis);
         _iconFont = NewChromeFormat("Segoe Fluent Icons", 14f, center: true);
         _iconSmall = NewChromeFormat("Segoe Fluent Icons", 10.5f, center: true);
 
@@ -1237,15 +1243,15 @@ internal partial class Program : ISessionHost, IWindowHost
     }
 
     /// <summary>Focus a single workspace (the active one) or clear focus: op = on|off|toggle. Tree mode only.</summary>
-    private void WorkspaceFocusOp(string op)
+    private void WorkspaceFocusOp(string op) => WorkspaceFocusOp(op, ActiveWorkspace().Id);
+
+    private void WorkspaceFocusOp(string op, string? wsId)
     {
-        string? wsId = ActiveWorkspace().Id;
-        bool on = _focusedWorkspaceId is not null;
         _focusedWorkspaceId = op switch
         {
             "on" => wsId,
             "off" => null,
-            _ => on ? null : wsId, // toggle
+            _ => _focusedWorkspaceId is not null ? null : wsId, // toggle
         };
         RequestRedraw(); SaveState();
     }
@@ -2050,9 +2056,12 @@ internal partial class Program : ISessionHost, IWindowHost
                     if (em2 is not null && em2.MouseReporting) SendMousePx(2, lParam, true);
                     else if (_config.RightClickPaste && (PaneAt(LoWord(lParam), HiWord(lParam))?.pane ?? ActiveSurface()) is { } pp)
                         PasteInto(pp);
+                    return IntPtr.Zero;
                 }
-                return IntPtr.Zero;
-            case WM_RBUTTONUP: if (InContent(lParam)) SendMousePx(2, lParam, false); return IntPtr.Zero;
+                break; // sidebar/chrome: let DefWindowProc raise WM_CONTEXTMENU so the row menu shows
+            case WM_RBUTTONUP:
+                if (InContent(lParam)) { SendMousePx(2, lParam, false); return IntPtr.Zero; }
+                break; // sidebar/chrome: fall through to DefWindowProc -> WM_CONTEXTMENU
 
             case WM_MOUSEMOVE:
                 {
@@ -3807,7 +3816,7 @@ internal partial class Program : ISessionHost, IWindowHost
         string name = sb.ToString().Trim();
         if (name.Length > 0)
         {
-            if (item is Ses s) s.Name = name;
+            if (item is Ses s) { s.Name = name; s.CustomName = name; } // CustomName drives the title bar
             else if (item is Workspace w) w.Name = name;
         }
         DestroyEditWindow(h);
@@ -3832,7 +3841,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
     // ---- Context menus (native Win32 popup) ----
 
-    private const uint IDM_NEW_SESSION = 1, IDM_OPEN_DIR = 2, IDM_RENAME = 3, IDM_CLOSE = 4, IDM_CLEAR = 5, IDM_DELETE_WS = 6, IDM_FLAG = 7;
+    private const uint IDM_NEW_SESSION = 1, IDM_OPEN_DIR = 2, IDM_RENAME = 3, IDM_CLOSE = 4, IDM_CLEAR = 5, IDM_DELETE_WS = 6, IDM_FLAG = 7, IDM_FOCUS_WS = 8;
     private const uint IDM_MOVE_BASE = 1000;
 
     private void ShowContextMenu(object item, int sx, int sy)
@@ -3870,11 +3879,14 @@ internal partial class Program : ISessionHost, IWindowHost
         }
         else if (item is Workspace ws)
         {
+            bool wsFocused = _focusedWorkspaceId == ws.Id;
+            int wsCount; lock (_workspaces) wsCount = _workspaces.Count;
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_RENAME, "Rename");
+            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_FOCUS_WS, wsFocused ? "Unfocus" : "Focus");
             AppendMenuW(menu, MF_SEPARATOR, UIntPtr.Zero, "");
-            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_DELETE_WS, "Delete Workspace");
+            AppendMenuW(menu, MF_STRING | (wsCount <= 1 ? MF_GRAYED : 0), (UIntPtr)IDM_DELETE_WS, "Delete Workspace");
             int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN, sx, sy, _hwnd, IntPtr.Zero);
             DestroyMenu(menu);
             switch ((uint)cmd)
@@ -3882,6 +3894,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 case IDM_NEW_SESSION: CreateSession(Guid.NewGuid().ToString(), null, null, ws, true); break;
                 case IDM_OPEN_DIR: { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ws, true); break; }
                 case IDM_RENAME: StartRename(ws); break;
+                case IDM_FOCUS_WS: WorkspaceFocusOp(wsFocused ? "off" : "on", ws.Id); break;
                 case IDM_DELETE_WS: DeleteWorkspace(ws); break;
             }
         }
@@ -4018,6 +4031,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
     private void DeleteWorkspace(Workspace ws)
     {
+        lock (_workspaces) if (_workspaces.Count <= 1) return; // agterm: can't delete the last workspace
         List<Ses> sessions;
         bool hadActive = _active is not null && ReferenceEquals(_active.Ws, ws);
         lock (_workspaces)
@@ -4675,6 +4689,25 @@ internal partial class Program : ISessionHost, IWindowHost
         return string.IsNullOrWhiteSpace(start) ? Environment.CurrentDirectory : start!;
     }
 
+    /// <summary>Title-bar display name (agterm precedence): custom name → program OSC title → cwd basename → app name.</summary>
+    private static string SessionDisplayName(Ses s)
+    {
+        if (!string.IsNullOrWhiteSpace(s.CustomName)) return s.CustomName!;
+        // A program's OSC title (e.g. "claude") — but ignore the shell's default console title,
+        // which on Windows is the bare exe path (…\powershell.exe) or an absolute path (noise).
+        string osc = s.ActivePane.S.Emulator.Title;
+        bool oscMeaningful = !string.IsNullOrWhiteSpace(osc)
+            && !osc.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            && !(osc.Length >= 2 && osc[1] == ':' && osc.Contains('\\')); // not a bare C:\… path
+        if (oscMeaningful) return osc;
+        // Single-row title = the full current path (agterm-style "just the path"), ~ for home.
+        string cwd = PrettyCwd(TitleCwd(s));
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrEmpty(home) && string.Equals(cwd.TrimEnd('\\', '/'), home.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+            return "~";
+        return string.IsNullOrWhiteSpace(cwd) ? "agwinterm" : cwd;
+    }
+
     private static string PrettyCwd(string raw)
     {
         if (string.IsNullOrEmpty(raw)) return "";
@@ -4726,22 +4759,16 @@ internal partial class Program : ISessionHost, IWindowHost
         float splitX = quickX - 10f - bw;
         float scratchX = splitX - bw;
 
-        // 3. Title + subtitle at the terminal's leading edge (right of the sidebar).
-        string title = _active?.Name ?? "agwinterm";
-        string subtitle = _active is not null ? TitleCwd(_active) : "";
+        // 3. Title at the terminal's leading edge (right of the sidebar): a SINGLE centered row
+        // showing the path (agterm-style): custom name -> program OSC title -> full cwd path.
+        string title = _active is not null ? SessionDisplayName(_active) : "agwinterm";
         float titleX = _sidebarW > 0 ? _sidebarW + 10f : togX + togW + 8f;
         float bellW = 34f, bellGap = 8f;
         float titleAvail = scratchX - 14f - bellW - bellGap - titleX;
         float titleMeasured = MeasureText(title, _uiFont);
         float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail));
         brush.Color = ChromeText;
-        if (subtitle.Length > 0)
-        {
-            rt.DrawText(title, _uiFont, new Rect(titleX, 3f, titleW, 19f), brush);
-            brush.Color = ChromeDim;
-            rt.DrawText(subtitle, _uiSmall, new Rect(titleX, 21f, MathF.Max(titleW, titleAvail), 16f), brush);
-        }
-        else rt.DrawText(title, _uiFont, new Rect(titleX, 0f, titleW, TitleBarH), brush);
+        rt.DrawText(title, _uiTitle, new Rect(titleX, 0f, titleW, TitleBarH), brush);  // one vertically-centered, ellipsized row
 
         // 4. Attention bell, hugging the title. dim = nothing, plain = active/completed, amber = any blocked.
         float bellX = MathF.Min(titleX + titleW + bellGap, scratchX - bellW - 14f);
@@ -4751,8 +4778,7 @@ internal partial class Program : ISessionHost, IWindowHost
             bellBase = new Color4(bellBase.R, bellBase.G, bellBase.B, 0.30f); // pulse when a blinking session needs attention
         {
             var c = ChromeBtnBg(rt, brush, bellX, 0, bellW, TitleBarH, "attention", _titleButtons, bellBase);
-            brush.Color = c;
-            rt.DrawText(GlyphBell, _iconFont, new Rect(bellX, 0, bellW, TitleBarH), brush);
+            DrawBellGlyph(rt, brush, bellX + bellW / 2f, TitleBarH / 2f, c);
         }
 
         // scratch (rounded rectangle; filled when active)
@@ -4809,6 +4835,27 @@ internal partial class Program : ISessionHost, IWindowHost
         brush.Color = color;
         var r = new RoundedRectangle { Rect = new Rect(cx - 7f, cy - 5.5f, 14f, 11f), RadiusX = 2.5f, RadiusY = 2.5f };
         if (filled) rt.FillRoundedRectangle(r, brush); else rt.DrawRoundedRectangle(r, brush, 1.4f);
+    }
+
+    /// <summary>Attention bell glyph (plain outline bell + clapper). Never slashed; color conveys state.</summary>
+    private void DrawBellGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color)
+    {
+        brush.Color = color;
+        var g = _d2d.CreatePathGeometry();
+        using (var sink = g.Open())
+        {
+            sink.BeginFigure(new System.Numerics.Vector2(cx - 5.5f, cy + 3.5f), FigureBegin.Hollow); // bottom-left rim
+            sink.AddLine(new System.Numerics.Vector2(cx - 4f, cy - 1.5f));                            // left wall
+            sink.AddQuadraticBezier(new QuadraticBezierSegment { Point1 = new System.Numerics.Vector2(cx - 4f, cy - 6.2f), Point2 = new System.Numerics.Vector2(cx, cy - 6.2f) });
+            sink.AddQuadraticBezier(new QuadraticBezierSegment { Point1 = new System.Numerics.Vector2(cx + 4f, cy - 6.2f), Point2 = new System.Numerics.Vector2(cx + 4f, cy - 1.5f) });
+            sink.AddLine(new System.Numerics.Vector2(cx + 5.5f, cy + 3.5f));                           // right wall to rim
+            sink.EndFigure(FigureEnd.Closed);                                                          // bottom rim
+            sink.Close();
+        }
+        rt.DrawGeometry(g, brush, 1.4f);
+        g.Dispose();
+        rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(cx, cy + 5.4f), 1.4f, 1.4f), brush);   // clapper
+        rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(cx, cy - 6.6f), 1.1f, 1.1f), brush);   // top nub
     }
 
     /// <summary>Split glyph: two side-by-side panes (right pane filled when split is active).</summary>
@@ -5127,7 +5174,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
     private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
-    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
+    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; } public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
         // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
         public string? BgFile { get; set; } public int BgOpacity { get; set; } = 15; public string BgMode { get; set; } = "fit"; }
     private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
@@ -5352,7 +5399,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 var wss = new WorkspaceState { Id = id, Name = name, Expanded = expanded };
                 foreach (var s in sessions)
                 {
-                    var ss = new SessionState { Id = s.Id, Name = s.Name, Active = s.Active, Flagged = s.Flagged,
+                    var ss = new SessionState { Id = s.Id, Name = s.Name, CustomName = s.CustomName, Active = s.Active, Flagged = s.Flagged,
                         BgFile = s.BgPath is null ? null : Path.GetFileName(s.BgPath), BgOpacity = s.BgOpacity, BgMode = s.BgMode };
                     List<Pane> panes;
                     lock (_workspaces) panes = s.Panes.ToList();
@@ -5462,6 +5509,7 @@ internal partial class Program : ISessionHost, IWindowHost
                         ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
                     }
                     ses.Flagged = s.Flagged;
+                    ses.CustomName = string.IsNullOrWhiteSpace(s.CustomName) ? null : s.CustomName;
                     if (!string.IsNullOrEmpty(s.BgFile)) // restore the watermark if its copied file still exists
                     {
                         string bg = Path.Combine(BackgroundsDir, s.BgFile!);
