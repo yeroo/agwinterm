@@ -2,328 +2,356 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
+using Vortice.Direct2D1;
+using Vortice.DirectWrite;
+using Vortice.Mathematics;
 using static Agwinterm.Win32.Win32;
 
 namespace Agwinterm.Win32;
 
 /// <summary>
-/// The Settings window: a native Win32 tabbed dialog (General / Appearance / Notifications /
-/// Agent Status / Key Mapping) matching agterm's preferences. Every control writes its key through
-/// <see cref="ConfigSetInternal"/> — the same path as the <c>config.set</c> verb — so changes persist
-/// to agwinterm.conf and apply live. Opened from the title-bar gear, the palette, or <c>settings.open</c>.
+/// The Settings panel: a themed surface drawn in Direct2D inside our own window (like the command
+/// palette), with custom widgets — no native Win32 chrome. Five tabs (General / Appearance /
+/// Notifications / Agent Status / Key Mapping) matching agterm. Every widget writes its key through
+/// <see cref="ConfigSetInternal"/> (the same path as the <c>config.set</c> verb) so changes persist to
+/// agwinterm.conf and apply live. Opened from the title-bar gear, the palette, or <c>settings.open</c>.
 /// </summary>
 internal partial class Program
 {
-    private const string SettingsClass = "AgwintermSettings";
-    private static IntPtr _settingsHwnd, _settingsTab;
-    private static WndProc? _settingsProc;
-    private static IntPtr _settingsFont, _settingsBold;
-    private static bool _settingsClassReg, _settingsCommonInit;
-    private static bool _settingsSyncing;                 // suppress control notifications during a programmatic refresh
-    private static IntPtr _custColors;                    // 16-slot custom-colors buffer for ChooseColor
+    private enum SW { Section, Toggle, Slider, Dropdown, Color, Sound, Path, Button, Info, Diag }
 
-    private enum SCK { Check, Combo, Slider, Color, Sound, Path, Multiline, Static }
-
-    private sealed class SC
+    private sealed class SetRow
     {
-        public int Id, Tab, Min, Max;
-        public string Key = "";
-        public SCK Kind;
-        public IntPtr Hwnd, Aux;                          // Aux: slider value-label / path browse-button
-        public string[] Opts = Array.Empty<string>();     // combo display strings
-        public string[] Vals = Array.Empty<string>();     // combo stored values (parallel to Opts)
+        public SW Kind;
+        public int Tab, Min, Max;
+        public string Key = "", Label = "";
+        public string[] Opts = Array.Empty<string>();
+        public string[] Vals = Array.Empty<string>();
+        public Action? OnClick;
+        // computed each frame (absolute px); Hit is the clickable widget area, W a secondary button (Path "Choose…")
+        public float Hx0, Hy0, Hx1, Hy1;
+        public float Bx0, By0, Bx1, By1;      // secondary button (Path)
+        public bool Vis;
     }
-    private static readonly List<SC> _sctls = new();
-    private static readonly Dictionary<IntPtr, IntPtr> _swatchBrush = new(); // swatch hwnd -> HBRUSH
-    private static int _settingsTabCur;
 
-    private static readonly string[] TabNames = { "General", "Appearance", "Notifications", "Agent Status", "Key Mapping" };
+    private bool _setOpen;
+    private int _setTab;
+    private float _setScroll;
+    private readonly List<SetRow> _setRows = new();
+    private readonly float[] _navHit = new float[5 * 2];   // per-tab nav row y0,y1
+    private Rect _setCard;
+    private float _setCloseX0, _setCloseY0, _setCloseX1, _setCloseY1;
+    private float _setPaneTop, _setPaneBottom, _setContentH;
+    private SetRow? _setDragRow;                            // slider being dragged
+    private static IntPtr _custColors;                      // 16-slot custom-colors buffer for ChooseColor
 
-    // Action-button ids (kept out of the auto id range).
-    private const int ID_CLOSE = 1, ID_RESET_STATUS = 3001, ID_RELOAD_KEYMAP = 3002, ID_OPEN_CFG = 3003, ID_CHOOSE_DIR = 3004;
+    // Dropdown popup state.
+    private SetRow? _ddRow;
+    private readonly List<int> _ddFiltered = new();
+    private string _ddQuery = "";
+    private int _ddSel;
+    private float _ddScroll;
+    private Rect _ddPanel;
+    private readonly List<(float y0, float y1, int idx)> _ddRows = new();
 
+    private static readonly string[] SetTabNames = { "General", "Appearance", "Notifications", "Agent Status", "Key Mapping" };
+
+    /// <summary>Open the themed Settings panel (entry point for the gear / palette / settings.open verb).</summary>
     private void OpenSettingsWindow()
     {
-        if (_settingsHwnd != IntPtr.Zero) { SetForegroundWindow(_settingsHwnd); return; }
-        IntPtr hInst = GetModuleHandleW(null);
-        if (!_settingsCommonInit)
-        {
-            var icc = new INITCOMMONCONTROLSEX { dwSize = Marshal.SizeOf<INITCOMMONCONTROLSEX>(), dwICC = ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES };
-            InitCommonControlsEx(ref icc);
-            _settingsCommonInit = true;
-        }
-        if (!_settingsClassReg)
-        {
-            _settingsProc = SettingsProc;
-            var wc = new WNDCLASSEXW
-            {
-                cbSize = (uint)Marshal.SizeOf<WNDCLASSEXW>(),
-                lpfnWndProc = _settingsProc,
-                hInstance = hInst,
-                hCursor = LoadCursorW(IntPtr.Zero, IDC_ARROW),
-                hbrBackground = (IntPtr)16,                // COLOR_BTNFACE+1 (dialog gray)
-                lpszClassName = SettingsClass,
-            };
-            RegisterClassExW(ref wc);
-            _settingsClassReg = true;
-        }
-        if (_settingsFont == IntPtr.Zero) _settingsFont = CreateFontW(-12, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
-        if (_settingsBold == IntPtr.Zero) _settingsBold = CreateFontW(-12, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
-        if (_custColors == IntPtr.Zero) _custColors = Marshal.AllocHGlobal(16 * sizeof(int));
-
-        const int w = 480, h = 600;
-        int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
-        if (GetWindowRect(_hwnd, out RECT pr)) { x = pr.left + ((pr.right - pr.left) - w) / 2; y = pr.top + ((pr.bottom - pr.top) - h) / 2; }
-        _settingsHwnd = CreateWindowExW(0, SettingsClass, "agwinterm — Settings",
-            WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, _hwnd, IntPtr.Zero, hInst, IntPtr.Zero);
-        if (_settingsHwnd == IntPtr.Zero) return;
-
-        BuildTabs(hInst);
-        BuildControls(hInst);
-        RefreshSettingsControls();
-        ShowTab(0);
-        ShowWindow(_settingsHwnd, SW_SHOW);
-        SetForegroundWindow(_settingsHwnd);
+        if (_palette != PaletteKind.None) ClosePalette();
+        BuildSettingsRows();
+        _setOpen = true; _setTab = 0; _setScroll = 0; _ddRow = null; _setDragRow = null;
+        RequestRedraw();
     }
 
-    private void BuildTabs(IntPtr hInst)
+    private void CloseSettings()
     {
-        _settingsTab = CreateWindowExW(0, "SysTabControl32", "", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-            6, 6, 468 - 20, 560, _settingsHwnd, IntPtr.Zero, hInst, IntPtr.Zero);
-        SendMessageW(_settingsTab, WM_SETFONT, _settingsFont, (IntPtr)1);
-        IntPtr pti = Marshal.AllocHGlobal(Marshal.SizeOf<TCITEMW>());
-        for (int i = 0; i < TabNames.Length; i++)
-        {
-            IntPtr txt = Marshal.StringToHGlobalUni(TabNames[i]);
-            var ti = new TCITEMW { mask = TCIF_TEXT, pszText = txt, cchTextMax = TabNames[i].Length };
-            Marshal.StructureToPtr(ti, pti, false);
-            SendMessageW(_settingsTab, TCM_INSERTITEMW, (IntPtr)i, pti);
-            Marshal.FreeHGlobal(txt);
-        }
-        Marshal.FreeHGlobal(pti);
+        _setOpen = false; _ddRow = null; _setDragRow = null;
+        RequestRedraw();
     }
 
-    // --- control-building helpers (parented to the settings window; shown/hidden per tab) ---
-    private int _bid;                 // auto control id
-    private int[] _ty = new int[8];   // per-tab running y
+    /// <summary>Kept for the config-write path; the D2D panel re-reads config on draw, so just repaint.</summary>
+    private void RefreshSettingsControls() { if (_setOpen) RequestRedraw(); }
 
-    private const int LX = 24, LW = 180, CX = 210, CW = 226, ROW = 30, TOP = 44;
-
-    private SC Add(SC c) { _sctls.Add(c); return c; }
-
-    private void Section(IntPtr hInst, int tab, string text)
+    private void BuildSettingsRows()
     {
-        int y = _ty[tab]; _ty[tab] += 26;
-        var s = CreateWindowExW(0, "STATIC", text, WS_CHILD, LX - 8, y + 6, 400, 18, _settingsHwnd, IntPtr.Zero, hInst, IntPtr.Zero);
-        SendMessageW(s, WM_SETFONT, _settingsBold, (IntPtr)1);
-        Add(new SC { Tab = tab, Kind = SCK.Static, Hwnd = s });
-    }
+        _setRows.Clear();
+        void Sec(int t, string s) => _setRows.Add(new SetRow { Kind = SW.Section, Tab = t, Label = s });
+        void Tog(int t, string k, string l) => _setRows.Add(new SetRow { Kind = SW.Toggle, Tab = t, Key = k, Label = l });
+        void Sld(int t, string k, string l, int lo, int hi) => _setRows.Add(new SetRow { Kind = SW.Slider, Tab = t, Key = k, Label = l, Min = lo, Max = hi });
+        void Drop(int t, string k, string l, string[] o, string[]? v = null) => _setRows.Add(new SetRow { Kind = SW.Dropdown, Tab = t, Key = k, Label = l, Opts = o, Vals = v ?? o });
+        void Col(int t, string k, string l) => _setRows.Add(new SetRow { Kind = SW.Color, Tab = t, Key = k, Label = l });
+        void Btn(int t, string l, Action a) => _setRows.Add(new SetRow { Kind = SW.Button, Tab = t, Label = l, OnClick = a });
 
-    private void Label(IntPtr hInst, int tab, int y, string text)
-    {
-        var s = CreateWindowExW(0, "STATIC", text, WS_CHILD, LX, y + 5, LW, 18, _settingsHwnd, IntPtr.Zero, hInst, IntPtr.Zero);
-        SendMessageW(s, WM_SETFONT, _settingsFont, (IntPtr)1);
-        Add(new SC { Tab = tab, Kind = SCK.Static, Hwnd = s });
-    }
-
-    private void AddCheck(IntPtr hInst, int tab, string key, string label)
-    {
-        int y = _ty[tab]; _ty[tab] += ROW; int id = ++_bid + 2000;
-        var b = CreateWindowExW(0, "BUTTON", label, WS_CHILD | WS_TABSTOP | BS_AUTOCHECKBOX, LX, y + 3, LW + CW, 22, _settingsHwnd, (IntPtr)id, hInst, IntPtr.Zero);
-        SendMessageW(b, WM_SETFONT, _settingsFont, (IntPtr)1);
-        Add(new SC { Id = id, Tab = tab, Key = key, Kind = SCK.Check, Hwnd = b });
-    }
-
-    private void AddCombo(IntPtr hInst, int tab, string key, string label, string[] opts, string[]? vals = null)
-    {
-        int y = _ty[tab]; _ty[tab] += ROW; int id = ++_bid + 2000;
-        Label(hInst, tab, y, label);
-        var cb = CreateWindowExW(0, "COMBOBOX", "", WS_CHILD | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST | CBS_HASSTRINGS, CX, y + 2, CW, 300, _settingsHwnd, (IntPtr)id, hInst, IntPtr.Zero);
-        foreach (var o in opts) SendMessageW(cb, CB_ADDSTRING, IntPtr.Zero, o);
-        SendMessageW(cb, WM_SETFONT, _settingsFont, (IntPtr)1);
-        Add(new SC { Id = id, Tab = tab, Key = key, Kind = key == "blocked-sound" ? SCK.Sound : SCK.Combo, Hwnd = cb, Opts = opts, Vals = vals ?? opts });
-    }
-
-    private void AddSlider(IntPtr hInst, int tab, string key, string label, int min, int max)
-    {
-        int y = _ty[tab]; _ty[tab] += ROW; int id = ++_bid + 2000;
-        Label(hInst, tab, y, label);
-        var tb = CreateWindowExW(0, "msctls_trackbar32", "", WS_CHILD | WS_TABSTOP | TBS_HORZ | TBS_AUTOTICKS, CX, y + 2, CW - 46, 24, _settingsHwnd, (IntPtr)id, hInst, IntPtr.Zero);
-        SendMessageW(tb, TBM_SETRANGE, (IntPtr)1, (IntPtr)((min & 0xFFFF) | (max << 16)));
-        var val = CreateWindowExW(0, "STATIC", "", WS_CHILD, CX + CW - 42, y + 5, 42, 18, _settingsHwnd, IntPtr.Zero, hInst, IntPtr.Zero);
-        SendMessageW(val, WM_SETFONT, _settingsFont, (IntPtr)1);
-        Add(new SC { Id = id, Tab = tab, Key = key, Kind = SCK.Slider, Hwnd = tb, Aux = val, Min = min, Max = max });
-    }
-
-    private void AddColor(IntPtr hInst, int tab, int id, string key, string label)
-    {
-        int y = _ty[tab]; _ty[tab] += ROW;
-        Label(hInst, tab, y, label);
-        var sw = CreateWindowExW(0, "STATIC", "", WS_CHILD | 0x00000100 /*SS_NOTIFY*/ | 0x00000001 /*SS_SUNKEN? no*/, CX, y + 3, 60, 20, _settingsHwnd, (IntPtr)id, hInst, IntPtr.Zero);
-        Add(new SC { Id = id, Tab = tab, Key = key, Kind = SCK.Color, Hwnd = sw });
-    }
-
-    private void AddPath(IntPtr hInst, int tab, string key, string label)
-    {
-        int y = _ty[tab]; _ty[tab] += ROW; int id = ++_bid + 2000;
-        Label(hInst, tab, y, label);
-        var ed = CreateWindowExW(0, "EDIT", "", WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL | 0x00800000, CX, y + 2, CW - 66, 22, _settingsHwnd, (IntPtr)id, hInst, IntPtr.Zero);
-        SendMessageW(ed, WM_SETFONT, _settingsFont, (IntPtr)1);
-        var br = CreateWindowExW(0, "BUTTON", "Choose…", WS_CHILD | WS_TABSTOP, CX + CW - 60, y + 1, 60, 24, _settingsHwnd, (IntPtr)ID_CHOOSE_DIR, hInst, IntPtr.Zero);
-        SendMessageW(br, WM_SETFONT, _settingsFont, (IntPtr)1);
-        Add(new SC { Id = id, Tab = tab, Key = key, Kind = SCK.Path, Hwnd = ed, Aux = br });
-    }
-
-    private IntPtr Button(IntPtr hInst, int tab, int id, string label, int wdt = 130)
-    {
-        int y = _ty[tab]; _ty[tab] += ROW + 4;
-        var b = CreateWindowExW(0, "BUTTON", label, WS_CHILD | WS_TABSTOP, LX, y + 2, wdt, 26, _settingsHwnd, (IntPtr)id, hInst, IntPtr.Zero);
-        SendMessageW(b, WM_SETFONT, _settingsFont, (IntPtr)1);
-        Add(new SC { Id = id, Tab = tab, Kind = SCK.Static, Hwnd = b });
-        return b;
-    }
-
-    private void BuildControls(IntPtr hInst)
-    {
-        _sctls.Clear(); _swatchBrush.Clear(); _bid = 0;
-        for (int i = 0; i < _ty.Length; i++) _ty[i] = TOP;
-
-        // ---- General ----
-        Section(hInst, 0, "Mouse");
-        AddSlider(hInst, 0, "scroll-speed", "Scroll speed", 1, 10);
-        AddCheck(hInst, 0, "right-click-paste", "Right-click pastes the clipboard");
-        AddCheck(hInst, 0, "copy-on-select", "Copy selection to clipboard automatically");
-        Section(hInst, 0, "Sessions");
-        AddCombo(hInst, 0, "new-session-dir-mode", "New sessions open in",
+        // General
+        Sec(0, "Mouse");
+        Sld(0, "scroll-speed", "Scroll speed", 1, 10);
+        Tog(0, "right-click-paste", "Right-click pastes clipboard");
+        Tog(0, "copy-on-select", "Copy selection automatically");
+        Sec(0, "Sessions");
+        Drop(0, "new-session-dir-mode", "New sessions open in",
             new[] { "Home directory", "Current session's dir", "Custom directory" }, new[] { "home", "current", "custom" });
-        AddPath(hInst, 0, "new-session-dir", "Custom directory");
-        AddCheck(hInst, 0, "restore-commands", "Restore running commands on restart");
-        AddCheck(hInst, 0, "confirm-close-session", "Confirm before closing a session");
-        Section(hInst, 0, "Shell");
-        AddCheck(hInst, 0, "shell-integration", "Shell integration (live working directory)");
+        _setRows.Add(new SetRow { Kind = SW.Path, Tab = 0, Key = "new-session-dir", Label = "Custom directory" });
+        Tog(0, "restore-commands", "Restore running commands");
+        Tog(0, "confirm-close-session", "Confirm before closing");
+        Sec(0, "Shell");
+        Tog(0, "shell-integration", "Shell integration (live cwd)");
 
-        // ---- Appearance ----
-        Section(hInst, 1, "Terminal");
+        // Appearance
+        Sec(1, "Terminal");
         string[] fonts = { "Default", "MesloLGSDZ Nerd Font", "Cascadia Mono", "Cascadia Code", "Consolas", "JetBrains Mono", "Fira Code", "Hack", "Source Code Pro", "Courier New", "Lucida Console" };
-        AddCombo(hInst, 1, "font-family", "Font", fonts);
-        AddSlider(hInst, 1, "font-size", "Font size", 8, 32);
-        AddCombo(hInst, 1, "theme", "Theme", _allThemes.Select(t => t.Name).ToArray());
-        AddCombo(hInst, 1, "cursor-style", "Cursor style", new[] { "bar", "block", "underline" });
-        AddCheck(hInst, 1, "cursor-blink", "Blink the cursor");
-        Section(hInst, 1, "Window");
-        AddCheck(hInst, 1, "compact-toolbar", "Compact toolbar (shorter title bar)");
-        AddSlider(hInst, 1, "window-opacity", "Window opacity", 30, 100);
-        AddSlider(hInst, 1, "sidebar-tint", "Sidebar tint", -100, 100);
-        Section(hInst, 1, "Panes");
-        AddSlider(hInst, 1, "inactive-pane-dim", "Inactive pane mute", 0, 100);
+        Drop(1, "font-family", "Font", fonts);
+        Sld(1, "font-size", "Font size", 8, 32);
+        Drop(1, "theme", "Theme", _allThemes.Select(t => t.Name).ToArray());
+        Drop(1, "cursor-style", "Cursor style", new[] { "bar", "block", "underline" });
+        Tog(1, "cursor-blink", "Blink cursor");
+        Sec(1, "Window");
+        Tog(1, "compact-toolbar", "Compact toolbar");
+        Sld(1, "window-opacity", "Window opacity", 30, 100);
+        Sld(1, "sidebar-tint", "Sidebar tint", -100, 100);
+        Sec(1, "Panes");
+        Sld(1, "inactive-pane-dim", "Inactive pane mute", 0, 100);
 
-        // ---- Notifications ----
-        Section(hInst, 2, "Notifications");
-        AddCheck(hInst, 2, "desktop-notifications", "Show desktop notifications (OS tray)");
-        AddCheck(hInst, 2, "notification-badges", "Show unread badges on sidebar rows");
-        AddCheck(hInst, 2, "attention-button", "Show the title-bar attention indicator");
+        // Notifications
+        Sec(2, "Notifications");
+        Tog(2, "desktop-notifications", "Desktop notifications (OS tray)");
+        Tog(2, "notification-badges", "Unread badges on sidebar rows");
+        Tog(2, "attention-button", "Title-bar attention indicator");
 
-        // ---- Agent Status ----
-        Section(hInst, 3, "Colors");
-        AddColor(hInst, 3, 2101, "status-color-active", "Active");
-        AddColor(hInst, 3, 2102, "status-color-blocked", "Blocked");
-        AddColor(hInst, 3, 2103, "status-color-completed", "Completed");
-        Section(hInst, 3, "Sound");
-        AddCombo(hInst, 3, "blocked-sound", "Blocked sound",
-            new[] { "None", "beep", "asterisk", "exclamation", "hand", "question", "Custom .wav…" },
-            new[] { "None", "beep", "asterisk", "exclamation", "hand", "question", "__custom__" });
-        Button(hInst, 3, ID_RESET_STATUS, "Reset to defaults");
-
-        // ---- Key Mapping ----
-        Section(hInst, 4, "Config Directory");
-        Label(hInst, 4, _ty[4], System.IO.Path.GetDirectoryName(KeymapPath) ?? ""); _ty[4] += ROW;
-        Button(hInst, 4, ID_OPEN_CFG, "Open Folder", 110);
-        Button(hInst, 4, ID_RELOAD_KEYMAP, "Reload", 110);
-        Section(hInst, 4, "Diagnostics");
+        // Agent Status
+        Sec(3, "Colors");
+        Col(3, "status-color-active", "Active");
+        Col(3, "status-color-blocked", "Blocked");
+        Col(3, "status-color-completed", "Completed");
+        Sec(3, "Sound");
+        _setRows.Add(new SetRow
         {
-            int y = _ty[4];
-            var ml = CreateWindowExW(0, "EDIT", "", WS_CHILD | WS_VSCROLL | 0x00800000 | ES_MULTILINE | ES_READONLY,
-                LX, y + 2, 420, 180, _settingsHwnd, (IntPtr)(++_bid + 2000), hInst, IntPtr.Zero);
-            SendMessageW(ml, WM_SETFONT, _settingsFont, (IntPtr)1);
-            Add(new SC { Tab = 4, Kind = SCK.Multiline, Key = "__diag__", Hwnd = ml });
-        }
+            Kind = SW.Sound, Tab = 3, Key = "blocked-sound", Label = "Blocked sound",
+            Opts = new[] { "None", "beep", "asterisk", "exclamation", "hand", "question", "Custom .wav…" },
+            Vals = new[] { "None", "beep", "asterisk", "exclamation", "hand", "question", "__custom__" },
+        });
+        Btn(3, "Reset to defaults", ResetAgentStatusSettings);
 
-        // Close button (all tabs).
-        var close = CreateWindowExW(0, "BUTTON", "Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 480 - 110, 600 - 66, 90, 26, _settingsHwnd, (IntPtr)ID_CLOSE, hInst, IntPtr.Zero);
-        SendMessageW(close, WM_SETFONT, _settingsFont, (IntPtr)1);
+        // Key Mapping
+        Sec(4, "Config Directory");
+        _setRows.Add(new SetRow { Kind = SW.Info, Tab = 4, Label = System.IO.Path.GetDirectoryName(KeymapPath) ?? "" });
+        Btn(4, "Open Folder", OpenConfigFolder);
+        Btn(4, "Reload keymap", () => { ReloadKeymap(); RequestRedraw(); });
+        Sec(4, "Diagnostics");
+        _setRows.Add(new SetRow { Kind = SW.Diag, Tab = 4 });
     }
 
-    private void ShowTab(int tab)
+    private static void OpenConfigFolder()
     {
-        _settingsTabCur = tab;
-        SendMessageW(_settingsTab, TCM_SETCURSEL, (IntPtr)tab, IntPtr.Zero);
-        foreach (var c in _sctls)
-        {
-            bool vis = c.Tab == tab;
-            ShowWindow(c.Hwnd, vis ? SW_SHOW : 0);
-            if (c.Aux != IntPtr.Zero) ShowWindow(c.Aux, vis ? SW_SHOW : 0);
-        }
+        var dir = System.IO.Path.GetDirectoryName(KeymapPath);
+        if (dir is null) return;
+        System.IO.Directory.CreateDirectory(dir);
+        ShellExecuteW(IntPtr.Zero, "open", dir, null, null, 5);
     }
 
-    private static string SoundDisplay(string v) =>
-        string.IsNullOrWhiteSpace(v) || v.Equals("off", StringComparison.OrdinalIgnoreCase) || v.Equals("none", StringComparison.OrdinalIgnoreCase)
-            ? "None" : v;
+    // ---- layout constants ----
+    private const float SetHeader = 46f, SetNavW = 160f, SetRowH = 38f, SetSecH = 30f, SetPad = 22f;
 
-    /// <summary>Push current config values into the open Settings controls (no-op when closed).</summary>
-    private void RefreshSettingsControls()
+    private void DrawSettingsPanel(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
-        if (_settingsHwnd == IntPtr.Zero) return;
-        _settingsSyncing = true;
-        try
+        if (!_setOpen) return;
+        int cw = ClientW(), ch = ClientH();
+        brush.Color = PalScrim;
+        rt.FillRectangle(new Rect(0, 0, cw, ch), brush);
+
+        float cardW = MathF.Min(680f, cw - 60f);
+        float cardH = MathF.Min(600f, ch - 80f);
+        float cardX = (cw - cardW) / 2f;
+        float cardY = MathF.Max(TitleBarH + 16f, (ch - cardH) / 2f);
+        _setCard = new Rect(cardX, cardY, cardW, cardH);
+
+        brush.Color = PalBg;
+        rt.FillRoundedRectangle(new RoundedRectangle { Rect = _setCard, RadiusX = 12f, RadiusY = 12f }, brush);
+        brush.Color = PalBorder;
+        rt.DrawRoundedRectangle(new RoundedRectangle { Rect = _setCard, RadiusX = 12f, RadiusY = 12f }, brush, 1f);
+
+        // Header + close button
+        brush.Color = ChromeText;
+        rt.DrawText("Settings", _uiFont, new Rect(cardX + SetPad, cardY, 200f, SetHeader), brush);
+        float cbSz = 26f, cbX = cardX + cardW - cbSz - 12f, cbY = cardY + (SetHeader - cbSz) / 2f;
+        _setCloseX0 = cbX; _setCloseY0 = cbY; _setCloseX1 = cbX + cbSz; _setCloseY1 = cbY + cbSz;
+        brush.Color = ChromeDim;
+        rt.DrawText(GlyphClose, _iconSmall, new Rect(cbX, cbY, cbSz, cbSz), brush);
+        brush.Color = ChromeBorder;
+        rt.DrawLine(new System.Numerics.Vector2(cardX + 1f, cardY + SetHeader), new System.Numerics.Vector2(cardX + cardW - 1f, cardY + SetHeader), brush, 1f);
+        rt.DrawLine(new System.Numerics.Vector2(cardX + SetNavW, cardY + SetHeader), new System.Numerics.Vector2(cardX + SetNavW, cardY + cardH - 1f), brush, 1f);
+
+        // Left nav
+        float navY = cardY + SetHeader + 8f;
+        for (int i = 0; i < SetTabNames.Length; i++)
         {
-            foreach (var c in _sctls)
+            float ry = navY + i * 34f;
+            _navHit[i * 2] = ry; _navHit[i * 2 + 1] = ry + 32f;
+            if (i == _setTab)
             {
-                switch (c.Kind)
-                {
-                    case SCK.Check:
-                        SendMessageW(c.Hwnd, BM_SETCHECK, (IntPtr)(ConfigValue(c.Key) is "true" or "yes" or "on" or "1" ? 1 : 0), IntPtr.Zero);
-                        break;
-                    case SCK.Combo:
-                    {
-                        string v = ConfigValue(c.Key);
-                        int idx = Array.FindIndex(c.Vals, o => string.Equals(o, v, StringComparison.OrdinalIgnoreCase));
-                        if (idx < 0 && c.Key is "theme" or "font-family" && v.Length > 0) // value not in list → add it
-                        { SendMessageW(c.Hwnd, CB_ADDSTRING, IntPtr.Zero, v); c.Opts = c.Opts.Append(v).ToArray(); c.Vals = c.Vals.Append(v).ToArray(); idx = c.Vals.Length - 1; }
-                        SendMessageW(c.Hwnd, CB_SETCURSEL, (IntPtr)idx, IntPtr.Zero);
-                        break;
-                    }
-                    case SCK.Sound:
-                    {
-                        string disp = SoundDisplay(ConfigValue(c.Key));
-                        int idx = Array.FindIndex(c.Vals, o => string.Equals(o, disp, StringComparison.OrdinalIgnoreCase));
-                        if (idx < 0) // a custom path/alias → add it as an item and select
-                        { SendMessageW(c.Hwnd, CB_ADDSTRING, IntPtr.Zero, disp); c.Opts = c.Opts.Append(disp).ToArray(); c.Vals = c.Vals.Append(disp).ToArray(); idx = c.Vals.Length - 1; }
-                        SendMessageW(c.Hwnd, CB_SETCURSEL, (IntPtr)idx, IntPtr.Zero);
-                        break;
-                    }
-                    case SCK.Slider:
-                    {
-                        int.TryParse(ConfigValue(c.Key), out int v);
-                        v = Math.Clamp(v, c.Min, c.Max);
-                        SendMessageW(c.Hwnd, TBM_SETPOS, (IntPtr)1, (IntPtr)v);
-                        SetWindowTextW(c.Aux, SliderLabel(c.Key, v));
-                        break;
-                    }
-                    case SCK.Color:
-                        SetSwatch(c.Hwnd, ConfigValue(c.Key));
-                        break;
-                    case SCK.Path:
-                        SetWindowTextW(c.Hwnd, ConfigValue(c.Key));
-                        break;
-                    case SCK.Multiline:
-                        SetWindowTextW(c.Hwnd, _keymapDiag.Length == 0 ? "No issues." : string.Join("\r\n", _keymapDiag));
-                        break;
-                }
+                brush.Color = PalSel;
+                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(cardX + 8f, ry, SetNavW - 16f, 32f), RadiusX = 6f, RadiusY = 6f }, brush);
+            }
+            brush.Color = i == _setTab ? SbActiveText : ChromeDim;
+            rt.DrawText(SetTabNames[i], _uiFont, new Rect(cardX + 20f, ry, SetNavW - 28f, 32f), brush);
+        }
+
+        // Right pane (clipped + scrolled)
+        float paneX = cardX + SetNavW, paneW = cardW - SetNavW;
+        _setPaneTop = cardY + SetHeader + 6f;
+        _setPaneBottom = cardY + cardH - 6f;
+        rt.PushAxisAlignedClip(new Rect(paneX, _setPaneTop, paneW, _setPaneBottom - _setPaneTop), AntialiasMode.Aliased);
+        float y = _setPaneTop + 6f - _setScroll;
+        float lblX = paneX + SetPad;
+        float rightX = paneX + paneW - SetPad;
+        foreach (var r in _setRows)
+        {
+            r.Vis = false;
+            if (r.Tab != _setTab) continue;
+            float rowH = r.Kind == SW.Section ? SetSecH : (r.Kind == SW.Diag ? 150f : SetRowH);
+            bool onscreen = y + rowH > _setPaneTop && y < _setPaneBottom;
+            if (onscreen) DrawRow(rt, brush, r, lblX, rightX, y, rowH, paneW);
+            y += rowH + (r.Kind == SW.Section ? 2f : 4f);
+        }
+        _setContentH = (y + _setScroll) - (_setPaneTop + 6f);
+        rt.PopAxisAlignedClip();
+
+        if (_ddRow is not null) DrawDropdown(rt, brush);
+    }
+
+    private void DrawRow(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, SetRow r, float lblX, float rightX, float y, float rowH, float paneW)
+    {
+        if (r.Kind == SW.Section)
+        {
+            brush.Color = ChromeAccent;
+            rt.DrawText(r.Label.ToUpperInvariant(), _uiSmall, new Rect(lblX, y + 8f, paneW - 2 * SetPad, 18f), brush);
+            return;
+        }
+        r.Vis = true;
+        brush.Color = ChromeText;
+        rt.DrawText(r.Label, _uiFont, new Rect(lblX, y, paneW - 2 * SetPad - 180f, rowH), brush);
+
+        switch (r.Kind)
+        {
+            case SW.Toggle:
+            {
+                bool on = IsOn(ConfigValue(r.Key));
+                float tw = 40f, th = 22f, tx = rightX - tw, ty = y + (rowH - th) / 2f;
+                brush.Color = on ? ChromeAccent : Mix(PalBg, ChromeText, 0.25f);
+                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(tx, ty, tw, th), RadiusX = th / 2f, RadiusY = th / 2f }, brush);
+                brush.Color = new Color4(1f, 1f, 1f, 1f);
+                float kr = th / 2f - 3f, kcx = on ? tx + tw - kr - 3f : tx + kr + 3f;
+                rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(kcx, ty + th / 2f), kr, kr), brush);
+                r.Hx0 = tx; r.Hy0 = ty; r.Hx1 = tx + tw; r.Hy1 = ty + th;
+                break;
+            }
+            case SW.Slider:
+            {
+                float sw = 180f, sx = rightX - sw, scy = y + rowH / 2f;
+                int.TryParse(ConfigValue(r.Key), out int v); v = Math.Clamp(v, r.Min, r.Max);
+                float trackX0 = sx, trackX1 = sx + sw - 44f;
+                float t = (float)(v - r.Min) / Math.Max(1, r.Max - r.Min);
+                float thumbX = trackX0 + (trackX1 - trackX0) * t;
+                brush.Color = Mix(PalBg, ChromeText, 0.22f);
+                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(trackX0, scy - 2f, trackX1 - trackX0, 4f), RadiusX = 2f, RadiusY = 2f }, brush);
+                brush.Color = ChromeAccent;
+                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(trackX0, scy - 2f, MathF.Max(0f, thumbX - trackX0), 4f), RadiusX = 2f, RadiusY = 2f }, brush);
+                rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(thumbX, scy), 7f, 7f), brush);
+                brush.Color = ChromeDim;
+                rt.DrawText(SliderLabel(r.Key, v), _uiSmall, new Rect(trackX1 + 8f, y, 40f, rowH), brush);
+                r.Hx0 = trackX0 - 6f; r.Hy0 = y; r.Hx1 = trackX1 + 6f; r.Hy1 = y + rowH;
+                break;
+            }
+            case SW.Dropdown:
+            case SW.Sound:
+            {
+                float dw = 200f, dh = 26f, dx = rightX - dw, dy = y + (rowH - dh) / 2f;
+                brush.Color = Mix(PalBg, ChromeText, 0.10f);
+                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(dx, dy, dw, dh), RadiusX = 6f, RadiusY = 6f }, brush);
+                brush.Color = PalBorder;
+                rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(dx, dy, dw, dh), RadiusX = 6f, RadiusY = 6f }, brush, 1f);
+                brush.Color = ChromeText;
+                rt.DrawText(CurrentDropdownText(r), _uiSmall, new Rect(dx + 8f, dy, dw - 24f, dh), brush);
+                brush.Color = ChromeDim;
+                rt.DrawText(((char)0xE70D).ToString(), _iconSmall, new Rect(dx + dw - 20f, dy, 18f, dh), brush);  // ChevronDown
+                r.Hx0 = dx; r.Hy0 = dy; r.Hx1 = dx + dw; r.Hy1 = dy + dh;
+                break;
+            }
+            case SW.Color:
+            {
+                float w = 54f, h = 22f, x = rightX - w, cy = y + (rowH - h) / 2f;
+                brush.Color = SwatchColor(ConfigValue(r.Key));
+                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, cy, w, h), RadiusX = 5f, RadiusY = 5f }, brush);
+                brush.Color = PalBorder;
+                rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, cy, w, h), RadiusX = 5f, RadiusY = 5f }, brush, 1f);
+                r.Hx0 = x; r.Hy0 = cy; r.Hx1 = x + w; r.Hy1 = cy + h;
+                break;
+            }
+            case SW.Path:
+            {
+                float bw = 84f, bh = 26f, bx = rightX - bw, by = y + (rowH - bh) / 2f;
+                float fx = lblX, fw = bx - 10f - fx;
+                brush.Color = Mix(PalBg, ChromeText, 0.06f);
+                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(fx, by, fw, bh), RadiusX = 5f, RadiusY = 5f }, brush);
+                brush.Color = ChromeDim;
+                string p = ConfigValue(r.Key); if (p.Length == 0) p = "(not set)";
+                rt.DrawText(p, _uiSmall, new Rect(fx + 8f, by, fw - 12f, bh), brush);
+                DrawPanelButton(rt, brush, bx, by, bw, bh, "Choose…");
+                r.Bx0 = bx; r.By0 = by; r.Bx1 = bx + bw; r.By1 = by + bh;
+                r.Hx0 = r.Hy0 = r.Hx1 = r.Hy1 = 0; // label handled by button
+                break;
+            }
+            case SW.Button:
+            {
+                float bw = MeasureText(r.Label, _uiSmall) + 32f, bh = 28f, bx = lblX, by = y + (rowH - bh) / 2f;
+                DrawPanelButton(rt, brush, bx, by, bw, bh, r.Label);
+                // buttons have no left label
+                r.Hx0 = bx; r.Hy0 = by; r.Hx1 = bx + bw; r.Hy1 = by + bh;
+                break;
+            }
+            case SW.Info:
+            {
+                brush.Color = ChromeDim;
+                rt.DrawText(r.Label, _uiSmall, new Rect(lblX, y, paneW - 2 * SetPad, rowH), brush);
+                r.Vis = false;
+                break;
+            }
+            case SW.Diag:
+            {
+                var lines = _keymapDiag.Length == 0 ? new[] { "No issues." } : _keymapDiag;
+                float ly = y;
+                brush.Color = _keymapDiag.Length == 0 ? ChromeDim : new Color4(240 / 255f, 160 / 255f, 40 / 255f, 1f);
+                foreach (var line in lines) { rt.DrawText(line, _uiSmall, new Rect(lblX, ly, paneW - 2 * SetPad, 18f), brush); ly += 18f; }
+                r.Vis = false;
+                break;
             }
         }
-        finally { _settingsSyncing = false; }
     }
+
+    private void DrawPanelButton(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float x, float y, float w, float h, string label)
+    {
+        brush.Color = Mix(PalBg, ChromeText, 0.14f);
+        rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, y, w, h), RadiusX = 6f, RadiusY = 6f }, brush);
+        brush.Color = PalBorder;
+        rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, y, w, h), RadiusX = 6f, RadiusY = 6f }, brush, 1f);
+        brush.Color = ChromeText;
+        rt.DrawText(label, _uiSmall, new Rect(x, y, w, h), brush);
+    }
+
+    private string CurrentDropdownText(SetRow r)
+    {
+        string v = ConfigValue(r.Key);
+        if (r.Kind == SW.Sound) v = SoundDisplayName(v);
+        int idx = Array.FindIndex(r.Vals, o => string.Equals(o, v, StringComparison.OrdinalIgnoreCase));
+        if (idx >= 0) return r.Opts[idx];
+        return v.Length == 0 ? (r.Opts.Length > 0 ? r.Opts[0] : "") : v;   // custom value (theme/font/wav path)
+    }
+
+    private static string SoundDisplayName(string v) =>
+        string.IsNullOrWhiteSpace(v) || v.Equals("off", StringComparison.OrdinalIgnoreCase) || v.Equals("none", StringComparison.OrdinalIgnoreCase) ? "None" : v;
+
+    private static bool IsOn(string v) => v is "true" or "yes" or "on" or "1";
 
     private static string SliderLabel(string key, int v) => key switch
     {
@@ -332,122 +360,193 @@ internal partial class Program
         _ => v.ToString(),
     };
 
-    private static void SetSwatch(IntPtr sw, string hex)
+    private Color4 SwatchColor(string hex) => HexColor4(hex, ChromeDim);
+
+    // ---- dropdown popup ----
+
+    private void OpenDropdown(SetRow r)
     {
-        var h = (hex ?? "").Trim().TrimStart('#');
-        if (h.Length == 3) h = string.Concat(h[0], h[0], h[1], h[1], h[2], h[2]);
-        int r = 0, g = 0, b = 0;
-        try { if (h.Length >= 6) { r = Convert.ToInt32(h[..2], 16); g = Convert.ToInt32(h.Substring(2, 2), 16); b = Convert.ToInt32(h.Substring(4, 2), 16); } } catch { }
-        if (_swatchBrush.TryGetValue(sw, out var old)) DeleteObject(old);
-        _swatchBrush[sw] = CreateSolidBrush(RGB(r, g, b));
-        InvalidateRect(sw, IntPtr.Zero, true);
+        _ddRow = r; _ddQuery = ""; _ddSel = 0; _ddScroll = 0;
+        FilterDropdown();
+        // select the current value
+        string cur = r.Kind == SW.Sound ? SoundDisplayName(ConfigValue(r.Key)) : ConfigValue(r.Key);
+        int at = _ddFiltered.FindIndex(i => string.Equals(r.Vals[i], cur, StringComparison.OrdinalIgnoreCase));
+        if (at >= 0) _ddSel = at;
+        RequestRedraw();
     }
 
-    private static IntPtr SettingsProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
+    private void FilterDropdown()
     {
-        switch (msg)
+        _ddFiltered.Clear();
+        if (_ddRow is null) return;
+        string q = _ddQuery.ToLowerInvariant();
+        for (int i = 0; i < _ddRow.Opts.Length; i++)
+            if (q.Length == 0 || _ddRow.Opts[i].ToLowerInvariant().Contains(q)) _ddFiltered.Add(i);
+        if (_ddSel >= _ddFiltered.Count) _ddSel = Math.Max(0, _ddFiltered.Count - 1);
+    }
+
+    private void DrawDropdown(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        var r = _ddRow!;
+        _ddRows.Clear();
+        const float rowH = 30f, qh = 30f;
+        int maxRows = 12;
+        float w = MathF.Max(220f, r.Hx1 - r.Hx0);
+        float x = MathF.Min(r.Hx0, ClientW() - w - 8f);
+        bool filterable = r.Opts.Length > 12;
+        int shown = Math.Min(_ddFiltered.Count, maxRows);
+        float h = (filterable ? qh : 0f) + Math.Max(1, shown) * rowH + 8f;
+        float y = r.Hy1 + 2f;
+        if (y + h > ClientH() - 8f) y = MathF.Max(_setPaneTop, r.Hy0 - h - 2f);
+        _ddPanel = new Rect(x, y, w, h);
+
+        brush.Color = Shade(PalBg, 0.06f);
+        rt.FillRoundedRectangle(new RoundedRectangle { Rect = _ddPanel, RadiusX = 8f, RadiusY = 8f }, brush);
+        brush.Color = PalBorder;
+        rt.DrawRoundedRectangle(new RoundedRectangle { Rect = _ddPanel, RadiusX = 8f, RadiusY = 8f }, brush, 1f);
+
+        float top = y + 4f;
+        if (filterable)
         {
-            case WM_NOTIFY:
-            {
-                var nm = Marshal.PtrToStructure<NMHDR>(lParam);
-                if (nm.hwndFrom == _settingsTab && nm.code == TCN_SELCHANGE)
-                    Frontmost.ShowTab((int)SendMessageW(_settingsTab, TCM_GETCURSEL, IntPtr.Zero, IntPtr.Zero));
-                break;
-            }
-            case WM_CTLCOLORSTATIC:
-                if (_swatchBrush.TryGetValue(lParam, out var br)) return br;   // paint color swatches
-                break;
-            case WM_HSCROLL:
-            {
-                var c = _sctls.FirstOrDefault(x => x.Hwnd == lParam && x.Kind == SCK.Slider);
-                if (c is not null)
-                {
-                    int pos = (int)SendMessageW(c.Hwnd, TBM_GETPOS, IntPtr.Zero, IntPtr.Zero);
-                    SetWindowTextW(c.Aux, SliderLabel(c.Key, pos));
-                    Frontmost.ConfigSetInternal(c.Key, pos.ToString());
-                }
-                return IntPtr.Zero;
-            }
-            case WM_COMMAND:
-            {
-                int cid = LoWord(wParam), code = HiWord(wParam);
-                if (cid == ID_CLOSE) { DestroyWindow(hWnd); return IntPtr.Zero; }
-                if (cid == ID_RESET_STATUS) { Frontmost.ResetAgentStatusSettings(); return IntPtr.Zero; }
-                if (cid == ID_RELOAD_KEYMAP) { Frontmost.ReloadKeymap(); Frontmost.RefreshSettingsControls(); return IntPtr.Zero; }
-                if (cid == ID_OPEN_CFG) { var dir = System.IO.Path.GetDirectoryName(KeymapPath); if (dir is not null) { System.IO.Directory.CreateDirectory(dir); ShellExecuteW(hWnd, "open", dir, null, null, 5); } return IntPtr.Zero; }
-                if (cid == ID_CHOOSE_DIR) { var d = Frontmost.PickFolder(); if (d is not null) { Frontmost.ConfigSetInternal("new-session-dir", d); Frontmost.ConfigSetInternal("new-session-dir-mode", "custom"); } return IntPtr.Zero; }
-                if (_settingsSyncing) break;
-
-                var ctl = _sctls.FirstOrDefault(x => x.Id == cid && x.Id != 0);
-                if (ctl is null) break;
-                switch (ctl.Kind)
-                {
-                    case SCK.Check when code == BN_CLICKED:
-                        Frontmost.ConfigSetInternal(ctl.Key, SendMessageW(ctl.Hwnd, BM_GETCHECK, IntPtr.Zero, IntPtr.Zero) != IntPtr.Zero ? "true" : "false");
-                        break;
-                    case SCK.Color when code == 0 /*STN_CLICKED*/:
-                        Frontmost.PickColor(ctl);
-                        break;
-                    case SCK.Combo when code == CBN_SELCHANGE:
-                    {
-                        int sel = (int)SendMessageW(ctl.Hwnd, CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero);
-                        if (sel >= 0 && sel < ctl.Vals.Length) Frontmost.ConfigSetInternal(ctl.Key, ctl.Vals[sel]);
-                        break;
-                    }
-                    case SCK.Sound when code == CBN_SELCHANGE:
-                        Frontmost.OnSoundChanged(ctl);
-                        break;
-                    case SCK.Path when code == EN_KILLFOCUS:
-                    {
-                        var sb = new StringBuilder(512); GetWindowTextW(ctl.Hwnd, sb, sb.Capacity);
-                        Frontmost.ConfigSetInternal(ctl.Key, sb.ToString());
-                        break;
-                    }
-                }
-                return IntPtr.Zero;
-            }
-            case WM_CLOSE:
-                DestroyWindow(hWnd);
-                return IntPtr.Zero;
-            case 0x0082: // WM_NCDESTROY
-                foreach (var b in _swatchBrush.Values) DeleteObject(b);
-                _swatchBrush.Clear();
-                _settingsHwnd = IntPtr.Zero; _settingsTab = IntPtr.Zero; _sctls.Clear();
-                break;
+            brush.Color = _ddQuery.Length > 0 ? ChromeText : ChromeDim;
+            rt.DrawText(_ddQuery.Length > 0 ? _ddQuery : "Type to filter…", _uiSmall, new Rect(x + 10f, top, w - 20f, qh - 6f), brush);
+            brush.Color = ChromeBorder;
+            rt.DrawLine(new System.Numerics.Vector2(x + 6f, top + qh - 4f), new System.Numerics.Vector2(x + w - 6f, top + qh - 4f), brush, 1f);
+            top += qh;
         }
-        return DefWindowProcW(hWnd, msg, wParam, lParam);
+        int start = _ddSel >= maxRows ? _ddSel - maxRows + 1 : 0;
+        rt.PushAxisAlignedClip(new Rect(x, top, w, shown * rowH + 2f), AntialiasMode.Aliased);
+        for (int i = 0; i < shown; i++)
+        {
+            int fi = start + i; if (fi >= _ddFiltered.Count) break;
+            int oi = _ddFiltered[fi];
+            float ry = top + i * rowH;
+            if (fi == _ddSel) { brush.Color = PalSel; rt.FillRectangle(new Rect(x + 4f, ry, w - 8f, rowH), brush); }
+            brush.Color = fi == _ddSel ? SbActiveText : ChromeText;
+            rt.DrawText(r.Opts[oi], _uiSmall, new Rect(x + 12f, ry, w - 20f, rowH), brush);
+            _ddRows.Add((ry, ry + rowH, fi));
+        }
+        rt.PopAxisAlignedClip();
     }
 
-    /// <summary>Open the Windows color picker for a status-color swatch and persist the chosen hex.</summary>
-    private void PickColor(SC c)
+    private void CommitDropdown(int filteredIdx)
     {
-        var cur = ConfigValue(c.Key).Trim().TrimStart('#');
+        var r = _ddRow!;
+        if (filteredIdx < 0 || filteredIdx >= _ddFiltered.Count) { _ddRow = null; RequestRedraw(); return; }
+        string val = r.Vals[_ddFiltered[filteredIdx]];
+        _ddRow = null;
+        if (r.Kind == SW.Sound)
+        {
+            if (val == "__custom__")
+            {
+                var wav = PickWav();
+                if (wav is not null) { ConfigSetInternal("blocked-sound", wav); PlayStatusSound(wav); }
+            }
+            else { ConfigSetInternal("blocked-sound", val == "None" ? "" : val); if (val != "None") PlayStatusSound(val); }
+        }
+        else ConfigSetInternal(r.Key, val);
+        RequestRedraw();
+    }
+
+    // ---- input ----
+
+    private void SettingsClick(int mx, int my)
+    {
+        if (_ddRow is not null)
+        {
+            if (mx >= _ddPanel.Left && mx <= _ddPanel.Right && my >= _ddPanel.Top && my <= _ddPanel.Bottom)
+            {
+                foreach (var (y0, y1, idx) in _ddRows) if (my >= y0 && my < y1) { CommitDropdown(idx); return; }
+                return; // click inside popup chrome
+            }
+            _ddRow = null; RequestRedraw(); return; // click outside closes the popup
+        }
+        if (mx >= _setCloseX0 && mx <= _setCloseX1 && my >= _setCloseY0 && my <= _setCloseY1) { CloseSettings(); return; }
+        // nav
+        if (mx >= _setCard.Left + 8f && mx <= _setCard.Left + SetNavW - 8f)
+            for (int i = 0; i < 5; i++)
+                if (my >= _navHit[i * 2] && my < _navHit[i * 2 + 1]) { _setTab = i; _setScroll = 0; RequestRedraw(); return; }
+        // outside the card → dismiss
+        if (mx < _setCard.Left || mx > _setCard.Right || my < _setCard.Top || my > _setCard.Bottom) { CloseSettings(); return; }
+        // widgets (only within the visible pane)
+        if (my < _setPaneTop || my > _setPaneBottom) return;
+        foreach (var r in _setRows)
+        {
+            if (r.Tab != _setTab) continue;
+            if (r.Kind == SW.Path && Hit(r.Bx0, r.By0, r.Bx1, r.By1, mx, my))
+            { var d = PickFolder(); if (d is not null) { ConfigSetInternal("new-session-dir", d); ConfigSetInternal("new-session-dir-mode", "custom"); } return; }
+            if (!r.Vis || !Hit(r.Hx0, r.Hy0, r.Hx1, r.Hy1, mx, my)) continue;
+            switch (r.Kind)
+            {
+                case SW.Toggle: ConfigSetInternal(r.Key, IsOn(ConfigValue(r.Key)) ? "false" : "true"); return;
+                case SW.Slider: _setDragRow = r; SetCapture(_hwnd); SliderTo(r, mx); return;
+                case SW.Dropdown: case SW.Sound: OpenDropdown(r); return;
+                case SW.Color: PickColorKey(r.Key); return;
+                case SW.Button: r.OnClick?.Invoke(); return;
+            }
+        }
+    }
+
+    private static bool Hit(float x0, float y0, float x1, float y1, int mx, int my) => mx >= x0 && mx <= x1 && my >= y0 && my <= y1;
+
+    private void SliderTo(SetRow r, int mx)
+    {
+        float trackX0 = r.Hx0 + 6f, trackX1 = r.Hx1 - 6f;
+        float t = Math.Clamp((mx - trackX0) / MathF.Max(1f, trackX1 - trackX0), 0f, 1f);
+        int v = r.Min + (int)MathF.Round(t * (r.Max - r.Min));
+        if (v.ToString() != ConfigValue(r.Key)) ConfigSetInternal(r.Key, v.ToString());
+        else RequestRedraw();
+    }
+
+    private void SettingsDrag(int mx) { if (_setDragRow is not null) SliderTo(_setDragRow, mx); }
+
+    private void SettingsMouseUp()
+    {
+        if (_setDragRow is not null) { _setDragRow = null; ReleaseCapture(); RequestRedraw(); }
+    }
+
+    private void SettingsWheel(int dir)
+    {
+        if (_ddRow is not null)
+        {
+            _ddSel = Math.Clamp(_ddSel - dir, 0, Math.Max(0, _ddFiltered.Count - 1));
+            RequestRedraw(); return;
+        }
+        float visible = _setPaneBottom - _setPaneTop - 12f;
+        float maxScroll = MathF.Max(0f, _setContentH - visible);
+        _setScroll = Math.Clamp(_setScroll - dir * 48f, 0f, maxScroll);
+        RequestRedraw();
+    }
+
+    /// <summary>Panel key handling; returns true if the key was consumed.</summary>
+    private bool SettingsKey(int vk)
+    {
+        if (_ddRow is not null)
+        {
+            switch (vk)
+            {
+                case VK_ESCAPE: _ddRow = null; RequestRedraw(); return true;
+                case VK_UP: if (_ddSel > 0) { _ddSel--; RequestRedraw(); } return true;
+                case VK_DOWN: if (_ddSel < _ddFiltered.Count - 1) { _ddSel++; RequestRedraw(); } return true;
+                case VK_RETURN: CommitDropdown(_ddSel); return true;
+                case VK_BACK: if (_ddQuery.Length > 0) { _ddQuery = _ddQuery[..^1]; FilterDropdown(); RequestRedraw(); } return true;
+            }
+            return true; // swallow everything while the popup is open
+        }
+        if (vk == VK_ESCAPE) { CloseSettings(); return true; }
+        return true; // panel is modal-ish: swallow other keys so they don't reach the terminal
+    }
+
+    private void PickColorKey(string key)
+    {
+        if (_custColors == IntPtr.Zero) _custColors = Marshal.AllocHGlobal(16 * sizeof(int));
+        var cur = ConfigValue(key).Trim().TrimStart('#');
         int init = 0;
         try { if (cur.Length >= 6) init = RGB(Convert.ToInt32(cur[..2], 16), Convert.ToInt32(cur.Substring(2, 2), 16), Convert.ToInt32(cur.Substring(4, 2), 16)); } catch { }
-        var cc = new CHOOSECOLOR { lStructSize = Marshal.SizeOf<CHOOSECOLOR>(), hwndOwner = _settingsHwnd, rgbResult = init, lpCustColors = _custColors, Flags = CC_RGBINIT | CC_FULLOPEN | CC_ANYCOLOR };
+        var cc = new CHOOSECOLOR { lStructSize = Marshal.SizeOf<CHOOSECOLOR>(), hwndOwner = _hwnd, rgbResult = init, lpCustColors = _custColors, Flags = CC_RGBINIT | CC_FULLOPEN | CC_ANYCOLOR };
         if (!ChooseColorW(ref cc)) return;
         int rr = cc.rgbResult & 0xFF, gg = (cc.rgbResult >> 8) & 0xFF, bb = (cc.rgbResult >> 16) & 0xFF;
-        ConfigSetInternal(c.Key, $"#{rr:X2}{gg:X2}{bb:X2}");
-        SetSwatch(c.Hwnd, ConfigValue(c.Key));
-    }
-
-    /// <summary>Blocked-sound combo change: None→clear, Custom→file picker, else set + preview.</summary>
-    private void OnSoundChanged(SC c)
-    {
-        int sel = (int)SendMessageW(c.Hwnd, CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero);
-        if (sel < 0 || sel >= c.Vals.Length) return;
-        string val = c.Vals[sel];
-        if (val == "__custom__")
-        {
-            var wav = PickWav();
-            if (wav is null) { RefreshSettingsControls(); return; }
-            ConfigSetInternal("blocked-sound", wav);
-            PlayStatusSound(wav);
-            RefreshSettingsControls();
-            return;
-        }
-        ConfigSetInternal("blocked-sound", val == "None" ? "" : val);
-        if (val != "None") PlayStatusSound(val);   // immediate preview
+        ConfigSetInternal(key, $"#{rr:X2}{gg:X2}{bb:X2}");
     }
 
     private string? PickWav()
@@ -458,7 +557,7 @@ internal partial class Program
             Marshal.WriteInt16(buf, 0, 0);
             var ofn = new OPENFILENAME
             {
-                lStructSize = Marshal.SizeOf<OPENFILENAME>(), hwndOwner = _settingsHwnd,
+                lStructSize = Marshal.SizeOf<OPENFILENAME>(), hwndOwner = _hwnd,
                 lpstrFilter = "WAV files\0*.wav\0All files\0*.*\0\0",
                 lpstrFile = buf, nMaxFile = 520, lpstrTitle = "Choose a .wav sound",
                 Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER,
@@ -468,13 +567,12 @@ internal partial class Program
         finally { Marshal.FreeHGlobal(buf); }
     }
 
-    /// <summary>Reset the Agent-Status tab: status colors + blocked sound back to defaults.</summary>
     private void ResetAgentStatusSettings()
     {
         ConfigSetInternal("status-color-active", "#3C8CFF");
         ConfigSetInternal("status-color-blocked", "#F0A028");
         ConfigSetInternal("status-color-completed", "#3CC85A");
         ConfigSetInternal("blocked-sound", "");
-        RefreshSettingsControls();
+        RequestRedraw();
     }
 }

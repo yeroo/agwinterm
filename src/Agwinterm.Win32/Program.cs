@@ -1952,6 +1952,11 @@ internal partial class Program : ISessionHost, IWindowHost
                 {
                     char c = (char)wParam;
                     if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return IntPtr.Zero; }
+                    if (_setOpen)
+                    {
+                        if (_ddRow is not null && c >= 0x20 && c != 0x7f) { _ddQuery += c; FilterDropdown(); RequestRedraw(); }
+                        return IntPtr.Zero;
+                    }
                     if (_palette != PaletteKind.None)
                     {
                         if (c >= 0x20 && c != 0x7f) { _palQuery += c; _palSel = 0; FilterPalette(); RequestRedraw(); }
@@ -1969,6 +1974,7 @@ internal partial class Program : ISessionHost, IWindowHost
             case WM_LBUTTONDOWN:
                 {
                     int mx = LoWord(lParam), my = HiWord(lParam);
+                    if (_setOpen) { SettingsClick(mx, my); return IntPtr.Zero; }
                     if (_palette != PaletteKind.None) { PaletteClick(mx, my); return IntPtr.Zero; }
                     // Notification banner: clicking it jumps to the raising session and dismisses.
                     if (_toastText is not null && _toastTarget is not null &&
@@ -2022,6 +2028,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     return IntPtr.Zero;
                 }
             case WM_LBUTTONUP:
+                if (_setOpen) { SettingsMouseUp(); return IntPtr.Zero; }
                 if (_pressBtn is not null)
                 {
                     ReleaseCapture();
@@ -2090,6 +2097,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
             case WM_MOUSEMOVE:
                 {
+                    if (_setOpen) { if (_setDragRow is not null) SettingsDrag(LoWord(lParam)); return IntPtr.Zero; }
                     if (!_mouseTracking)
                     {
                         var tme = new TRACKMOUSEEVENT { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<TRACKMOUSEEVENT>(), dwFlags = TME_LEAVE, hwndTrack = hwnd, dwHoverTime = 0 };
@@ -2132,6 +2140,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
             case WM_MOUSEWHEEL:
                 {
+                    if (_setOpen) { SettingsWheel(HiWord(wParam) > 0 ? 1 : -1); return IntPtr.Zero; }
                     var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
                     ScreenToClient(_hwnd, ref pt);
                     var em = _session?.Emulator;
@@ -2850,6 +2859,7 @@ internal partial class Program : ISessionHost, IWindowHost
         if (_mruWalking && vk == VK_ESCAPE) { MruCancel(); return true; }
 
         // While a palette is open it owns the keyboard (nav here, typing via WM_CHAR).
+        if (_setOpen) return SettingsKey(vk);
         if (_palette != PaletteKind.None) return PaletteKeyDown(vk);
         // While the find bar is open it owns the keyboard (Enter/F3 nav, Esc close, Backspace edit).
         if (_searchActive) return SearchKeyDown(vk);
@@ -3451,6 +3461,7 @@ internal partial class Program : ISessionHost, IWindowHost
         DrawToast(rt, brush);
         DrawLeaderHint(rt, brush);
         DrawPalette(rt, brush);
+        DrawSettingsPanel(rt, brush);
         DrawSwitcher(rt, brush);
     }
 
