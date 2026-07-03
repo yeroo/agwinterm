@@ -32,6 +32,29 @@ public static class ShellIntegrationInstaller
         """ + "\n" + End;
 
     /// <summary>
+    /// The prompt-wrap script run at shell LAUNCH (out-of-the-box live cwd, no $PROFILE edit). Same OSC 7
+    /// emit as <see cref="Block"/>, guarded by the SAME <c>$global:__agwSI</c> sentinel so the launch wrap
+    /// and an installed $PROFILE block never double-wrap. Passed via <c>-EncodedCommand</c> so it runs after
+    /// the user's profile (oh-my-posh) and WRAPS the existing prompt instead of replacing it.
+    /// </summary>
+    public static readonly string PromptWrap =
+        """
+        if (-not $global:__agwSI) {
+          $global:__agwSI = $true
+          $global:__agwPrompt = $function:prompt
+          function global:prompt {
+            $d = (Get-Location).ProviderPath
+            [Console]::Write("$([char]27)]7;file://$env:COMPUTERNAME/$(($d -replace '\\','/'))$([char]7)")
+            if ($global:__agwPrompt) { & $global:__agwPrompt } else { "PS $d> " }
+          }
+        }
+        """;
+
+    /// <summary>Base64 (UTF-16LE) of <see cref="PromptWrap"/> for <c>powershell.exe -EncodedCommand</c>.</summary>
+    public static string PromptWrapEncoded =>
+        System.Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(PromptWrap));
+
+    /// <summary>
     /// Resolve the CurrentUser/CurrentHost powershell.exe profile path via powershell itself
     /// (so a OneDrive-redirected Documents folder is honored). Falls back to the conventional path.
     /// </summary>

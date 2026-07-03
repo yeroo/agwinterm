@@ -629,12 +629,14 @@ internal partial class Program : ISessionHost, IWindowHost
     }
 
     /// <summary>
-    /// pwsh launch args: a plain interactive shell so the user's profile (e.g. oh-my-posh) loads
-    /// normally. Live-cwd tracking (OSC 7) is provided prompt-safely by the shell-integration
-    /// installer (ShellIntegrationInstaller), which appends a guarded, prompt-WRAPPING block to
-    /// $PROFILE — so it composes with oh-my-posh instead of replacing it.
+    /// pwsh launch args: an interactive shell (the user's profile / oh-my-posh loads normally) PLUS an
+    /// out-of-the-box live-cwd wrap. The wrap is passed via -EncodedCommand so it runs AFTER the profile
+    /// and WRAPS the existing prompt to emit OSC 7 (composes with oh-my-posh, never replaces it); it's
+    /// guarded by the same $__agwSI sentinel as the opt-in $PROFILE installer, so the two never
+    /// double-wrap. -NoExit keeps the shell interactive after the wrap runs.
     /// </summary>
-    private static string[] ShellArgs() => new[] { "-NoLogo" };
+    private static string[] ShellArgs() =>
+        new[] { "-NoLogo", "-NoExit", "-EncodedCommand", Agwinterm.Pty.ShellIntegrationInstaller.PromptWrapEncoded };
 
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null)
@@ -4663,6 +4665,16 @@ internal partial class Program : ISessionHost, IWindowHost
     private static string SafeCwd(Ses s) { lock (s.S.SyncRoot) return s.S.Emulator.Cwd; }
     private static string SafeCwd(Pane p) { lock (p.S.SyncRoot) return p.S.Emulator.Cwd; }
 
+    /// <summary>The path shown in the title bar for a session: live OSC 7 cwd if the shell reports it,
+    /// else the pane's launch dir, else the process cwd — so a real path always shows, out of the box.</summary>
+    private static string TitleCwd(Ses s)
+    {
+        string live = SafeCwd(s);
+        if (!string.IsNullOrWhiteSpace(live)) return PrettyCwd(live);
+        string? start = s.ActivePane.StartCwd;
+        return string.IsNullOrWhiteSpace(start) ? Environment.CurrentDirectory : start!;
+    }
+
     private static string PrettyCwd(string raw)
     {
         if (string.IsNullOrEmpty(raw)) return "";
@@ -4716,7 +4728,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
         // 3. Title + subtitle at the terminal's leading edge (right of the sidebar).
         string title = _active?.Name ?? "agwinterm";
-        string subtitle = _active is not null ? PrettyCwd(SafeCwd(_active)) : "";
+        string subtitle = _active is not null ? TitleCwd(_active) : "";
         float titleX = _sidebarW > 0 ? _sidebarW + 10f : togX + togW + 8f;
         float bellW = 34f, bellGap = 8f;
         float titleAvail = scratchX - 14f - bellW - bellGap - titleX;
