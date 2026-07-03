@@ -1,0 +1,36 @@
+name: Release
+
+# Tag a commit (e.g. `git tag v0.2.0 && git push origin v0.2.0`) to build the
+# installer and publish a GitHub Release with agwinterm-setup-<ver>.exe attached.
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: ./installer/build.ps1
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/Output/agwinterm-setup-*.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true

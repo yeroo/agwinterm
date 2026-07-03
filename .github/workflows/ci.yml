@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Agwinterm.slnx
+
+      - name: Build
+        run: dotnet build Agwinterm.slnx -c Release --no-restore
+
+      - name: Test (Core + Pty)
+        run: dotnet test Agwinterm.slnx -c Release --no-build
