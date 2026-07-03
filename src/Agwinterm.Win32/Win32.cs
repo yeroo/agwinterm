@@ -80,6 +80,7 @@ internal static class Win32
     public const int EC_LEFTMARGIN = 0x0001, EC_RIGHTMARGIN = 0x0002;
     public const int EN_KILLFOCUS = 0x0200;
     public const uint WS_CHILD = 0x40000000, ES_AUTOHSCROLL = 0x0080;
+    public const uint ES_MULTILINE = 0x0004, ES_READONLY = 0x0800, WS_CLIPSIBLINGS = 0x04000000;
     public const int GWLP_WNDPROC = -4;
     public const int DEFAULT_GUI_FONT = 17;
     public const uint CS_DBLCLKS = 0x0008;
@@ -423,4 +424,58 @@ internal static class Win32
 
     public static int LoWord(IntPtr l) => unchecked((short)(long)l);
     public static int HiWord(IntPtr l) => unchecked((short)((long)l >> 16));
+
+    // ---- Settings dialog: message boxes, common controls (tab + trackbar), color/file pickers ----
+    public const uint WM_NOTIFY = 0x004E, WM_HSCROLL = 0x0114, WM_CTLCOLORSTATIC = 0x0138, WM_CTLCOLORBTN = 0x0135;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
+    public const uint MB_YESNO = 0x4, MB_ICONQUESTION = 0x20;
+    public const int IDYES = 6;
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr ShellExecuteW(IntPtr hwnd, string? op, string file, string? args, string? dir, int show);
+
+    [StructLayout(LayoutKind.Sequential)] public struct INITCOMMONCONTROLSEX { public int dwSize; public int dwICC; }
+    [DllImport("comctl32.dll")] public static extern bool InitCommonControlsEx(ref INITCOMMONCONTROLSEX icc);
+    public const int ICC_TAB_CLASSES = 0x8, ICC_BAR_CLASSES = 0x4, ICC_STANDARD_CLASSES = 0x4000;
+
+    // Tab control
+    public const uint TCM_INSERTITEMW = 0x133E, TCM_SETCURSEL = 0x130C, TCM_GETCURSEL = 0x130B;
+    public const int TCIF_TEXT = 0x1, TCN_SELCHANGE = -551;
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct TCITEMW { public uint mask; public uint dwState; public uint dwStateMask; public IntPtr pszText; public int cchTextMax; public int iImage; public IntPtr lParam; }
+    [StructLayout(LayoutKind.Sequential)] public struct NMHDR { public IntPtr hwndFrom; public IntPtr idFrom; public int code; }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SendMessageW(IntPtr hWnd, uint msg, IntPtr wParam, ref TCITEMW lParam);
+
+    // Trackbar (msctls_trackbar32)
+    public const uint TBM_SETPOS = 0x0405, TBM_GETPOS = 0x0400, TBM_SETRANGE = 0x0406, TBM_SETPAGESIZE = 0x0415;
+    public const uint TBS_AUTOTICKS = 0x1, TBS_HORZ = 0x0;
+
+    // Color picker
+    [StructLayout(LayoutKind.Sequential)]
+    public struct CHOOSECOLOR
+    {
+        public int lStructSize; public IntPtr hwndOwner; public IntPtr hInstance;
+        public int rgbResult; public IntPtr lpCustColors; public uint Flags;
+        public IntPtr lCustData; public IntPtr lpfnHook; public IntPtr lpTemplateName;
+    }
+    [DllImport("comdlg32.dll")] public static extern bool ChooseColorW(ref CHOOSECOLOR cc);
+    public const uint CC_RGBINIT = 0x1, CC_FULLOPEN = 0x2, CC_ANYCOLOR = 0x100;
+
+    // File open (custom .wav)
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct OPENFILENAME
+    {
+        public int lStructSize; public IntPtr hwndOwner; public IntPtr hInstance;
+        public string? lpstrFilter; public string? lpstrCustomFilter; public int nMaxCustFilter;
+        public int nFilterIndex; public IntPtr lpstrFile; public int nMaxFile;
+        public string? lpstrFileTitle; public int nMaxFileTitle; public string? lpstrInitialDir;
+        public string? lpstrTitle; public int Flags; public short nFileOffset; public short nFileExtension;
+        public string? lpstrDefExt; public IntPtr lCustData; public IntPtr lpfnHook; public string? lpTemplateName;
+        public IntPtr pvReserved; public int dwReserved; public int FlagsEx;
+    }
+    [DllImport("comdlg32.dll", CharSet = CharSet.Unicode)] public static extern bool GetOpenFileNameW(ref OPENFILENAME ofn);
+    public const int OFN_FILEMUSTEXIST = 0x1000, OFN_PATHMUSTEXIST = 0x800, OFN_EXPLORER = 0x80000;
 }

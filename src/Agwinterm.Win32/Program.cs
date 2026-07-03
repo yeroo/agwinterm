@@ -97,7 +97,8 @@ internal partial class Program : ISessionHost, IWindowHost
     private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
 
     // Chrome geometry (custom title bar + status bar, drawn in Direct2D).
-    private const float TitleBarH = 40f;
+    // Compact toolbar (agterm) shrinks the custom title bar; read live so a config toggle reflows everything.
+    private static float TitleBarH => _config is { CompactToolbar: true } ? 30f : 40f;
     private const float FooterH = 34f;       // toolbar at the bottom of the sidebar
     private const float SidebarWFull = 220f;
     private const float CaptionBtnW = 46f;   // native min/max/close hit width
@@ -658,9 +659,17 @@ internal partial class Program : ISessionHost, IWindowHost
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null)
     {
         float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
-        // Fall back to the configured default new-session directory when no explicit cwd was given.
-        if (string.IsNullOrEmpty(cwd) && !string.IsNullOrWhiteSpace(_config.NewSessionDir) && Directory.Exists(_config.NewSessionDir))
-            cwd = _config.NewSessionDir;
+        // No explicit cwd → resolve by the new-session-directory mode (home | current | custom).
+        if (string.IsNullOrEmpty(cwd))
+        {
+            string? want = _config.NewSessionDirMode switch
+            {
+                "current" => _active is not null ? CurrentDirOf(_active) : null,
+                "custom" => _config.NewSessionDir,
+                _ /*home*/ => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            };
+            if (!string.IsNullOrWhiteSpace(want) && Directory.Exists(want)) cwd = want;
+        }
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws };
@@ -1016,12 +1025,18 @@ internal partial class Program : ISessionHost, IWindowHost
         RequestRedraw();
     }
 
+    /// <summary>Confirm a user-initiated session close (Yes/No), unless confirm-close-session is off.</summary>
+    private bool ConfirmCloseOk()
+        => !_config.ConfirmCloseSession
+           || MessageBoxW(_hwnd, "Close this session and end what's running in it?", "Close session",
+                          MB_YESNO | MB_ICONQUESTION) == IDYES;
+
     /// <summary>Close the focused pane; if it's the last pane, close the whole session.</summary>
     private void CloseActivePane()
     {
         var ses = _active;
         if (ses is null) return;
-        if (ses.Panes.Count <= 1) { CloseSessionInternal(ses); return; }
+        if (ses.Panes.Count <= 1) { if (ConfirmCloseOk()) CloseSessionInternal(ses); return; }
         var cur = ses.ActivePane;
         int idx = ses.Panes.IndexOf(cur);
         try { cur.S.Dispose(); } catch { }
@@ -3567,13 +3582,25 @@ internal partial class Program : ISessionHost, IWindowHost
     private Color4 SbActiveText = new(1f, 1f, 1f, 1f);
     private Color4 SbDimText = new(0.60f, 0.63f, 0.67f, 1f);
 
+    // Status-glyph colors are user-configurable (Agent Status settings tab); defaults match the originals.
     private Color4 StatusDot(AgentStatus s) => s switch
     {
-        AgentStatus.Active => new(60 / 255f, 140 / 255f, 255 / 255f, 1f),
-        AgentStatus.Blocked => new(240 / 255f, 160 / 255f, 40 / 255f, 1f),
-        AgentStatus.Completed => new(60 / 255f, 200 / 255f, 90 / 255f, 1f),
+        AgentStatus.Active => HexColor4(_config.StatusColorActive, new(60 / 255f, 140 / 255f, 255 / 255f, 1f)),
+        AgentStatus.Blocked => HexColor4(_config.StatusColorBlocked, new(240 / 255f, 160 / 255f, 40 / 255f, 1f)),
+        AgentStatus.Completed => HexColor4(_config.StatusColorCompleted, new(60 / 255f, 200 / 255f, 90 / 255f, 1f)),
         _ => new(90 / 255f, 96 / 255f, 102 / 255f, 1f),
     };
+
+    /// <summary>Parse "#RRGGBB" (or "#RGB") to a Color4; returns <paramref name="fallback"/> on any failure.</summary>
+    private static Color4 HexColor4(string hex, Color4 fallback)
+    {
+        if (string.IsNullOrWhiteSpace(hex)) return fallback;
+        var h = hex.Trim().TrimStart('#');
+        if (h.Length == 3) h = string.Concat(h[0], h[0], h[1], h[1], h[2], h[2]);
+        if (h.Length < 6) return fallback;
+        try { return new Color4(Convert.ToInt32(h[..2], 16) / 255f, Convert.ToInt32(h.Substring(2, 2), 16) / 255f, Convert.ToInt32(h.Substring(4, 2), 16) / 255f, 1f); }
+        catch { return fallback; }
+    }
 
     private void DrawSidebar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
@@ -3681,9 +3708,9 @@ internal partial class Program : ISessionHost, IWindowHost
         brush.Color = isDrag ? new Color4(0.5f, 0.53f, 0.57f, 0.45f) : (active ? SbActiveText : SbDimText);
         if (!ReferenceEquals(_editing, s)) // the rename box covers the name while editing
             rt.DrawText(s.Name, _uiFont, new Rect(26f, y, _sidebarW - 26f - 22f, rowH), brush);
-        // Unread-notification count badge, just left of the status circle.
+        // Unread-notification count badge, just left of the status circle (can be hidden; the count still tracks).
         int unread = UnreadOf(s);
-        if (unread > 0)
+        if (unread > 0 && _config.NotificationBadges)
         {
             string bn = unread > 99 ? "99+" : unread.ToString();
             float bw = MeasureText(bn, _uiSmall) + 10f, bx = _sidebarW - 30f - bw;
@@ -3886,7 +3913,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 case IDM_RENAME: StartRename(ses); break;
                 case IDM_FLAG: FlagOp(ses, "toggle"); break;
                 case IDM_CLEAR: ses.S.SetStatus(AgentStatus.Idle); RequestRedraw(); break;
-                case IDM_CLOSE: CloseSessionInternal(ses); break;
+                case IDM_CLOSE: if (ConfirmCloseOk()) CloseSessionInternal(ses); break;
                 default:
                     if (cmd >= (int)IDM_MOVE_BASE && cmd < (int)IDM_MOVE_BASE + targets.Count)
                         MoveSession(ses, targets[cmd - (int)IDM_MOVE_BASE]);
@@ -4716,6 +4743,14 @@ internal partial class Program : ISessionHost, IWindowHost
     private static string SafeCwd(Ses s) { lock (s.S.SyncRoot) return s.S.Emulator.Cwd; }
     private static string SafeCwd(Pane p) { lock (p.S.SyncRoot) return p.S.Emulator.Cwd; }
 
+    /// <summary>An existing directory for a session's "current" dir: live OSC-7 cwd if valid, else its launch dir.</summary>
+    private static string? CurrentDirOf(Ses s)
+    {
+        var live = SafeCwd(s);
+        if (!string.IsNullOrWhiteSpace(live)) { var p = PrettyCwd(live); if (Directory.Exists(p)) return p; }
+        return s.ActivePane.StartCwd;
+    }
+
     /// <summary>The path shown in the title bar for a session: live OSC 7 cwd if the shell reports it,
     /// else the pane's launch dir, else the process cwd — so a real path always shows, out of the box.</summary>
     private static string TitleCwd(Ses s)
@@ -4802,21 +4837,24 @@ internal partial class Program : ISessionHost, IWindowHost
         // 3. Title at the terminal's leading edge (right of the sidebar): a SINGLE centered row
         // showing the path (agterm-style): custom name -> program OSC title -> full cwd path.
         string title = _active is not null ? SessionDisplayName(_active) : "agwinterm";
+        // 4. Attention bell (can be hidden via settings; when hidden it reserves no space).
+        bool showBell = _config.AttentionButton;
         float titleX = _sidebarW > 0 ? _sidebarW + 10f : togX + togW + 8f;
-        float bellW = 34f, bellGap = 8f;
+        float bellW = showBell ? 34f : 0f, bellGap = showBell ? 8f : 0f;
         float titleAvail = scratchX - 14f - bellW - bellGap - titleX;
         float titleMeasured = MeasureText(title, _uiFont);
         float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail));
         brush.Color = ChromeText;
         rt.DrawText(title, _uiTitle, new Rect(titleX, 0f, titleW, TitleBarH), brush);  // one vertically-centered, ellipsized row
 
-        // 4. Attention bell, hugging the title. dim = nothing, plain = active/completed, amber = any blocked.
-        float bellX = MathF.Min(titleX + titleW + bellGap, scratchX - bellW - 14f);
-        var (bellBlocked, bellActive) = AttentionState();
-        var bellBase = bellBlocked ? new Color4(240 / 255f, 160 / 255f, 40 / 255f, 1f) : (bellActive ? ChromeText : ChromeDim);
-        if ((bellBlocked || bellActive) && !_cursorOn && AnyBlinkAttention())
-            bellBase = new Color4(bellBase.R, bellBase.G, bellBase.B, 0.30f); // pulse when a blinking session needs attention
+        // dim = nothing, plain = active/completed, blocked-color = any blocked (uses the configured status color).
+        if (showBell)
         {
+            float bellX = MathF.Min(titleX + titleW + bellGap, scratchX - bellW - 14f);
+            var (bellBlocked, bellActive) = AttentionState();
+            var bellBase = bellBlocked ? StatusDot(AgentStatus.Blocked) : (bellActive ? ChromeText : ChromeDim);
+            if ((bellBlocked || bellActive) && !_cursorOn && AnyBlinkAttention())
+                bellBase = new Color4(bellBase.R, bellBase.G, bellBase.B, 0.30f); // pulse when a blinking session needs attention
             var c = ChromeBtnBg(rt, brush, bellX, 0, bellW, TitleBarH, "attention", _titleButtons, bellBase);
             DrawBellGlyph(rt, brush, bellX + bellW / 2f, TitleBarH / 2f, c);
         }
@@ -5077,7 +5115,9 @@ internal partial class Program : ISessionHost, IWindowHost
         "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
         "scrollback-lines", "inactive-pane-dim", "window-opacity", "sidebar-tint", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "desktop-notifications", "shell-integration",
-        "restore-commands", "blocked-sound",
+        "restore-commands", "blocked-sound", "omp-theme",
+        "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "notification-badges",
+        "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
     };
 
     /// <summary>Rewrite (or append) a single `key = value` line in agwinterm.conf, preserving the rest.</summary>
@@ -5119,6 +5159,15 @@ internal partial class Program : ISessionHost, IWindowHost
         "shell-integration" => _config.ShellIntegration ? "true" : "false",
         "restore-commands" => _config.RestoreCommands ? "true" : "false",
         "blocked-sound" => _config.BlockedSound,
+        "omp-theme" => _config.OmpTheme,
+        "new-session-dir-mode" => _config.NewSessionDirMode,
+        "confirm-close-session" => _config.ConfirmCloseSession ? "true" : "false",
+        "compact-toolbar" => _config.CompactToolbar ? "true" : "false",
+        "notification-badges" => _config.NotificationBadges ? "true" : "false",
+        "attention-button" => _config.AttentionButton ? "true" : "false",
+        "status-color-active" => _config.StatusColorActive,
+        "status-color-blocked" => _config.StatusColorBlocked,
+        "status-color-completed" => _config.StatusColorCompleted,
         _ => "",
     };
 
@@ -5133,6 +5182,8 @@ internal partial class Program : ISessionHost, IWindowHost
         if (key == "cursor-blink-ms" && _hwnd != IntPtr.Zero) SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
         RecomputeChrome();
         ApplyWindowOpacity();
+        if (key == "compact-toolbar")                     // title-bar height changed → reflow the terminal grid
+        { if (_active is not null) RegridSession(_active); if (_cover is not null) RegridCover(); }
         RequestRedraw();
         RefreshSettingsControls();                        // keep an open Settings window in sync
         bool deferred = key is "font-family" or "font-size" or "scrollback-lines" or "shell-integration" or "restore-commands";

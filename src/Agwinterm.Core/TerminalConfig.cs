@@ -66,6 +66,26 @@ public sealed class TerminalConfig
     /// overriding the profile's theme. Empty = use whatever the profile sets. Set via the in-app picker.</summary>
     public string OmpTheme { get; set; } = "";
 
+    /// <summary>Where new sessions open: home (user profile) | current (active session's cwd) | custom (NewSessionDir).</summary>
+    public string NewSessionDirMode { get; set; } = "home";
+
+    /// <summary>Ask for confirmation before a user closes a session (Ctrl+Shift+W / menu Close). Off by default.</summary>
+    public bool ConfirmCloseSession { get; set; } = false;
+
+    /// <summary>Compact toolbar: a shorter title bar. Off by default.</summary>
+    public bool CompactToolbar { get; set; } = false;
+
+    /// <summary>Draw the red unread-count pill on sidebar rows (the count still tracks when off). On by default.</summary>
+    public bool NotificationBadges { get; set; } = true;
+
+    /// <summary>Show the title-bar attention bell (hidden entirely when off). On by default.</summary>
+    public bool AttentionButton { get; set; } = true;
+
+    /// <summary>Sidebar/bell status-glyph colors (#RRGGBB). Defaults match the built-in dot colors.</summary>
+    public string StatusColorActive { get; set; } = "#3C8CFF";
+    public string StatusColorBlocked { get; set; } = "#F0A028";
+    public string StatusColorCompleted { get; set; } = "#3CC85A";
+
     /// <summary>Default config file contents (also used to seed the file on first run).</summary>
     public const string DefaultText =
         """
@@ -128,6 +148,24 @@ public sealed class TerminalConfig
         # oh-my-posh theme for new pwsh sessions (a theme name or a full .omp.json path); empty = use
         # the profile's theme. Pick live from the action palette -> "oh-my-posh Theme..." (--persist saves here).
         omp-theme =
+
+        # Where new sessions open: home (user profile) | current (active session's dir) | custom (new-session-dir).
+        new-session-dir-mode = home
+
+        # Ask before closing a session (Ctrl+Shift+W / right-click Close).
+        confirm-close-session = false
+
+        # Compact toolbar: a shorter title bar.
+        compact-toolbar = false
+
+        # Notifications: show the red unread-count pill on sidebar rows; show the title-bar attention bell.
+        notification-badges = true
+        attention-button = true
+
+        # Agent-status glyph colors (#RRGGBB) for the sidebar dot + title-bar bell.
+        status-color-active = #3C8CFF
+        status-color-blocked = #F0A028
+        status-color-completed = #3CC85A
         """;
 
     public static TerminalConfig Parse(string text)
@@ -163,6 +201,14 @@ public sealed class TerminalConfig
                 case "new-session-dir": cfg.NewSessionDir = val; break;
                 case "scroll-speed": if (int.TryParse(val, out var ss)) cfg.ScrollSpeed = System.Math.Clamp(ss, 1, 10); break;
                 case "omp-theme": cfg.OmpTheme = val; break;
+                case "new-session-dir-mode": { var m = val.ToLowerInvariant(); if (m is "home" or "current" or "custom") cfg.NewSessionDirMode = m; break; }
+                case "confirm-close-session": cfg.ConfirmCloseSession = ParseBool(val, cfg.ConfirmCloseSession); break;
+                case "compact-toolbar": cfg.CompactToolbar = ParseBool(val, cfg.CompactToolbar); break;
+                case "notification-badges": cfg.NotificationBadges = ParseBool(val, cfg.NotificationBadges); break;
+                case "attention-button": cfg.AttentionButton = ParseBool(val, cfg.AttentionButton); break;
+                case "status-color-active": if (val.Length > 0) cfg.StatusColorActive = val; break;
+                case "status-color-blocked": if (val.Length > 0) cfg.StatusColorBlocked = val; break;
+                case "status-color-completed": if (val.Length > 0) cfg.StatusColorCompleted = val; break;
             }
         }
         return cfg;
