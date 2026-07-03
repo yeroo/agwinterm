@@ -377,6 +377,10 @@ internal partial class Program : ISessionHost, IWindowHost
             throw new InvalidOperationException("CreateWindowExW failed: " + System.Runtime.InteropServices.Marshal.GetLastWin32Error());
         _registry[_hwnd] = this;
 
+        // Win11 rounded corners: our custom frame (WM_NCCALCSIZE) suppresses the automatic rounding,
+        // so opt in explicitly. Harmless no-op on Win10 / older.
+        try { int pref = DWMWCP_ROUND; DwmSetWindowAttribute(_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int)); } catch { }
+
         // App icon for the window (taskbar + alt-tab); the exe icon comes from <ApplicationIcon>.
         try
         {

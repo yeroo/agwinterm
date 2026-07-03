@@ -236,6 +236,13 @@ internal static class Win32
     [DllImport("user32.dll")]
     public static extern IntPtr DefWindowProcW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
+    // DWM: opt the custom-frame window into Win11 rounded corners (not applied automatically once we
+    // reclaim the non-client frame via WM_NCCALCSIZE).
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+    public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    public const int DWMWCP_ROUND = 2;
+
     [DllImport("user32.dll")]
     public static extern int GetMessageW(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
 
