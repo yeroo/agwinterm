@@ -4700,11 +4700,14 @@ internal partial class Program : ISessionHost, IWindowHost
             && !osc.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
             && !(osc.Length >= 2 && osc[1] == ':' && osc.Contains('\\')); // not a bare C:\… path
         if (oscMeaningful) return osc;
-        // Single-row title = the full current path (agterm-style "just the path"), ~ for home.
-        string cwd = PrettyCwd(TitleCwd(s));
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (!string.IsNullOrEmpty(home) && string.Equals(cwd.TrimEnd('\\', '/'), home.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
-            return "~";
+        // Single-row title = the full current path (agterm-style "just the path"), home collapsed to ~.
+        string cwd = PrettyCwd(TitleCwd(s)).TrimEnd('\\', '/');
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile).TrimEnd('\\', '/');
+        if (!string.IsNullOrEmpty(home))
+        {
+            if (string.Equals(cwd, home, StringComparison.OrdinalIgnoreCase)) return "~";
+            if (cwd.StartsWith(home + "\\", StringComparison.OrdinalIgnoreCase)) return "~" + cwd[home.Length..];
+        }
         return string.IsNullOrWhiteSpace(cwd) ? "agwinterm" : cwd;
     }
 
