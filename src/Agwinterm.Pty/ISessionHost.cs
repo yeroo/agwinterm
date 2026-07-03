@@ -141,6 +141,11 @@ public interface ISessionHost
     /// <summary>Drive the leader-chord state machine for observability/testing:
     /// op = state|begin|cancel|"key:&lt;chord&gt;". Returns "idle"|"pending"|the resolution result.</summary>
     string CommandLeader(string op);
+
+    /// <summary>Apply an oh-my-posh theme (by name or .omp.json path) live to the active session's shell
+    /// (re-inits oh-my-posh and re-applies the OSC-7 prompt wrap). When <paramref name="persist"/>, also
+    /// save it to config so new sessions launch with it. Returns an ack / "not found".</summary>
+    string OmpSet(string nameOrPath, bool persist);
 }
 
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
@@ -198,4 +203,5 @@ public sealed class SingleSessionHost : ISessionHost
     public string CommandRun(string nameOrCommand, string? mode) => "unsupported";
     public string CommandList() => "";
     public string CommandLeader(string op) => "idle";
+    public string OmpSet(string nameOrPath, bool persist) => "unsupported";
 }

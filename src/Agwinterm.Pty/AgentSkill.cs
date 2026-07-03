@@ -156,12 +156,14 @@ public static class AgentSkill
           Keys: font-family, font-size, cursor-style, cursor-blink, cursor-blink-ms, theme, scrollback-lines,
           inactive-pane-dim (0-100, dims non-active split panes), window-opacity (30-100), sidebar-tint (-100..100),
           scroll-speed (1-10), new-session-dir, right-click-paste, copy-on-select, desktop-notifications, shell-integration,
-          restore-commands, blocked-sound. Changing the theme retints the WHOLE window (sidebar/title/status), not just the terminal.
+          restore-commands, blocked-sound, omp-theme. Changing the theme retints the WHOLE window (sidebar/title/status), not just the terminal.
 
         ## Config / restore
         - `agwintermctl keymap reload`                           — re-parse keymap.conf (reports diagnostics)
         - `agwintermctl restore clear`                           — clear the saved session-tree state
         - `agwintermctl install hooks|skill|shell`               — install agent-status hooks / this skill / shell-integration (live cwd)
+        - `agwintermctl install cli [--remove]`                  — add (or remove) agwintermctl on the user PATH
+        - `agwintermctl omp list` / `omp set <name> [--persist]` — list / apply oh-my-posh themes (live; --persist keeps it for new sessions)
 
         ## Show an image inline
         - `agwintermctl image show C:\path\pic.png --row 2 --col 4`

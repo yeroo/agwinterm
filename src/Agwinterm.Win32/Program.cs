@@ -154,7 +154,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private const int SelAutoTimer = 7;   // WM_TIMER id for drag-autoscroll ticks
 
     // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
-    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom, Windows }
+    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom, Windows, Omp }
     private sealed class PalItem
     {
         public required string Label;
@@ -641,8 +641,18 @@ internal partial class Program : ISessionHost, IWindowHost
     /// guarded by the same $__agwSI sentinel as the opt-in $PROFILE installer, so the two never
     /// double-wrap. -NoExit keeps the shell interactive after the wrap runs.
     /// </summary>
-    private static string[] ShellArgs() =>
-        new[] { "-NoLogo", "-NoExit", "-EncodedCommand", Agwinterm.Pty.ShellIntegrationInstaller.PromptWrapEncoded };
+    private static string[] ShellArgs()
+    {
+        string wrap = Agwinterm.Pty.ShellIntegrationInstaller.PromptWrap;
+        // If an oh-my-posh theme is configured, apply it after the profile, then let the wrap capture
+        // that (new) prompt so live cwd (OSC 7) still works.
+        string? omp = string.IsNullOrWhiteSpace(_config.OmpTheme) ? null : Agwinterm.Pty.OmpThemes.Resolve(_config.OmpTheme);
+        string script = omp is not null
+            ? "oh-my-posh init pwsh --config '" + omp.Replace("'", "''") + "' | Invoke-Expression\n" + wrap
+            : wrap;
+        string enc = System.Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        return new[] { "-NoLogo", "-NoExit", "-EncodedCommand", enc };
+    }
 
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null)
@@ -2244,12 +2254,18 @@ internal partial class Program : ISessionHost, IWindowHost
     }
 
     /// <summary>Install the $PROFILE OSC-7 shell integration off the UI thread, then toast the result.</summary>
-    private void InstallShellIntegration()
-        => System.Threading.Tasks.Task.Run(() =>
-        {
-            string result = Agwinterm.Pty.ShellIntegrationInstaller.Install();
-            Post(() => ShowToast(result));
-        });
+    private void InstallShellIntegration() => RunInstaller(Agwinterm.Pty.ShellIntegrationInstaller.Install);
+
+    /// <summary>Opt-in: add agwintermctl to the user PATH (agterm's "Install Command Line Tool").</summary>
+    private void InstallCli() => RunInstaller(Agwinterm.Pty.CliInstaller.Install);
+    /// <summary>Opt-in: install Claude Code / Codex / generic agent status hooks.</summary>
+    private void InstallHooks() => RunInstaller(Agwinterm.Pty.AgentHooks.Install);
+    /// <summary>Opt-in: install the agent skill (teaches agents to drive agwinterm via agwintermctl).</summary>
+    private void InstallSkill() => RunInstaller(Agwinterm.Pty.AgentSkill.Install);
+
+    /// <summary>Run an installer off the UI thread and toast its result.</summary>
+    private void RunInstaller(Func<string> installer)
+        => System.Threading.Tasks.Task.Run(() => { string r = installer(); Post(() => ShowToast(r)); });
 
     /// <summary>Run a configured custom command per its mode (send|new|overlay|detached), expanding {AGW_*}.</summary>
     private void RunCustomCommand(Keymap.CmdDef cmd) => RunCommandText(cmd.Text, cmd.Mode);
@@ -4237,8 +4253,13 @@ internal partial class Program : ISessionHost, IWindowHost
                 A("Scratch Terminal", "Ctrl+J", () => { if (_active is not null) ScratchOp(_active, "toggle"); });
                 A("Quick Terminal", "Ctrl+`", () => QuickOp("toggle"));
                 A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
+                A("oh-my-posh Theme…", "", () => TogglePalette(PaletteKind.Omp));
                 A("Settings…", "", OpenSettingsWindow);
                 A("Custom Commands…", "Ctrl+Shift+O", () => TogglePalette(PaletteKind.Custom));
+                // Opt-in integrations (agterm's Help-menu trio + shell) — the installer stays minimal.
+                A("Install Command-Line Tool (PATH)", "", InstallCli);
+                A("Install Agent Status Hooks", "", InstallHooks);
+                A("Install Agent Skill", "", InstallSkill);
                 A("Install Shell Integration", "", InstallShellIntegration);
                 A("Reload Keymap", "", ReloadKeymap);
                 break;
@@ -4264,6 +4285,22 @@ internal partial class Program : ISessionHost, IWindowHost
                 {
                     var tx = th;
                     _palAll.Add(new PalItem { Label = tx.Name, Search = tx.Name, Data = tx, Run = () => CommitTheme(tx) });
+                }
+                break;
+            }
+            case PaletteKind.Omp:
+            {
+                var themes = Agwinterm.Pty.OmpThemes.List();
+                if (themes.Count == 0)
+                {
+                    _palAll.Add(new PalItem { Label = "No oh-my-posh themes found",
+                        Secondary = "install oh-my-posh or set $env:POSH_THEMES_PATH", Run = null });
+                    break;
+                }
+                foreach (var (nm, pth) in themes)
+                {
+                    var p = pth; // applies live + persists so new sessions keep it
+                    _palAll.Add(new PalItem { Label = nm, Search = nm, Run = () => ApplyOmp(p, persist: true) });
                 }
                 break;
             }
@@ -4380,7 +4417,7 @@ internal partial class Program : ISessionHost, IWindowHost
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = _palPanel, RadiusX = 10f, RadiusY = 10f }, brush, 1f);
 
         // Query line (placeholder when empty) + blinking caret.
-        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Custom => "Run command…", PaletteKind.Windows => "Switch window…", _ => "Attention" };
+        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Omp => "oh-my-posh theme…", PaletteKind.Custom => "Run command…", PaletteKind.Windows => "Switch window…", _ => "Attention" };
         brush.Color = _palQuery.Length > 0 ? ChromeText : ChromeDim;
         rt.DrawText(_palQuery.Length > 0 ? _palQuery : placeholder, _uiFont, new Rect(px + 16f, py + 9f, pw - 32f, queryH - 10f), brush);
         if (_cursorOn && _palQuery.Length > 0)
@@ -4994,6 +5031,38 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         if (_palette != PaletteKind.Themes) return;
         if (_palSel >= 0 && _palSel < _palItems.Count && _palItems[_palSel].Data is Theme th) ApplyTheme(th);
+    }
+
+    // ---- oh-my-posh scheme changer (in-app extension) ----
+
+    /// <summary>Apply an oh-my-posh theme (name or .omp.json path) live to the active session's shell,
+    /// re-running oh-my-posh init and RE-APPLYING our OSC-7 prompt wrap (init redefines `prompt`, which
+    /// would drop the wrap). Persists to config when asked so new sessions launch with it.</summary>
+    public string OmpSet(string nameOrPath, bool persist)
+    {
+        string? path = Agwinterm.Pty.OmpThemes.Resolve(nameOrPath);
+        if (path is null) return "oh-my-posh theme not found: " + nameOrPath;
+        Post(() => ApplyOmp(path, persist));
+        return "oh-my-posh theme set: " + nameOrPath;
+    }
+
+    private void ApplyOmp(string path, bool persist)
+    {
+        if (ActiveSurface() is { } pane)
+        {
+            string q = path.Replace("'", "''");
+            // Re-init oh-my-posh with the chosen config (which redefines `prompt`), then wrap that NEW
+            // prompt to keep emitting OSC 7 so the title's live cwd survives the switch. One clean line.
+            string line =
+                "oh-my-posh init pwsh --config '" + q + "' | Invoke-Expression; " +
+                "$__o=$function:prompt; function global:prompt { " +
+                "[Console]::Write(\"$([char]27)]7;file://$env:COMPUTERNAME/$(((Get-Location).ProviderPath -replace '\\\\','/'))$([char]7)\"); " +
+                "& $__o }\r";
+            pane.S.NotifyActivity();
+            pane.S.Write(Encoding.UTF8.GetBytes(line));
+            RequestRedraw();
+        }
+        if (persist) { try { WriteConfigKey("omp-theme", path); } catch { } _config.OmpTheme = path; }
     }
 
     private static Theme FindTheme(string name)

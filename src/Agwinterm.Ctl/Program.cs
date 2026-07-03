@@ -60,6 +60,14 @@ switch (area)
     case "install" when sub == "hooks": cmd = "install.hooks"; break;
     case "install" when sub == "skill": cmd = "install.skill"; break;
     case "install" when sub == "shell": cmd = "install.shell"; break;
+    case "install" when sub == "cli": cmd = "install.cli"; if (options.ContainsKey("remove")) cargs["remove"] = true; break;
+    case "omp" when sub == "list": cmd = "omp.list"; break;
+    case "omp" when sub == "set":
+        cmd = "omp.set";
+        if (rest.Count == 0) { Console.Error.WriteLine("omp set needs a theme name"); return 2; }
+        cargs["name"] = string.Join(' ', rest);
+        if (options.ContainsKey("persist")) cargs["persist"] = true;
+        break;
     case "workspace":
         target = Opt("target") ?? "active";
         switch (sub)
@@ -284,6 +292,18 @@ switch (area)
 if (cmd == "install.skill")
 {
     Console.WriteLine(Agwinterm.Pty.AgentSkill.Install());
+    return 0;
+}
+// install.cli (PATH edit) and omp.list (file enumeration) are self-contained too — run locally.
+if (cmd == "install.cli")
+{
+    Console.WriteLine(options.ContainsKey("remove")
+        ? Agwinterm.Pty.CliInstaller.Uninstall() : Agwinterm.Pty.CliInstaller.Install());
+    return 0;
+}
+if (cmd == "omp.list")
+{
+    foreach (var (name, _) in Agwinterm.Pty.OmpThemes.List()) Console.WriteLine(name);
     return 0;
 }
 

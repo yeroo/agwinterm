@@ -62,6 +62,10 @@ public sealed class TerminalConfig
     /// <summary>Scrollback wheel speed: lines scrolled per wheel notch, 1–10. Default 3.</summary>
     public int ScrollSpeed { get; set; } = 3;
 
+    /// <summary>oh-my-posh theme (a theme name or a full .omp.json path) applied to new pwsh sessions,
+    /// overriding the profile's theme. Empty = use whatever the profile sets. Set via the in-app picker.</summary>
+    public string OmpTheme { get; set; } = "";
+
     /// <summary>Default config file contents (also used to seed the file on first run).</summary>
     public const string DefaultText =
         """
@@ -120,6 +124,10 @@ public sealed class TerminalConfig
 
         # Scrollback wheel speed: lines per wheel notch (1-10).
         scroll-speed = 3
+
+        # oh-my-posh theme for new pwsh sessions (a theme name or a full .omp.json path); empty = use
+        # the profile's theme. Pick live from the action palette -> "oh-my-posh Theme..." (--persist saves here).
+        omp-theme =
         """;
 
     public static TerminalConfig Parse(string text)
@@ -154,6 +162,7 @@ public sealed class TerminalConfig
                 case "sidebar-tint": if (int.TryParse(val, out var st)) cfg.SidebarTint = System.Math.Clamp(st, -100, 100); break;
                 case "new-session-dir": cfg.NewSessionDir = val; break;
                 case "scroll-speed": if (int.TryParse(val, out var ss)) cfg.ScrollSpeed = System.Math.Clamp(ss, 1, 10); break;
+                case "omp-theme": cfg.OmpTheme = val; break;
             }
         }
         return cfg;

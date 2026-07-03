@@ -105,6 +105,8 @@ public sealed class ControlServer : IDisposable
                 case "install.hooks": return Ok(AgentHooks.Install());
                 case "install.skill": return Ok(AgentSkill.Install());
                 case "install.shell": return Ok(ShellIntegrationInstaller.Install());
+                case "install.cli": return Ok(GetBool(args, "remove") ? CliInstaller.Uninstall() : CliInstaller.Install());
+                case "omp.list": return Ok(string.Join("\n", OmpThemes.List().Select(t => t.Name)));
                 // ---- Wave F1b: window management (target = the window selector) ----
                 case "window.new": return _windows is null ? Err("multi-window unavailable") : Ok(_windows.WindowNew(GetString(args, "name") ?? target));
                 case "window.list": return _windows is null ? Err("multi-window unavailable") : HandleWindowList();
@@ -192,6 +194,7 @@ public sealed class ControlServer : IDisposable
                 }
                 case "command.list": return Ok(host.CommandList());
                 case "command.leader": return Ok(host.CommandLeader(GetString(args, "op") ?? "state"));
+                case "omp.set": return Ok(host.OmpSet(GetString(args, "name") ?? "", GetBool(args, "persist")));
             }
 
             // Session-targeted commands.
