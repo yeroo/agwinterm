@@ -10,7 +10,9 @@ Workspaces, sessions, splits, live agent-status, and a scriptable control API â€
 custom-drawn Win32 + Direct2D shell. A Windows homage to [umputun's **agterm**](https://github.com/umputun/agterm).
 
 [![CI](https://github.com/yeroo/agwinterm/actions/workflows/ci.yml/badge.svg)](https://github.com/yeroo/agwinterm/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yeroo/agwinterm/badge)](https://scorecard.dev/viewer/?uri=github.com/yeroo/agwinterm)
 [![Release](https://img.shields.io/github/v/release/yeroo/agwinterm?sort=semver)](https://github.com/yeroo/agwinterm/releases)
+[![Downloads](https://img.shields.io/github/downloads/yeroo/agwinterm/total.svg)](https://github.com/yeroo/agwinterm/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 <img src="docs/img/screenshot.png" width="820" alt="agwinterm screenshot" />

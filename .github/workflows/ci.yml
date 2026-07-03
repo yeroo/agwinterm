@@ -7,8 +7,12 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-test:
+    name: build + test (windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
