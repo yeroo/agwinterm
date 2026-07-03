@@ -97,6 +97,7 @@ internal partial class Program
         Tog(0, "confirm-close-session", "Confirm before closing");
         Sec(0, "Shell");
         Tog(0, "shell-integration", "Shell integration (live cwd)");
+        Tog(0, "omp-integration", "oh-my-posh integration");
 
         // Appearance
         Sec(1, "Terminal");

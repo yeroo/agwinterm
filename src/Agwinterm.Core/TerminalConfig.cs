@@ -66,6 +66,11 @@ public sealed class TerminalConfig
     /// overriding the profile's theme. Empty = use whatever the profile sets. Set via the in-app picker.</summary>
     public string OmpTheme { get; set; } = "";
 
+    /// <summary>oh-my-posh integration: show the theme picker and inject the persisted omp-theme into new
+    /// sessions. Turn OFF if you use a different prompt (e.g. starship) — agwinterm then leaves the shell
+    /// prompt alone and hides the "oh-my-posh Theme…" selector.</summary>
+    public bool OmpIntegration { get; set; } = true;
+
     /// <summary>Where new sessions open: home (user profile) | current (active session's cwd) | custom (NewSessionDir).</summary>
     public string NewSessionDirMode { get; set; } = "home";
 
@@ -149,6 +154,10 @@ public sealed class TerminalConfig
         # the profile's theme. Pick live from the action palette -> "oh-my-posh Theme..." (--persist saves here).
         omp-theme =
 
+        # oh-my-posh integration: show the theme picker + inject omp-theme into new sessions. Set false if
+        # you use a different prompt (e.g. starship) — agwinterm then leaves the prompt alone and hides the picker.
+        omp-integration = true
+
         # Where new sessions open: home (user profile) | current (active session's dir) | custom (new-session-dir).
         new-session-dir-mode = home
 
@@ -201,6 +210,7 @@ public sealed class TerminalConfig
                 case "new-session-dir": cfg.NewSessionDir = val; break;
                 case "scroll-speed": if (int.TryParse(val, out var ss)) cfg.ScrollSpeed = System.Math.Clamp(ss, 1, 10); break;
                 case "omp-theme": cfg.OmpTheme = val; break;
+                case "omp-integration": cfg.OmpIntegration = ParseBool(val, cfg.OmpIntegration); break;
                 case "new-session-dir-mode": { var m = val.ToLowerInvariant(); if (m is "home" or "current" or "custom") cfg.NewSessionDirMode = m; break; }
                 case "confirm-close-session": cfg.ConfirmCloseSession = ParseBool(val, cfg.ConfirmCloseSession); break;
                 case "compact-toolbar": cfg.CompactToolbar = ParseBool(val, cfg.CompactToolbar); break;

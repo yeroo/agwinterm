@@ -647,7 +647,7 @@ internal partial class Program : ISessionHost, IWindowHost
         string wrap = Agwinterm.Pty.ShellIntegrationInstaller.PromptWrap;
         // If an oh-my-posh theme is configured, apply it after the profile, then let the wrap capture
         // that (new) prompt so live cwd (OSC 7) still works.
-        string? omp = string.IsNullOrWhiteSpace(_config.OmpTheme) ? null : Agwinterm.Pty.OmpThemes.Resolve(_config.OmpTheme);
+        string? omp = (!_config.OmpIntegration || string.IsNullOrWhiteSpace(_config.OmpTheme)) ? null : Agwinterm.Pty.OmpThemes.Resolve(_config.OmpTheme);
         string script = omp is not null
             ? "oh-my-posh init pwsh --config '" + omp.Replace("'", "''") + "' | Invoke-Expression\n" + wrap
             : wrap;
@@ -4305,7 +4305,9 @@ internal partial class Program : ISessionHost, IWindowHost
                 A("Scratch Terminal", "Ctrl+J", () => { if (_active is not null) ScratchOp(_active, "toggle"); });
                 A("Quick Terminal", "Ctrl+`", () => QuickOp("toggle"));
                 A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
-                A("oh-my-posh Theme…", "", () => TogglePalette(PaletteKind.Omp));
+                // Only when oh-my-posh integration is on AND oh-my-posh is actually installed (themes found).
+                if (_config.OmpIntegration && Agwinterm.Pty.OmpThemes.List().Count > 0)
+                    A("oh-my-posh Theme…", "", () => TogglePalette(PaletteKind.Omp));
                 A("Settings…", "", OpenSettingsWindow);
                 A("Custom Commands…", "Ctrl+Shift+O", () => TogglePalette(PaletteKind.Custom));
                 // Opt-in integrations (agterm's Help-menu trio + shell) — the installer stays minimal.
@@ -5140,7 +5142,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
         "scrollback-lines", "inactive-pane-dim", "window-opacity", "sidebar-tint", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "desktop-notifications", "shell-integration",
-        "restore-commands", "blocked-sound", "omp-theme",
+        "restore-commands", "blocked-sound", "omp-theme", "omp-integration",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "notification-badges",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
     };
@@ -5185,6 +5187,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "restore-commands" => _config.RestoreCommands ? "true" : "false",
         "blocked-sound" => _config.BlockedSound,
         "omp-theme" => _config.OmpTheme,
+        "omp-integration" => _config.OmpIntegration ? "true" : "false",
         "new-session-dir-mode" => _config.NewSessionDirMode,
         "confirm-close-session" => _config.ConfirmCloseSession ? "true" : "false",
         "compact-toolbar" => _config.CompactToolbar ? "true" : "false",
