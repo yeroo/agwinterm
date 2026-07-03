@@ -109,6 +109,7 @@ switch (area)
                 if (Opt("command") is { } command) cargs["command"] = command;
                 if (Opt("workspace-name") is { } wsn) cargs["workspace-name"] = wsn;
                 if (options.ContainsKey("create-workspace")) cargs["create-workspace"] = true;
+                if (Opt("profile") is { } prof) cargs["profile"] = prof;
                 target = null; // new isn't targeted
                 break;
             case "select":
@@ -200,6 +201,8 @@ switch (area)
         cargs["name"] = string.Join(' ', rest);
         break;
     case "keymap" when sub == "reload": cmd = "keymap.reload"; break;
+    case "profiles" when sub == "list": cmd = "profiles.list"; break;
+    case "profiles" when sub == "reload": cmd = "profiles.reload"; break;
     case "restore" when sub == "clear": cmd = "restore.clear"; break;
     case "config" when sub == "set":
         cmd = "config.set";

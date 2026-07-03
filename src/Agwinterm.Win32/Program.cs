@@ -74,6 +74,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private static Theme _theme = Theme.Default;                 // active colour theme (renderer resolves through it)
     private static Theme? _themeBeforePreview;                   // saved when the theme picker opens (Esc reverts)
     private static List<Theme> _allThemes = new();
+    private static Agwinterm.Pty.ShellProfiles.Config _profileCfg = new();   // shell profiles (profiles.json); app-global
     private TerminalSession? _session;   // mirrors the ACTIVE SURFACE (active pane, or a shown cover)
     // Auxiliary "cover" terminal drawn over the content region: scratch (per-session) or quick (per-app).
     private Pane? _cover;                // the shown cover, or null
@@ -254,6 +255,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public int Active;         // index of the focused pane
         public bool Flagged;       // durable working-set flag (survives moves; persisted; drives flagged sidebar mode)
         public string? CustomName; // user-renamed title (null = show the cwd/OSC title in the title bar, agterm-style)
+        public string? ProfileName; // shell profile this session launched with (null = default; persisted)
         public Pane? Scratch;      // per-session scratch terminal (lazy; kept alive when hidden; not restored)
         public Pane? Overlay;      // ephemeral overlay terminal running a program over this session (Wave B3)
         public int OverlaySizePercent; // 0 = full content region; 1..100 = centered floating panel
@@ -341,6 +343,7 @@ internal partial class Program : ISessionHost, IWindowHost
         // window that was open at last quit. Each open window is its own Program instance routed by
         // HWND; Frontmost is what un-scoped control verbs act on.
         _hInstance = hInstance;
+        _profileCfg = Agwinterm.Pty.ShellProfiles.Load(AppDir);   // shell profiles (seed profiles.json on first run)
         LoadOrMigrateIndex();
         List<WinMeta> toOpen;
         lock (_windowIndex)
@@ -567,7 +570,7 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>Create one terminal pane (its own ConPTY, env, wiring) sized for the given font.
     /// When <paramref name="command"/> is set, that argv runs as the pane's process instead of the shell.</summary>
     private Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null,
-        bool shellWrap = false, bool interactive = false, Dictionary<string, string>? extraEnv = null)
+        bool shellWrap = false, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null)
     {
         var (cols, rows) = GridSizeFor(fontSize);
         var session = new TerminalSession(cols, rows);
@@ -613,9 +616,9 @@ internal partial class Program : ISessionHost, IWindowHost
             if (argv.Length > 0)
                 _ = session.StartAsync(argv[0], argv[1..], extraEnv: env, cwd: cwd);
             else
-                _ = session.StartAsync("powershell.exe", ShellArgs(), extraEnv: env, cwd: cwd);
+                LaunchShell(session, profileName, env, cwd);
         }
-        else _ = session.StartAsync("powershell.exe", ShellArgs(), extraEnv: env, cwd: cwd);
+        else LaunchShell(session, profileName, env, cwd);   // launch the chosen shell profile (default = Windows PowerShell)
         return pane;
     }
 
@@ -655,8 +658,38 @@ internal partial class Program : ISessionHost, IWindowHost
         return new[] { "-NoLogo", "-NoExit", "-EncodedCommand", enc };
     }
 
+    /// <summary>Resolve a profile by name (case-insensitive), else the configured default, else null.</summary>
+    private static Agwinterm.Pty.ShellProfile? ResolveProfile(string? name)
+    {
+        var profs = _profileCfg.Profiles;
+        if (profs.Count == 0) return null;
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            var m = profs.FirstOrDefault(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (m is not null) return m;
+        }
+        return profs.FirstOrDefault(p => p.Name.Equals(_profileCfg.Default, StringComparison.OrdinalIgnoreCase)) ?? profs[0];
+    }
+
+    /// <summary>Launch a session's shell from its profile. PowerShell profiles (powershell.exe / pwsh) with
+    /// no custom args get the OSC-7 cwd wrap + omp injection (today's default behavior); everything else
+    /// (cmd, Git Bash, WSL, custom) launches its raw command + args. AGWINTERM_* env is passed regardless.</summary>
+    private void LaunchShell(TerminalSession session, string? profileName, Dictionary<string, string> env, string? cwd)
+    {
+        var prof = ResolveProfile(profileName);
+        string cmd = prof?.Command is { Length: > 0 } c ? c : "powershell.exe";
+        string[]? pargs = prof?.Args;
+        string? pcwd = string.IsNullOrEmpty(cwd) ? prof?.Cwd : cwd;
+        string exe = Path.GetFileName(cmd).ToLowerInvariant();
+        bool isPwsh = exe is "powershell.exe" or "pwsh.exe" or "pwsh";
+        if (isPwsh && (pargs is null || pargs.Length == 0))
+            _ = session.StartAsync(cmd, ShellArgs(), extraEnv: env, cwd: pcwd);        // wrap + omp (cwd-in-title)
+        else
+            _ = session.StartAsync(cmd, pargs ?? Array.Empty<string>(), extraEnv: env, cwd: pcwd); // raw shell
+    }
+
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
-        string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null)
+        string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null)
     {
         float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
         // No explicit cwd → resolve by the new-session-directory mode (home | current | custom).
@@ -672,8 +705,8 @@ internal partial class Program : ISessionHost, IWindowHost
         }
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
-        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws };
-        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv));   // first pane shares the session id (control-API back-compat)
+        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName };
+        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName));   // first pane shares the session id (control-API back-compat)
         ses.Active = 0;
 
         lock (_workspaces) { ws.Sessions.Add(ses); ws.Expanded = true; }
@@ -687,7 +720,7 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>Append an extra pane to an existing session (used by split-layout restore).</summary>
     private Pane AppendPane(Ses ses, string paneId, string? cwd, float fontSize)
     {
-        var p = CreatePane(paneId, ses.Ws, cwd, fontSize);
+        var p = CreatePane(paneId, ses.Ws, cwd, fontSize, profileName: ses.ProfileName);
         lock (_workspaces) ses.Panes.Add(p);
         return p;
     }
@@ -1009,7 +1042,7 @@ internal partial class Program : ISessionHost, IWindowHost
         if (ses.Panes.Count >= 2) return;   // agterm model: strictly primary + one split (no 3+ panes)
         var cur = ses.ActivePane;
         string? cwd = string.IsNullOrEmpty(cur.StartCwd) ? null : cur.StartCwd;
-        var np = CreatePane(Guid.NewGuid().ToString(), ses.Ws, cwd, cur.FontSize);
+        var np = CreatePane(Guid.NewGuid().ToString(), ses.Ws, cwd, cur.FontSize, profileName: ses.ProfileName);
         float half = cur.Ratio / 2f;
         cur.Ratio = half; np.Ratio = half;
         int idx = ses.Panes.IndexOf(cur);
@@ -1483,7 +1516,7 @@ internal partial class Program : ISessionHost, IWindowHost
         }
 
         public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-            string? workspaceName = null, bool createWorkspace = false)
+            string? workspaceName = null, bool createWorkspace = false, string? profile = null)
         {
             string id = Guid.NewGuid().ToString();
             Post(() =>
@@ -1500,7 +1533,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     ws = byName ?? (createWorkspace ? CreateWorkspace(Guid.NewGuid().ToString(), workspaceName) : ActiveWorkspace());
                 }
                 else ws = ActiveWorkspace();
-                CreateSession(id, name, cwd, ws, makeActive: true, command: command);
+                CreateSession(id, name, cwd, ws, makeActive: true, command: command, profileName: profile);
             });
             return id;
         }
@@ -1619,6 +1652,10 @@ internal partial class Program : ISessionHost, IWindowHost
         public string ConfigGet(string key) => InvokeOnUi(() => ConfigValue(key.Trim().ToLowerInvariant()));
         public string ConfigList() => InvokeOnUi(() => string.Join("\n", ConfigKeys.Select(k => $"{k} = {ConfigValue(k)}")));
         public string SettingsOpen() { Post(OpenSettingsWindow); return "settings opened"; }
+
+        public string ProfilesList() => InvokeOnUi(() => string.Join("\n", _profileCfg.Profiles.Select(p =>
+            $"{(p.Name.Equals(_profileCfg.Default, StringComparison.OrdinalIgnoreCase) ? "*" : " ")} {p.Name}\t{p.Command}{(p.Args is { Length: > 0 } a ? " " + string.Join(" ", a) : "")}")));
+        public string ProfilesReload() => InvokeOnUi(() => { _profileCfg = Agwinterm.Pty.ShellProfiles.Load(AppDir); RequestRedraw(); return $"{_profileCfg.Profiles.Count} profiles loaded"; });
 
         public string RestoreClear()
         {
@@ -3911,13 +3948,33 @@ internal partial class Program : ISessionHost, IWindowHost
 
     private const uint IDM_NEW_SESSION = 1, IDM_OPEN_DIR = 2, IDM_RENAME = 3, IDM_CLOSE = 4, IDM_CLEAR = 5, IDM_DELETE_WS = 6, IDM_FLAG = 7, IDM_FOCUS_WS = 8;
     private const uint IDM_MOVE_BASE = 1000;
+    private const uint IDM_PROFILE_BASE = 2000;   // "New Session ▸ <profile>" items: IDM_PROFILE_BASE + index
+
+    /// <summary>A popup menu listing the shell profiles (item id = IDM_PROFILE_BASE + index).</summary>
+    private static IntPtr BuildProfilesMenu()
+    {
+        IntPtr m = CreatePopupMenu();
+        var profs = _profileCfg.Profiles;
+        for (int i = 0; i < profs.Count; i++) AppendMenuW(m, MF_STRING, (UIntPtr)(IDM_PROFILE_BASE + (uint)i), profs[i].Name);
+        return m;
+    }
+
+    /// <summary>If cmd is a profile item, create a session with that profile in <paramref name="ws"/>. Returns true if handled.</summary>
+    private bool TryCreateSessionForProfileCmd(int cmd, Workspace ws, string? cwd)
+    {
+        int idx = cmd - (int)IDM_PROFILE_BASE;
+        if (idx < 0 || idx >= _profileCfg.Profiles.Count) return false;
+        CreateSession(Guid.NewGuid().ToString(), null, cwd, ws, makeActive: true, profileName: _profileCfg.Profiles[idx].Name);
+        return true;
+    }
 
     private void ShowContextMenu(object item, int sx, int sy)
     {
         IntPtr menu = CreatePopupMenu();
         if (item is Ses ses)
         {
-            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
+            if (_profileCfg.Profiles.Count > 1) AppendMenuW(menu, MF_POPUP, (UIntPtr)(ulong)BuildProfilesMenu(), "New Session");
+            else AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_RENAME, "Rename");
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_FLAG, ses.Flagged ? "Unflag Session" : "Flag Session");
@@ -3942,6 +3999,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 default:
                     if (cmd >= (int)IDM_MOVE_BASE && cmd < (int)IDM_MOVE_BASE + targets.Count)
                         MoveSession(ses, targets[cmd - (int)IDM_MOVE_BASE]);
+                    else TryCreateSessionForProfileCmd(cmd, ses.Ws, null);   // "New Session ▸ <profile>"
                     break;
             }
         }
@@ -3949,7 +4007,8 @@ internal partial class Program : ISessionHost, IWindowHost
         {
             bool wsFocused = _focusedWorkspaceId == ws.Id;
             int wsCount; lock (_workspaces) wsCount = _workspaces.Count;
-            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
+            if (_profileCfg.Profiles.Count > 1) AppendMenuW(menu, MF_POPUP, (UIntPtr)(ulong)BuildProfilesMenu(), "New Session");
+            else AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_RENAME, "Rename");
             AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_FOCUS_WS, wsFocused ? "Unfocus" : "Focus");
@@ -3964,6 +4023,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 case IDM_RENAME: StartRename(ws); break;
                 case IDM_FOCUS_WS: WorkspaceFocusOp(wsFocused ? "off" : "on", ws.Id); break;
                 case IDM_DELETE_WS: DeleteWorkspace(ws); break;
+                default: TryCreateSessionForProfileCmd(cmd, ws, null); break;   // "New Session ▸ <profile>"
             }
         }
         else DestroyMenu(menu);
@@ -3977,13 +4037,15 @@ internal partial class Program : ISessionHost, IWindowHost
         var pt = new POINT { x = (int)bx0, y = ClientH() - (int)FooterH };
         ClientToScreen(_hwnd, ref pt);
         IntPtr menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
+        var profs = _profileCfg.Profiles;                       // one "New <profile>" item per shell profile
+        for (int i = 0; i < profs.Count; i++) AppendMenuW(menu, MF_STRING, (UIntPtr)(IDM_PROFILE_BASE + (uint)i), profs[i].Name);
+        AppendMenuW(menu, MF_SEPARATOR, UIntPtr.Zero, "");
         AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
         int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, _hwnd, IntPtr.Zero);
         DestroyMenu(menu);
         var ws = ActiveWorkspace();
-        if (cmd == (int)IDM_NEW_SESSION) CreateSession(Guid.NewGuid().ToString(), null, null, ws, true);
-        else if (cmd == (int)IDM_OPEN_DIR) { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ws, true); }
+        if (cmd == (int)IDM_OPEN_DIR) { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ws, true); }
+        else TryCreateSessionForProfileCmd(cmd, ws, null);
     }
 
     private void MoveSession(Ses ses, Workspace target)
@@ -5325,7 +5387,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
     private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
-    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; } public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
+    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; } public string? Profile { get; set; } public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
         // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
         public string? BgFile { get; set; } public int BgOpacity { get; set; } = 15; public string BgMode { get; set; } = "fit"; }
     private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
@@ -5550,7 +5612,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 var wss = new WorkspaceState { Id = id, Name = name, Expanded = expanded };
                 foreach (var s in sessions)
                 {
-                    var ss = new SessionState { Id = s.Id, Name = s.Name, CustomName = s.CustomName, Active = s.Active, Flagged = s.Flagged,
+                    var ss = new SessionState { Id = s.Id, Name = s.Name, CustomName = s.CustomName, Profile = s.ProfileName, Active = s.Active, Flagged = s.Flagged,
                         BgFile = s.BgPath is null ? null : Path.GetFileName(s.BgPath), BgOpacity = s.BgOpacity, BgMode = s.BgMode };
                     List<Pane> panes;
                     lock (_workspaces) panes = s.Panes.ToList();
@@ -5647,7 +5709,8 @@ internal partial class Program : ISessionHost, IWindowHost
                         string.IsNullOrWhiteSpace(s.Name) ? null : s.Name,
                         string.IsNullOrWhiteSpace(first.Cwd) ? null : first.Cwd,
                         ws, makeActive: s.Id == st.ActiveId,
-                        fontSize: first.FontSize > 0 ? first.FontSize : (float?)null);
+                        fontSize: first.FontSize > 0 ? first.FontSize : (float?)null,
+                        profileName: string.IsNullOrWhiteSpace(s.Profile) ? null : s.Profile);
                     for (int i = 1; i < pl.Count; i++)
                         AppendPane(ses,
                             string.IsNullOrEmpty(pl[i].Id) ? Guid.NewGuid().ToString() : pl[i].Id,

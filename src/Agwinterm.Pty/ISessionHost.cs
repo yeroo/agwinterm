@@ -28,7 +28,12 @@ public interface ISessionHost
     /// instead of the shell.
     /// </summary>
     string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false);
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null);
+
+    /// <summary>List the configured shell profiles (name, command, default marker).</summary>
+    string ProfilesList();
+    /// <summary>Reload profiles.json from disk.</summary>
+    string ProfilesReload();
 
     bool SelectSession(string target);
     bool CloseSession(string target);
@@ -159,7 +164,9 @@ public sealed class SingleSessionHost : ISessionHost
         new[] { new WorkspaceSnapshot("ws", "workspace", true,
             new[] { new SessionSnapshot("single", "session", true, _session.Status) }) };
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false) => "single";
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null) => "single";
+    public string ProfilesList() => "Windows PowerShell";
+    public string ProfilesReload() => "0 profiles loaded";
     public bool SelectSession(string target) => true;
     public bool CloseSession(string target) => false;
     public string NewWorkspace(string? name) => "ws";

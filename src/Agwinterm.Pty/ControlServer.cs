@@ -128,7 +128,9 @@ public sealed class ControlServer : IDisposable
             {
                 case "tree": return HandleTree(host);
                 case "session.new": return Ok(host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace"),
-                    GetString(args, "command"), GetString(args, "workspace-name"), GetBool(args, "create-workspace")));
+                    GetString(args, "command"), GetString(args, "workspace-name"), GetBool(args, "create-workspace"), GetString(args, "profile")));
+                case "profiles.list": return Ok(host.ProfilesList());
+                case "profiles.reload": return Ok(host.ProfilesReload());
                 case "session.select": return host.SelectSession(target ?? "active") ? Ok("selected") : Err("session not found");
                 case "session.close": return host.CloseSession(target ?? "active") ? Ok("closed") : Err("session not found");
                 case "workspace.new": return Ok(host.NewWorkspace(GetString(args, "name")));

@@ -52,8 +52,11 @@ public static class AgentSkill
 
         ## Manage sessions & workspaces
         - `agwintermctl tree --json`                              — list workspaces+sessions (id, name, active, status)
-        - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"]`
+        - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"] [--profile NAME]`
           — create a session (prints its id). `--command` runs that program as the session process (argv-style, no shell) instead of the shell.
+          `--profile NAME` picks a shell profile (default = Windows PowerShell).
+        - `agwintermctl profiles list` — shell profiles (cmd, Windows PowerShell, PowerShell 7, Git Bash, WSL:*, custom); `* ` marks the default.
+          Profiles live in `%LOCALAPPDATA%\agwinterm\profiles.json` (auto-seeded from detected shells; edit to add your own — name/command/args/cwd/icon); `agwintermctl profiles reload` re-reads it.
         - `agwintermctl session select <id>` / `session close <id>`
         - `agwintermctl session go next|prev|first|last|next-attention|prev-attention` — move the active session
         - `agwintermctl session move --to up|down|top|bottom`     — reorder within its workspace
