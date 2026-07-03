@@ -874,6 +874,11 @@ internal partial class Program : ISessionHost, IWindowHost
             float fw = w * o.OverlaySizePercent / 100f, fh = h * o.OverlaySizePercent / 100f;
             return (x0 + (w - fw) / 2f, y0 + (h - fh) / 2f, fw, fh);
         }
+        if (_coverKind == 2)   // quick terminal: a centered floating panel over the main window (~85%)
+        {
+            float fw = w * 0.85f, fh = h * 0.85f;
+            return (x0 + (w - fw) / 2f, y0 + (h - fh) / 2f, fw, fh);
+        }
         return (x0, y0, w, h);
     }
 
@@ -1984,6 +1989,13 @@ internal partial class Program : ISessionHost, IWindowHost
                         _toastText = null; _toastTarget = null; KillTimer(hwnd, (IntPtr)2);
                         SetActive(t);
                         return IntPtr.Zero;
+                    }
+                    // Quick terminal is a floating panel: a left-click anywhere in the "main window area"
+                    // outside the panel dismisses it (like a tool window that hides on focus loss).
+                    if (_coverKind == 2)
+                    {
+                        var (qx, qy, qw, qh) = CoverRect();
+                        if (mx < qx || mx >= qx + qw || my < qy || my >= qy + qh) { HideCover(); return IntPtr.Zero; }
                     }
                     if (my < (int)TitleBarH)
                     {
@@ -3427,8 +3439,10 @@ internal partial class Program : ISessionHost, IWindowHost
         rt.BeginDraw();
         rt.Clear(C4(_theme.DefaultBackground));
 
-        bool floatingOverlay = _cover is not null && _coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 };
-        if (_cover is not null && !floatingOverlay)
+        // Quick terminal (kind 2) and a sized floating overlay (kind 3) both render as a centered
+        // panel over the live main window — a "tool window" look. Scratch (1) / full overlay fill.
+        bool floatingPanel = _cover is not null && ((_coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 }) || _coverKind == 2);
+        if (_cover is not null && !floatingPanel)
         {
             var (ox, oy, cw0, _) = ContentArea();
             var (fmt, cw, ch) = Metrics(_cover.FontSize);
@@ -3438,8 +3452,8 @@ internal partial class Program : ISessionHost, IWindowHost
         }
         else
         {
-            if (_active is not null) RenderPanes(rt, brush, _active);
-            if (floatingOverlay)
+            if (_active is not null) RenderPanes(rt, brush, _active);   // the main window shows behind
+            if (floatingPanel)
             {
                 var (cx0, cy0, cw0, ch0) = ContentArea();
                 brush.Color = new Color4(0f, 0f, 0f, 0.45f);                 // dim scrim over the session
@@ -3452,7 +3466,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 brush.Color = ChromeAccent;                                  // 1px frame
                 rt.DrawRectangle(new Rect(fx - 1f, fy - 1f, fw + 2f, fh + 2f), brush, 1f);
                 DrawCoverBadge(rt, brush, fx + fw, fy);
-                DrawOverlayFooter(rt, brush);
+                if (_coverKind == 3) DrawOverlayFooter(rt, brush);          // overlay-only footer
             }
         }
         DrawSidebar(rt, brush);
