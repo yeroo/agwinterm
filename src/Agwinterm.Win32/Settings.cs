@@ -18,7 +18,7 @@ namespace Agwinterm.Win32;
 /// </summary>
 internal partial class Program
 {
-    private enum SW { Section, Toggle, Slider, Dropdown, Color, Sound, Path, Button, Info, Diag }
+    private enum SW { Section, Toggle, Slider, Dropdown, Color, Sound, Path, Button, Info, Diag, Profile }
 
     private sealed class SetRow
     {
@@ -38,7 +38,7 @@ internal partial class Program
     private int _setTab;
     private float _setScroll;
     private readonly List<SetRow> _setRows = new();
-    private readonly float[] _navHit = new float[5 * 2];   // per-tab nav row y0,y1
+    private readonly float[] _navHit = new float[6 * 2];   // per-tab nav row y0,y1
     private Rect _setCard;
     private float _setCloseX0, _setCloseY0, _setCloseX1, _setCloseY1;
     private float _setPaneTop, _setPaneBottom, _setContentH;
@@ -54,7 +54,7 @@ internal partial class Program
     private Rect _ddPanel;
     private readonly List<(float y0, float y1, int idx)> _ddRows = new();
 
-    private static readonly string[] SetTabNames = { "General", "Appearance", "Notifications", "Agent Status", "Key Mapping" };
+    private static readonly string[] SetTabNames = { "General", "Appearance", "Notifications", "Agent Status", "Key Mapping", "Profiles" };
 
     /// <summary>Open the themed Settings panel (entry point for the gear / palette / settings.open verb).</summary>
     private void OpenSettingsWindow()
@@ -141,6 +141,34 @@ internal partial class Program
         Btn(4, "Reload keymap", () => { ReloadKeymap(); RequestRedraw(); });
         Sec(4, "Diagnostics");
         _setRows.Add(new SetRow { Kind = SW.Diag, Tab = 4 });
+
+        // Profiles (shell chooser for new sessions)
+        Sec(5, "Shell Profiles");
+        foreach (var p in _profileCfg.Profiles)
+        {
+            string cmd = p.Command + (p.Args is { Length: > 0 } a ? " " + string.Join(" ", a) : "");
+            _setRows.Add(new SetRow { Kind = SW.Profile, Tab = 5, Key = p.Name, Label = p.Name, Opts = new[] { cmd } });
+        }
+        Sec(5, "Manage");
+        Btn(5, "Edit profiles.json…", EditProfilesJson);
+        Btn(5, "Reload", () => { _profileCfg = Agwinterm.Pty.ShellProfiles.Load(AppDir); BuildSettingsRows(); RequestRedraw(); });
+        _setRows.Add(new SetRow { Kind = SW.Info, Tab = 5, Label = "Click a profile to set the default; edit profiles.json then Reload to add your own." });
+    }
+
+    /// <summary>Open profiles.json in the default editor (seeding it first if needed).</summary>
+    private void EditProfilesJson()
+    {
+        string p = Agwinterm.Pty.ShellProfiles.PathFor(AppDir);
+        if (!System.IO.File.Exists(p)) Agwinterm.Pty.ShellProfiles.Load(AppDir);   // seed on first open
+        ShellExecuteW(IntPtr.Zero, "open", p, null, null, 5);
+    }
+
+    /// <summary>Make a shell profile the default (persists to profiles.json) and refresh the tab.</summary>
+    private void SetProfileDefault(string name)
+    {
+        _profileCfg = Agwinterm.Pty.ShellProfiles.SetDefault(AppDir, name);
+        BuildSettingsRows();
+        RequestRedraw();
     }
 
     private static void OpenConfigFolder()
@@ -210,7 +238,7 @@ internal partial class Program
         {
             r.Vis = false;
             if (r.Tab != _setTab) continue;
-            float rowH = r.Kind == SW.Section ? SetSecH : (r.Kind == SW.Diag ? 150f : SetRowH);
+            float rowH = r.Kind == SW.Section ? SetSecH : r.Kind == SW.Diag ? 150f : r.Kind == SW.Profile ? 46f : SetRowH;
             bool onscreen = y + rowH > _setPaneTop && y < _setPaneBottom;
             if (onscreen) DrawRow(rt, brush, r, lblX, rightX, y, rowH, paneW);
             y += rowH + (r.Kind == SW.Section ? 2f : 4f);
@@ -230,8 +258,32 @@ internal partial class Program
             return;
         }
         r.Vis = true;
-        brush.Color = ChromeText;
-        rt.DrawText(r.Label, _uiFont, new Rect(lblX, y, paneW - 2 * SetPad - 180f, rowH), brush);
+        if (r.Kind == SW.Profile)
+        {
+            bool isDef = string.Equals(r.Key, _profileCfg.Default, StringComparison.OrdinalIgnoreCase);
+            float rr = 7f, rcx = rightX - rr, rcy = y + rowH / 2f;
+            // name + command (dimmed), leaving room for the right-side radio/"Default"
+            brush.Color = ChromeText;
+            rt.DrawText(r.Label, _uiFont, new Rect(lblX, y + 3f, paneW - 2 * SetPad - 96f, 20f), brush);
+            brush.Color = ChromeDim;
+            rt.DrawText(r.Opts.Length > 0 ? r.Opts[0] : "", _uiSmall, new Rect(lblX, y + 24f, paneW - 2 * SetPad - 96f, 16f), brush);
+            // radio (filled accent when default) + "Default" label
+            if (isDef)
+            {
+                brush.Color = ChromeDim; float dw = MeasureText("Default", _uiSmall);
+                rt.DrawText("Default", _uiSmall, new Rect(rcx - rr - 8f - dw, y, dw + 2f, rowH), brush);
+            }
+            brush.Color = isDef ? ChromeAccent : PalBorder;
+            rt.DrawEllipse(new Ellipse(new System.Numerics.Vector2(rcx, rcy), rr, rr), brush, 1.5f);
+            if (isDef) { brush.Color = ChromeAccent; rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(rcx, rcy), rr - 3f, rr - 3f), brush); }
+            r.Hx0 = lblX - 8f; r.Hy0 = y; r.Hx1 = rightX + rr + 2f; r.Hy1 = y + rowH;
+            return;
+        }
+        if (r.Kind is not (SW.Info or SW.Diag))   // Info/Diag draw their own text below (avoid a double-draw)
+        {
+            brush.Color = ChromeText;
+            rt.DrawText(r.Label, _uiFont, new Rect(lblX, y, paneW - 2 * SetPad - 180f, rowH), brush);
+        }
 
         switch (r.Kind)
         {
@@ -465,7 +517,7 @@ internal partial class Program
         if (mx >= _setCloseX0 && mx <= _setCloseX1 && my >= _setCloseY0 && my <= _setCloseY1) { CloseSettings(); return; }
         // nav
         if (mx >= _setCard.Left + 8f && mx <= _setCard.Left + SetNavW - 8f)
-            for (int i = 0; i < 5; i++)
+            for (int i = 0; i < SetTabNames.Length; i++)
                 if (my >= _navHit[i * 2] && my < _navHit[i * 2 + 1]) { _setTab = i; _setScroll = 0; RequestRedraw(); return; }
         // outside the card → dismiss
         if (mx < _setCard.Left || mx > _setCard.Right || my < _setCard.Top || my > _setCard.Bottom) { CloseSettings(); return; }
@@ -483,6 +535,7 @@ internal partial class Program
                 case SW.Slider: _setDragRow = r; SetCapture(_hwnd); SliderTo(r, mx); return;
                 case SW.Dropdown: case SW.Sound: OpenDropdown(r); return;
                 case SW.Color: PickColorKey(r.Key); return;
+                case SW.Profile: SetProfileDefault(r.Key); return;
                 case SW.Button: r.OnClick?.Invoke(); return;
             }
         }

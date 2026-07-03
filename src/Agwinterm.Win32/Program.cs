@@ -156,7 +156,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private const int SelAutoTimer = 7;   // WM_TIMER id for drag-autoscroll ticks
 
     // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
-    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom, Windows, Omp }
+    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom, Windows, Omp, NewSession }
     private sealed class PalItem
     {
         public required string Label;
@@ -4340,6 +4340,7 @@ internal partial class Program : ISessionHost, IWindowHost
             {
                 void A(string label, string hint, Action run) => _palAll.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
                 A("New Session", "Ctrl+Shift+T", () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true));
+                A("New Session…", "", () => TogglePalette(PaletteKind.NewSession));   // pick a shell profile
                 A("New Workspace", "Ctrl+Shift+N", () => CreateWorkspace(Guid.NewGuid().ToString(), null));
                 A("New Window", "Ctrl+Alt+N", () => WindowNew(null));
                 A("Close Window", "", () => DestroyWindow(_hwnd));
@@ -4418,6 +4419,30 @@ internal partial class Program : ISessionHost, IWindowHost
                     var p = pth; // applies live + persists so new sessions keep it
                     _palAll.Add(new PalItem { Label = nm, Search = nm, Run = () => ApplyOmp(p, persist: true) });
                 }
+                break;
+            }
+            case PaletteKind.NewSession:
+            {
+                foreach (var p in _profileCfg.Profiles)
+                {
+                    var name = p.Name;
+                    string cmd = p.Command + (p.Args is { Length: > 0 } aa ? " " + string.Join(" ", aa) : "");
+                    bool def = name.Equals(_profileCfg.Default, StringComparison.OrdinalIgnoreCase);
+                    _palAll.Add(new PalItem
+                    {
+                        Label = name + (def ? "  (default)" : ""),
+                        Secondary = cmd,
+                        Search = name,
+                        Run = () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true, profileName: name),
+                    });
+                }
+                _palAll.Add(new PalItem
+                {
+                    Label = "Open Directory…",
+                    Secondary = "pick a folder for a new session",
+                    Search = "open directory folder",
+                    Run = () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ActiveWorkspace(), true); },
+                });
                 break;
             }
             case PaletteKind.Attention:
@@ -4533,7 +4558,7 @@ internal partial class Program : ISessionHost, IWindowHost
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = _palPanel, RadiusX = 10f, RadiusY = 10f }, brush, 1f);
 
         // Query line (placeholder when empty) + blinking caret.
-        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Omp => "oh-my-posh theme…", PaletteKind.Custom => "Run command…", PaletteKind.Windows => "Switch window…", _ => "Attention" };
+        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Omp => "oh-my-posh theme…", PaletteKind.Custom => "Run command…", PaletteKind.Windows => "Switch window…", PaletteKind.NewSession => "New session — pick a shell…", _ => "Attention" };
         brush.Color = _palQuery.Length > 0 ? ChromeText : ChromeDim;
         rt.DrawText(_palQuery.Length > 0 ? _palQuery : placeholder, _uiFont, new Rect(px + 16f, py + 9f, pw - 32f, queryH - 10f), brush);
         if (_cursorOn && _palQuery.Length > 0)
@@ -4737,7 +4762,7 @@ internal partial class Program : ISessionHost, IWindowHost
         switch (a)
         {
             case "toggle": ToggleSidebar(); break;
-            case "add-session": ShowAddSessionMenu(); break;   // menu: New Session / Open Directory…
+            case "add-session": TogglePalette(PaletteKind.NewSession); break;   // themed picker: profiles + Open Directory…
             case "new-workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
             case "attention": GoToNextAttention(1); break;
             case "scratch": if (_active is not null) ScratchOp(_active, "toggle"); break;

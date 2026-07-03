@@ -60,6 +60,28 @@ public static class ShellProfiles
         return Normalize(seeded);
     }
 
+    /// <summary>The profiles.json path (for opening in an editor).</summary>
+    public static string PathFor(string appDir) => Path.Combine(appDir, "profiles.json");
+
+    /// <summary>Persist the config (default + profiles) to profiles.json (best-effort).</summary>
+    public static void Save(string appDir, Config c)
+    {
+        try { Directory.CreateDirectory(appDir); File.WriteAllText(PathFor(appDir), JsonSerializer.Serialize(c, JsonOpts)); }
+        catch { /* best-effort */ }
+    }
+
+    /// <summary>Set the default profile by name and persist; returns the reloaded/normalized config.</summary>
+    public static Config SetDefault(string appDir, string name)
+    {
+        var c = Load(appDir);
+        if (c.Profiles.Exists(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        {
+            c.Default = name;
+            Save(appDir, c);
+        }
+        return Normalize(c);
+    }
+
     private static Config Normalize(Config c)
     {
         c.Profiles.RemoveAll(p => string.IsNullOrWhiteSpace(p.Name) || string.IsNullOrWhiteSpace(p.Command));
