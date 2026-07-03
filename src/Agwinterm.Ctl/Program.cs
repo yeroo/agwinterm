@@ -279,6 +279,14 @@ switch (area)
         Console.Error.WriteLine($"unknown command '{area} {sub}'"); return 2;
 }
 
+// install.skill is a self-contained file-write (writes SKILL.md to ~/.claude & ~/.codex); run it
+// locally so it works with no running app / pipe (e.g. from the installer, incl. silent installs).
+if (cmd == "install.skill")
+{
+    Console.WriteLine(Agwinterm.Pty.AgentSkill.Install());
+    return 0;
+}
+
 var req = new Dictionary<string, object?> { ["cmd"] = cmd };
 if (!string.IsNullOrEmpty(target)) req["target"] = target;
 // --window <id|prefix|active> targets a specific window for content verbs (window.* use the positional target).

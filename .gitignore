@@ -3,3 +3,5 @@ obj/
 *.user
 .vs/
 artifacts/
+installer/stage/
+installer/Output/

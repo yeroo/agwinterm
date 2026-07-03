@@ -8,4 +8,8 @@
     <AssemblyName>agwintermctl</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- For running install.* locally (no running app / pipe needed), e.g. from the installer. -->
+    <ProjectReference Include="../Agwinterm.Pty/Agwinterm.Pty.csproj" />
+  </ItemGroup>
 </Project>
