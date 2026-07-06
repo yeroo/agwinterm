@@ -36,8 +36,8 @@ public sealed class TerminalConfig
     public bool RightClickPaste { get; set; } = true;
 
     /// <summary>Auto-copy the selection to the clipboard the moment a selection is finished (mouse-up /
-    /// word / line select), without needing Ctrl+C. Off by default. The selection stays highlighted.</summary>
-    public bool CopyOnSelect { get; set; } = false;
+    /// word / line select), without needing Ctrl+C. On by default. The selection stays highlighted.</summary>
+    public bool CopyOnSelect { get; set; } = true;
 
     /// <summary>Show OS desktop notifications (tray balloon) for OSC 9/777 / notify. Off → in-app banner + badge only.</summary>
     public bool DesktopNotifications { get; set; } = true;
@@ -115,7 +115,7 @@ public sealed class TerminalConfig
         right-click-paste = true
 
         # Auto-copy the selection to the clipboard as soon as it's made (no Ctrl+C needed).
-        copy-on-select = false
+        copy-on-select = true
 
         # Desktop notifications: show an OS tray-balloon for OSC 9/777 / `agwintermctl notify`
         # (the in-app banner + sidebar badge always show regardless). Set false to suppress the OS toast.
