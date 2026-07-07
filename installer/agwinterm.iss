@@ -2,7 +2,7 @@
 ; Build via installer\build.ps1 (publishes to stage\ then runs ISCC on this file).
 
 #define AppName    "agwinterm"
-#define AppVersion "0.5.0"
+#define AppVersion "0.6.0"
 #define AppExe     "Agwinterm.Win32.exe"
 #define AppPublisher "Boris Kudriashov"
 
