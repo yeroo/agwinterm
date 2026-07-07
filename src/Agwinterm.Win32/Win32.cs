@@ -242,6 +242,10 @@ internal static class Win32
     public const uint WS_OVERLAPPEDWINDOW = 0x00CF0000, WS_VISIBLE = 0x10000000;
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
     public static readonly IntPtr IDC_ARROW = (IntPtr)32512;
+    public static readonly IntPtr IDC_HAND = (IntPtr)32649;
+    public const uint WM_SETCURSOR = 0x0020;
+
+    [DllImport("user32.dll")] public static extern IntPtr SetCursor(IntPtr hCursor);
     public static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = (IntPtr)(-4);
 
     [DllImport("user32.dll", SetLastError = true)]

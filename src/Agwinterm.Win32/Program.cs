@@ -2021,6 +2021,12 @@ internal partial class Program : ISessionHost, IWindowHost
                 // Committing the MRU walk happens when Ctrl is finally released (any key-up where Ctrl
                 // is no longer held is exactly the Ctrl-up event; a Tab-up with Ctrl still down is ignored).
                 if (_mruWalking && !KeyDown(VK_CONTROL)) { MruCommit(); return IntPtr.Zero; }
+                if (!KeyDown(VK_CONTROL)) ClearLinkHover();   // Ctrl released: drop the link underline/cursor
+                break;
+
+            case WM_SETCURSOR:
+                if (_linkUrl is not null && LoWord(lParam) == HTCLIENT)
+                { SetCursor(LoadCursorW(IntPtr.Zero, IDC_HAND)); return (IntPtr)1; }   // hand over a hovered link
                 break;
 
             case WM_CHAR:
@@ -2095,6 +2101,8 @@ internal partial class Program : ISessionHost, IWindowHost
                     int di = _cover is null ? DividerAtX(mx, my) : -1;
                     if (di >= 0) { _divDragging = true; _divLeft = di; SetCapture(hwnd); return IntPtr.Zero; }
                     if (_cover is null) FocusPaneAtX(mx); // covers capture the whole content region
+                    // Ctrl+click on a hovered link opens it (never starts a selection or reaches the app).
+                    if (KeyDown(VK_CONTROL) && _linkUrl is { } lurl) { OpenLink(lurl); return IntPtr.Zero; }
                     bool shiftDn = KeyDown(VK_SHIFT);
                     var em0 = _session?.Emulator;
                     if (em0 is not null && em0.MouseReporting && !shiftDn) { SendMousePx(0, lParam, true); SetCapture(hwnd); return IntPtr.Zero; }
@@ -2188,6 +2196,11 @@ internal partial class Program : ISessionHost, IWindowHost
                         TrackMouseEvent(ref tme); _mouseTracking = true;
                     }
                     if (!_divDragging && !_sbPress && !_selecting) UpdateChromeHover(LoWord(lParam), HiWord(lParam));
+                    if (!_divDragging && !_sbPress && !_selecting)
+                    {
+                        if (KeyDown(VK_CONTROL)) UpdateLinkHover(LoWord(lParam), HiWord(lParam));   // Ctrl+hover: link detection
+                        else ClearLinkHover();
+                    }
                     if (_divDragging && ((long)wParam & MK_LBUTTON) != 0) { DragDivider(LoWord(lParam)); return IntPtr.Zero; }
                     if (_sbPress && ((long)wParam & MK_LBUTTON) != 0)
                     {
@@ -2630,6 +2643,67 @@ internal partial class Program : ISessionHost, IWindowHost
             ? $"\x1b[<{btn};{col + 1};{row + 1}{(press ? 'M' : 'm')}"
             : "\x1b[M" + (char)(32 + (press ? btn : 3)) + (char)(33 + col) + (char)(33 + row);
         _session?.Write(Encoding.UTF8.GetBytes(seq));
+    }
+
+    // ---- Clickable links: Ctrl+hover underlines a URL (hand cursor); Ctrl+click opens it ----
+
+    private static readonly System.Text.RegularExpressions.Regex LinkRx = new(
+        @"https?://[^\s""'<>\[\]{}|\\^`]+", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private string? _linkUrl;      // hovered link (null = none); drawn underlined in RenderTerminal
+    private Pane? _linkPane;
+    private int _linkLine, _linkC0, _linkC1;   // absolute line + column span
+
+    /// <summary>Trailing punctuation is almost never part of a URL pasted into terminal output.</summary>
+    private static string TrimLink(string s)
+    {
+        while (s.Length > 0 && s[^1] is '.' or ',' or ';' or ':' or '!' or '?' or ')' or '\'' or '"') s = s[..^1];
+        return s;
+    }
+
+    /// <summary>Refresh the Ctrl+hover link state for the mouse point; true when over a link.</summary>
+    private bool UpdateLinkHover(int mx, int my)
+    {
+        string? url = null; Pane? pane = null; int line = 0, c0 = 0, c1 = 0;
+        if (PaneAt(mx, my) is { } h)
+        {
+            var (ln, col) = CellAtPx(h.pane, h.ox, h.oy, h.cw, h.ch, mx, my);
+            var em = h.pane.S.Emulator;
+            var sb = new StringBuilder();
+            lock (h.pane.S.SyncRoot)
+            {
+                int cols = em.Screen.Cols, rows = em.Screen.Rows, hist = em.HistoryCount;
+                for (int c = 0; c < cols; c++)   // string index == screen column (wide-char spacers -> ' ')
+                {
+                    Cell cell = CellAbs(em, hist, rows, cols, ln, c);
+                    sb.Append(cell.Width == 0 || cell.Rune == '\0' ? ' ' : cell.Rune);
+                }
+            }
+            string row = sb.ToString();
+            foreach (System.Text.RegularExpressions.Match m in LinkRx.Matches(row))
+            {
+                int end = m.Index + TrimLink(m.Value).Length;
+                if (col >= m.Index && col < end)
+                { url = row[m.Index..end]; pane = h.pane; line = ln; c0 = m.Index; c1 = end - 1; break; }
+            }
+        }
+        if (url != _linkUrl || !ReferenceEquals(pane, _linkPane) || line != _linkLine || c0 != _linkC0)
+        { _linkUrl = url; _linkPane = pane; _linkLine = line; _linkC0 = c0; _linkC1 = c1; RequestRedraw(); }
+        return _linkUrl is not null;
+    }
+
+    private void ClearLinkHover()
+    {
+        if (_linkUrl is null) return;
+        _linkUrl = null; _linkPane = null; RequestRedraw();
+    }
+
+    /// <summary>Validated open: absolute http/https only, handed to the shell.</summary>
+    private void OpenLink(string url)
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme is "http" or "https")
+            ShellExecuteW(IntPtr.Zero, "open", url, null, null, SW_SHOW);
+        else ShowToast("blocked non-http(s) link");
     }
 
     // ---- Text selection + clipboard ----
@@ -3458,6 +3532,13 @@ internal partial class Program : ISessionHost, IWindowHost
                                                        : new Color4(150 / 255f, 110 / 255f, 25 / 255f, 1f);
                         rt.FillRectangle(new Rect(ox + from * cw, y, (to - from + 1) * cw, ch), brush);
                     }
+                }
+                if (_linkUrl is not null && selPane is not null && ReferenceEquals(selPane, _linkPane) && abs == _linkLine)
+                {   // Ctrl+hovered link: accent underline under its column span
+                    brush.Color = ChromeAccent;
+                    float uy = y + ch - 1.5f;
+                    rt.DrawLine(new System.Numerics.Vector2(ox + _linkC0 * cw, uy),
+                                new System.Numerics.Vector2(ox + (_linkC1 + 1) * cw, uy), brush, 1.4f);
                 }
                 c = 0;
                 while (c < cols)  // Pass 2: coalesced same-colour text runs
