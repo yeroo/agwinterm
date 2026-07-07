@@ -4005,6 +4005,7 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         _ctxItem = item;
         _palAnchor = (cx, cy);
+        if (_palette == PaletteKind.Context) ClosePalette();   // right-click while open: reopen at the new row/point
         TogglePalette(PaletteKind.Context);
     }
 
@@ -4540,7 +4541,10 @@ internal partial class Program : ISessionHost, IWindowHost
         const int maxRows = 12;
         float pw = MathF.Min(_palette == PaletteKind.Context ? 340f : 560f, cw - 80f);
         float px = (cw - pw) / 2f;
-        int shown = Math.Min(_palItems.Count, maxRows);
+        // Cap the row count so the panel always fits inside the window (the list scrolls with the
+        // selection when there are more items than fit).
+        int fitRows = Math.Max(1, (int)((ch - TitleBarH - 16f - queryH - 8f) / rowH));
+        int shown = Math.Min(_palItems.Count, Math.Min(maxRows, fitRows));
         float ph = queryH + Math.Max(1, shown) * rowH + 8f;
         float py = MathF.Max(TitleBarH + 16f, ch * 0.14f);
         if (_palette == PaletteKind.Context && _palAnchor is { } an)   // context menu: at the click point, clamped on-window
@@ -4548,6 +4552,7 @@ internal partial class Program : ISessionHost, IWindowHost
             px = Math.Clamp(an.x, 8f, MathF.Max(8f, cw - pw - 8f));
             py = Math.Clamp(an.y, TitleBarH + 8f, MathF.Max(TitleBarH + 8f, ch - ph - 8f));
         }
+        else py = MathF.Min(py, MathF.Max(TitleBarH + 8f, ch - ph - 8f));   // short window: pull the centered panel up
         _palPanel = new Rect(px, py, pw, ph);
 
         brush.Color = PalBg;
@@ -4568,7 +4573,7 @@ internal partial class Program : ISessionHost, IWindowHost
         brush.Color = ChromeBorder;
         rt.DrawLine(new System.Numerics.Vector2(px + 8f, py + queryH), new System.Numerics.Vector2(px + pw - 8f, py + queryH), brush, 1f);
 
-        int start = _palSel >= maxRows ? _palSel - maxRows + 1 : 0;
+        int start = _palSel >= shown ? _palSel - shown + 1 : 0;
         for (int i = 0; i < shown; i++)
         {
             int idx = start + i;
@@ -4580,8 +4585,9 @@ internal partial class Program : ISessionHost, IWindowHost
             if (it.Dot is AgentStatus ds) { brush.Color = StatusDot(ds); rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(px + 16f, ry + rowH / 2f), 4.5f, 4.5f), brush); tx = px + 30f; }
             bool hasSub = it.Secondary.Length > 0;
             brush.Color = it.Run is null ? ChromeDim : (idx == _palSel ? SbActiveText : ChromeText);
-            rt.DrawText(it.Label, _uiFont, new Rect(tx, ry + (hasSub ? 3f : 0f), pw - (tx - px) - 80f, hasSub ? 20f : rowH), brush);
-            if (hasSub) { brush.Color = ChromeDim; rt.DrawText(it.Secondary, _uiSmall, new Rect(tx, ry + 20f, pw - (tx - px) - 20f, 16f), brush); }
+            float lw = pw - (tx - px) - (it.Hint.Length > 0 ? 80f : 20f);
+            rt.DrawText(it.Label, _uiFont, new Rect(tx, ry + (hasSub ? 3f : 0f), lw, hasSub ? 20f : rowH), brush, DrawTextOptions.Clip);
+            if (hasSub) { brush.Color = ChromeDim; rt.DrawText(it.Secondary, _uiSmall, new Rect(tx, ry + 20f, pw - (tx - px) - 20f, 16f), brush, DrawTextOptions.Clip); }
             if (it.Hint.Length > 0) { brush.Color = ChromeDim; float hw = MeasureText(it.Hint, _uiSmall); rt.DrawText(it.Hint, _uiSmall, new Rect(px + pw - 16f - hw, ry + (rowH - 16f) / 2f, hw + 2f, 16f), brush); }
             _palRows.Add((ry, ry + rowH, idx));
         }
