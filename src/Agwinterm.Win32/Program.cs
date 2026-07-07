@@ -6047,7 +6047,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
         "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "window-opacity", "sidebar-tint", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "word-delimiters", "desktop-notifications", "shell-integration",
-        "restore-commands", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
+        "restore-commands", "restore-buffer", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "notification-badges",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
     };
@@ -6093,6 +6093,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "desktop-notifications" => _config.DesktopNotifications ? "true" : "false",
         "shell-integration" => _config.ShellIntegration ? "true" : "false",
         "restore-commands" => _config.RestoreCommands ? "true" : "false",
+        "restore-buffer" => _config.RestoreBuffer ? "true" : "false",
         "blocked-sound" => _config.BlockedSound,
         "omp-theme" => _config.OmpTheme,
         "omp-integration" => _config.OmpIntegration ? "true" : "false",
@@ -6257,7 +6258,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
     // ---- Persistence: workspace/session tree + selection + sidebar state ----
 
-    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; }
+    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public List<string>? Buffer { get; set; } }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
     private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; } public string? Profile { get; set; } public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
         // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
@@ -6496,7 +6497,10 @@ internal partial class Program : ISessionHost, IWindowHost
                         string live = PrettyCwd(SafeCwd(p));                       // OSC 7 cwd if the shell reports it
                         string cwd = live.Length > 0 ? live : (p.StartCwd ?? ""); // else the launch dir
                         string cmd = (p.S.ChildProcessId is int pid && cmdByPid.TryGetValue(pid, out var c)) ? c : "";
-                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd });
+                        List<string>? buf = null;
+                        if (_config.RestoreBuffer)
+                            try { lock (p.S.SyncRoot) buf = p.S.Emulator.DumpBuffer().TakeLast(500).ToList(); } catch { }  // cap the saved lines
+                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, Buffer = buf });
                     }
                     wss.Sessions.Add(ss);
                 }
@@ -6627,6 +6631,16 @@ internal partial class Program : ISessionHost, IWindowHost
                             ses.Panes[i].Ratio = pl[i].Ratio > 0 ? pl[i].Ratio : 1f;
                         ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
                     }
+                    // Buffer-content restore: seed each pane's scrollback (dimmed) above the fresh shell.
+                    if (_config.RestoreBuffer)
+                        lock (_workspaces)
+                            for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
+                                if (pl[i].Buffer is { Count: > 0 } b)
+                                {
+                                    var seed = new List<string>(b) { "──── restored ────" };
+                                    var pane = ses.Panes[i];
+                                    lock (pane.S.SyncRoot) pane.S.Emulator.SeedScrollback(seed);
+                                }
                     ses.Flagged = s.Flagged;
                     ses.CustomName = string.IsNullOrWhiteSpace(s.CustomName) ? null : s.CustomName;
                     if (!string.IsNullOrEmpty(s.BgFile)) // restore the watermark if its copied file still exists

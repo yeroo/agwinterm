@@ -32,6 +32,10 @@ public sealed class TerminalConfig
     /// Off by default; honors restore-denylist.conf. Best-effort (Windows foreground-command capture).</summary>
     public bool RestoreCommands { get; set; } = false;
 
+    /// <summary>Persist each pane's scrollback text and re-display it (dimmed) above the fresh shell on
+    /// relaunch. WT's buffer-content restore. Off by default.</summary>
+    public bool RestoreBuffer { get; set; } = false;
+
     /// <summary>Paste the clipboard on a right-click in the terminal (when the app isn't grabbing the mouse).</summary>
     public bool RightClickPaste { get; set; } = true;
 
@@ -162,6 +166,9 @@ public sealed class TerminalConfig
         # opt-in restore-on-restart). Off by default. Edit restore-denylist.conf to exclude commands.
         restore-commands = false
 
+        # Restore each pane's scrollback text (dimmed) above the fresh shell on relaunch.
+        restore-buffer = false
+
         # Dim non-active panes in a split (0 = off, 100 = fully dark).
         inactive-pane-dim = 35
 
@@ -242,6 +249,7 @@ public sealed class TerminalConfig
                 case "theme": if (val.Length > 0) cfg.Theme = val; break;
                 case "shell-integration": cfg.ShellIntegration = ParseBool(val, cfg.ShellIntegration); break;
                 case "restore-commands": cfg.RestoreCommands = ParseBool(val, cfg.RestoreCommands); break;
+                case "restore-buffer": cfg.RestoreBuffer = ParseBool(val, cfg.RestoreBuffer); break;
                 case "right-click-paste": cfg.RightClickPaste = ParseBool(val, cfg.RightClickPaste); break;
                 case "copy-on-select": cfg.CopyOnSelect = ParseBool(val, cfg.CopyOnSelect); break;
                 case "word-delimiters": cfg.WordDelimiters = val; break;
