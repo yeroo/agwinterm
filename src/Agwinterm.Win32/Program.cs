@@ -3007,7 +3007,12 @@ internal partial class Program : ISessionHost, IWindowHost
         lock (p.S.SyncRoot)
         {
             int cols = em.Screen.Cols, rows = em.Screen.Rows, hist = em.HistoryCount;
-            bool Word(int c) { int ch = CellAbs(em, hist, rows, cols, line, c).Rune; return ch != ' ' && ch != '\0'; }
+            string delims = _config.WordDelimiters;
+            bool Word(int c)
+            {
+                int ch = CellAbs(em, hist, rows, cols, line, c).Rune;
+                return ch != ' ' && ch != '\0' && (delims.Length == 0 || ch > 0xFFFF || delims.IndexOf((char)ch) < 0);
+            }
             if (col < 0 || col >= cols || !Word(col)) return;
             int a = col, b = col;
             while (a > 0 && Word(a - 1)) a--;
@@ -5897,7 +5902,7 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
         "scrollback-lines", "inactive-pane-dim", "window-opacity", "sidebar-tint", "scroll-speed",
-        "new-session-dir", "right-click-paste", "copy-on-select", "desktop-notifications", "shell-integration",
+        "new-session-dir", "right-click-paste", "copy-on-select", "word-delimiters", "desktop-notifications", "shell-integration",
         "restore-commands", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "notification-badges",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
@@ -5938,6 +5943,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "new-session-dir" => _config.NewSessionDir,
         "right-click-paste" => _config.RightClickPaste ? "true" : "false",
         "copy-on-select" => _config.CopyOnSelect ? "true" : "false",
+        "word-delimiters" => _config.WordDelimiters,
         "desktop-notifications" => _config.DesktopNotifications ? "true" : "false",
         "shell-integration" => _config.ShellIntegration ? "true" : "false",
         "restore-commands" => _config.RestoreCommands ? "true" : "false",
