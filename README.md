@@ -59,6 +59,9 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
 Grab the latest **`agwinterm-setup-<version>.exe`** from the
 [**Releases**](https://github.com/yeroo/agwinterm/releases) page and run it.
 
+Prefer no installer? Each release also ships **`agwinterm-portable-<version>-win-x64.exe`** — a
+single self-contained exe, run it from anywhere (settings still live under `%LOCALAPPDATA%\agwinterm`).
+
 - **Per-user, no admin required**, and **self-contained** — no .NET runtime needed on the target.
 - It's currently **unsigned**, so SmartScreen will warn on first run → *More info → Run anyway*.
 - The installer is deliberately minimal (copies files + shortcuts). The integrations

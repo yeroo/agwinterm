@@ -30,4 +30,11 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+  <!-- Also embed the same themes in the assembly so the single-file portable exe works with no
+       on-disk themes\ dir (disk copies still win by name when present). -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\themes\*.conf">
+      <LogicalName>theme:%(Filename)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
 </Project>

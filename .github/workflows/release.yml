@@ -28,9 +28,15 @@ jobs:
         shell: pwsh
         run: ./installer/build.ps1
 
+      - name: Build portable exe
+        shell: pwsh
+        run: ./installer/build-portable.ps1
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: installer/Output/agwinterm-setup-*.exe
+          files: |
+            installer/Output/agwinterm-setup-*.exe
+            installer/Output/agwinterm-portable-*.exe
           generate_release_notes: true
           fail_on_unmatched_files: true

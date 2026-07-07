@@ -437,6 +437,9 @@ internal static class Win32
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr ShellExecuteW(IntPtr hwnd, string? op, string file, string? args, string? dir, int show);
 
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint ExtractIconExW(string lpszFile, int nIconIndex, out IntPtr phiconLarge, out IntPtr phiconSmall, uint nIcons);
+
     [StructLayout(LayoutKind.Sequential)] public struct INITCOMMONCONTROLSEX { public int dwSize; public int dwICC; }
     [DllImport("comctl32.dll")] public static extern bool InitCommonControlsEx(ref INITCOMMONCONTROLSEX icc);
     public const int ICC_TAB_CLASSES = 0x8, ICC_BAR_CLASSES = 0x4, ICC_STANDARD_CLASSES = 0x4000;

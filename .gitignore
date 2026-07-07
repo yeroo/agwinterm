@@ -4,4 +4,5 @@ obj/
 .vs/
 artifacts/
 installer/stage/
+installer/stage-portable/
 installer/Output/
