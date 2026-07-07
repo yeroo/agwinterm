@@ -2356,6 +2356,7 @@ internal partial class Program : ISessionHost, IWindowHost
             case "toggle_flagged_view": ToggleFlaggedView(); break;
             case "focus_workspace": WorkspaceFocusOp("toggle"); break;
             case "close_cover": CloseCover(); break;
+            case "toggle_fullscreen": ToggleFullscreen(); break;
             case "select_all": if (ActiveSurface() is { } sa) SelectAll(sa); break;
             case "copy_selection": if (ActiveSurface() is { } sc && sc.HasSel) CopySelection(sc); break;
             case "paste": if (ActiveSurface() is { } sp2) PasteInto(sp2); break;
@@ -4355,6 +4356,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 A("New Session…", "", () => TogglePalette(PaletteKind.NewSession));   // pick a shell profile
                 A("New Workspace", "Ctrl+Shift+N", () => CreateWorkspace(Guid.NewGuid().ToString(), null));
                 A("New Window", "Ctrl+Alt+N", () => WindowNew(null));
+                A("Toggle Fullscreen", "F11", ToggleFullscreen);
                 A("Close Window", "", () => DestroyWindow(_hwnd));
                 A("Switch Window…", "", () => TogglePalette(PaletteKind.Windows));
                 A("Rename Active Session", "F2", () => { if (_active is not null) StartRename(_active); });
@@ -5472,6 +5474,8 @@ internal partial class Program : ISessionHost, IWindowHost
         // Wave D1: sidebar view mode ("tree"|"flagged") + focused workspace id (null = show all).
         public string SidebarMode { get; set; } = "tree";
         public string? FocusedWorkspaceId { get; set; }
+        // Ctrl+Tab MRU session order (most recent first); restored on relaunch.
+        public List<string> Mru { get; set; } = new();
     }
 
     private static readonly JsonSerializerOptions _stateJson = new() { WriteIndented = true };
@@ -5671,6 +5675,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 SidebarVisible = _sidebarW > 0,
                 SidebarMode = _sidebarMode == SidebarMode.Flagged ? "flagged" : "tree",
                 FocusedWorkspaceId = _focusedWorkspaceId,
+                Mru = _mru.ToList(),   // Ctrl+Tab recency order survives relaunch
             };
             CaptureGeometry(st);
             foreach (var (id, name, expanded, sessions) in rows)
@@ -5721,6 +5726,35 @@ internal partial class Program : ISessionHost, IWindowHost
     private int _geoX, _geoY, _geoW, _geoH;
     private bool _geoMax;
     private bool _wasMaximized;
+
+    // ---- Fullscreen (F11 / toggle_fullscreen): borderless over the whole monitor ----
+    private bool _fullscreen;
+    private WINDOWPLACEMENT _fsPrev;
+
+    private void ToggleFullscreen()
+    {
+        long style = (long)GetWindowLongPtrW(_hwnd, GWL_STYLE);
+        if (!_fullscreen)
+        {
+            _fsPrev = new WINDOWPLACEMENT { length = System.Runtime.InteropServices.Marshal.SizeOf<WINDOWPLACEMENT>() };
+            GetWindowPlacement(_hwnd, ref _fsPrev);
+            var mi = new MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+            GetMonitorInfoW(MonitorFromWindow(_hwnd, MONITOR_DEFAULTTONEAREST), ref mi);
+            SetWindowLongPtrW(_hwnd, GWL_STYLE, (IntPtr)((style & ~(long)WS_OVERLAPPEDWINDOW) | WS_POPUP));
+            SetWindowPos(_hwnd, IntPtr.Zero, mi.rcMonitor.left, mi.rcMonitor.top,
+                mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+                SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOZORDER);
+            _fullscreen = true;
+        }
+        else
+        {
+            SetWindowLongPtrW(_hwnd, GWL_STYLE, (IntPtr)((style & ~(long)WS_POPUP) | WS_OVERLAPPEDWINDOW));
+            SetWindowPlacement(_hwnd, ref _fsPrev);
+            SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            _fullscreen = false;
+        }
+        RequestRedraw();
+    }
 
     /// <summary>Fill AppState with the window's restore rect + maximized flag (GetWindowPlacement).</summary>
     private void CaptureGeometry(AppState st)
@@ -5828,6 +5862,7 @@ internal partial class Program : ISessionHost, IWindowHost
         // Restore sidebar mode + workspace focus (Wave D1). Focus that no longer resolves is dropped.
         _sidebarMode = string.Equals(st.SidebarMode, "flagged", StringComparison.OrdinalIgnoreCase) ? SidebarMode.Flagged : SidebarMode.Tree;
         _focusedWorkspaceId = st.FocusedWorkspaceId;
+        if (st.Mru is { Count: > 0 }) { _mru.Clear(); _mru.AddRange(st.Mru); } // EnsureMru prunes dead ids on first walk
         if (_focusedWorkspaceId is not null)
             lock (_workspaces) if (!_workspaces.Any(w => w.Id == _focusedWorkspaceId)) _focusedWorkspaceId = null;
 
