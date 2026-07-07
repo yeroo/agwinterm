@@ -105,3 +105,7 @@ buffer-content restore (M)
 
 **Rejected**: search regex/case toggle, global summon hotkey, hidden profiles,
 one-keystroke duplicate session.
+
+### Tier 3 triage (2026-07-07)
+
+Reviewed and **confirmed as-is**: none of the by-design skips move to the backlog.
