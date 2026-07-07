@@ -69,4 +69,49 @@ public class OscTests
         Assert.Equal("", t.Title);
         Assert.Equal("", t.Cwd);
     }
+
+    // Control characters embedded in OSC payloads are an injection vector (the title is re-shown
+    // in the title bar; the cwd is expanded into custom-command text). They must be stripped.
+
+    [Fact]
+    public void OscTitle_StripsControlCharacters()
+    {
+        var t = Feed("\x1b]2;bad\r\ntitle\twith\u0008controls\x07");
+        Assert.Equal("badtitlewithcontrols", t.Title);
+    }
+
+    [Fact]
+    public void OscCwd_StripsControlCharacters()
+    {
+        var t = Feed("\x1b]7;file:///c:/work\n/repo\x1b\\");
+        Assert.Equal("file:///c:/work/repo", t.Cwd);
+    }
+
+    [Fact]
+    public void OscTitle_StripsDelAndC1Controls()
+    {
+        var t = new TerminalEmulator(40, 3);
+        t.OscDispatch(2, "a\u007Fb\u009Cc");   // DEL + C1 (ST)
+        Assert.Equal("abc", t.Title);
+    }
+
+    [Fact]
+    public void OscNotification_StripsControlCharacters()
+    {
+        var t = new TerminalEmulator(40, 3);
+        string? gotBody = null;
+        t.Notified += (_, body) => gotBody = body;
+        t.OscDispatch(9, "line1\r\nline2");
+        Assert.Equal("line1line2", gotBody);
+    }
+
+    // Regression: the parser must UTF-8-decode OSC payloads (byte-as-char accumulation
+    // mojibakes multibyte text and lets the C1 stripper eat continuation bytes).
+
+    [Fact]
+    public void OscTitle_Utf8DecodesMultibyteText()
+    {
+        var t = Feed("\x1b]2;normal title \u2014 \u00FCn\u00EFcode ok\x07");
+        Assert.Equal("normal title \u2014 \u00FCn\u00EFcode ok", t.Title);
+    }
 }

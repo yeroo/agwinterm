@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Agwinterm.Core;
 
 public sealed class TerminalEmulator : IParserPerformer
@@ -361,8 +363,25 @@ public sealed class TerminalEmulator : IParserPerformer
     /// (title, body). Fires on the feed/pump thread — consumers must marshal to their UI thread.</summary>
     public event Action<string, string>? Notified;
 
+    /// <summary>Strip C0/C1 control characters (and DEL) from an OSC payload. OSC strings feed the
+    /// window title, the tracked cwd (later expanded into custom-command text), and notification
+    /// toasts — embedded control bytes there are a terminal/shell-injection vector, so they are
+    /// dropped at the dispatch boundary (the parser only terminates on BEL/ST; other C0s pass).</summary>
+    private static string StripControls(string s)
+    {
+        bool clean = true;
+        foreach (char c in s)
+            if (c < '\x20' || c == '\x7f' || (c >= '\x80' && c <= '\x9f')) { clean = false; break; }
+        if (clean) return s;
+        var sb = new StringBuilder(s.Length);
+        foreach (char c in s)
+            if (c >= '\x20' && c != '\x7f' && (c < '\x80' || c > '\x9f')) sb.Append(c);
+        return sb.ToString();
+    }
+
     public void OscDispatch(int command, string text)
     {
+        text = StripControls(text);
         switch (command)
         {
             case 0:
