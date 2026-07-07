@@ -56,6 +56,12 @@ public interface ISessionHost
     /// <summary>Rename a session: sets its custom name (shown in the sidebar and title bar).</summary>
     bool SessionRename(string? target, string name);
 
+    /// <summary>Clear a session's unseen-notification badge without visiting it (headless "seen").</summary>
+    bool SessionSeen(string? target);
+
+    /// <summary>Sidebar state read-back: "visible tree" | "hidden flagged" | ….</summary>
+    string SidebarState();
+
     bool WorkspaceRename(string? target, string name);
     bool WorkspaceDelete(string? target);
     bool WorkspaceSelect(string? target);
@@ -180,6 +186,8 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionReorder(string? target, string dir) => false;
     public bool SessionToWorkspace(string? target, string workspace) => false;
     public bool SessionRename(string? target, string name) => false;
+    public bool SessionSeen(string? target) => false;
+    public string SidebarState() => "visible tree";
     public bool WorkspaceRename(string? target, string name) => false;
     public bool WorkspaceDelete(string? target) => false;
     public bool WorkspaceSelect(string? target) => false;

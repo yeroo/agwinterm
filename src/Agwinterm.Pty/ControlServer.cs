@@ -101,7 +101,7 @@ public sealed class ControlServer : IDisposable
             // App-level, window-agnostic verbs first.
             switch (cmd)
             {
-                case "ping": return Ok("agwinterm");
+                case "ping": return Ok("agwinterm " + AppVersion());
                 case "install.hooks": return Ok(AgentHooks.Install());
                 case "install.skill": return Ok(AgentSkill.Install());
                 case "install.shell": return Ok(ShellIntegrationInstaller.Install());
@@ -144,6 +144,7 @@ public sealed class ControlServer : IDisposable
                         : host.SessionReorder(target, GetString(args, "dir") ?? "down"))
                         ? Ok("moved") : Err("not found");
                 case "session.rename": return host.SessionRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("session not found / blank name");
+                case "session.seen": return host.SessionSeen(target) ? Ok("seen") : Err("session not found");
                 case "workspace.rename": return host.WorkspaceRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("workspace not found");
                 case "workspace.delete": return host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found");
                 case "workspace.select": return host.WorkspaceSelect(target) ? Ok("selected") : Err("workspace not found");
@@ -165,7 +166,12 @@ public sealed class ControlServer : IDisposable
                 case "config.get": return Ok(host.ConfigGet(GetString(args, "key") ?? ""));
                 case "config.list": return Ok(host.ConfigList());
                 case "settings.open": return Ok(host.SettingsOpen());
-                case "sidebar": host.SidebarOp(GetString(args, "op") ?? "toggle"); return Ok("sidebar");
+                case "sidebar":
+                {
+                    string op = GetString(args, "op") ?? "toggle";
+                    if (op is "state" or "get") return Ok(host.SidebarState());   // read-back, no mutation
+                    host.SidebarOp(op); return Ok("sidebar");
+                }
                 case "session.copy": return Ok(host.SessionCopy(target)); // selection text (host-side), "" if none
                 case "selection.all": return Ok(host.SelectionAll(target));
                 case "selection.copy": return Ok(host.SelectionCopy(target));      // -> Windows clipboard
@@ -424,6 +430,18 @@ public sealed class ControlServer : IDisposable
     private static bool GetBool(JsonElement args, string key)
         => args.ValueKind == JsonValueKind.Object && args.TryGetProperty(key, out var v)
            && (v.ValueKind == JsonValueKind.True || (v.ValueKind == JsonValueKind.String && v.GetString() is "true" or "1"));
+
+    /// <summary>App version for `ping` — the entry assembly's informational version (stamped by the
+    /// release build scripts via -p:Version; "1.0.0" in unstamped dev builds), without metadata.</summary>
+    private static string AppVersion()
+    {
+        string v = System.Reflection.Assembly.GetEntryAssembly()?
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion ?? "dev";
+        int plus = v.IndexOf('+');
+        return plus > 0 ? v[..plus] : v;
+    }
 
     private static string Ok(string result) => $"{{\"ok\":true,\"result\":{JsonSerializer.Serialize(result)}}}";
     private static string OkRaw(string rawResult) => $"{{\"ok\":true,\"result\":{rawResult}}}";

@@ -19,9 +19,14 @@ Write-Host "== clean stage ==" -ForegroundColor Cyan
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage | Out-Null
 
+# version = the installer's AppVersion define (stamped into the assemblies so `ping` reports it)
+$issText = Get-Content (Join-Path $here "agwinterm.iss") -Raw
+if ($issText -notmatch '#define\s+AppVersion\s+"([^"]+)"') { throw "AppVersion not found in agwinterm.iss" }
+$ver = $Matches[1]
+
 # Self-contained, NON-single-file (a folder): most robust for Vortice native libs + the on-disk
 # themes\ / assets\ the app reads relative to the exe. The installer bundles the whole folder.
-$common = @("-c","Release","-r","win-x64","--self-contained","true","-p:PublishSingleFile=false","-o",$stage)
+$common = @("-c","Release","-r","win-x64","--self-contained","true","-p:PublishSingleFile=false","-p:Version=$ver","-o",$stage)
 
 Write-Host "== publish Agwinterm.Win32 (app) ==" -ForegroundColor Cyan
 & $dotnet publish (Join-Path $root "src\Agwinterm.Win32\Agwinterm.Win32.csproj") @common
