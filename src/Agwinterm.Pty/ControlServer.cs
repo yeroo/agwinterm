@@ -146,6 +146,7 @@ public sealed class ControlServer : IDisposable
                 case "session.rename": return host.SessionRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("session not found / blank name");
                 case "session.seen": return host.SessionSeen(target) ? Ok("seen") : Err("session not found");
                 case "broadcast": return Ok(host.BroadcastOp(GetString(args, "op") ?? "toggle"));
+                case "session.readonly": return Ok(host.ReadOnlyOp(target, GetString(args, "op") ?? "toggle"));
                 case "session.output": return Ok(host.SessionOutput(target)); // last completed command's output (FTCS)
                 case "workspace.rename": return host.WorkspaceRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("workspace not found");
                 case "workspace.delete": return host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found");
