@@ -240,6 +240,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
         public int Unread;         // unread desktop-notification count (OSC 9/777 / notify) since last visit
+        public bool ReadOnly;      // block keyboard input to this pane (protect a running agent from stray keys)
         // Text selection (absolute line index: [0..HistoryCount) history, then the live grid rows).
         public bool HasSel;
         public int SelAncLine, SelAncCol, SelFocLine, SelFocCol;
@@ -1759,6 +1760,14 @@ internal partial class Program : ISessionHost, IWindowHost
             return _broadcast ? "on" : "off";
         });
 
+        public string ReadOnlyOp(string? target, string op) => InvokeOnUi(() =>
+        {
+            var p = PaneForTarget(target); if (p is null) return "no session";
+            bool want = op switch { "on" => true, "off" => false, "state" or "get" => p.ReadOnly, _ => !p.ReadOnly };
+            if (op is not ("state" or "get")) { p.ReadOnly = want; RequestRedraw(); }
+            return p.ReadOnly ? "on" : "off";
+        });
+
         public bool SessionSeen(string? target)
         {
             var ses = FindSesForTarget(target);
@@ -2443,6 +2452,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private void Send(string s)
     {
         var surf = ActiveSurface();
+        if (surf is { ReadOnly: true }) { ShowToast("pane is read-only"); return; }   // block input to a protected pane
         if (surf is not null) { surf.ScrollOffset = 0; surf.ClearSel(); } // typing snaps to bottom, clears selection
         if (_broadcast && _cover is null && _active is not null)
         {
@@ -2560,6 +2570,7 @@ internal partial class Program : ISessionHost, IWindowHost
             case "close_cover": CloseCover(); break;
             case "toggle_fullscreen": ToggleFullscreen(); break;
             case "toggle_broadcast": ToggleBroadcast(); break;
+            case "toggle_read_only": if (ActiveSurface() is { } rp) { rp.ReadOnly = !rp.ReadOnly; ShowToast(rp.ReadOnly ? "pane read-only ON" : "pane read-only off"); RequestRedraw(); } break;
             case "previous_prompt": JumpPrompt(-1); break;
             case "next_prompt": JumpPrompt(1); break;
             case "select_all": if (ActiveSurface() is { } sa) SelectAll(sa); break;
@@ -3076,6 +3087,7 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>Paste literal text into a pane, honoring bracketed-paste mode (shared by Ctrl+V and the API).</summary>
     private void PasteTextInto(Pane pane, string t)
     {
+        if (pane.ReadOnly) { ShowToast("pane is read-only"); return; }
         if (t.Length == 0) return;
         t = t.Replace("\r\n", "\r").Replace("\n", "\r");
         if (pane.S.Emulator.BracketedPaste) t = "\x1b[200~" + t + "\x1b[201~";
@@ -4654,6 +4666,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 A("New Window", "Ctrl+Alt+N", () => WindowNew(null));
                 A("Toggle Fullscreen", "F11", ToggleFullscreen);
                 A("Toggle Broadcast Input", "", ToggleBroadcast);   // typing fans out to the whole workspace
+                A("Toggle Read-Only Pane", "", () => { if (ActiveSurface() is { } rp) { rp.ReadOnly = !rp.ReadOnly; ShowToast(rp.ReadOnly ? "pane read-only ON" : "pane read-only off"); RequestRedraw(); } });
                 A("Close Window", "", () => DestroyWindow(_hwnd));
                 A("Switch Window…", "", () => TogglePalette(PaletteKind.Windows));
                 A("Rename Active Session", "F2", () => { if (_active is not null) StartRename(_active); });
@@ -5417,15 +5430,18 @@ internal partial class Program : ISessionHost, IWindowHost
         float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail));
         brush.Color = ChromeText;
         rt.DrawText(title, _uiTitle, new Rect(titleX, 0f, titleW, TitleBarH), brush);  // one vertically-centered, ellipsized row
-        if (_broadcast)   // persistent danger pill: typing fans out to the whole workspace
+        float pillX = titleX + titleW + 10f;
+        void Pill(string label, Color4 bg)   // small status pill after the title
         {
-            float bx0 = titleX + titleW + 10f;
-            float bw0 = MeasureText("BROADCAST", _uiSmall) + 14f;
-            brush.Color = new Color4(0.85f, 0.25f, 0.25f, 0.95f);
-            rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(bx0, (TitleBarH - 20f) / 2f, bw0, 20f), RadiusX = 5f, RadiusY = 5f }, brush);
+            float w = MeasureText(label, _uiSmall) + 14f;
+            brush.Color = bg;
+            rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(pillX, (TitleBarH - 20f) / 2f, w, 20f), RadiusX = 5f, RadiusY = 5f }, brush);
             brush.Color = new Color4(1f, 1f, 1f, 1f);
-            rt.DrawText("BROADCAST", _uiSmall, new Rect(bx0 + 7f, (TitleBarH - 20f) / 2f + 2f, bw0, 16f), brush);
+            rt.DrawText(label, _uiSmall, new Rect(pillX + 7f, (TitleBarH - 20f) / 2f + 2f, w, 16f), brush);
+            pillX += w + 6f;
         }
+        if (_broadcast) Pill("BROADCAST", new Color4(0.85f, 0.25f, 0.25f, 0.95f));  // typing fans out to the workspace
+        if (ActiveSurface() is { ReadOnly: true }) Pill("READ-ONLY", new Color4(0.45f, 0.45f, 0.5f, 0.95f));
 
         // dim = nothing, plain = active/completed, blocked-color = any blocked (uses the configured status color).
         if (showBell)

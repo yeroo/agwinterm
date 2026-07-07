@@ -157,6 +157,7 @@ switch (area)
                 else if (rest.Count > 0) cargs["query"] = string.Join(' ', rest);
                 break;
             case "split": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break;
+            case "readonly": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|state; block input to the pane
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
             case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay result
                 cargs["action"] = rest.Count > 0 ? rest[0] : "open";
