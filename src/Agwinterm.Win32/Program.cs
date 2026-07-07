@@ -2408,7 +2408,9 @@ internal partial class Program : ISessionHost, IWindowHost
                 }
 
             case WM_ACTIVATE:
-                if (LoWord(wParam) != 0 && _frontmostId != Id) // WA_ACTIVE/WA_CLICKACTIVE -> this window is frontmost
+                _windowActive = LoWord(wParam) != 0;   // WA_ACTIVE/WA_CLICKACTIVE vs WA_INACTIVE (drives unfocused dim)
+                if (_config.UnfocusedDim > 0) RequestRedraw();
+                if (_windowActive && _frontmostId != Id) // this window is frontmost
                 {
                     Frontmost = this; _frontmostId = Id; SaveIndex();
                 }
@@ -3877,6 +3879,12 @@ internal partial class Program : ISessionHost, IWindowHost
                 DrawCoverBadge(rt, brush, fx + fw, fy);
                 if (_coverKind == 3) DrawOverlayFooter(rt, brush);          // overlay-only footer
             }
+        }
+        if (!_windowActive && _config.UnfocusedDim > 0)   // dim the content region when the window isn't focused
+        {
+            var (dx, dy, dw, dh) = ContentArea();
+            brush.Color = new Color4(0f, 0f, 0f, Math.Clamp(_config.UnfocusedDim, 0, 90) / 100f);
+            rt.FillRectangle(new Rect(dx, dy, dw, dh), brush);
         }
         DrawSidebar(rt, brush);
         DrawTitleBar(rt, brush);
@@ -5921,7 +5929,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private static readonly string[] ConfigKeys =
     {
         "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
-        "scrollback-lines", "inactive-pane-dim", "window-opacity", "sidebar-tint", "scroll-speed",
+        "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "window-opacity", "sidebar-tint", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "word-delimiters", "desktop-notifications", "shell-integration",
         "restore-commands", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "notification-badges",
@@ -5957,6 +5965,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "theme" => _config.Theme,
         "scrollback-lines" => _config.Scrollback.ToString(),
         "inactive-pane-dim" => _config.InactivePaneDim.ToString(),
+        "unfocused-dim" => _config.UnfocusedDim.ToString(),
         "window-opacity" => _config.WindowOpacity.ToString(),
         "sidebar-tint" => _config.SidebarTint.ToString(),
         "scroll-speed" => _config.ScrollSpeed.ToString(),
@@ -6404,6 +6413,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private int _geoX, _geoY, _geoW, _geoH;
     private bool _geoMax;
     private bool _wasMaximized;
+    private bool _windowActive = true;   // window focus state (drives unfocused-dim)
 
     // ---- Fullscreen (F11 / toggle_fullscreen): borderless over the whole monitor ----
     private bool _fullscreen;
