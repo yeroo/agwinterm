@@ -26,6 +26,7 @@ Write-Host "== publish single-file portable exe (v$ver) ==" -ForegroundColor Cya
   -p:IncludeNativeLibrariesForSelfExtract=true `
   -p:SatelliteResourceLanguages=en `
   -p:DebugType=none `
+  -p:Version=$ver `
   -o $stage
 if ($LASTEXITCODE -ne 0) { throw "portable publish failed" }
 

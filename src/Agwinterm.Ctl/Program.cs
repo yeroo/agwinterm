@@ -10,6 +10,8 @@ using System.Text.Json;
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]
+//   agwintermctl session seen [--target ID]        (clear the unseen-notification badge)
+//   agwintermctl sidebar state                      (read-back: "visible tree" | "hidden flagged" | ...)
 //   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
 //   agwintermctl session type <text...> [--target ID]
 //   agwintermctl session write <text...> [--target ID]
@@ -135,6 +137,7 @@ switch (area)
                 break;
             case "text": break; // dump the buffer; target only
             case "copy": break;  // return the target's selection text; target only
+            case "seen": break;  // clear the unseen-notification badge; target only
             case "paste": // paste literal text (or the clipboard if none) into the target pane
                 cargs["text"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("text") ?? "");
                 break;

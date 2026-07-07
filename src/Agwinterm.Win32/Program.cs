@@ -1687,6 +1687,17 @@ internal partial class Program : ISessionHost, IWindowHost
 
         public void SidebarOp(string op) => Post(() => SidebarOpInternal(op));
 
+        public string SidebarState() => InvokeOnUi(() =>
+            (_sidebarW > 0 ? "visible" : "hidden") + " " + (_sidebarMode == SidebarMode.Flagged ? "flagged" : "tree"));
+
+        public bool SessionSeen(string? target)
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null) return false;
+            Post(() => { ClearUnread(ses); RequestRedraw(); });
+            return true;
+        }
+
         public string SessionCopy(string? target)
         {
             var s = Resolve(target);
