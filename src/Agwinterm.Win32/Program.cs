@@ -4496,7 +4496,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
                 A("Prompt Engine…", "", () => TogglePalette(PaletteKind.PromptEngine));   // omp | starship | vanilla
                 // Theme picker for the ACTIVE engine only (and only when that engine is installed).
-                if (_config.PromptEngine == "omp" && Agwinterm.Pty.OmpThemes.List().Count > 0)
+                if (_config.PromptEngine == "omp" && OmpAvailable())
                     A("oh-my-posh Theme…", "", () => TogglePalette(PaletteKind.Omp));
                 if (_config.PromptEngine == "starship" && Agwinterm.Pty.StarshipPresets.Available())
                     A("Starship Theme…", "", () => TogglePalette(PaletteKind.Starship));
@@ -4540,8 +4540,10 @@ internal partial class Program : ISessionHost, IWindowHost
                 var themes = Agwinterm.Pty.OmpThemes.List();
                 if (themes.Count == 0)
                 {
-                    _palAll.Add(new PalItem { Label = "No oh-my-posh themes found",
-                        Secondary = "install oh-my-posh or set $env:POSH_THEMES_PATH", Run = null });
+                    // The Store install ships no themes dir — offer the official pack (GitHub release).
+                    _palAll.Add(new PalItem { Label = "Download themes pack…",
+                        Secondary = "no themes on disk — fetch the official oh-my-posh themes from GitHub",
+                        Search = "download themes pack", Run = DownloadOmpThemes });
                     break;
                 }
                 foreach (var (nm, pth) in themes)
@@ -5573,6 +5575,35 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>oh-my-posh present? Theme folders OR the exe itself — the Microsoft Store install
     /// has no POSH_THEMES_PATH/winget themes dir, yet is fully usable (init + font tool).</summary>
     private static bool OmpAvailable() => Agwinterm.Pty.OmpThemes.List().Count > 0 || CommandExists("oh-my-posh");
+
+    /// <summary>Download oh-my-posh's official themes pack (GitHub release asset) into an
+    /// agwinterm-local dir the theme scanner reads — for installs that ship no themes on disk.</summary>
+    private void DownloadOmpThemes()
+    {
+        ShowToast("downloading oh-my-posh themes pack…");
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "omp-themes");
+                Directory.CreateDirectory(dir);
+                using var http = new System.Net.Http.HttpClient();
+                http.DefaultRequestHeaders.UserAgent.ParseAdd("agwinterm");
+                byte[] bytes = await http.GetByteArrayAsync("https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest/download/themes.zip");
+                string zip = Path.Combine(dir, "themes.zip");
+                await File.WriteAllBytesAsync(zip, bytes);
+                System.IO.Compression.ZipFile.ExtractToDirectory(zip, dir, overwriteFiles: true);
+                File.Delete(zip);
+                int n = Directory.GetFiles(dir, "*.omp.json").Length;
+                Post(() => ShowToast($"{n} oh-my-posh themes downloaded — open “oh-my-posh Theme…” again"));
+            }
+            catch (Exception ex)
+            {
+                var msg = ex.Message;
+                Post(() => ShowToast("themes download failed: " + msg));
+            }
+        });
+    }
 
     private static bool CommandExists(string exe)
     {
