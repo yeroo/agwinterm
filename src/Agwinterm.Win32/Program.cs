@@ -635,6 +635,7 @@ internal partial class Program : ISessionHost, IWindowHost
         // An explicit --sound on session.status: play its spec (null => default alert).
         session.SoundRequested += PlayStatusSound;
         session.Emulator.Notified += (title, body) => Post(() => OnNotified(pane, title, body));
+        session.Emulator.Progress += (st, val) => Post(() => OnProgress(st, val));   // OSC 9;4 -> taskbar
         var env = new Dictionary<string, string>
         {
             ["AGWINTERM"] = "1",
@@ -5179,6 +5180,27 @@ internal partial class Program : ISessionHost, IWindowHost
     }
 
     private static void ClearUnread(Ses s) { foreach (var p in s.Panes) p.Unread = 0; if (s.Scratch is not null) s.Scratch.Unread = 0; if (s.Overlay is not null) s.Overlay.Unread = 0; }
+
+    // ---- Taskbar progress (OSC 9;4, ConEmu/Windows Terminal convention) ----
+    // Last-writer-wins across sessions: the most recent report drives the window's taskbar icon.
+    private ITaskbarList3? _taskbar;
+
+    private void OnProgress(int state, int value)
+    {
+        try
+        {
+            if (_taskbar is null)
+            {
+                _taskbar = (ITaskbarList3)new TaskbarListCom();
+                _taskbar.HrInit();
+            }
+            int flags = state switch { 1 => TBPF_NORMAL, 2 => TBPF_ERROR, 3 => TBPF_INDETERMINATE, 4 => TBPF_PAUSED, _ => TBPF_NOPROGRESS };
+            _taskbar.SetProgressState(_hwnd, flags);
+            if (flags is TBPF_NORMAL or TBPF_ERROR or TBPF_PAUSED)
+                _taskbar.SetProgressValue(_hwnd, (ulong)value, 100);
+        }
+        catch { /* taskbar progress is cosmetic */ }
+    }
 
     /// <summary>Show an OS desktop notification via a Shell_NotifyIcon tray balloon (no AUMID/shortcut needed).</summary>
     private void TrayNotify(string title, string body)
