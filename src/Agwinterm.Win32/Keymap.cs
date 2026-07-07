@@ -51,7 +51,7 @@ internal static class Keymap
         "focus_left_pane", "focus_right_pane", "next_session", "previous_session",
         "toggle_sidebar", "rename_session", "delete_workspace", "session_palette", "action_palette",
         "attention_list", "custom_palette", "next_attention", "previous_attention", "reload_keymap",
-        "toggle_search", "toggle_scratch", "quick_terminal", "close_cover", "toggle_fullscreen",
+        "toggle_search", "toggle_scratch", "quick_terminal", "close_cover", "toggle_fullscreen", "toggle_broadcast",
         "toggle_flag", "toggle_flagged_view", "focus_workspace",
         "select_all", "copy_selection", "paste",
         "new_window", "close_window", "switch_window",

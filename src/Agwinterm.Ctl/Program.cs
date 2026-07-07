@@ -243,6 +243,10 @@ switch (area)
         cmd = "quick";
         cargs["op"] = sub.Length > 0 ? sub : "toggle"; // on|off|toggle; the window's throwaway shell
         break;
+    case "broadcast": // agwintermctl broadcast [on|off|toggle|state] — typing fans out to the whole workspace
+        cmd = "broadcast";
+        cargs["op"] = sub.Length > 0 ? sub : "toggle";
+        break;
     case "notify": // agwintermctl notify <body...> [--title T] [--target ID]
         cmd = "notify";
         target = DefaultTarget();

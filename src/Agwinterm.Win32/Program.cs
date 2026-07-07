@@ -1751,6 +1751,13 @@ internal partial class Program : ISessionHost, IWindowHost
         public string SidebarState() => InvokeOnUi(() =>
             (_sidebarW > 0 ? "visible" : "hidden") + " " + (_sidebarMode == SidebarMode.Flagged ? "flagged" : "tree"));
 
+        public string BroadcastOp(string op) => InvokeOnUi(() =>
+        {
+            bool want = op switch { "on" => true, "off" => false, "state" or "get" => _broadcast, _ => !_broadcast };
+            if (op is not ("state" or "get") && want != _broadcast) ToggleBroadcast();
+            return _broadcast ? "on" : "off";
+        });
+
         public bool SessionSeen(string? target)
         {
             var ses = FindSesForTarget(target);
@@ -2401,10 +2408,29 @@ internal partial class Program : ISessionHost, IWindowHost
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 
+    // ---- Broadcast input (WT's toggleBroadcastInput analog): keyboard input mirrors to every
+    // pane of every session in the ACTIVE WORKSPACE. Paste stays targeted (safety). ----
+    private bool _broadcast;
+
+    private void ToggleBroadcast()
+    {
+        _broadcast = !_broadcast;
+        ShowToast(_broadcast ? "broadcast ON — typing goes to ALL sessions in this workspace" : "broadcast off");
+        RequestRedraw();
+    }
+
     private void Send(string s)
     {
         var surf = ActiveSurface();
         if (surf is not null) { surf.ScrollOffset = 0; surf.ClearSel(); } // typing snaps to bottom, clears selection
+        if (_broadcast && _cover is null && _active is not null)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(s);
+            List<Pane> panes;
+            lock (_workspaces) panes = _active.Ws.Sessions.SelectMany(x => x.Panes).ToList();
+            foreach (var p in panes) { p.S.NotifyActivity(); p.S.Write(bytes); }
+            return;
+        }
         _session?.NotifyActivity();
         _session?.Write(Encoding.UTF8.GetBytes(s));
     }
@@ -2467,6 +2493,7 @@ internal partial class Program : ISessionHost, IWindowHost
             case "focus_workspace": WorkspaceFocusOp("toggle"); break;
             case "close_cover": CloseCover(); break;
             case "toggle_fullscreen": ToggleFullscreen(); break;
+            case "toggle_broadcast": ToggleBroadcast(); break;
             case "select_all": if (ActiveSurface() is { } sa) SelectAll(sa); break;
             case "copy_selection": if (ActiveSurface() is { } sc && sc.HasSel) CopySelection(sc); break;
             case "paste": if (ActiveSurface() is { } sp2) PasteInto(sp2); break;
@@ -4546,6 +4573,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 A("New Workspace", "Ctrl+Shift+N", () => CreateWorkspace(Guid.NewGuid().ToString(), null));
                 A("New Window", "Ctrl+Alt+N", () => WindowNew(null));
                 A("Toggle Fullscreen", "F11", ToggleFullscreen);
+                A("Toggle Broadcast Input", "", ToggleBroadcast);   // typing fans out to the whole workspace
                 A("Close Window", "", () => DestroyWindow(_hwnd));
                 A("Switch Window…", "", () => TogglePalette(PaletteKind.Windows));
                 A("Rename Active Session", "F2", () => { if (_active is not null) StartRename(_active); });
@@ -5288,6 +5316,15 @@ internal partial class Program : ISessionHost, IWindowHost
         float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail));
         brush.Color = ChromeText;
         rt.DrawText(title, _uiTitle, new Rect(titleX, 0f, titleW, TitleBarH), brush);  // one vertically-centered, ellipsized row
+        if (_broadcast)   // persistent danger pill: typing fans out to the whole workspace
+        {
+            float bx0 = titleX + titleW + 10f;
+            float bw0 = MeasureText("BROADCAST", _uiSmall) + 14f;
+            brush.Color = new Color4(0.85f, 0.25f, 0.25f, 0.95f);
+            rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(bx0, (TitleBarH - 20f) / 2f, bw0, 20f), RadiusX = 5f, RadiusY = 5f }, brush);
+            brush.Color = new Color4(1f, 1f, 1f, 1f);
+            rt.DrawText("BROADCAST", _uiSmall, new Rect(bx0 + 7f, (TitleBarH - 20f) / 2f + 2f, bw0, 16f), brush);
+        }
 
         // dim = nothing, plain = active/completed, blocked-color = any blocked (uses the configured status color).
         if (showBell)
