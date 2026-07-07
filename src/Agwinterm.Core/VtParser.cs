@@ -15,7 +15,7 @@ public sealed class VtParser(IParserPerformer performer)
     private int _utf8Accum;
 
     // OSC / APC string accumulators.
-    private readonly System.Text.StringBuilder _osc = new();
+    private readonly List<byte> _osc = new();   // raw payload bytes; UTF-8-decoded at dispatch
     private readonly System.Text.StringBuilder _apc = new();
 
     public void Feed(ReadOnlySpan<byte> bytes)
@@ -50,7 +50,7 @@ public sealed class VtParser(IParserPerformer performer)
 
             case ParserState.OscString:
                 if (b == 0x07) { DispatchOsc(); _state = ParserState.Ground; } // BEL terminator
-                else _osc.Append((char)b);
+                else _osc.Add(b);
                 break;
 
             case ParserState.OscEsc:
@@ -121,7 +121,9 @@ public sealed class VtParser(IParserPerformer performer)
 
     private void DispatchOsc()
     {
-        string s = _osc.ToString();
+        // Decode the payload as UTF-8 (titles/cwd/notifications may be non-ASCII); invalid
+        // sequences become U+FFFD. Byte-as-char accumulation would mojibake multibyte text.
+        string s = System.Text.Encoding.UTF8.GetString(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_osc));
         int sep = s.IndexOf(';');
         string head = sep >= 0 ? s[..sep] : s;
         string text = sep >= 0 ? s[(sep + 1)..] : string.Empty;
