@@ -748,6 +748,10 @@ internal partial class Program : ISessionHost, IWindowHost
         string cmd = prof?.Command is { Length: > 0 } c ? c : "powershell.exe";
         string[]? pargs = prof?.Args;
         string? pcwd = string.IsNullOrEmpty(cwd) ? prof?.Cwd : cwd;
+        // Per-profile env vars (WT parity). AGWINTERM_* set by CreatePane win, so profile env can't
+        // clobber our identity vars; a custom-command's $AGW_* extraEnv still overrides last.
+        if (prof?.Env is { Count: > 0 } penv)
+            foreach (var kv in penv) if (!kv.Key.StartsWith("AGWINTERM", StringComparison.OrdinalIgnoreCase)) env[kv.Key] = kv.Value;
         string exe = Path.GetFileName(cmd).ToLowerInvariant();
         bool isPwsh = exe is "powershell.exe" or "pwsh.exe" or "pwsh";
         if (isPwsh && (pargs is null || pargs.Length == 0))
