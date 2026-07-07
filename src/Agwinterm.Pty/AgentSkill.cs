@@ -58,7 +58,7 @@ public static class AgentSkill
           — create a session (prints its id). `--command` runs that program as the session process (argv-style, no shell) instead of the shell.
           `--profile NAME` picks a shell profile (default = Windows PowerShell).
         - `agwintermctl profiles list` — shell profiles (cmd, Windows PowerShell, PowerShell 7, Git Bash, WSL:*, custom); `* ` marks the default.
-          Profiles live in `%LOCALAPPDATA%\agwinterm\profiles.json` (auto-seeded from detected shells; edit to add your own — name/command/args/cwd/icon); `agwintermctl profiles reload` re-reads it.
+          Profiles live in `%LOCALAPPDATA%\agwinterm\profiles.json` (auto-seeded from detected shells; edit to add your own — name/command/args/cwd/icon/env); `agwintermctl profiles reload` re-reads it.
         - `agwintermctl session select <id>` / `session close <id>`
         - `agwintermctl session rename <new-name> [--target ID]` — set a session's custom name (sidebar + title bar)
         - `agwintermctl session seen [--target ID]` — clear a session's unseen-notification badge headlessly
