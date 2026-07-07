@@ -156,7 +156,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private const int SelAutoTimer = 7;   // WM_TIMER id for drag-autoscroll ticks
 
     // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
-    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom, Windows, Omp, NewSession, Context }
+    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom, Windows, Omp, NewSession }
     private sealed class PalItem
     {
         public required string Label;
@@ -1934,7 +1934,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     if (pt.x < (int)_sidebarW && pt.y >= (int)TitleBarH)
                     {
                         var item = RowAt(pt.y);
-                        if (item is not null) ShowContextPalette(item, pt.x, pt.y);
+                        if (item is not null) ShowContextMenuWindow(item, sx, sy);   // screen coords
                         return IntPtr.Zero;
                     }
                     break;
@@ -2932,6 +2932,10 @@ internal partial class Program : ISessionHost, IWindowHost
     private bool OnKeyDown(int vk)
     {
         bool ctrl = KeyDown(VK_CONTROL), shift = KeyDown(VK_SHIFT), alt = KeyDown(VK_MENU);
+
+        // While the popup context menu is up it owns the keyboard (↑↓ Enter Esc; the popup window
+        // never takes focus, so keys arrive here and are forwarded).
+        if (_menuHwnd != IntPtr.Zero) return MenuKeyDown(vk);
 
         // A --wait overlay whose program has exited hangs around; any key dismisses it.
         if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return true; }
@@ -3996,17 +4000,45 @@ internal partial class Program : ISessionHost, IWindowHost
 
     // ---- Context menus ----
 
-    // Sidebar right-click menu: a themed palette anchored at the click point (replaces the native
-    // Win32 popup, which ignores the app theme). _ctxItem is the row (Ses/Workspace) it acts on.
-    private object? _ctxItem;
-    private (float x, float y)? _palAnchor;
+    /// <summary>Sidebar right-click menu at screen point (sx, sy): a themed popup window (Menu.cs)
+    /// that — like a native menu — can extend beyond the main window's bounds.</summary>
+    private void ShowContextMenuWindow(object item, int sx, int sy) => ShowMenuWindow(BuildContextItems(item), sx, sy);
 
-    private void ShowContextPalette(object item, int cx, int cy)
+    /// <summary>The context-menu items for a sidebar row (mirrors agterm's session/workspace menus).</summary>
+    private List<PalItem> BuildContextItems(object item)
     {
-        _ctxItem = item;
-        _palAnchor = (cx, cy);
-        if (_palette == PaletteKind.Context) ClosePalette();   // right-click while open: reopen at the new row/point
-        TogglePalette(PaletteKind.Context);
+        var list = new List<PalItem>();
+        void A(string label, string hint, Action run) => list.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
+        if (item is Ses ses)
+        {
+            if (_profileCfg.Profiles.Count > 1)
+                foreach (var p in _profileCfg.Profiles)
+                { var nm = p.Name; A($"New Session — {nm}", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true, profileName: nm)); }
+            else A("New Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true));
+            A("Open Directory…", "", () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ses.Ws, true); });
+            A("Rename", "F2", () => StartRename(ses));
+            A(ses.Flagged ? "Unflag Session" : "Flag Session", "", () => FlagOp(ses, "toggle"));
+            List<Workspace> targets;
+            lock (_workspaces) targets = _workspaces.Where(w => !ReferenceEquals(w, ses.Ws)).ToList();
+            foreach (var t in targets) A($"Move to — {t.Name}", "", () => MoveSession(ses, t));
+            if (ses.S.Status != AgentStatus.Idle) A("Clear Status", "", () => { ses.S.SetStatus(AgentStatus.Idle); RequestRedraw(); });
+            list.Add(MenuSeparator());
+            A("Close Session", "", () => { if (ConfirmCloseOk()) CloseSessionInternal(ses); });
+        }
+        else if (item is Workspace cws)
+        {
+            bool wsFocused = _focusedWorkspaceId == cws.Id;
+            int wsCount; lock (_workspaces) wsCount = _workspaces.Count;
+            if (_profileCfg.Profiles.Count > 1)
+                foreach (var p in _profileCfg.Profiles)
+                { var nm = p.Name; A($"New Session — {nm}", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, cws, true, profileName: nm)); }
+            else A("New Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, cws, true));
+            A("Open Directory…", "", () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, cws, true); });
+            A("Rename", "", () => StartRename(cws));
+            A(wsFocused ? "Unfocus" : "Focus", "", () => WorkspaceFocusOp(wsFocused ? "off" : "on", cws.Id));
+            if (wsCount > 1) { list.Add(MenuSeparator()); A("Delete Workspace", "", () => DeleteWorkspace(cws)); }
+        }
+        return list;
     }
 
     private void MoveSession(Ses ses, Workspace target)
@@ -4406,39 +4438,6 @@ internal partial class Program : ISessionHost, IWindowHost
                 });
                 break;
             }
-            case PaletteKind.Context:
-            {
-                void A(string label, string hint, Action run) => _palAll.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
-                if (_ctxItem is Ses ses)
-                {
-                    if (_profileCfg.Profiles.Count > 1)
-                        foreach (var p in _profileCfg.Profiles)
-                        { var nm = p.Name; A($"New Session — {nm}", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true, profileName: nm)); }
-                    else A("New Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true));
-                    A("Open Directory…", "", () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ses.Ws, true); });
-                    A("Rename", "F2", () => StartRename(ses));
-                    A(ses.Flagged ? "Unflag Session" : "Flag Session", "", () => FlagOp(ses, "toggle"));
-                    List<Workspace> targets;
-                    lock (_workspaces) targets = _workspaces.Where(w => !ReferenceEquals(w, ses.Ws)).ToList();
-                    foreach (var t in targets) A($"Move to — {t.Name}", "", () => MoveSession(ses, t));
-                    if (ses.S.Status != AgentStatus.Idle) A("Clear Status", "", () => { ses.S.SetStatus(AgentStatus.Idle); RequestRedraw(); });
-                    A("Close Session", "", () => { if (ConfirmCloseOk()) CloseSessionInternal(ses); });
-                }
-                else if (_ctxItem is Workspace cws)
-                {
-                    bool wsFocused = _focusedWorkspaceId == cws.Id;
-                    int wsCount; lock (_workspaces) wsCount = _workspaces.Count;
-                    if (_profileCfg.Profiles.Count > 1)
-                        foreach (var p in _profileCfg.Profiles)
-                        { var nm = p.Name; A($"New Session — {nm}", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, cws, true, profileName: nm)); }
-                    else A("New Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, cws, true));
-                    A("Open Directory…", "", () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, cws, true); });
-                    A("Rename", "", () => StartRename(cws));
-                    A(wsFocused ? "Unfocus" : "Focus", "", () => WorkspaceFocusOp(wsFocused ? "off" : "on", cws.Id));
-                    if (wsCount > 1) A("Delete Workspace", "", () => DeleteWorkspace(cws));
-                }
-                break;
-            }
             case PaletteKind.Attention:
             {
                 var att = AllSessions().Where(s => s.S.Status != AgentStatus.Idle)
@@ -4539,7 +4538,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
         const float queryH = 42f, rowH = 40f;
         const int maxRows = 12;
-        float pw = MathF.Min(_palette == PaletteKind.Context ? 340f : 560f, cw - 80f);
+        float pw = MathF.Min(560f, cw - 80f);
         float px = (cw - pw) / 2f;
         // Cap the row count so the panel always fits inside the window (the list scrolls with the
         // selection when there are more items than fit).
@@ -4547,12 +4546,7 @@ internal partial class Program : ISessionHost, IWindowHost
         int shown = Math.Min(_palItems.Count, Math.Min(maxRows, fitRows));
         float ph = queryH + Math.Max(1, shown) * rowH + 8f;
         float py = MathF.Max(TitleBarH + 16f, ch * 0.14f);
-        if (_palette == PaletteKind.Context && _palAnchor is { } an)   // context menu: at the click point, clamped on-window
-        {
-            px = Math.Clamp(an.x, 8f, MathF.Max(8f, cw - pw - 8f));
-            py = Math.Clamp(an.y, TitleBarH + 8f, MathF.Max(TitleBarH + 8f, ch - ph - 8f));
-        }
-        else py = MathF.Min(py, MathF.Max(TitleBarH + 8f, ch - ph - 8f));   // short window: pull the centered panel up
+        py = MathF.Min(py, MathF.Max(TitleBarH + 8f, ch - ph - 8f));   // short window: pull the panel up
         _palPanel = new Rect(px, py, pw, ph);
 
         brush.Color = PalBg;
@@ -4561,7 +4555,7 @@ internal partial class Program : ISessionHost, IWindowHost
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = _palPanel, RadiusX = 10f, RadiusY = 10f }, brush, 1f);
 
         // Query line (placeholder when empty) + blinking caret.
-        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Omp => "oh-my-posh theme…", PaletteKind.Custom => "Run command…", PaletteKind.Windows => "Switch window…", PaletteKind.NewSession => "New session — pick a shell…", PaletteKind.Context => _ctxItem is Workspace ? "Workspace…" : "Session…", _ => "Attention" };
+        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Omp => "oh-my-posh theme…", PaletteKind.Custom => "Run command…", PaletteKind.Windows => "Switch window…", PaletteKind.NewSession => "New session — pick a shell…", _ => "Attention" };
         brush.Color = _palQuery.Length > 0 ? ChromeText : ChromeDim;
         rt.DrawText(_palQuery.Length > 0 ? _palQuery : placeholder, _uiFont, new Rect(px + 16f, py + 9f, pw - 32f, queryH - 10f), brush);
         if (_cursorOn && _palQuery.Length > 0)
