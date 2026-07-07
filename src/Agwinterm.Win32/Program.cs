@@ -392,16 +392,22 @@ internal partial class Program : ISessionHost, IWindowHost
         try { int pref = DWMWCP_ROUND; DwmSetWindowAttribute(_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int)); } catch { }
 
         // App icon for the window (taskbar + alt-tab); the exe icon comes from <ApplicationIcon>.
+        // Single-file portable exe has no assets\ dir — extract the icon compiled into the exe instead.
         try
         {
+            IntPtr hIconBig = IntPtr.Zero, hIconSm = IntPtr.Zero;
             string icoPath = System.IO.Path.Combine(AppContext.BaseDirectory, "assets", "agwinterm.ico");
             if (System.IO.File.Exists(icoPath))
             {
-                IntPtr hIconBig = LoadImageW(IntPtr.Zero, icoPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
-                IntPtr hIconSm = LoadImageW(IntPtr.Zero, icoPath, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
-                if (hIconBig != IntPtr.Zero) SendMessageW(_hwnd, WM_SETICON, (IntPtr)ICON_BIG, hIconBig);
-                if (hIconSm != IntPtr.Zero) SendMessageW(_hwnd, WM_SETICON, (IntPtr)ICON_SMALL, hIconSm);
+                hIconBig = LoadImageW(IntPtr.Zero, icoPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
+                hIconSm = LoadImageW(IntPtr.Zero, icoPath, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
             }
+            else if (Environment.ProcessPath is { } exe)
+            {
+                ExtractIconExW(exe, 0, out hIconBig, out hIconSm, 1);
+            }
+            if (hIconBig != IntPtr.Zero) SendMessageW(_hwnd, WM_SETICON, (IntPtr)ICON_BIG, hIconBig);
+            if (hIconSm != IntPtr.Zero) SendMessageW(_hwnd, WM_SETICON, (IntPtr)ICON_SMALL, hIconSm);
         }
         catch { /* icon is cosmetic; ignore load failures */ }
 
@@ -5377,6 +5383,24 @@ internal partial class Program : ISessionHost, IWindowHost
             }
             catch { }
         }
+
+        // Single-file portable exe: no themes\ dir on disk — the same curated themes are embedded
+        // in the assembly (disk copies above win the name dedup when both exist).
+        try
+        {
+            var asm = typeof(Program).Assembly;
+            foreach (var res in asm.GetManifestResourceNames())
+            {
+                if (!res.StartsWith("theme:", StringComparison.Ordinal)) continue;
+                using var s = asm.GetManifestResourceStream(res);
+                if (s is null) continue;
+                using var r = new StreamReader(s);
+                var lines = new List<string>();
+                while (r.ReadLine() is { } ln) lines.Add(ln);
+                if (ParseGhosttyTheme(res["theme:".Length..], lines) is Theme th) Add(th);
+            }
+        }
+        catch { }
         return list;
     }
 
@@ -5401,11 +5425,17 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>Parse a ghostty-format theme file (palette = N=#rrggbb, background/foreground/cursor-color).</summary>
     private static Theme? ParseGhosttyTheme(string path)
     {
+        try { return ParseGhosttyTheme(Path.GetFileNameWithoutExtension(path), File.ReadAllLines(path)); }
+        catch { return null; }
+    }
+
+    private static Theme? ParseGhosttyTheme(string name, IEnumerable<string> lines)
+    {
         try
         {
             var pal = Theme.DefaultPalette();
             Color fg = Color.DefaultForeground, bg = Color.DefaultBackground, cur = new(222, 222, 230);
-            foreach (var raw in File.ReadAllLines(path))
+            foreach (var raw in lines)
             {
                 var line = raw.Trim();
                 if (line.Length == 0 || line[0] == '#') continue;
@@ -5419,7 +5449,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     case "cursor-color": cur = Hex(val); break;
                 }
             }
-            return new Theme { Name = Path.GetFileNameWithoutExtension(path), Palette = pal, DefaultForeground = fg, DefaultBackground = bg, Cursor = cur };
+            return new Theme { Name = name, Palette = pal, DefaultForeground = fg, DefaultBackground = bg, Cursor = cur };
         }
         catch { return null; }
     }
