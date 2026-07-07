@@ -73,8 +73,9 @@ public sealed class TerminalConfig
     public bool OmpIntegration { get; set; } = true;
 
     /// <summary>Prompt engine injected into new pwsh sessions and offered a theme picker:
-    /// omp (oh-my-posh) | starship | vanilla (no injection, no pickers). Pick live via the
-    /// action palette's "Prompt Engine…".</summary>
+    /// omp (oh-my-posh) | starship | vanilla (reset to the plain "PS C:\&gt;" prompt, overriding
+    /// profile customizations) | profile (no injection at all — $PROFILE rules). Pick live via
+    /// the action palette's "Prompt Engine…".</summary>
     public string PromptEngine { get; set; } = "omp";
 
     /// <summary>starship preset (see `starship preset --list`) applied to new pwsh sessions when
@@ -168,8 +169,9 @@ public sealed class TerminalConfig
         # you use a different prompt (e.g. starship) — agwinterm then leaves the prompt alone and hides the picker.
         omp-integration = true
 
-        # Prompt engine for new pwsh sessions: omp (oh-my-posh) | starship | vanilla (no injection,
-        # no pickers). Pick live from the action palette -> "Prompt Engine...". Overrides omp-integration.
+        # Prompt engine for new pwsh sessions: omp (oh-my-posh) | starship | vanilla (plain
+        # "PS C:\>" prompt, overriding profile customizations) | profile (no injection - $PROFILE
+        # rules). Pick live from the action palette -> "Prompt Engine...". Overrides omp-integration.
         prompt-engine = omp
 
         # starship preset for new pwsh sessions when prompt-engine = starship (`starship preset --list`);
@@ -228,13 +230,13 @@ public sealed class TerminalConfig
                 case "new-session-dir": cfg.NewSessionDir = val; break;
                 case "scroll-speed": if (int.TryParse(val, out var ss)) cfg.ScrollSpeed = System.Math.Clamp(ss, 1, 10); break;
                 case "omp-theme": cfg.OmpTheme = val; break;
-                case "omp-integration":   // legacy alias: false = vanilla (an explicit prompt-engine line later wins)
+                case "omp-integration":   // legacy alias: false = profile/no-injection (an explicit prompt-engine line later wins)
                     cfg.OmpIntegration = ParseBool(val, cfg.OmpIntegration);
-                    if (!cfg.OmpIntegration) cfg.PromptEngine = "vanilla";
+                    if (!cfg.OmpIntegration) cfg.PromptEngine = "profile";
                     break;
                 case "prompt-engine":
-                    if (val.ToLowerInvariant() is "omp" or "oh-my-posh" or "starship" or "vanilla" or "none")
-                        cfg.PromptEngine = val.ToLowerInvariant() switch { "oh-my-posh" => "omp", "none" => "vanilla", var v => v };
+                    if (val.ToLowerInvariant() is "omp" or "oh-my-posh" or "starship" or "vanilla" or "profile" or "none")
+                        cfg.PromptEngine = val.ToLowerInvariant() switch { "oh-my-posh" => "omp", "none" => "profile", var v => v };
                     break;
                 case "starship-theme": cfg.StarshipTheme = val; break;
                 case "new-session-dir-mode": { var m = val.ToLowerInvariant(); if (m is "home" or "current" or "custom") cfg.NewSessionDirMode = m; break; }

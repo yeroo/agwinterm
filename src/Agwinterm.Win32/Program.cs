@@ -156,7 +156,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private const int SelAutoTimer = 7;   // WM_TIMER id for drag-autoscroll ticks
 
     // Command palette overlay (⌃P sessions / ⌃⇧P actions / ⌃⇧I attention).
-    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom, Windows, Omp, NewSession, Starship, PromptEngine }
+    private enum PaletteKind { None, Sessions, Actions, Attention, Themes, Custom, Windows, Omp, NewSession, Starship, PromptEngine, Fonts }
     private sealed class PalItem
     {
         public required string Label;
@@ -656,10 +656,14 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         string wrap = Agwinterm.Pty.ShellIntegrationInstaller.PromptWrap;
         // Prompt-engine injection runs after the profile, then the wrap captures the (new) prompt so
-        // live cwd (OSC 7) still works. vanilla = wrap only; omp with no theme = profile's own omp.
+        // live cwd (OSC 7) still works. profile = wrap only; omp with no theme = profile's own omp;
+        // vanilla = reset to the stock "PS C:\>" prompt (overriding profile customizations).
         string script = wrap;
         switch (_config.PromptEngine)
         {
+            case "vanilla":
+                script = VanillaPromptReset + "\n" + wrap;
+                break;
             case "omp" when !string.IsNullOrWhiteSpace(_config.OmpTheme)
                             && Agwinterm.Pty.OmpThemes.Resolve(_config.OmpTheme) is { } omp:
                 script = "oh-my-posh init pwsh --config '" + omp.Replace("'", "''") + "' | Invoke-Expression\n" + wrap;
@@ -678,6 +682,10 @@ internal partial class Program : ISessionHost, IWindowHost
         string enc = System.Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
         return new[] { "-NoLogo", "-NoExit", "-EncodedCommand", enc };
     }
+
+    /// <summary>Restore PowerShell's stock prompt (the "vanilla" engine) — profiles often redefine it.</summary>
+    private const string VanillaPromptReset =
+        "function global:prompt { \"PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) \" }";
 
     /// <summary>Resolve a profile by name (case-insensitive), else the configured default, else null.</summary>
     private static Agwinterm.Pty.ShellProfile? ResolveProfile(string? name)
@@ -4490,6 +4498,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     A("oh-my-posh Theme…", "", () => TogglePalette(PaletteKind.Omp));
                 if (_config.PromptEngine == "starship" && Agwinterm.Pty.StarshipPresets.Available())
                     A("Starship Theme…", "", () => TogglePalette(PaletteKind.Starship));
+                A("Install Nerd Font…", "", () => TogglePalette(PaletteKind.Fonts));   // omp/starship themes need one
                 A("Settings…", "", OpenSettingsWindow);
                 A("Custom Commands…", "Ctrl+Shift+O", () => TogglePalette(PaletteKind.Custom));
                 // Opt-in integrations (agterm's Help-menu trio + shell) — the installer stays minimal.
@@ -4560,16 +4569,64 @@ internal partial class Program : ISessionHost, IWindowHost
             }
             case PaletteKind.PromptEngine:
             {
-                void E(string id, string label, string secondary) => _palAll.Add(new PalItem
+                // Detected engine -> selecting switches to it; undetected -> selecting installs it
+                // (winget in an overlay terminal), then re-opening the picker offers the switch.
+                void E(string id, string label, bool detected, string readySecondary) => _palAll.Add(new PalItem
                 {
-                    Label = label + (_config.PromptEngine == id ? "  (current)" : ""),
-                    Secondary = secondary,
-                    Search = label,
-                    Run = () => ApplyPromptEngine(id),
+                    Label = label + (_config.PromptEngine == id ? "  (current)" : detected ? "" : "  — install…"),
+                    Secondary = detected ? readySecondary : "not detected — select to install via winget (overlay shows progress)",
+                    Search = label + " install",
+                    Run = detected ? () => ApplyPromptEngine(id) : () => InstallPromptEngine(id),
                 });
-                E("omp", "oh-my-posh", Agwinterm.Pty.OmpThemes.List().Count > 0 ? "theme picker + injection into new sessions" : "not detected — install oh-my-posh first");
-                E("starship", "Starship", Agwinterm.Pty.StarshipPresets.Available() ? "preset picker + injection into new sessions" : "not detected — install starship first");
-                E("vanilla", "Vanilla", "no prompt injection, no pickers — your profile rules");
+                E("omp", "oh-my-posh", Agwinterm.Pty.OmpThemes.List().Count > 0, "theme picker + injection into new sessions");
+                E("starship", "Starship", Agwinterm.Pty.StarshipPresets.Available(), "preset picker + injection into new sessions");
+                _palAll.Add(new PalItem
+                {
+                    Label = "Vanilla" + (_config.PromptEngine == "vanilla" ? "  (current)" : ""),
+                    Secondary = "plain \"PS C:\\>\" prompt — overrides profile prompt customizations",
+                    Search = "vanilla plain default",
+                    Run = () => ApplyPromptEngine("vanilla"),
+                });
+                _palAll.Add(new PalItem
+                {
+                    Label = "Profile" + (_config.PromptEngine == "profile" ? "  (current)" : ""),
+                    Secondary = "no injection at all — whatever your $PROFILE sets up rules",
+                    Search = "profile none leave alone",
+                    Run = () => ApplyPromptEngine("profile"),
+                });
+                _palAll.Add(new PalItem
+                {
+                    Label = "Install Nerd Font…",
+                    Secondary = "omp/starship themes need a Nerd Font for their glyphs",
+                    Search = "install nerd font",
+                    Run = () => TogglePalette(PaletteKind.Fonts),
+                });
+                break;
+            }
+            case PaletteKind.Fonts:
+            {
+                // Popular Nerd Fonts, installed via oh-my-posh's font tool (works for starship too —
+                // fonts are engine-agnostic). Selecting installs in an overlay AND points font-family
+                // at the new family so the terminal uses it once installed.
+                foreach (var (slug, family) in new[]
+                {
+                    ("meslo", "MesloLGM Nerd Font"),
+                    ("jetbrainsmono", "JetBrainsMono Nerd Font"),
+                    ("cascadiacode", "CaskaydiaCove Nerd Font"),
+                    ("firacode", "FiraCode Nerd Font"),
+                    ("hack", "Hack Nerd Font"),
+                })
+                {
+                    var (s, f) = (slug, family);
+                    bool current = string.Equals(_config.FontFamily, f, StringComparison.OrdinalIgnoreCase);
+                    _palAll.Add(new PalItem
+                    {
+                        Label = f + (current ? "  (current font)" : ""),
+                        Secondary = $"oh-my-posh font install {s} + set font-family",
+                        Search = f + " " + s,
+                        Run = () => InstallNerdFont(s, f),
+                    });
+                }
                 break;
             }
             case PaletteKind.NewSession:
@@ -4721,7 +4778,7 @@ internal partial class Program : ISessionHost, IWindowHost
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = _palPanel, RadiusX = 10f, RadiusY = 10f }, brush, 1f);
 
         // Query line (placeholder when empty) + blinking caret.
-        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Omp => "oh-my-posh theme…", PaletteKind.Starship => "starship preset…", PaletteKind.PromptEngine => "Prompt engine…", PaletteKind.Custom => "Run command…", PaletteKind.Windows => "Switch window…", PaletteKind.NewSession => "New session — pick a shell…", _ => "Attention" };
+        string placeholder = _palette switch { PaletteKind.Sessions => "Go to session…", PaletteKind.Actions => "Run action…", PaletteKind.Themes => "Select theme…", PaletteKind.Omp => "oh-my-posh theme…", PaletteKind.Starship => "starship preset…", PaletteKind.PromptEngine => "Prompt engine…", PaletteKind.Fonts => "Install Nerd Font…", PaletteKind.Custom => "Run command…", PaletteKind.Windows => "Switch window…", PaletteKind.NewSession => "New session — pick a shell…", _ => "Attention" };
         brush.Color = _palQuery.Length > 0 ? ChromeText : ChromeDim;
         rt.DrawText(_palQuery.Length > 0 ? _palQuery : placeholder, _uiFont, new Rect(px + 16f, py + 9f, pw - 32f, queryH - 10f), brush);
         if (_cursorOn && _palQuery.Length > 0)
@@ -5463,6 +5520,68 @@ internal partial class Program : ISessionHost, IWindowHost
         if (persist) { try { WriteConfigKey("starship-theme", preset); } catch { } _config.StarshipTheme = preset; }
     }
 
+    /// <summary>Refresh the process PATH from the registry (Machine + User) so an engine installed
+    /// moments ago (winget) is detectable — and inherited by new sessions — without an app restart.</summary>
+    private static void RefreshEnvPath()
+    {
+        try
+        {
+            string machine = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.Machine) ?? "";
+            string user = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User) ?? "";
+            var current = new HashSet<string>((Environment.GetEnvironmentVariable("Path") ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+            var add = machine.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Concat(user.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                .Where(p => !current.Contains(p)).ToList();
+            if (add.Count > 0)
+                Environment.SetEnvironmentVariable("Path", Environment.GetEnvironmentVariable("Path") + ";" + string.Join(';', add));
+        }
+        catch { }
+    }
+
+    /// <summary>Install a prompt engine via winget in an overlay terminal (live progress, any key
+    /// closes when done). Re-open the picker afterwards — PATH is refreshed on open.</summary>
+    private void InstallPromptEngine(string engine)
+    {
+        var ses = _active;
+        if (ses is null) { ShowToast("open a session first"); return; }
+        string id = engine == "starship" ? "Starship.Starship" : "JanDeDobbeleer.OhMyPosh";
+        OverlayOpen(ses, $"winget install --id {id} -e --accept-source-agreements --accept-package-agreements", 70, wait: true);
+        ShowToast($"installing {(engine == "starship" ? "starship" : "oh-my-posh")} — re-open the picker when it finishes");
+    }
+
+    /// <summary>Install a Nerd Font via oh-my-posh's font tool (engine-agnostic: starship themes
+    /// need the same glyphs) in an overlay, and point font-family at the new family. When omp isn't
+    /// installed yet, installs it first — it IS the font tool.</summary>
+    private void InstallNerdFont(string slug, string family)
+    {
+        var ses = _active;
+        if (ses is null) { ShowToast("open a session first"); return; }
+        RefreshEnvPath();
+        if (Agwinterm.Pty.OmpThemes.List().Count == 0 && !CommandExists("oh-my-posh"))
+        {
+            InstallPromptEngine("omp");   // omp is the font installer; re-pick the font afterwards
+            ShowToast("installing oh-my-posh first (it provides the font installer) — then re-pick the font");
+            return;
+        }
+        OverlayOpen(ses, $"oh-my-posh font install {slug}", 70, wait: true);
+        ConfigSetInternal("font-family", family);
+        ShowToast($"installing {family} — the terminal switches to it once the overlay finishes");
+    }
+
+    private static bool CommandExists(string exe)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(exe, "--version")
+            { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p is null) return false;
+            if (!p.WaitForExit(4000)) { try { p.Kill(); } catch { } return false; }
+            return true;
+        }
+        catch { return false; }
+    }
+
     /// <summary>Switch the prompt engine (omp | starship | vanilla): persists, re-inits the active
     /// session's shell for omp/starship (vanilla applies to new sessions only), and keeps the legacy
     /// omp-integration key in sync.</summary>
@@ -5482,7 +5601,15 @@ internal partial class Program : ISessionHost, IWindowHost
                 ShowToast("prompt engine: oh-my-posh — pick a theme via “oh-my-posh Theme…”");
                 break;
             case "vanilla":
-                ShowToast("prompt engine: vanilla — new sessions get no prompt injection");
+                if (ActiveSurface() is { } vp)   // live: reset to the stock prompt right away
+                {
+                    vp.S.NotifyActivity();
+                    vp.S.Write(Encoding.UTF8.GetBytes(VanillaPromptReset + "\r"));
+                }
+                ShowToast("prompt engine: vanilla — plain PowerShell prompt");
+                break;
+            case "profile":
+                ShowToast("prompt engine: profile — new sessions get no injection ($PROFILE rules)");
                 break;
             default:
                 ShowToast($"prompt engine set to {engine} (engine not detected — install it first)");
