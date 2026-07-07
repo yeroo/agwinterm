@@ -138,6 +138,7 @@ switch (area)
             case "text": break; // dump the buffer; target only
             case "copy": break;  // return the target's selection text; target only
             case "seen": break;  // clear the unseen-notification badge; target only
+            case "output": break; // last completed command's output (FTCS marks); target only
             case "paste": // paste literal text (or the clipboard if none) into the target pane
                 cargs["text"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("text") ?? "");
                 break;
