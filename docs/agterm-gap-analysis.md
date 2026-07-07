@@ -1,5 +1,7 @@
 # agterm → agwinterm gap analysis
 
+> **⚠️ Superseded (2026-07-07):** the status columns below predate the big porting waves (scratch/quick/overlay, multi-window, search, selection/clipboard, MRU, flags are all **done** now). For the current analysis — agterm's July PRs + community show-and-tell recipes — see **[agterm-gap-analysis-2026-07.md](agterm-gap-analysis-2026-07.md)**.
+
 Comparison of umputun's **agterm** (macOS/Swift/libghostty, latest `master`) against our **agwinterm** native Win32/Direct2D port. Grounded in agterm's README *and* source (`agterm/`, `agtermCore/`). Status legend: **Done** / **Partial** / **Missing**. Effort: S (hours) / M (a day-ish) / L (multi-day). "macOS-only" marks things not worth porting as-is.
 
 _Generated from agterm source at clone time; re-run to refresh._
