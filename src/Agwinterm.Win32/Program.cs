@@ -3763,6 +3763,16 @@ internal partial class Program : ISessionHost, IWindowHost
                     Cell cell = CellAt(r, c);
                     if (cell.Width == 0 || cell.Rune == ' ' || cell.Rune == '\0') { c++; continue; }
                     Color runFg = EffectiveFg(cell);
+                    // Builtin box-drawing / block elements: vector-draw for pixel-perfect borders
+                    // (unhandled codepoints in the range fall back to the font glyph, drawn solo so
+                    // the coalesced run never has to include them).
+                    if (_config.BuiltinGlyphs && cell.Rune is (>= 0x2500 and <= 0x259F) or 0x2571 or 0x2572)
+                    {
+                        float bx = ox + c * cw;
+                        if (!DrawBoxGlyph(rt, brush, cell.Rune, bx, y, cw, ch, C4(runFg)))
+                        { brush.Color = C4(runFg); rt.DrawText(RuneStr(cell.Rune), fmt, new Rect(bx, y, bx + cw, y + ch), brush); }
+                        c++; continue;
+                    }
                     if (cell.Width == 2 || cell.Rune > 0xFFFF)
                     {
                         // Wide and astral glyphs draw individually: runs assume string index ==
@@ -3780,6 +3790,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     {
                         Cell cc = CellAt(r, c);
                         if (cc.Width == 2 || cc.Width == 0 || cc.Rune > 0xFFFF) break;
+                        if (_config.BuiltinGlyphs && cc.Rune is (>= 0x2500 and <= 0x259F) or 0x2571 or 0x2572) break; // vector-drawn separately
                         bool blank = cc.Rune == ' ' || cc.Rune == '\0';
                         if (!blank && EffectiveFg(cc) != runFg) break;
                         _run.Append(blank ? ' ' : (char)cc.Rune);
@@ -5087,6 +5098,52 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>A cell codepoint as a drawable string (astral -> surrogate pair).</summary>
     private static string RuneStr(int cp) => cp > 0xFFFF ? char.ConvertFromUtf32(cp) : ((char)cp).ToString();
 
+    /// <summary>Vector-draw a box-drawing / block-element codepoint filling the cell exactly, for
+    /// seamless borders and crisp blocks at any size. Returns false if cp isn't a handled glyph
+    /// (falls back to the font). Covers light single lines (incl. heavy/double as light), block
+    /// elements, shades, and eighth blocks — the set that dominates TUI chrome.</summary>
+    private bool DrawBoxGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, int cp, float x, float y, float w, float h, Color4 color)
+    {
+        float t = MathF.Max(1f, MathF.Round(h / 12f));   // line thickness
+        float cx = x + w / 2f, cy = y + h / 2f;
+        void H(float x0, float x1) { brush.Color = color; rt.FillRectangle(new Rect(x0, cy - t / 2f, x1 - x0, t), brush); }
+        void V(float y0, float y1) { brush.Color = color; rt.FillRectangle(new Rect(cx - t / 2f, y0, t, y1 - y0), brush); }
+        void Fill(float x0, float y0, float x1, float y1, float a = 1f) { brush.Color = new Color4(color.R, color.G, color.B, a); rt.FillRectangle(new Rect(x0, y0, x1 - x0, y1 - y0), brush); }
+
+        switch (cp)
+        {
+            // ---- light single lines ----
+            case 0x2500 or 0x2501: H(x, x + w); return true;              // ─ ━
+            case 0x2502 or 0x2503: V(y, y + h); return true;              // │ ┃
+            case 0x250C or 0x250D or 0x250E or 0x250F: H(cx, x + w); V(cy, y + h); return true;  // ┌
+            case 0x2510 or 0x2511 or 0x2512 or 0x2513: H(x, cx + t / 2f); V(cy, y + h); return true;  // ┐
+            case 0x2514 or 0x2515 or 0x2516 or 0x2517: H(cx, x + w); V(y, cy + t / 2f); return true;  // └
+            case 0x2518 or 0x2519 or 0x251A or 0x251B: H(x, cx + t / 2f); V(y, cy + t / 2f); return true;  // ┘
+            case >= 0x251C and <= 0x2523: V(y, y + h); H(cx, x + w); return true;  // ├ family
+            case >= 0x2524 and <= 0x252B: V(y, y + h); H(x, cx + t / 2f); return true;  // ┤ family
+            case >= 0x252C and <= 0x2533: H(x, x + w); V(cy, y + h); return true;  // ┬ family
+            case >= 0x2534 and <= 0x253B: H(x, x + w); V(y, cy + t / 2f); return true;  // ┴ family
+            case >= 0x253C and <= 0x254B: H(x, x + w); V(y, y + h); return true;  // ┼ family
+            case 0x2550: H(x, x + w); return true;                       // ═ (double as single)
+            case 0x2551: V(y, y + h); return true;                       // ║
+            // ---- block elements ----
+            case 0x2588: Fill(x, y, x + w, y + h); return true;          // █ full
+            case 0x2580: Fill(x, y, x + w, cy); return true;             // ▀ upper half
+            case 0x2584: Fill(x, cy, x + w, y + h); return true;         // ▄ lower half
+            case 0x258C: Fill(x, y, cx, y + h); return true;             // ▌ left half
+            case 0x2590: Fill(cx, y, x + w, y + h); return true;         // ▐ right half
+            case 0x2591: Fill(x, y, x + w, y + h, 0.25f); return true;   // ░ light shade
+            case 0x2592: Fill(x, y, x + w, y + h, 0.50f); return true;   // ▒ medium shade
+            case 0x2593: Fill(x, y, x + w, y + h, 0.75f); return true;   // ▓ dark shade
+            // lower eighth blocks ▁▂▃▄▅▆▇ (2581..2587): fill bottom n/8
+            case >= 0x2581 and <= 0x2587: { float frac = (cp - 0x2580) / 8f; Fill(x, y + h * (1 - frac), x + w, y + h); return true; }
+            // left eighth blocks ▉▊▋▌▍▎▏ (2589..258F): fill left (8-n)/8 .. actually 2589=7/8 down to 258F=1/8
+            case >= 0x2589 and <= 0x258F: { float frac = (0x2590 - cp) / 8f; Fill(x, y, x + w * frac, y + h); return true; }
+            // upper/right eighth-ish and quadrants: fall back to font for the rare rest
+            default: return false;
+        }
+    }
+
     private int ClientW() { GetClientRect(_hwnd, out RECT rc); return rc.right - rc.left; }
     private int ClientH() { GetClientRect(_hwnd, out RECT rc); return rc.bottom - rc.top; }
 
@@ -5929,7 +5986,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private static readonly string[] ConfigKeys =
     {
         "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
-        "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "window-opacity", "sidebar-tint", "scroll-speed",
+        "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "window-opacity", "sidebar-tint", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "word-delimiters", "desktop-notifications", "shell-integration",
         "restore-commands", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "notification-badges",
@@ -5966,6 +6023,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "scrollback-lines" => _config.Scrollback.ToString(),
         "inactive-pane-dim" => _config.InactivePaneDim.ToString(),
         "unfocused-dim" => _config.UnfocusedDim.ToString(),
+        "builtin-glyphs" => _config.BuiltinGlyphs ? "true" : "false",
         "window-opacity" => _config.WindowOpacity.ToString(),
         "sidebar-tint" => _config.SidebarTint.ToString(),
         "scroll-speed" => _config.ScrollSpeed.ToString(),
