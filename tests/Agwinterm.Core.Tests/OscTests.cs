@@ -105,6 +105,42 @@ public class OscTests
         Assert.Equal("line1line2", gotBody);
     }
 
+    // OSC 9;4 (ConEmu/Windows Terminal progress) must fire Progress, NOT a notification toast.
+
+    [Fact]
+    public void Osc9_4_FiresProgressNotNotification()
+    {
+        var t = new TerminalEmulator(40, 3);
+        int? st = null, val = null; bool notified = false;
+        t.Progress += (s, v) => { st = s; val = v; };
+        t.Notified += (_, _) => notified = true;
+        t.OscDispatch(9, "4;1;62");
+        Assert.Equal(1, st);
+        Assert.Equal(62, val);
+        Assert.False(notified);
+    }
+
+    [Fact]
+    public void Osc9_4_ClearAndClamp()
+    {
+        var t = new TerminalEmulator(40, 3);
+        var got = new List<(int, int)>();
+        t.Progress += (s, v) => got.Add((s, v));
+        t.OscDispatch(9, "4;1;250");   // clamped to 100
+        t.OscDispatch(9, "4;0");       // clear, no value
+        Assert.Equal(new[] { (1, 100), (0, 0) }, got.ToArray());
+    }
+
+    [Fact]
+    public void Osc9_PlainMessage_StillNotifies()
+    {
+        var t = new TerminalEmulator(40, 3);
+        string? body = null;
+        t.Notified += (_, b) => body = b;
+        t.OscDispatch(9, "42 done");   // not "4;" -> a normal notification
+        Assert.Equal("42 done", body);
+    }
+
     // Regression: the parser must UTF-8-decode OSC payloads (byte-as-char accumulation
     // mojibakes multibyte text and lets the C1 stripper eat continuation bytes).
 

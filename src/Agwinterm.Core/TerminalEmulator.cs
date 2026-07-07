@@ -379,6 +379,11 @@ public sealed class TerminalEmulator : IParserPerformer
     /// (title, body). Fires on the feed/pump thread — consumers must marshal to their UI thread.</summary>
     public event Action<string, string>? Notified;
 
+    /// <summary>Raised for OSC 9;4 progress reports (ConEmu/Windows Terminal convention):
+    /// (state, value) where state = 0 clear | 1 normal | 2 error | 3 indeterminate | 4 paused,
+    /// value = 0–100 for state 1/2/4. Fires on the feed/pump thread.</summary>
+    public event Action<int, int>? Progress;
+
     /// <summary>Strip C0/C1 control characters (and DEL) from an OSC payload. OSC strings feed the
     /// window title, the tracked cwd (later expanded into custom-command text), and notification
     /// toasts — embedded control bytes there are a terminal/shell-injection vector, so they are
@@ -407,7 +412,17 @@ public sealed class TerminalEmulator : IParserPerformer
             case 7:
                 Cwd = text;
                 break;
-            case 9: // OSC 9 ; <message>  — body-only desktop notification
+            case 9: // OSC 9 ; <message> — body-only desktop notification; OSC 9;4 = ConEmu/WT progress
+                if (text.StartsWith("4;", StringComparison.Ordinal))
+                {
+                    // 9;4;<state>;<value> — state: 0 clear, 1 normal (value 0-100), 2 error,
+                    // 3 indeterminate, 4 paused. Progress, not a notification.
+                    var pp = text.Split(';');
+                    int pState = pp.Length > 1 && int.TryParse(pp[1], out int s9) ? s9 : 0;
+                    int pValue = pp.Length > 2 && int.TryParse(pp[2], out int v9) ? Math.Clamp(v9, 0, 100) : 0;
+                    Progress?.Invoke(pState, pValue);
+                    break;
+                }
                 Notified?.Invoke("", text);
                 break;
             case 777: // OSC 777 ; notify ; <title> ; <body>
