@@ -39,6 +39,10 @@ public sealed class TerminalConfig
     /// word / line select), without needing Ctrl+C. Off by default. The selection stays highlighted.</summary>
     public bool CopyOnSelect { get; set; } = false;
 
+    /// <summary>Characters that DELIMIT words for double-click selection (in addition to whitespace).
+    /// Empty = whitespace only (double-click grabs a whole path/URL). WT's wordDelimiters analog.</summary>
+    public string WordDelimiters { get; set; } = "";
+
     /// <summary>Show OS desktop notifications (tray balloon) for OSC 9/777 / notify. Off → in-app banner + badge only.</summary>
     public bool DesktopNotifications { get; set; } = true;
 
@@ -127,6 +131,10 @@ public sealed class TerminalConfig
 
         # Auto-copy the selection to the clipboard as soon as it's made (no Ctrl+C needed).
         copy-on-select = false
+
+        # Extra word-delimiter characters for double-click selection (besides whitespace).
+        # Empty = whitespace only, so double-click grabs a whole path or URL. Example: /\.:;,="'()[]{}
+        word-delimiters =
 
         # Desktop notifications: show an OS tray-balloon for OSC 9/777 / `agwintermctl notify`
         # (the in-app banner + sidebar badge always show regardless). Set false to suppress the OS toast.
@@ -222,6 +230,7 @@ public sealed class TerminalConfig
                 case "restore-commands": cfg.RestoreCommands = ParseBool(val, cfg.RestoreCommands); break;
                 case "right-click-paste": cfg.RightClickPaste = ParseBool(val, cfg.RightClickPaste); break;
                 case "copy-on-select": cfg.CopyOnSelect = ParseBool(val, cfg.CopyOnSelect); break;
+                case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;
                 case "inactive-pane-dim": if (int.TryParse(val, out var ipd)) cfg.InactivePaneDim = System.Math.Clamp(ipd, 0, 100); break;
