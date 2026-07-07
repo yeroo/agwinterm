@@ -2264,6 +2264,12 @@ internal partial class Program : ISessionHost, IWindowHost
                     if (_setOpen) { SettingsWheel(HiWord(wParam) > 0 ? 1 : -1); return IntPtr.Zero; }
                     var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
                     ScreenToClient(_hwnd, ref pt);
+                    // Ctrl+wheel: font zoom (Windows-wide convention), on the active surface.
+                    if (KeyDown(VK_CONTROL) && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
+                    {
+                        ChangeFontSize(HiWord(wParam) > 0 ? 1 : -1);
+                        return IntPtr.Zero;
+                    }
                     var em = _session?.Emulator;
                     if (em is not null && em.MouseReporting) // app wants the wheel (forward to the active pane)
                     {
