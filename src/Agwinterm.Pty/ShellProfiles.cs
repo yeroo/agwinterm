@@ -85,6 +85,10 @@ public static class ShellProfiles
     private static Config Normalize(Config c)
     {
         c.Profiles.RemoveAll(p => string.IsNullOrWhiteSpace(p.Name) || string.IsNullOrWhiteSpace(p.Command));
+        // Repair earlier seeds that captured the wsl.exe stub's "install WSL?" message lines as
+        // distros (e.g. "WSL: Press any key to install …") — distro names never contain spaces.
+        c.Profiles.RemoveAll(p => p.Name.StartsWith("WSL: ", StringComparison.OrdinalIgnoreCase)
+                                  && p.Name["WSL: ".Length..].Contains(' '));
         if (c.Profiles.Count == 0) c.Profiles.Add(DefaultPowerShell());
         if (string.IsNullOrWhiteSpace(c.Default) ||
             !c.Profiles.Exists(p => p.Name.Equals(c.Default, StringComparison.OrdinalIgnoreCase)))
@@ -146,14 +150,18 @@ public static class ShellProfiles
             };
             using var p = Process.Start(psi);
             if (p is null) return result;
-            outp = p.StandardOutput.ReadToEnd();
-            p.WaitForExit(3000);
+            var read = p.StandardOutput.ReadToEndAsync();   // read async so a prompting stub can't deadlock us
+            if (!p.WaitForExit(3000)) { try { p.Kill(); } catch { } return result; }
+            // Without WSL installed, wsl.exe is a stub that prints "Press any key to install…"
+            // prompt lines and exits non-zero — those lines are NOT distros.
+            if (p.ExitCode != 0) return result;
+            outp = read.GetAwaiter().GetResult();
         }
         catch { return result; }
         foreach (var raw in outp.Split('\n'))
         {
             var d = raw.Trim().Trim('\0', '\r');
-            if (d.Length > 0) result.Add(d);
+            if (d.Length > 0 && !d.Contains(' ')) result.Add(d);   // real distro names never contain spaces
         }
         return result;
     }
