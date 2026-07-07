@@ -904,6 +904,14 @@ internal partial class Program : ISessionHost, IWindowHost
         RequestRedraw();
     }
 
+    /// <summary>Dismiss whatever cover is up (the "close_cover" keymap action): overlays close
+    /// (their program is ephemeral), scratch/quick just hide (their shells stay alive).</summary>
+    private void CloseCover()
+    {
+        if (_cover is null) return;
+        if (_coverKind == 3) CloseActiveOverlay(); else HideCover();
+    }
+
     /// <summary>The rect (px) the current cover occupies: the full content region, or — for a floating overlay — a centered panel sized by percent.</summary>
     private (float x, float y, float w, float h) CoverRect()
     {
@@ -2033,11 +2041,13 @@ internal partial class Program : ISessionHost, IWindowHost
                         SetActive(t);
                         return IntPtr.Zero;
                     }
-                    // Quick terminal is a floating panel: a left-click anywhere in the "main window area"
-                    // outside the panel dismisses it (like a tool window that hides on focus loss).
+                    // Quick terminal is a floating panel: its corner ✕ hides it, and a left-click anywhere
+                    // in the "main window area" outside the panel also dismisses it (like a tool window).
                     if (_coverKind == 2)
                     {
                         var (qx, qy, qw, qh) = CoverRect();
+                        var (bx, by, bw, bh) = CoverCloseRect(qx + qw, qy);
+                        if (mx >= bx && mx < bx + bw && my >= by && my < by + bh) { HideCover(); return IntPtr.Zero; }
                         if (mx < qx || mx >= qx + qw || my < qy || my >= qy + qh) { HideCover(); return IntPtr.Zero; }
                     }
                     if (my < (int)TitleBarH)
@@ -2326,6 +2336,7 @@ internal partial class Program : ISessionHost, IWindowHost
             case "toggle_flag": if (_active is not null) FlagOp(_active, "toggle"); break;
             case "toggle_flagged_view": ToggleFlaggedView(); break;
             case "focus_workspace": WorkspaceFocusOp("toggle"); break;
+            case "close_cover": CloseCover(); break;
             case "select_all": if (ActiveSurface() is { } sa) SelectAll(sa); break;
             case "copy_selection": if (ActiveSurface() is { } sc && sc.HasSel) CopySelection(sc); break;
             case "paste": if (ActiveSurface() is { } sp2) PasteInto(sp2); break;
@@ -3004,7 +3015,12 @@ internal partial class Program : ISessionHost, IWindowHost
         // Keymap dispatch: build the chord and run its bound action (defaults overlaid by keymap.conf).
         // Unbound chords fall through to terminal input below.
         string? chord = Keymap.ChordFor(vk, ctrl, alt, shift);
-        if (chord is not null && _keymap.TryGetValue(chord, out var action)) { RunAction(action); return true; }
+        if (chord is not null && _keymap.TryGetValue(chord, out var action))
+        {
+            // close_cover only applies while a cover is up — otherwise its chord (typically a bare
+            // Escape) falls through so the key still reaches the terminal.
+            if (action is not "close_cover" || _cover is not null) { RunAction(action); return true; }
+        }
 
         if (_session is null) return false;
 
@@ -3608,10 +3624,22 @@ internal partial class Program : ISessionHost, IWindowHost
     }
 
     /// <summary>Corner badge naming the current cover (scratch / quick / overlay); rightX/topY = cover top-right.</summary>
+    /// <summary>The quick terminal's ✕ close box, anchored to the panel's top-right corner.</summary>
+    private static (float x, float y, float w, float h) CoverCloseRect(float rightX, float topY) => (rightX - 26f, topY + 4f, 20f, 20f);
+
     private void DrawCoverBadge(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float rightX, float topY)
     {
         string badge = _coverKind switch { 1 => "scratch", 2 => "quick", 3 => "overlay", _ => "" };
         if (badge.Length == 0) return;
+        if (_coverKind == 2)   // quick terminal: ✕ close box in the corner; the badge pill sits left of it
+        {
+            var (cx, cy, cw2, ch2) = CoverCloseRect(rightX, topY);
+            brush.Color = WithA(SbHighlight, 0.92f);
+            rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx, cy, cw2, ch2), RadiusX = 5f, RadiusY = 5f }, brush);
+            brush.Color = ChromeText;
+            rt.DrawText(GlyphClose, _iconFont, new Rect(cx + 4f, cy + 3f, cw2 - 4f, ch2 - 3f), brush);
+            rightX = cx - 2f;
+        }
         float bw = MeasureText(badge, _uiSmall) + 16f;
         brush.Color = WithA(SbHighlight, 0.92f);
         rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(rightX - bw - 6f, topY + 4f, bw, 20f), RadiusX = 5f, RadiusY = 5f }, brush);
