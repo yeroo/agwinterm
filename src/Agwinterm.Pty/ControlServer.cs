@@ -143,6 +143,7 @@ public sealed class ControlServer : IDisposable
                         ? host.SessionToWorkspace(target, wsMove)
                         : host.SessionReorder(target, GetString(args, "dir") ?? "down"))
                         ? Ok("moved") : Err("not found");
+                case "session.rename": return host.SessionRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("session not found / blank name");
                 case "workspace.rename": return host.WorkspaceRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("workspace not found");
                 case "workspace.delete": return host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found");
                 case "workspace.select": return host.WorkspaceSelect(target) ? Ok("selected") : Err("workspace not found");
