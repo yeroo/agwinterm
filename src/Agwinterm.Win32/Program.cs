@@ -4551,6 +4551,11 @@ internal partial class Program : ISessionHost, IWindowHost
                     var p = pth; // applies live + persists so new sessions keep it
                     _palAll.Add(new PalItem { Label = nm, Search = nm, Data = p, Run = () => ApplyOmp(p, persist: true) });
                 }
+                // Our downloaded pack in use: offer a refresh (new omp releases add/update themes).
+                if (Directory.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "omp-themes")))
+                    _palAll.Add(new PalItem { Label = "Update themes pack…",
+                        Secondary = "re-download the official themes from the latest oh-my-posh release",
+                        Search = "update refresh download themes pack", Run = DownloadOmpThemes });
                 break;
             }
             case PaletteKind.Starship:
