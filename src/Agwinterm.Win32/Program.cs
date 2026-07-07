@@ -244,6 +244,7 @@ internal partial class Program : ISessionHost, IWindowHost
         // Text selection (absolute line index: [0..HistoryCount) history, then the live grid rows).
         public bool HasSel;
         public int SelAncLine, SelAncCol, SelFocLine, SelFocCol;
+        public bool BlockSel;   // rectangular (Alt+drag) selection: clip each row to [minCol,maxCol]
         public void ClearSel() => HasSel = false;
     }
 
@@ -2245,6 +2246,7 @@ internal partial class Program : ISessionHost, IWindowHost
                         if (Environment.TickCount - _lastClickMs < 400 && _clickCount >= 2)  // triple-click -> line
                         { SelectLine(h0.pane, line); _clickCount = 3; _selMoved = true; }
                         else { BeginSelect(h0.pane, line, col, shiftDn); _clickCount = 1; }
+                        h0.pane.BlockSel = KeyDown(VK_MENU) && _clickCount == 1;   // Alt+drag = rectangular
                         _lastClickMs = Environment.TickCount;
                         _selPane = h0.pane; _selAutoDir = 0; _selMouseX = mx;
                         _selecting = true; SetCapture(hwnd); RequestRedraw();
@@ -2576,6 +2578,7 @@ internal partial class Program : ISessionHost, IWindowHost
             case "close_cover": CloseCover(); break;
             case "toggle_fullscreen": ToggleFullscreen(); break;
             case "toggle_broadcast": ToggleBroadcast(); break;
+            case "mark_mode": ToggleMarkMode(); break;
             case "toggle_read_only": if (ActiveSurface() is { } rp) { rp.ReadOnly = !rp.ReadOnly; ShowToast(rp.ReadOnly ? "pane read-only ON" : "pane read-only off"); RequestRedraw(); } break;
             case "previous_prompt": JumpPrompt(-1); break;
             case "next_prompt": JumpPrompt(1); break;
@@ -2988,10 +2991,12 @@ internal partial class Program : ISessionHost, IWindowHost
         {
             int cols = em.Screen.Cols, rows = em.Screen.Rows, hist = em.HistoryCount;
             NormSel(pane, out int l0, out int c0, out int l1, out int c1);
+            // Block selection: every row uses the same [minCol, maxCol] column span (rectangle).
+            int blkFrom = Math.Min(pane.SelAncCol, pane.SelFocCol), blkTo = Math.Max(pane.SelAncCol, pane.SelFocCol);
             for (int line = l0; line <= l1; line++)
             {
-                int from = line == l0 ? c0 : 0;
-                int to = (line == l1 ? c1 : cols - 1) + 1; // inclusive end col
+                int from = pane.BlockSel ? blkFrom : (line == l0 ? c0 : 0);
+                int to = (pane.BlockSel ? blkTo : (line == l1 ? c1 : cols - 1)) + 1; // inclusive end col
                 var row = new StringBuilder();
                 for (int c = Math.Max(0, from); c < Math.Min(cols, to); c++)
                 {
@@ -3005,6 +3010,53 @@ internal partial class Program : ISessionHost, IWindowHost
             }
         }
         return sb.ToString();
+    }
+
+    // ---- Keyboard mark mode (WT's markMode): build a selection without the mouse ----
+    private bool _markMode;
+
+    private void ToggleMarkMode()
+    {
+        if (_markMode) { _markMode = false; ShowToast("mark mode off"); RequestRedraw(); return; }
+        if (ActiveSurface() is not { } p) return;
+        var em = p.S.Emulator;
+        int hist, row, col;
+        lock (p.S.SyncRoot) { hist = em.HistoryCount; row = em.CursorRow; col = em.CursorCol; }
+        int abs = hist - Math.Clamp(p.ScrollOffset, 0, hist) + row;   // buffer-absolute caret line
+        p.SelAncLine = p.SelFocLine = abs; p.SelAncCol = p.SelFocCol = col; p.HasSel = true; p.BlockSel = false;
+        _markMode = true;
+        ShowToast("mark mode: arrows select · Shift+arrows by word/line · Enter copies · Esc exits");
+        RequestRedraw();
+    }
+
+    /// <summary>Returns true if the key was consumed by mark mode.</summary>
+    private bool MarkModeKey(int vk, bool ctrl)
+    {
+        if (ActiveSurface() is not { } p) { _markMode = false; return false; }
+        var em = p.S.Emulator;
+        int cols, rows, hist;
+        lock (p.S.SyncRoot) { cols = em.Screen.Cols; rows = em.Screen.Rows; hist = em.HistoryCount; }
+        int maxLine = hist + rows - 1;
+        switch (vk)
+        {
+            case VK_ESCAPE: _markMode = false; p.ClearSel(); RequestRedraw(); return true;
+            case VK_LEFT: p.SelFocCol = Math.Max(0, p.SelFocCol - 1); break;
+            case VK_RIGHT: p.SelFocCol = Math.Min(cols - 1, p.SelFocCol + 1); break;
+            case VK_UP: p.SelFocLine = Math.Max(0, p.SelFocLine - 1); break;
+            case VK_DOWN: p.SelFocLine = Math.Min(maxLine, p.SelFocLine + 1); break;
+            case VK_HOME: p.SelFocCol = 0; break;
+            case VK_END: p.SelFocCol = cols - 1; break;
+            case VK_RETURN: CopySelection(p, clear: false); _markMode = false; ShowToast("copied"); RequestRedraw(); return true;
+            case 0x43 when ctrl: CopySelection(p, clear: false); _markMode = false; ShowToast("copied"); RequestRedraw(); return true; // Ctrl+C
+            default: return true;   // swallow everything else while in mark mode
+        }
+        p.HasSel = true;
+        // keep the focus line visible (scroll the pane if the caret walked off the top)
+        int topAbs = hist - Math.Clamp(p.ScrollOffset, 0, hist);
+        if (p.SelFocLine < topAbs) p.ScrollOffset = Math.Clamp(hist - p.SelFocLine, 0, hist);
+        else if (p.SelFocLine >= topAbs + rows) p.ScrollOffset = Math.Clamp(hist - (p.SelFocLine - rows + 1), 0, hist);
+        RequestRedraw();
+        return true;
     }
 
     private void BeginSelect(Pane p, int line, int col, bool extend)
@@ -3247,6 +3299,10 @@ internal partial class Program : ISessionHost, IWindowHost
         // While the popup context menu is up it owns the keyboard (↑↓ Enter Esc; the popup window
         // never takes focus, so keys arrive here and are forwarded).
         if (_menuHwnd != IntPtr.Zero) return MenuKeyDown(vk);
+
+        // Keyboard mark mode (mouseless selection): arrows move the selection focus, Enter/Ctrl+C
+        // copies, Esc exits. Owns the keyboard while active.
+        if (_markMode && MarkModeKey(vk, ctrl)) return true;
 
         // A --wait overlay whose program has exited hangs around; any key dismisses it.
         if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return true; }
@@ -3730,8 +3786,10 @@ internal partial class Program : ISessionHost, IWindowHost
                 int abs = hist - off + r;
                 if (hasSel && abs >= sl0 && abs <= sl1)  // selection highlight (behind the text)
                 {
-                    int from = Math.Clamp(abs == sl0 ? sc0 : 0, 0, cols - 1);
-                    int to = Math.Clamp(abs == sl1 ? sc1 : cols - 1, 0, cols - 1);
+                    bool block = selPane!.BlockSel;
+                    int from = block ? Math.Min(sc0, sc1) : Math.Clamp(abs == sl0 ? sc0 : 0, 0, cols - 1);
+                    int to = block ? Math.Max(sc0, sc1) : Math.Clamp(abs == sl1 ? sc1 : cols - 1, 0, cols - 1);
+                    from = Math.Clamp(from, 0, cols - 1); to = Math.Clamp(to, 0, cols - 1);
                     if (to >= from)
                     {
                         brush.Color = new Color4(40 / 255f, 90 / 255f, 150 / 255f, 1f);
@@ -4694,6 +4752,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 A("New Window", "Ctrl+Alt+N", () => WindowNew(null));
                 A("Toggle Fullscreen", "F11", ToggleFullscreen);
                 A("Toggle Broadcast Input", "", ToggleBroadcast);   // typing fans out to the whole workspace
+                A("Mark Mode (keyboard select)", "Ctrl+Shift+M", ToggleMarkMode);
                 A("Toggle Read-Only Pane", "", () => { if (ActiveSurface() is { } rp) { rp.ReadOnly = !rp.ReadOnly; ShowToast(rp.ReadOnly ? "pane read-only ON" : "pane read-only off"); RequestRedraw(); } });
                 A("Close Window", "", () => DestroyWindow(_hwnd));
                 A("Switch Window…", "", () => TogglePalette(PaletteKind.Windows));
