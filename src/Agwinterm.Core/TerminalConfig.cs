@@ -68,8 +68,18 @@ public sealed class TerminalConfig
 
     /// <summary>oh-my-posh integration: show the theme picker and inject the persisted omp-theme into new
     /// sessions. Turn OFF if you use a different prompt (e.g. starship) — agwinterm then leaves the shell
-    /// prompt alone and hides the "oh-my-posh Theme…" selector.</summary>
+    /// prompt alone and hides the "oh-my-posh Theme…" selector. Legacy alias: false maps to
+    /// prompt-engine = vanilla when no explicit prompt-engine is set.</summary>
     public bool OmpIntegration { get; set; } = true;
+
+    /// <summary>Prompt engine injected into new pwsh sessions and offered a theme picker:
+    /// omp (oh-my-posh) | starship | vanilla (no injection, no pickers). Pick live via the
+    /// action palette's "Prompt Engine…".</summary>
+    public string PromptEngine { get; set; } = "omp";
+
+    /// <summary>starship preset (see `starship preset --list`) applied to new pwsh sessions when
+    /// prompt-engine = starship. Empty = starship's default config. Set via the in-app picker.</summary>
+    public string StarshipTheme { get; set; } = "";
 
     /// <summary>Where new sessions open: home (user profile) | current (active session's cwd) | custom (NewSessionDir).</summary>
     public string NewSessionDirMode { get; set; } = "home";
@@ -158,6 +168,14 @@ public sealed class TerminalConfig
         # you use a different prompt (e.g. starship) — agwinterm then leaves the prompt alone and hides the picker.
         omp-integration = true
 
+        # Prompt engine for new pwsh sessions: omp (oh-my-posh) | starship | vanilla (no injection,
+        # no pickers). Pick live from the action palette -> "Prompt Engine...". Overrides omp-integration.
+        prompt-engine = omp
+
+        # starship preset for new pwsh sessions when prompt-engine = starship (`starship preset --list`);
+        # empty = starship's default config. Pick live from the action palette -> "Starship Theme...".
+        starship-theme =
+
         # Where new sessions open: home (user profile) | current (active session's dir) | custom (new-session-dir).
         new-session-dir-mode = home
 
@@ -210,7 +228,15 @@ public sealed class TerminalConfig
                 case "new-session-dir": cfg.NewSessionDir = val; break;
                 case "scroll-speed": if (int.TryParse(val, out var ss)) cfg.ScrollSpeed = System.Math.Clamp(ss, 1, 10); break;
                 case "omp-theme": cfg.OmpTheme = val; break;
-                case "omp-integration": cfg.OmpIntegration = ParseBool(val, cfg.OmpIntegration); break;
+                case "omp-integration":   // legacy alias: false = vanilla (an explicit prompt-engine line later wins)
+                    cfg.OmpIntegration = ParseBool(val, cfg.OmpIntegration);
+                    if (!cfg.OmpIntegration) cfg.PromptEngine = "vanilla";
+                    break;
+                case "prompt-engine":
+                    if (val.ToLowerInvariant() is "omp" or "oh-my-posh" or "starship" or "vanilla" or "none")
+                        cfg.PromptEngine = val.ToLowerInvariant() switch { "oh-my-posh" => "omp", "none" => "vanilla", var v => v };
+                    break;
+                case "starship-theme": cfg.StarshipTheme = val; break;
                 case "new-session-dir-mode": { var m = val.ToLowerInvariant(); if (m is "home" or "current" or "custom") cfg.NewSessionDirMode = m; break; }
                 case "confirm-close-session": cfg.ConfirmCloseSession = ParseBool(val, cfg.ConfirmCloseSession); break;
                 case "compact-toolbar": cfg.CompactToolbar = ParseBool(val, cfg.CompactToolbar); break;
