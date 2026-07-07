@@ -2860,27 +2860,42 @@ internal partial class Program : ISessionHost, IWindowHost
         return true; // consume all keys while the find bar is open
     }
 
+    /// <summary>Open the clipboard with retries: clipboard history / cloud sync / managers briefly
+    /// hold it open on every change, so a single failed OpenClipboard is common and transient.</summary>
+    private bool OpenClipboardRetry()
+    {
+        for (int i = 0; ; i++)
+        {
+            if (OpenClipboard(_hwnd)) return true;
+            if (i >= 9) return false;
+            System.Threading.Thread.Sleep(10);
+        }
+    }
+
     private void ClipboardSet(string text)
     {
-        if (!OpenClipboard(_hwnd)) return;
+        // Build the handle before touching the clipboard so a failed alloc never leaves it emptied.
+        byte[] buf = Encoding.Unicode.GetBytes(text + "\0");
+        IntPtr h = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)(uint)buf.Length);
+        if (h == IntPtr.Zero) return;
+        IntPtr p = GlobalLock(h);
+        if (p == IntPtr.Zero) { GlobalFree(h); return; }
+        Marshal.Copy(buf, 0, p, buf.Length);
+        GlobalUnlock(h);
+
+        if (!OpenClipboardRetry()) { GlobalFree(h); return; }
         try
         {
             EmptyClipboard();
-            byte[] buf = Encoding.Unicode.GetBytes(text + "\0");
-            IntPtr h = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)(uint)buf.Length);
-            if (h == IntPtr.Zero) return;
-            IntPtr p = GlobalLock(h);
-            if (p == IntPtr.Zero) return;
-            Marshal.Copy(buf, 0, p, buf.Length);
-            GlobalUnlock(h);
-            SetClipboardData(CF_UNICODETEXT, h); // clipboard takes ownership of h
+            if (SetClipboardData(CF_UNICODETEXT, h) == IntPtr.Zero)
+                GlobalFree(h); // ownership only transfers to the clipboard on success
         }
         finally { CloseClipboard(); }
     }
 
     private string ClipboardGet()
     {
-        if (!OpenClipboard(_hwnd)) return "";
+        if (!OpenClipboardRetry()) return "";
         try
         {
             IntPtr h = GetClipboardData(CF_UNICODETEXT);
@@ -2957,9 +2972,10 @@ internal partial class Program : ISessionHost, IWindowHost
         }
 
         // Clipboard: Ctrl+Shift+C / Ctrl+C-with-selection copies; Ctrl+V / Ctrl+Shift+V pastes.
-        if (ctrl && !alt && _active is not null)
+        // Uses ActiveSurface() (not _active.ActivePane) so selections in a cover — quick terminal,
+        // scratch, overlay — copy too instead of falling through and interrupting the shell.
+        if (ctrl && !alt && ActiveSurface() is { } ap)
         {
-            var ap = _active.ActivePane;
             if (vk == 0x43) // C
             {
                 if (ap.HasSel) { CopySelection(ap); return true; }
