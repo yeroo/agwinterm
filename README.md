@@ -43,7 +43,9 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
 - **Splits** (toggle two panes), **scratch** & **quick** terminals, and ephemeral **overlays**.
 - **Multi-window** — independent windows, each with its own tree; address any of them from the CLI.
 - **MRU `Ctrl+Tab` switcher**, fuzzy **command / session / action palettes**, **search**, scrollback,
-  full **selection & clipboard** (word/line/select-all, copy-on-select, drag-autoscroll).
+  full **selection & clipboard** — Windows Terminal-style defaults (`Ctrl+C` copies the selection,
+  right-click pastes, `Shift`+drag forces selection in mouse-mode apps), plus word/line/select-all,
+  drag-autoscroll, and opt-in copy-on-select.
 - **Whole-window theming** with **~580 bundled themes** (the ghostty / iTerm2 color-scheme set) —
   the sidebar, title bar, and terminal all retint together, light or dark.
 - **cwd in the title, out of the box** (composes with oh-my-posh), plus an **oh-my-posh theme picker**.
@@ -56,14 +58,15 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
 
 ## Install
 
-Grab the latest **`agwinterm-setup-<version>.exe`** from the
-[**Releases**](https://github.com/yeroo/agwinterm/releases) page and run it.
+Grab either from the [**Releases**](https://github.com/yeroo/agwinterm/releases) page:
 
-Prefer no installer? Each release also ships **`agwinterm-portable-<version>-win-x64.exe`** — a
-single self-contained exe, run it from anywhere (settings still live under `%LOCALAPPDATA%\agwinterm`).
+- **`agwinterm-setup-<version>.exe`** — per-user installer (Start-menu shortcut + uninstaller).
+- **`agwinterm-portable-<version>-win-x64.exe`** — **portable**: a single self-contained exe, no
+  installation — run it from anywhere (settings still live under `%LOCALAPPDATA%\agwinterm`).
 
-- **Per-user, no admin required**, and **self-contained** — no .NET runtime needed on the target.
-- It's currently **unsigned**, so SmartScreen will warn on first run → *More info → Run anyway*.
+Both are **self-contained** (no .NET runtime needed) and need **no admin rights**.
+
+- Binaries are currently **unsigned**, so SmartScreen will warn on first run → *More info → Run anyway*.
 - The installer is deliberately minimal (copies files + shortcuts). The integrations
   (put `agwintermctl` on PATH, agent status hooks, agent skill, shell integration) are **opt-in from
   inside the app** — open the command palette (`Ctrl+Shift+P`) and pick the matching *Install…* entry.
@@ -82,6 +85,9 @@ dotnet run --project src/Agwinterm.Win32 -c Release
 
 # build the installer (needs Inno Setup 6)
 ./installer/build.ps1
+
+# build the portable single-file exe (no Inno Setup needed)
+./installer/build-portable.ps1
 ```
 
 ## Control it from anything (`agwintermctl`)
