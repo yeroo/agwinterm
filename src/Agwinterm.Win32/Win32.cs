@@ -219,6 +219,16 @@ internal static class Win32
         public byte rgbReserved28; public byte rgbReserved29; public byte rgbReserved30; public byte rgbReserved31;
     }
 
+    // ---- Drag & drop: file paths onto the terminal ----
+    public const uint WM_DROPFILES = 0x0233;
+    public const int WS_EX_ACCEPTFILES = 0x00000010;
+
+    [DllImport("shell32.dll")] public static extern void DragAcceptFiles(IntPtr hWnd, bool fAccept);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint DragQueryFileW(IntPtr hDrop, uint iFile, System.Text.StringBuilder? lpszFile, uint cch);
+    [DllImport("shell32.dll")] public static extern bool DragQueryPoint(IntPtr hDrop, out POINT lppt);
+    [DllImport("shell32.dll")] public static extern void DragFinish(IntPtr hDrop);
+
     // ---- Popup menu window (a real top-level HWND for the themed context menu) ----
     public const uint WS_EX_TOPMOST = 0x00000008, WS_EX_TOOLWINDOW = 0x00000080, WS_EX_NOACTIVATE = 0x08000000;
     public const uint CS_DROPSHADOW = 0x00020000;

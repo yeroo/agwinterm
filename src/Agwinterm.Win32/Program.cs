@@ -411,6 +411,8 @@ internal partial class Program : ISessionHost, IWindowHost
         }
         catch { /* icon is cosmetic; ignore load failures */ }
 
+        DragAcceptFiles(_hwnd, true);   // drop files/folders onto a pane -> quoted paths pasted
+
         CreateRenderTarget();
         StartSession();
 
@@ -1966,6 +1968,35 @@ internal partial class Program : ISessionHost, IWindowHost
                 SetTextColor(wParam, RGB(255, 255, 255));
                 SetBkColor(wParam, RGB(41, 51, 64));
                 return _editBrush;
+
+            case WM_DROPFILES:
+                {
+                    // Files/folders dropped onto the window: paste their quoted paths (space-joined)
+                    // into the pane under the drop point — via PasteTextInto, so bracketed paste
+                    // applies and the text can't auto-execute.
+                    IntPtr hDrop = wParam;
+                    try
+                    {
+                        DragQueryPoint(hDrop, out POINT dp);
+                        uint n = DragQueryFileW(hDrop, 0xFFFFFFFF, null, 0);
+                        var paths = new List<string>();
+                        for (uint i = 0; i < n; i++)
+                        {
+                            uint len = DragQueryFileW(hDrop, i, null, 0);
+                            if (len == 0) continue;
+                            var sb = new StringBuilder((int)len + 1);
+                            if (DragQueryFileW(hDrop, i, sb, len + 1) > 0) paths.Add(sb.ToString());
+                        }
+                        if (paths.Count > 0)
+                        {
+                            string text = string.Join(" ", paths.Select(p => p.IndexOfAny(new[] { ' ', '\'', '(', ')', '&', ';' }) >= 0 ? "\"" + p + "\"" : p));
+                            var target = PaneAt(dp.x, dp.y)?.pane ?? ActiveSurface();
+                            if (target is not null) PasteTextInto(target, text);
+                        }
+                    }
+                    finally { DragFinish(hDrop); }
+                    return IntPtr.Zero;
+                }
 
             case WM_CONTEXTMENU:
                 {
