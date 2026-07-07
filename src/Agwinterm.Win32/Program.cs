@@ -603,6 +603,7 @@ internal partial class Program : ISessionHost, IWindowHost
             ["AGWINTERM_ENABLED"] = "1",
             ["AGWINTERM_PIPE"] = _control!.PipeName,
             ["AGWINTERM_SESSION_ID"] = paneId,       // each pane is independently targetable
+            ["AGWINTERM_PANE_ID"] = paneId,          // explicit pane identity (unique per split pane)
             ["AGWINTERM_WORKSPACE_ID"] = ws.Id,
             ["AGWINTERM_WINDOW_ID"] = Id,
         };
@@ -1525,7 +1526,7 @@ internal partial class Program : ISessionHost, IWindowHost
             lock (_workspaces)
                 return _workspaces.Select(w => new WorkspaceSnapshot(
                     w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
-                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), s.S.Status, s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null)).ToList()
+                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), AggStatus(s), s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null)).ToList()
                 )).ToList();
         }
 
@@ -3688,7 +3689,7 @@ internal partial class Program : ISessionHost, IWindowHost
             var s = _mruSnapshot[i];
             float ry = py + headH + i * rowH;
             if (i == _mruIdx) { brush.Color = PalSel; rt.FillRectangle(new Rect(px + 4f, ry, pw - 8f, rowH), brush); }
-            brush.Color = StatusDot(s.ActivePane.S.Status);
+            brush.Color = StatusDot(AggStatus(s));
             rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(px + 18f, ry + rowH / 2f), 4.5f, 4.5f), brush);
             brush.Color = i == _mruIdx ? SbActiveText : ChromeText;
             rt.DrawText(s.Name, _uiFont, new Rect(px + 32f, ry + (rowH - 20f) / 2f, pw - 150f, 20f), brush);
@@ -3937,8 +3938,9 @@ internal partial class Program : ISessionHost, IWindowHost
             rt.DrawText(bn, _uiSmall, new Rect(bx + 5f, y + rowH / 2f - 8f, bw - 8f, 16f), brush);
         }
         // Status circle right-aligned in the row (agterm layout); pulse it if blink was requested.
-        var dot = StatusDot(s.S.Status);
-        if (s.S.Blink && !_cursorOn) dot = new Color4(dot.R, dot.G, dot.B, 0.22f);
+        // Pane-aware: the dot shows the most attention-worthy status across ALL the session's panes.
+        var dot = StatusDot(AggStatus(s));
+        if (AggBlink(s) && !_cursorOn) dot = new Color4(dot.R, dot.G, dot.B, 0.22f);
         brush.Color = dot;
         rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(_sidebarW - 16f, y + rowH / 2f), 4.5f, 4.5f), brush);
         _sidebarRows.Add((y, y + rowH, false, s));
@@ -4122,7 +4124,7 @@ internal partial class Program : ISessionHost, IWindowHost
             List<Workspace> targets;
             lock (_workspaces) targets = _workspaces.Where(w => !ReferenceEquals(w, ses.Ws)).ToList();
             foreach (var t in targets) A($"Move to — {t.Name}", "", () => MoveSession(ses, t));
-            if (ses.S.Status != AgentStatus.Idle) A("Clear Status", "", () => { ses.S.SetStatus(AgentStatus.Idle); RequestRedraw(); });
+            if (AggStatus(ses) != AgentStatus.Idle) A("Clear Status", "", () => { foreach (var p in ses.Panes) p.S.SetStatus(AgentStatus.Idle); RequestRedraw(); });
             list.Add(MenuSeparator());
             A("Close Session", "", () => { if (ConfirmCloseOk()) CloseSessionInternal(ses); });
         }
@@ -4300,7 +4302,7 @@ internal partial class Program : ISessionHost, IWindowHost
         bool blocked = false, active = false;
         foreach (var s in AllSessions())
         {
-            var st = s.S.Status;
+            var st = AggStatus(s);
             if (st == AgentStatus.Blocked) blocked = true;
             else if (st is AgentStatus.Active or AgentStatus.Completed) active = true;
         }
@@ -4309,7 +4311,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
     private void GoToNextAttention(int dir)
     {
-        var list = AllSessions().Where(s => s.S.Status is AgentStatus.Blocked or AgentStatus.Completed).ToList();
+        var list = AllSessions().Where(s => AggStatus(s) is AgentStatus.Blocked or AgentStatus.Completed).ToList();
         if (list.Count == 0) { ShowToast("no sessions need attention"); return; }
         int idx = _active is not null ? list.IndexOf(_active) : -1;
         int next = idx < 0 ? (dir > 0 ? 0 : list.Count - 1) : ((idx + dir) % list.Count + list.Count) % list.Count;
@@ -4320,7 +4322,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private bool AnyBlinkAttention()
     {
         foreach (var s in AllSessions())
-            if (s.S.Blink && s.S.Status is AgentStatus.Blocked or AgentStatus.Active or AgentStatus.Completed) return true;
+            if (AggBlink(s)) return true;
         return false;
     }
 
@@ -4424,7 +4426,7 @@ internal partial class Program : ISessionHost, IWindowHost
                         Label = sx.Name,
                         Secondary = cwd.Length > 0 ? $"{sx.Ws.Name}  ·  {cwd}" : sx.Ws.Name,
                         Search = $"{sx.Name} {sx.Ws.Name} {cwd}",
-                        Dot = sx.S.Status,
+                        Dot = AggStatus(sx),
                         Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
                     });
                 }
@@ -4542,8 +4544,8 @@ internal partial class Program : ISessionHost, IWindowHost
             }
             case PaletteKind.Attention:
             {
-                var att = AllSessions().Where(s => s.S.Status != AgentStatus.Idle)
-                    .OrderBy(s => s.S.Status == AgentStatus.Blocked ? 0 : s.S.Status == AgentStatus.Active ? 1 : 2)
+                var att = AllSessions().Where(s => AggStatus(s) != AgentStatus.Idle)
+                    .OrderBy(s => AggStatus(s) == AgentStatus.Blocked ? 0 : AggStatus(s) == AgentStatus.Active ? 1 : 2)
                     .ToList();
                 if (att.Count == 0) { _palAll.Add(new PalItem { Label = "No sessions need attention", Run = null }); break; }
                 foreach (var s in att)
@@ -4552,9 +4554,9 @@ internal partial class Program : ISessionHost, IWindowHost
                     _palAll.Add(new PalItem
                     {
                         Label = sx.Name,
-                        Secondary = $"{sx.Ws.Name}  ·  {sx.S.Status.ToString().ToLowerInvariant()}",
+                        Secondary = $"{sx.Ws.Name}  ·  {AggStatus(sx).ToString().ToLowerInvariant()}",
                         Search = $"{sx.Name} {sx.Ws.Name}",
-                        Dot = sx.S.Status,
+                        Dot = AggStatus(sx),
                         Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
                     });
                 }
@@ -4921,6 +4923,24 @@ internal partial class Program : ISessionHost, IWindowHost
 
     /// <summary>Total unread notifications across a session's panes (for the sidebar badge).</summary>
     private static int UnreadOf(Ses s) { int n = 0; foreach (var p in s.Panes) n += p.Unread; return n; }
+
+    /// <summary>Session status for display: the most attention-worthy status across ALL panes
+    /// (Blocked &gt; Completed &gt; Active &gt; Idle) — a background pane's state must not be invisible.</summary>
+    private static AgentStatus AggStatus(Ses s)
+    {
+        static int Sev(AgentStatus a) => a switch { AgentStatus.Blocked => 3, AgentStatus.Completed => 2, AgentStatus.Active => 1, _ => 0 };
+        AgentStatus best = AgentStatus.Idle;
+        foreach (var p in s.Panes) if (Sev(p.S.Status) > Sev(best)) best = p.S.Status;
+        return best;
+    }
+
+    /// <summary>True if any pane of the session has an attention-worthy status with blink set.</summary>
+    private static bool AggBlink(Ses s)
+    {
+        foreach (var p in s.Panes)
+            if (p.S.Blink && p.S.Status is AgentStatus.Blocked or AgentStatus.Active or AgentStatus.Completed) return true;
+        return false;
+    }
 
     private static void ClearUnread(Ses s) { foreach (var p in s.Panes) p.Unread = 0; if (s.Scratch is not null) s.Scratch.Unread = 0; if (s.Overlay is not null) s.Overlay.Unread = 0; }
 
