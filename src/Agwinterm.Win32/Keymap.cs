@@ -42,6 +42,7 @@ internal static class Keymap
         ("ctrl+shift+f", "toggle_flag"),
         ("ctrl+shift+a", "select_all"),
         ("ctrl+alt+n", "new_window"),
+        ("f11", "toggle_fullscreen"),
     };
 
     public static readonly HashSet<string> ValidActions = new(StringComparer.OrdinalIgnoreCase)
@@ -50,7 +51,7 @@ internal static class Keymap
         "focus_left_pane", "focus_right_pane", "next_session", "previous_session",
         "toggle_sidebar", "rename_session", "delete_workspace", "session_palette", "action_palette",
         "attention_list", "custom_palette", "next_attention", "previous_attention", "reload_keymap",
-        "toggle_search", "toggle_scratch", "quick_terminal", "close_cover",
+        "toggle_search", "toggle_scratch", "quick_terminal", "close_cover", "toggle_fullscreen",
         "toggle_flag", "toggle_flagged_view", "focus_workspace",
         "select_all", "copy_selection", "paste",
         "new_window", "close_window", "switch_window",
@@ -68,7 +69,9 @@ internal static class Keymap
         #   map leader <chord> = <action|command:Label>        bind a leader sequence
         #
         # chords: ctrl+ alt+ shift+ then a key — a-z, 0-9, f1-f12,
-        #         tab enter escape space up down left right.  e.g. ctrl+shift+g
+        #         tab enter escape space up down left right,
+        #         comma period slash semicolon quote backtick minus equals
+        #         lbracket rbracket backslash (US layout).  e.g. shift+comma, ctrl+shift+g
         #
         # run modes: send (default; types into the active session) | new (fresh session's
         #            shell runs it) | overlay (ephemeral pane over the session) | detached
@@ -208,7 +211,10 @@ internal static class Keymap
     {
         if (t.Length == 1 && char.IsLetterOrDigit(t[0])) return true;
         if (t.Length is 2 or 3 && t[0] == 'f' && int.TryParse(t[1..], out int n) && n is >= 1 and <= 12) return true;
-        return t is "tab" or "enter" or "escape" or "space" or "up" or "down" or "left" or "right";
+        return t is "tab" or "enter" or "escape" or "space" or "up" or "down" or "left" or "right"
+            // OEM punctuation (US layout), so symbol chords like shift+comma ('<') bind too.
+            or "comma" or "period" or "slash" or "semicolon" or "quote" or "backtick"
+            or "minus" or "equals" or "lbracket" or "rbracket" or "backslash";
     }
 
     /// <summary>Build the canonical chord for a live keypress, or null if the key isn't bindable.</summary>
@@ -228,6 +234,10 @@ internal static class Keymap
         {
             VK_TAB => "tab", VK_RETURN => "enter", VK_ESCAPE => "escape", VK_SPACE => "space",
             VK_UP => "up", VK_DOWN => "down", VK_LEFT => "left", VK_RIGHT => "right",
+            // OEM punctuation VKs (US layout names)
+            0xBA => "semicolon", 0xBB => "equals", 0xBC => "comma", 0xBD => "minus",
+            0xBE => "period", 0xBF => "slash", 0xC0 => "backtick",
+            0xDB => "lbracket", 0xDC => "backslash", 0xDD => "rbracket", 0xDE => "quote",
             _ => null,
         };
     }
