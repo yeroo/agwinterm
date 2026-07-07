@@ -302,9 +302,33 @@ internal partial class Program : ISessionHost, IWindowHost
     private readonly HashSet<string> _bgDecoding = new();
     private readonly System.Collections.Concurrent.ConcurrentQueue<(string path, byte[]? bgra, int w, int h)> _bgDecoded = new();
 
-    [STAThread]
-    private static void Main()
+    // ---- CLI launch args (wt-style, applied to the first window): ----
+    //   Agwinterm.Win32.exe [-p|--profile NAME] [-d|--dir PATH] [--maximized] [--fullscreen]
+    private static string? _argProfile;
+    private static string? _argDir;
+    private static bool _argMaximized, _argFullscreen;
+
+    private static void ParseLaunchArgs(string[] args)
     {
+        for (int i = 0; i < args.Length; i++)
+        {
+            switch (args[i].ToLowerInvariant())
+            {
+                case "-p" or "--profile" when i + 1 < args.Length: _argProfile = args[++i]; break;
+                case "-d" or "--dir" or "--startingdirectory" when i + 1 < args.Length: _argDir = args[++i]; break;
+                case "--maximized": _argMaximized = true; break;
+                case "--fullscreen": _argFullscreen = true; break;
+                // unknown args are ignored (forward compatibility)
+            }
+        }
+        if (_argDir is not null)
+            try { _argDir = Path.GetFullPath(_argDir); if (!Directory.Exists(_argDir)) _argDir = null; } catch { _argDir = null; }
+    }
+
+    [STAThread]
+    private static void Main(string[] args)
+    {
+        ParseLaunchArgs(args);
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         // Process-global setup (config/themes/keymap + window class + shared D2D/DWrite objects).
         _config = LoadOrCreateConfig();
@@ -421,7 +445,9 @@ internal partial class Program : ISessionHost, IWindowHost
         // runs unconditionally; the cursor render itself stays solid when cursor-blink is disabled.
         SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
 
-        ShowWindow(_hwnd, _geoValid && _geoMax ? SW_MAXIMIZE : SW_SHOW);
+        ShowWindow(_hwnd, _argMaximized || (_geoValid && _geoMax) ? SW_MAXIMIZE : SW_SHOW);
+        if (_argFullscreen) { _argFullscreen = false; ToggleFullscreen(); }   // first window only
+        _argMaximized = false;
         _wasMaximized = IsZoomed(_hwnd);
         ApplyWindowOpacity();
         UpdateWindow(_hwnd);
@@ -538,9 +564,19 @@ internal partial class Program : ISessionHost, IWindowHost
             _control = new ControlServer(this, this, "agwinterm");
             _control.Start();
         }
-        if (TryRestoreState()) return;
+        // CLI args (first window only; consumed so extra windows don't re-apply them).
+        string? argProfile = _argProfile, argDir = _argDir;
+        _argProfile = null; _argDir = null;
+
+        if (TryRestoreState())
+        {
+            // Restored: an explicit -p/-d still means "and open me this session".
+            if (argProfile is not null || argDir is not null)
+                CreateSession(Guid.NewGuid().ToString(), null, argDir, ActiveWorkspace(), makeActive: true, profileName: argProfile);
+            return;
+        }
         var ws = CreateWorkspace(Guid.NewGuid().ToString(), null);
-        CreateSession(Guid.NewGuid().ToString(), null, null, ws, makeActive: true);
+        CreateSession(Guid.NewGuid().ToString(), null, argDir, ws, makeActive: true, profileName: argProfile);
     }
 
     // ---- Session/workspace management (UI thread) ----
