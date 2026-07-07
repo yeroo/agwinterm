@@ -2697,10 +2697,10 @@ internal partial class Program : ISessionHost, IWindowHost
             lock (h.pane.S.SyncRoot)
             {
                 int cols = em.Screen.Cols, rows = em.Screen.Rows, hist = em.HistoryCount;
-                for (int c = 0; c < cols; c++)   // string index == screen column (wide-char spacers -> ' ')
+                for (int c = 0; c < cols; c++)   // string index == screen column (spacers/astral -> ' '; URLs are ASCII)
                 {
                     Cell cell = CellAbs(em, hist, rows, cols, ln, c);
-                    sb.Append(cell.Width == 0 || cell.Rune == '\0' ? ' ' : cell.Rune);
+                    sb.Append(cell.Width == 0 || cell.Rune == '\0' || cell.Rune > 0xFFFF ? ' ' : (char)cell.Rune);
                 }
             }
             string row = sb.ToString();
@@ -2812,7 +2812,8 @@ internal partial class Program : ISessionHost, IWindowHost
                 {
                     Cell cell = CellAbs(em, hist, rows, cols, line, c);
                     if (cell.Width == 0) continue; // trailing spacer of a wide glyph
-                    row.Append(cell.Rune == '\0' ? ' ' : cell.Rune);
+                    if (cell.Rune > 0xFFFF) row.Append(char.ConvertFromUtf32(cell.Rune));   // full fidelity for copy
+                    else row.Append(cell.Rune == '\0' ? ' ' : (char)cell.Rune);
                 }
                 sb.Append(row.ToString().TrimEnd(' '));
                 if (line != l1) sb.Append("\r\n");
@@ -2838,7 +2839,7 @@ internal partial class Program : ISessionHost, IWindowHost
         lock (p.S.SyncRoot)
         {
             int cols = em.Screen.Cols, rows = em.Screen.Rows, hist = em.HistoryCount;
-            bool Word(int c) { char ch = CellAbs(em, hist, rows, cols, line, c).Rune; return ch != ' ' && ch != '\0'; }
+            bool Word(int c) { int ch = CellAbs(em, hist, rows, cols, line, c).Rune; return ch != ' ' && ch != '\0'; }
             if (col < 0 || col >= cols || !Word(col)) return;
             int a = col, b = col;
             while (a > 0 && Word(a - 1)) a--;
@@ -2944,7 +2945,8 @@ internal partial class Program : ISessionHost, IWindowHost
                 for (int c = 0; c < cols; c++)
                 {
                     Cell cell = CellAbs(em, hist, rows, cols, line, c);
-                    sb.Append(cell.Rune == '\0' ? ' ' : cell.Rune);
+                    // astral -> one replacement char so string index keeps matching the column
+                    sb.Append(cell.Rune == '\0' ? ' ' : cell.Rune > 0xFFFF ? '�' : (char)cell.Rune);
                 }
                 string text = sb.ToString().ToLowerInvariant();
                 int idx = 0;
@@ -3570,11 +3572,13 @@ internal partial class Program : ISessionHost, IWindowHost
                     Cell cell = CellAt(r, c);
                     if (cell.Width == 0 || cell.Rune == ' ' || cell.Rune == '\0') { c++; continue; }
                     Color runFg = EffectiveFg(cell);
-                    if (cell.Width == 2)
+                    if (cell.Width == 2 || cell.Rune > 0xFFFF)
                     {
+                        // Wide and astral glyphs draw individually: runs assume string index ==
+                        // column, and an astral codepoint is two UTF-16 units in one column.
                         brush.Color = C4(runFg);
                         float wx = ox + c * cw;
-                        rt.DrawText(cell.Rune.ToString(), fmt, new Rect(wx, y, wx + 2 * cw, y + ch), brush);
+                        rt.DrawText(RuneStr(cell.Rune), fmt, new Rect(wx, y, wx + cell.Width * cw, y + ch), brush);
                         c++;
                         continue;
                     }
@@ -3584,10 +3588,10 @@ internal partial class Program : ISessionHost, IWindowHost
                     while (c < cols)
                     {
                         Cell cc = CellAt(r, c);
-                        if (cc.Width == 2 || cc.Width == 0) break;
+                        if (cc.Width == 2 || cc.Width == 0 || cc.Rune > 0xFFFF) break;
                         bool blank = cc.Rune == ' ' || cc.Rune == '\0';
                         if (!blank && EffectiveFg(cc) != runFg) break;
-                        _run.Append(blank ? ' ' : cc.Rune);
+                        _run.Append(blank ? ' ' : (char)cc.Rune);
                         c++;
                         if (!blank) lastNonBlank = _run.Length;
                     }
@@ -4868,6 +4872,9 @@ internal partial class Program : ISessionHost, IWindowHost
         PalBorder = Mix(PalBg, fg, dark ? 0.28f : 0.30f);
         PalSel = Mix(PalBg, accent, dark ? 0.45f : 0.32f);
     }
+
+    /// <summary>A cell codepoint as a drawable string (astral -> surrogate pair).</summary>
+    private static string RuneStr(int cp) => cp > 0xFFFF ? char.ConvertFromUtf32(cp) : ((char)cp).ToString();
 
     private int ClientW() { GetClientRect(_hwnd, out RECT rc); return rc.right - rc.left; }
     private int ClientH() { GetClientRect(_hwnd, out RECT rc); return rc.bottom - rc.top; }

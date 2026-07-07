@@ -43,6 +43,12 @@ public static class Wcwidth
     public static int Of(int codepoint)
     {
         if (codepoint == 0) return 0;
+        if (codepoint > 0xFFFF)   // astral: emoji/CJK extensions are wide; plane-15/16 PUA (nerd-font icons) are single
+        {
+            if (codepoint is >= 0x1F300 and <= 0x1FAFF) return 2;   // emoji & pictographs
+            if (codepoint is >= 0x20000 and <= 0x3FFFD) return 2;   // CJK Extensions B..H
+            return 1;
+        }
         if (InRanges(codepoint, ZeroWidth)) return 0;
         if (InRanges(codepoint, Wide)) return 2;
         return 1;
