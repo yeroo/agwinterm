@@ -9,6 +9,7 @@ using System.Text.Json;
 //   agwintermctl session new [--cwd DIR] [--name NAME]
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
+//   agwintermctl session rename <new-name...> [--target ID]
 //   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
 //   agwintermctl session type <text...> [--target ID]
 //   agwintermctl session write <text...> [--target ID]
@@ -115,6 +116,10 @@ switch (area)
             case "select":
             case "close":
                 target = rest.Count > 0 ? rest[0] : (Opt("target") ?? "active");
+                break;
+            case "rename": // session rename <new-name...> [--target ID]
+                if (rest.Count == 0 && Opt("name") is null) { Console.Error.WriteLine("session rename needs a name"); return 2; }
+                cargs["name"] = rest.Count > 0 ? string.Join(' ', rest) : Opt("name")!;
                 break;
             case "status":
                 if (rest.Count == 0) { Console.Error.WriteLine("session status needs a state"); return 2; }

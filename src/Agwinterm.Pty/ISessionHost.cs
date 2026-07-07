@@ -53,6 +53,9 @@ public interface ISessionHost
     /// <summary>Relocate a session to another workspace (by id/prefix/active), appending.</summary>
     bool SessionToWorkspace(string? target, string workspace);
 
+    /// <summary>Rename a session: sets its custom name (shown in the sidebar and title bar).</summary>
+    bool SessionRename(string? target, string name);
+
     bool WorkspaceRename(string? target, string name);
     bool WorkspaceDelete(string? target);
     bool WorkspaceSelect(string? target);
@@ -176,6 +179,7 @@ public sealed class SingleSessionHost : ISessionHost
     public void SessionGo(string dir) { }
     public bool SessionReorder(string? target, string dir) => false;
     public bool SessionToWorkspace(string? target, string workspace) => false;
+    public bool SessionRename(string? target, string name) => false;
     public bool WorkspaceRename(string? target, string name) => false;
     public bool WorkspaceDelete(string? target) => false;
     public bool WorkspaceSelect(string? target) => false;

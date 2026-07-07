@@ -1603,6 +1603,14 @@ internal partial class Program : ISessionHost, IWindowHost
             return true;
         }
 
+        public bool SessionRename(string? target, string name)
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null || string.IsNullOrWhiteSpace(name)) return false;
+            Post(() => { ses.Name = name; ses.CustomName = name; RequestRedraw(); SaveState(); }); // CustomName drives the title bar
+            return true;
+        }
+
         public bool WorkspaceRename(string? target, string name)
         {
             var ws = FindWs(target);

@@ -58,6 +58,7 @@ public static class AgentSkill
         - `agwintermctl profiles list` — shell profiles (cmd, Windows PowerShell, PowerShell 7, Git Bash, WSL:*, custom); `* ` marks the default.
           Profiles live in `%LOCALAPPDATA%\agwinterm\profiles.json` (auto-seeded from detected shells; edit to add your own — name/command/args/cwd/icon); `agwintermctl profiles reload` re-reads it.
         - `agwintermctl session select <id>` / `session close <id>`
+        - `agwintermctl session rename <new-name> [--target ID]` — set a session's custom name (sidebar + title bar)
         - `agwintermctl session go next|prev|first|last|next-attention|prev-attention` — move the active session
         - `agwintermctl session move --to up|down|top|bottom`     — reorder within its workspace
         - `agwintermctl session move <workspace-id>`             — relocate to another workspace
