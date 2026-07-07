@@ -27,7 +27,9 @@ public static class AgentSkill
 
         ## Detect
         You are inside agwinterm when `AGWINTERM_ENABLED=1`. Relevant env vars:
-        - `AGWINTERM_SESSION_ID` — your session id (the default target for commands).
+        - `AGWINTERM_SESSION_ID` — your session id (the default target for commands). Unique PER PANE:
+          two agents in a split can't collide (each pane resolves as its own target).
+        - `AGWINTERM_PANE_ID` — explicit pane identity (same value; use when you specifically mean the pane).
         - `AGWINTERM_WINDOW_ID` — your window id.
         - `AGWINTERM_PIPE` — the control pipe name (full path `\\.\pipe\<name>`).
 
