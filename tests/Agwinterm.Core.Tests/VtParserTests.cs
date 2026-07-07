@@ -89,10 +89,11 @@ public class VtParserTests
     }
 
     [Fact]
-    public void AstralCodepoint_BecomesReplacement()
+    public void AstralCodepoint_EmitsSurrogatePair()
     {
-        // U+1F600 😀 = 0xF0 0x9F 0x98 0x80 -> outside BMP -> U+FFFD (v1 BMP-only limitation)
-        Assert.Equal(new[] { "print:�" }, RunBytes(0xF0, 0x9F, 0x98, 0x80));
+        // U+1F600 😀 = 0xF0 0x9F 0x98 0x80 -> the performer receives the surrogate pair
+        // (the emulator re-pairs it into a single cell).
+        Assert.Equal(new[] { "print:\uD83D", "print:\uDE00" }, RunBytes(0xF0, 0x9F, 0x98, 0x80));
     }
 
     [Fact]

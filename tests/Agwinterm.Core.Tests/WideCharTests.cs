@@ -50,6 +50,28 @@ public class WideCharTests
     }
 
     [Fact]
+    public void AstralEmoji_OneWideCellPlusSpacer()
+    {
+        var t = Feed(10, 2, "😀x");                 // U+1F600: wide (2 cols) + trailing spacer
+        Assert.Equal(0x1F600, t.Screen[0, 0].Rune); // full codepoint in ONE cell
+        Assert.Equal(2, t.Screen[0, 0].Width);
+        Assert.Equal(0, t.Screen[0, 1].Width);      // spacer
+        Assert.Equal('x', t.Screen[0, 2].Rune);
+        Assert.Equal(3, t.CursorCol);
+        Assert.Equal("😀x", t.DumpRow(0).TrimEnd());
+    }
+
+    [Fact]
+    public void AstralNerdFontIcon_SingleCell()
+    {
+        var t = Feed(10, 2, "\U000F0CB2x");         // plane-15 PUA (nf-md icon): single-width
+        Assert.Equal(0xF0CB2, t.Screen[0, 0].Rune);
+        Assert.Equal(1, t.Screen[0, 0].Width);
+        Assert.Equal('x', t.Screen[0, 1].Rune);
+        Assert.Equal(2, t.CursorCol);
+    }
+
+    [Fact]
     public void WideChar_AtRightEdge_WrapsToNextLine()
     {
         // 3 cols: "ab" fills the first two; the wide char can't fit the last column -> wraps.

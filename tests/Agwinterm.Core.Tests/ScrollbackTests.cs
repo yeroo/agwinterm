@@ -10,7 +10,7 @@ public class ScrollbackTests
     private static string HistoryRow(TerminalEmulator t, int row, int cols)
     {
         var sb = new StringBuilder();
-        for (int c = 0; c < cols; c++) sb.Append(t.GetHistoryCell(row, c).Rune);
+        for (int c = 0; c < cols; c++) sb.Append((char)t.GetHistoryCell(row, c).Rune);
         return sb.ToString().TrimEnd();
     }
 

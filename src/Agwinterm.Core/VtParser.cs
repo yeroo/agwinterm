@@ -139,11 +139,21 @@ public sealed class VtParser(IParserPerformer performer)
 
     private void EmitScalar(int scalar)
     {
-        // v1 limitation: BMP only. Astral codepoints and surrogates -> replacement.
-        if (scalar is >= 0xD800 and <= 0xDFFF or > 0xFFFF)
+        // Raw surrogates / out-of-range -> replacement.
+        if (scalar is >= 0xD800 and <= 0xDFFF or > 0x10FFFF or < 0)
+        {
             performer.Print(Replacement);
-        else
-            performer.Print((char)scalar);
+            return;
+        }
+        if (scalar > 0xFFFF)
+        {
+            // Astral (emoji, nerd-font plane-15/16 icons): hand the performer the surrogate pair;
+            // the emulator re-pairs it into a single cell.
+            performer.Print((char)(0xD800 + ((scalar - 0x10000) >> 10)));
+            performer.Print((char)(0xDC00 + ((scalar - 0x10000) & 0x3FF)));
+            return;
+        }
+        performer.Print((char)scalar);
     }
 
     private void FlushIncompleteUtf8()

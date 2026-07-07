@@ -109,9 +109,25 @@ public sealed class TerminalEmulator : IParserPerformer
         if (CursorCol >= cols) CursorCol = cols - 1;
     }
 
+    private char _pendingHighSurrogate;
+
     public void Print(char ch)
     {
-        int w = Wcwidth.Of(ch);
+        // Astral codepoints arrive as a surrogate pair (two Print calls); re-pair into one cell.
+        if (char.IsHighSurrogate(ch)) { _pendingHighSurrogate = ch; return; }
+        if (char.IsLowSurrogate(ch))
+        {
+            if (_pendingHighSurrogate != '\0') PrintScalar(char.ConvertToUtf32(_pendingHighSurrogate, ch));
+            _pendingHighSurrogate = '\0';
+            return;
+        }
+        _pendingHighSurrogate = '\0';
+        PrintScalar(ch);
+    }
+
+    private void PrintScalar(int cp)
+    {
+        int w = Wcwidth.Of(cp);
         if (w == 0) return; // combining/zero-width: dropped in v1 (see spec non-goals)
 
         if (CursorCol >= Screen.Cols)
@@ -127,7 +143,7 @@ public sealed class TerminalEmulator : IParserPerformer
             Index();
         }
 
-        Screen[CursorRow, CursorCol] = new Cell(ch, _fg, _bg, _attrs, (byte)w, _fgSpec, _bgSpec);
+        Screen[CursorRow, CursorCol] = new Cell(cp, _fg, _bg, _attrs, (byte)w, _fgSpec, _bgSpec);
         if (w == 2)
             Screen[CursorRow, CursorCol + 1] = new Cell('\0', _fg, _bg, _attrs, 0, _fgSpec, _bgSpec); // trailing spacer
         CursorCol += w;
@@ -584,7 +600,8 @@ public sealed class TerminalEmulator : IParserPerformer
         {
             Cell cell = Screen[row, c];
             if (cell.Width == 0) continue; // trailing spacer of a wide glyph
-            sb.Append(cell.Rune);
+            if (cell.Rune > 0xFFFF) sb.Append(char.ConvertFromUtf32(cell.Rune));
+            else sb.Append((char)cell.Rune);
         }
         return sb.ToString().TrimEnd();
     }
