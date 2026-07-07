@@ -417,6 +417,7 @@ internal static class Win32
     [DllImport("user32.dll")] public static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
     [DllImport("user32.dll")] public static extern IntPtr GetClipboardData(uint uFormat);
     [DllImport("kernel32.dll")] public static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+    [DllImport("kernel32.dll")] public static extern IntPtr GlobalFree(IntPtr hMem);
     [DllImport("kernel32.dll")] public static extern IntPtr GlobalLock(IntPtr hMem);
     [DllImport("kernel32.dll")] public static extern bool GlobalUnlock(IntPtr hMem);
 
