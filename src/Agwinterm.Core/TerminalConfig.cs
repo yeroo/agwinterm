@@ -54,6 +54,10 @@ public sealed class TerminalConfig
     /// <summary>How much to dim non-active panes in a split (0 = no dimming, 100 = fully dark). Default 35.</summary>
     public int InactivePaneDim { get; set; } = 35;
 
+    /// <summary>Dim the whole content region when the window isn't focused (0 = off … 90). WT's
+    /// unfocusedAppearance analog. Off by default.</summary>
+    public int UnfocusedDim { get; set; } = 0;
+
     /// <summary>Whole-window opacity, 30–100 (%). 100 = opaque. Clamped so the window never disappears.</summary>
     public int WindowOpacity { get; set; } = 100;
 
@@ -157,6 +161,9 @@ public sealed class TerminalConfig
         # Dim non-active panes in a split (0 = off, 100 = fully dark).
         inactive-pane-dim = 35
 
+        # Dim the terminal content when this window isn't focused (0 = off .. 90).
+        unfocused-dim = 0
+
         # Whole-window opacity, 30-100 (%). 100 = opaque.
         window-opacity = 100
 
@@ -234,6 +241,7 @@ public sealed class TerminalConfig
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;
                 case "inactive-pane-dim": if (int.TryParse(val, out var ipd)) cfg.InactivePaneDim = System.Math.Clamp(ipd, 0, 100); break;
+                case "unfocused-dim": if (int.TryParse(val, out var ufd)) cfg.UnfocusedDim = System.Math.Clamp(ufd, 0, 90); break;
                 case "window-opacity": if (int.TryParse(val, out var wo)) cfg.WindowOpacity = System.Math.Clamp(wo, 30, 100); break;
                 case "sidebar-tint": if (int.TryParse(val, out var st)) cfg.SidebarTint = System.Math.Clamp(st, -100, 100); break;
                 case "new-session-dir": cfg.NewSessionDir = val; break;
