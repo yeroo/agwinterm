@@ -904,6 +904,14 @@ internal partial class Program : ISessionHost, IWindowHost
         RequestRedraw();
     }
 
+    /// <summary>Dismiss whatever cover is up (the "close_cover" keymap action): overlays close
+    /// (their program is ephemeral), scratch/quick just hide (their shells stay alive).</summary>
+    private void CloseCover()
+    {
+        if (_cover is null) return;
+        if (_coverKind == 3) CloseActiveOverlay(); else HideCover();
+    }
+
     /// <summary>The rect (px) the current cover occupies: the full content region, or — for a floating overlay — a centered panel sized by percent.</summary>
     private (float x, float y, float w, float h) CoverRect()
     {
@@ -1926,7 +1934,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     if (pt.x < (int)_sidebarW && pt.y >= (int)TitleBarH)
                     {
                         var item = RowAt(pt.y);
-                        if (item is not null) ShowContextMenu(item, sx, sy);
+                        if (item is not null) ShowContextMenuWindow(item, sx, sy);   // screen coords
                         return IntPtr.Zero;
                     }
                     break;
@@ -2033,11 +2041,13 @@ internal partial class Program : ISessionHost, IWindowHost
                         SetActive(t);
                         return IntPtr.Zero;
                     }
-                    // Quick terminal is a floating panel: a left-click anywhere in the "main window area"
-                    // outside the panel dismisses it (like a tool window that hides on focus loss).
+                    // Quick terminal is a floating panel: its corner ✕ hides it, and a left-click anywhere
+                    // in the "main window area" outside the panel also dismisses it (like a tool window).
                     if (_coverKind == 2)
                     {
                         var (qx, qy, qw, qh) = CoverRect();
+                        var (bx, by, bw, bh) = CoverCloseRect(qx + qw, qy);
+                        if (mx >= bx && mx < bx + bw && my >= by && my < by + bh) { HideCover(); return IntPtr.Zero; }
                         if (mx < qx || mx >= qx + qw || my < qy || my >= qy + qh) { HideCover(); return IntPtr.Zero; }
                     }
                     if (my < (int)TitleBarH)
@@ -2326,6 +2336,7 @@ internal partial class Program : ISessionHost, IWindowHost
             case "toggle_flag": if (_active is not null) FlagOp(_active, "toggle"); break;
             case "toggle_flagged_view": ToggleFlaggedView(); break;
             case "focus_workspace": WorkspaceFocusOp("toggle"); break;
+            case "close_cover": CloseCover(); break;
             case "select_all": if (ActiveSurface() is { } sa) SelectAll(sa); break;
             case "copy_selection": if (ActiveSurface() is { } sc && sc.HasSel) CopySelection(sc); break;
             case "paste": if (ActiveSurface() is { } sp2) PasteInto(sp2); break;
@@ -2922,6 +2933,10 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         bool ctrl = KeyDown(VK_CONTROL), shift = KeyDown(VK_SHIFT), alt = KeyDown(VK_MENU);
 
+        // While the popup context menu is up it owns the keyboard (↑↓ Enter Esc; the popup window
+        // never takes focus, so keys arrive here and are forwarded).
+        if (_menuHwnd != IntPtr.Zero) return MenuKeyDown(vk);
+
         // A --wait overlay whose program has exited hangs around; any key dismisses it.
         if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return true; }
 
@@ -3004,7 +3019,12 @@ internal partial class Program : ISessionHost, IWindowHost
         // Keymap dispatch: build the chord and run its bound action (defaults overlaid by keymap.conf).
         // Unbound chords fall through to terminal input below.
         string? chord = Keymap.ChordFor(vk, ctrl, alt, shift);
-        if (chord is not null && _keymap.TryGetValue(chord, out var action)) { RunAction(action); return true; }
+        if (chord is not null && _keymap.TryGetValue(chord, out var action))
+        {
+            // close_cover only applies while a cover is up — otherwise its chord (typically a bare
+            // Escape) falls through so the key still reaches the terminal.
+            if (action is not "close_cover" || _cover is not null) { RunAction(action); return true; }
+        }
 
         if (_session is null) return false;
 
@@ -3608,10 +3628,22 @@ internal partial class Program : ISessionHost, IWindowHost
     }
 
     /// <summary>Corner badge naming the current cover (scratch / quick / overlay); rightX/topY = cover top-right.</summary>
+    /// <summary>The quick terminal's ✕ close box, anchored to the panel's top-right corner.</summary>
+    private static (float x, float y, float w, float h) CoverCloseRect(float rightX, float topY) => (rightX - 26f, topY + 4f, 20f, 20f);
+
     private void DrawCoverBadge(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float rightX, float topY)
     {
         string badge = _coverKind switch { 1 => "scratch", 2 => "quick", 3 => "overlay", _ => "" };
         if (badge.Length == 0) return;
+        if (_coverKind == 2)   // quick terminal: ✕ close box in the corner; the badge pill sits left of it
+        {
+            var (cx, cy, cw2, ch2) = CoverCloseRect(rightX, topY);
+            brush.Color = WithA(SbHighlight, 0.92f);
+            rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx, cy, cw2, ch2), RadiusX = 5f, RadiusY = 5f }, brush);
+            brush.Color = ChromeText;
+            rt.DrawText(GlyphClose, _iconFont, new Rect(cx + 4f, cy + 3f, cw2 - 4f, ch2 - 3f), brush);
+            rightX = cx - 2f;
+        }
         float bw = MeasureText(badge, _uiSmall) + 16f;
         brush.Color = WithA(SbHighlight, 0.92f);
         rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(rightX - bw - 6f, topY + 4f, bw, 20f), RadiusX = 5f, RadiusY = 5f }, brush);
@@ -3966,108 +3998,47 @@ internal partial class Program : ISessionHost, IWindowHost
         SetFocus(_hwnd);
     }
 
-    // ---- Context menus (native Win32 popup) ----
+    // ---- Context menus ----
 
-    private const uint IDM_NEW_SESSION = 1, IDM_OPEN_DIR = 2, IDM_RENAME = 3, IDM_CLOSE = 4, IDM_CLEAR = 5, IDM_DELETE_WS = 6, IDM_FLAG = 7, IDM_FOCUS_WS = 8;
-    private const uint IDM_MOVE_BASE = 1000;
-    private const uint IDM_PROFILE_BASE = 2000;   // "New Session ▸ <profile>" items: IDM_PROFILE_BASE + index
+    /// <summary>Sidebar right-click menu at screen point (sx, sy): a themed popup window (Menu.cs)
+    /// that — like a native menu — can extend beyond the main window's bounds.</summary>
+    private void ShowContextMenuWindow(object item, int sx, int sy) => ShowMenuWindow(BuildContextItems(item), sx, sy);
 
-    /// <summary>A popup menu listing the shell profiles (item id = IDM_PROFILE_BASE + index).</summary>
-    private static IntPtr BuildProfilesMenu()
+    /// <summary>The context-menu items for a sidebar row (mirrors agterm's session/workspace menus).</summary>
+    private List<PalItem> BuildContextItems(object item)
     {
-        IntPtr m = CreatePopupMenu();
-        var profs = _profileCfg.Profiles;
-        for (int i = 0; i < profs.Count; i++) AppendMenuW(m, MF_STRING, (UIntPtr)(IDM_PROFILE_BASE + (uint)i), profs[i].Name);
-        return m;
-    }
-
-    /// <summary>If cmd is a profile item, create a session with that profile in <paramref name="ws"/>. Returns true if handled.</summary>
-    private bool TryCreateSessionForProfileCmd(int cmd, Workspace ws, string? cwd)
-    {
-        int idx = cmd - (int)IDM_PROFILE_BASE;
-        if (idx < 0 || idx >= _profileCfg.Profiles.Count) return false;
-        CreateSession(Guid.NewGuid().ToString(), null, cwd, ws, makeActive: true, profileName: _profileCfg.Profiles[idx].Name);
-        return true;
-    }
-
-    private void ShowContextMenu(object item, int sx, int sy)
-    {
-        IntPtr menu = CreatePopupMenu();
+        var list = new List<PalItem>();
+        void A(string label, string hint, Action run) => list.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
         if (item is Ses ses)
         {
-            if (_profileCfg.Profiles.Count > 1) AppendMenuW(menu, MF_POPUP, (UIntPtr)(ulong)BuildProfilesMenu(), "New Session");
-            else AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
-            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
-            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_RENAME, "Rename");
-            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_FLAG, ses.Flagged ? "Unflag Session" : "Flag Session");
+            if (_profileCfg.Profiles.Count > 1)
+                foreach (var p in _profileCfg.Profiles)
+                { var nm = p.Name; A($"New Session — {nm}", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true, profileName: nm)); }
+            else A("New Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true));
+            A("Open Directory…", "", () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ses.Ws, true); });
+            A("Rename", "F2", () => StartRename(ses));
+            A(ses.Flagged ? "Unflag Session" : "Flag Session", "", () => FlagOp(ses, "toggle"));
             List<Workspace> targets;
             lock (_workspaces) targets = _workspaces.Where(w => !ReferenceEquals(w, ses.Ws)).ToList();
-            IntPtr sub = CreatePopupMenu();
-            for (int i = 0; i < targets.Count; i++) AppendMenuW(sub, MF_STRING, (UIntPtr)(IDM_MOVE_BASE + (uint)i), targets[i].Name);
-            AppendMenuW(menu, MF_POPUP | (targets.Count == 0 ? MF_GRAYED : 0), (UIntPtr)(ulong)sub, "Move to");
-            if (ses.S.Status != AgentStatus.Idle) AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_CLEAR, "Clear Status");
-            AppendMenuW(menu, MF_SEPARATOR, UIntPtr.Zero, "");
-            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_CLOSE, "Close Session");
-            int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN, sx, sy, _hwnd, IntPtr.Zero);
-            DestroyMenu(menu);
-            switch ((uint)cmd)
-            {
-                case IDM_NEW_SESSION: CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true); break;
-                case IDM_OPEN_DIR: { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ses.Ws, true); break; }
-                case IDM_RENAME: StartRename(ses); break;
-                case IDM_FLAG: FlagOp(ses, "toggle"); break;
-                case IDM_CLEAR: ses.S.SetStatus(AgentStatus.Idle); RequestRedraw(); break;
-                case IDM_CLOSE: if (ConfirmCloseOk()) CloseSessionInternal(ses); break;
-                default:
-                    if (cmd >= (int)IDM_MOVE_BASE && cmd < (int)IDM_MOVE_BASE + targets.Count)
-                        MoveSession(ses, targets[cmd - (int)IDM_MOVE_BASE]);
-                    else TryCreateSessionForProfileCmd(cmd, ses.Ws, null);   // "New Session ▸ <profile>"
-                    break;
-            }
+            foreach (var t in targets) A($"Move to — {t.Name}", "", () => MoveSession(ses, t));
+            if (ses.S.Status != AgentStatus.Idle) A("Clear Status", "", () => { ses.S.SetStatus(AgentStatus.Idle); RequestRedraw(); });
+            list.Add(MenuSeparator());
+            A("Close Session", "", () => { if (ConfirmCloseOk()) CloseSessionInternal(ses); });
         }
-        else if (item is Workspace ws)
+        else if (item is Workspace cws)
         {
-            bool wsFocused = _focusedWorkspaceId == ws.Id;
+            bool wsFocused = _focusedWorkspaceId == cws.Id;
             int wsCount; lock (_workspaces) wsCount = _workspaces.Count;
-            if (_profileCfg.Profiles.Count > 1) AppendMenuW(menu, MF_POPUP, (UIntPtr)(ulong)BuildProfilesMenu(), "New Session");
-            else AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_NEW_SESSION, "New Session");
-            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
-            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_RENAME, "Rename");
-            AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_FOCUS_WS, wsFocused ? "Unfocus" : "Focus");
-            AppendMenuW(menu, MF_SEPARATOR, UIntPtr.Zero, "");
-            AppendMenuW(menu, MF_STRING | (wsCount <= 1 ? MF_GRAYED : 0), (UIntPtr)IDM_DELETE_WS, "Delete Workspace");
-            int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN, sx, sy, _hwnd, IntPtr.Zero);
-            DestroyMenu(menu);
-            switch ((uint)cmd)
-            {
-                case IDM_NEW_SESSION: CreateSession(Guid.NewGuid().ToString(), null, null, ws, true); break;
-                case IDM_OPEN_DIR: { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ws, true); break; }
-                case IDM_RENAME: StartRename(ws); break;
-                case IDM_FOCUS_WS: WorkspaceFocusOp(wsFocused ? "off" : "on", ws.Id); break;
-                case IDM_DELETE_WS: DeleteWorkspace(ws); break;
-                default: TryCreateSessionForProfileCmd(cmd, ws, null); break;   // "New Session ▸ <profile>"
-            }
+            if (_profileCfg.Profiles.Count > 1)
+                foreach (var p in _profileCfg.Profiles)
+                { var nm = p.Name; A($"New Session — {nm}", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, cws, true, profileName: nm)); }
+            else A("New Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, cws, true));
+            A("Open Directory…", "", () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, cws, true); });
+            A("Rename", "", () => StartRename(cws));
+            A(wsFocused ? "Unfocus" : "Focus", "", () => WorkspaceFocusOp(wsFocused ? "off" : "on", cws.Id));
+            if (wsCount > 1) { list.Add(MenuSeparator()); A("Delete Workspace", "", () => DeleteWorkspace(cws)); }
         }
-        else DestroyMenu(menu);
-    }
-
-    /// <summary>Footer add-session button: popup menu (New Session / Open Directory…) above the button.</summary>
-    private void ShowAddSessionMenu()
-    {
-        float bx0 = 6f;
-        foreach (var b in _footerButtons) if (b.action == "add-session") { bx0 = b.x0; break; }
-        var pt = new POINT { x = (int)bx0, y = ClientH() - (int)FooterH };
-        ClientToScreen(_hwnd, ref pt);
-        IntPtr menu = CreatePopupMenu();
-        var profs = _profileCfg.Profiles;                       // one "New <profile>" item per shell profile
-        for (int i = 0; i < profs.Count; i++) AppendMenuW(menu, MF_STRING, (UIntPtr)(IDM_PROFILE_BASE + (uint)i), profs[i].Name);
-        AppendMenuW(menu, MF_SEPARATOR, UIntPtr.Zero, "");
-        AppendMenuW(menu, MF_STRING, (UIntPtr)IDM_OPEN_DIR, "Open Directory…");
-        int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN, pt.x, pt.y, _hwnd, IntPtr.Zero);
-        DestroyMenu(menu);
-        var ws = ActiveWorkspace();
-        if (cmd == (int)IDM_OPEN_DIR) { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ws, true); }
-        else TryCreateSessionForProfileCmd(cmd, ws, null);
+        return list;
     }
 
     private void MoveSession(Ses ses, Workspace target)
@@ -4569,9 +4540,13 @@ internal partial class Program : ISessionHost, IWindowHost
         const int maxRows = 12;
         float pw = MathF.Min(560f, cw - 80f);
         float px = (cw - pw) / 2f;
-        int shown = Math.Min(_palItems.Count, maxRows);
+        // Cap the row count so the panel always fits inside the window (the list scrolls with the
+        // selection when there are more items than fit).
+        int fitRows = Math.Max(1, (int)((ch - TitleBarH - 16f - queryH - 8f) / rowH));
+        int shown = Math.Min(_palItems.Count, Math.Min(maxRows, fitRows));
         float ph = queryH + Math.Max(1, shown) * rowH + 8f;
         float py = MathF.Max(TitleBarH + 16f, ch * 0.14f);
+        py = MathF.Min(py, MathF.Max(TitleBarH + 8f, ch - ph - 8f));   // short window: pull the panel up
         _palPanel = new Rect(px, py, pw, ph);
 
         brush.Color = PalBg;
@@ -4592,7 +4567,7 @@ internal partial class Program : ISessionHost, IWindowHost
         brush.Color = ChromeBorder;
         rt.DrawLine(new System.Numerics.Vector2(px + 8f, py + queryH), new System.Numerics.Vector2(px + pw - 8f, py + queryH), brush, 1f);
 
-        int start = _palSel >= maxRows ? _palSel - maxRows + 1 : 0;
+        int start = _palSel >= shown ? _palSel - shown + 1 : 0;
         for (int i = 0; i < shown; i++)
         {
             int idx = start + i;
@@ -4604,8 +4579,9 @@ internal partial class Program : ISessionHost, IWindowHost
             if (it.Dot is AgentStatus ds) { brush.Color = StatusDot(ds); rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(px + 16f, ry + rowH / 2f), 4.5f, 4.5f), brush); tx = px + 30f; }
             bool hasSub = it.Secondary.Length > 0;
             brush.Color = it.Run is null ? ChromeDim : (idx == _palSel ? SbActiveText : ChromeText);
-            rt.DrawText(it.Label, _uiFont, new Rect(tx, ry + (hasSub ? 3f : 0f), pw - (tx - px) - 80f, hasSub ? 20f : rowH), brush);
-            if (hasSub) { brush.Color = ChromeDim; rt.DrawText(it.Secondary, _uiSmall, new Rect(tx, ry + 20f, pw - (tx - px) - 20f, 16f), brush); }
+            float lw = pw - (tx - px) - (it.Hint.Length > 0 ? 80f : 20f);
+            rt.DrawText(it.Label, _uiFont, new Rect(tx, ry + (hasSub ? 3f : 0f), lw, hasSub ? 20f : rowH), brush, DrawTextOptions.Clip);
+            if (hasSub) { brush.Color = ChromeDim; rt.DrawText(it.Secondary, _uiSmall, new Rect(tx, ry + 20f, pw - (tx - px) - 20f, 16f), brush, DrawTextOptions.Clip); }
             if (it.Hint.Length > 0) { brush.Color = ChromeDim; float hw = MeasureText(it.Hint, _uiSmall); rt.DrawText(it.Hint, _uiSmall, new Rect(px + pw - 16f - hw, ry + (rowH - 16f) / 2f, hw + 2f, 16f), brush); }
             _palRows.Add((ry, ry + rowH, idx));
         }

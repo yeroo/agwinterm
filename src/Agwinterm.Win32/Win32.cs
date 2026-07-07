@@ -219,6 +219,20 @@ internal static class Win32
         public byte rgbReserved28; public byte rgbReserved29; public byte rgbReserved30; public byte rgbReserved31;
     }
 
+    // ---- Popup menu window (a real top-level HWND for the themed context menu) ----
+    public const uint WS_EX_TOPMOST = 0x00000008, WS_EX_TOOLWINDOW = 0x00000080, WS_EX_NOACTIVATE = 0x08000000;
+    public const uint CS_DROPSHADOW = 0x00020000;
+    public const int SW_SHOWNOACTIVATE = 4;
+    public const uint WM_MOUSEACTIVATE = 0x0021, WM_CAPTURECHANGED = 0x0215;
+    public const int MA_NOACTIVATE = 3;
+    public const uint MONITOR_DEFAULTTONEAREST = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
+
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+    [DllImport("user32.dll")] public static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
+
     public const uint CS_HREDRAW = 0x0002, CS_VREDRAW = 0x0001;
     public const uint WS_OVERLAPPEDWINDOW = 0x00CF0000, WS_VISIBLE = 0x10000000;
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
