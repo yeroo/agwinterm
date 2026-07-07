@@ -91,5 +91,17 @@ Valuable but bigger, nichier, or partially covered by an agwinterm-native answer
 6. **FTCS shell-integration marks** (T1 #1, M) — OSC 133 parsing, jump-to-prompt, select-command/output; the agent-workflow multiplier, scheduled last as the largest
 
 **Rejected in triage** (revisit on demand): vertical splits + pane zoom (T1 #3), copy as
-HTML/RTF (T1 #5), BEL bell styles (T1 #6), Explorer "Open here" (T1 #9). Tier 2 remains
-undecided — pull items up as needed.
+HTML/RTF (T1 #5), BEL bell styles (T1 #6), Explorer "Open here" (T1 #9).
+
+### Tier 2 triage (2026-07-07)
+
+**Accepted → backlog** (no execution order yet; tasks created per batch when work starts):
+word-delimiter config (S) · read-only panes (S) · block selection + mark mode (M) ·
+per-profile env vars (S) · elevated profile launch (M) · unfocused-window dim (S) ·
+ligatures/font.features (M–L) · builtin box-drawing glyphs (M) · acrylic/Mica (M) ·
+sixel graphics (M–L) · win32-input-mode + Kitty keyboard protocol (M) ·
+**Default Terminal Application delegation (L)** · **UIA screen-reader accessibility (L)** ·
+buffer-content restore (M)
+
+**Rejected**: search regex/case toggle, global summon hotkey, hidden profiles,
+one-keystroke duplicate session.
