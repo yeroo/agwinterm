@@ -4403,6 +4403,8 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         if (_palette == kind) { ClosePalette(); return; }
         if (kind == PaletteKind.Themes) _themeBeforePreview = _theme;
+        // Engine/font pickers detect installed tools: pick up a just-finished winget install.
+        if (kind is PaletteKind.PromptEngine or PaletteKind.Fonts or PaletteKind.Starship) RefreshEnvPath();
         _palette = kind; _palQuery = ""; _palSel = 0;
         BuildPaletteItems();
         FilterPalette();          // calls PreviewSelectedTheme() at its end
@@ -4578,7 +4580,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     Search = label + " install",
                     Run = detected ? () => ApplyPromptEngine(id) : () => InstallPromptEngine(id),
                 });
-                E("omp", "oh-my-posh", Agwinterm.Pty.OmpThemes.List().Count > 0, "theme picker + injection into new sessions");
+                E("omp", "oh-my-posh", OmpAvailable(), "theme picker + injection into new sessions");
                 E("starship", "Starship", Agwinterm.Pty.StarshipPresets.Available(), "preset picker + injection into new sessions");
                 _palAll.Add(new PalItem
                 {
@@ -5568,6 +5570,10 @@ internal partial class Program : ISessionHost, IWindowHost
         ShowToast($"installing {family} — the terminal switches to it once the overlay finishes");
     }
 
+    /// <summary>oh-my-posh present? Theme folders OR the exe itself — the Microsoft Store install
+    /// has no POSH_THEMES_PATH/winget themes dir, yet is fully usable (init + font tool).</summary>
+    private static bool OmpAvailable() => Agwinterm.Pty.OmpThemes.List().Count > 0 || CommandExists("oh-my-posh");
+
     private static bool CommandExists(string exe)
     {
         try
@@ -5596,8 +5602,17 @@ internal partial class Program : ISessionHost, IWindowHost
                 ApplyStarship(_config.StarshipTheme, persist: false);
                 ShowToast("prompt engine: starship — pick a preset via “Starship Theme…”");
                 break;
-            case "omp" when Agwinterm.Pty.OmpThemes.List().Count > 0:
+            case "omp" when OmpAvailable():
                 if (Agwinterm.Pty.OmpThemes.Resolve(_config.OmpTheme) is { } p) ApplyOmp(p, persist: false);
+                else if (ActiveSurface() is { } op)   // no theme configured (e.g. Store install, no themes dir): init with omp's default/env theme
+                {
+                    op.S.NotifyActivity();
+                    op.S.Write(Encoding.UTF8.GetBytes(
+                        "oh-my-posh init pwsh | Invoke-Expression; " +
+                        "$__o=$function:prompt; function global:prompt { " +
+                        "[Console]::Write(\"$([char]27)]7;file://$env:COMPUTERNAME/$(((Get-Location).ProviderPath -replace '\\\\','/'))$([char]7)\"); " +
+                        "& $__o }\r"));
+                }
                 ShowToast("prompt engine: oh-my-posh — pick a theme via “oh-my-posh Theme…”");
                 break;
             case "vanilla":
