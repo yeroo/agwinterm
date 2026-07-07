@@ -42,10 +42,17 @@ public static class ShellIntegrationInstaller
         if (-not $global:__agwSI) {
           $global:__agwSI = $true
           $global:__agwPrompt = $function:prompt
+          $global:__agwFirst = $true
           function global:prompt {
+            $ok = $?
+            $e = [char]27; $b = [char]7
+            $ec = $global:LASTEXITCODE; if ($null -eq $ec) { $ec = if ($ok) { 0 } else { 1 } }
+            if ($global:__agwFirst) { $global:__agwFirst = $false } else { [Console]::Write("$e]133;D;$ec$b") }
+            [Console]::Write("$e]133;A$b")
             $d = (Get-Location).ProviderPath
-            [Console]::Write("$([char]27)]7;file://$env:COMPUTERNAME/$(($d -replace '\\','/'))$([char]7)")
-            if ($global:__agwPrompt) { & $global:__agwPrompt } else { "PS $d> " }
+            [Console]::Write("$e]7;file://$env:COMPUTERNAME/$(($d -replace '\\','/'))$b")
+            $p = if ($global:__agwPrompt) { & $global:__agwPrompt } else { "PS $d> " }
+            "$p$e]133;B$b"
           }
         }
         """;

@@ -62,6 +62,8 @@ public static class AgentSkill
         - `agwintermctl session select <id>` / `session close <id>`
         - `agwintermctl session rename <new-name> [--target ID]` — set a session's custom name (sidebar + title bar)
         - `agwintermctl session seen [--target ID]` — clear a session's unseen-notification badge headlessly
+        - `agwintermctl session output [--target ID]` — the LAST COMPLETED command's output (FTCS marks;
+          pwsh sessions emit them automatically) — cleaner than parsing `session text` yourself
         - `agwintermctl sidebar state` — read-back: `visible tree` | `hidden flagged` | … (`ping` reports the app version)
         - `agwintermctl session go next|prev|first|last|next-attention|prev-attention` — move the active session
         - `agwintermctl session move --to up|down|top|bottom`     — reorder within its workspace

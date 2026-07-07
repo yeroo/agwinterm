@@ -1767,6 +1767,26 @@ internal partial class Program : ISessionHost, IWindowHost
             return true;
         }
 
+        /// <summary>Plain text of the LAST COMPLETED command's output (FTCS marks) — the
+        /// agent-workflow primitive: "give me what that command printed".</summary>
+        public string SessionOutput(string? target)
+        {
+            var s = Resolve(target);
+            if (s is null) return "";
+            Pane? pane;
+            lock (_workspaces)
+                pane = _workspaces.SelectMany(w => w.Sessions).SelectMany(x => x.Panes)
+                                  .FirstOrDefault(p => ReferenceEquals(p.S, s));
+            if (pane is null) return "";
+            TerminalEmulator.ShellMark? m;
+            lock (pane.S.SyncRoot) m = pane.S.Emulator.Marks.LastOrDefault(x => x.EndLine >= 0);
+            if (m is null) return "no completed command marks (FTCS wrap not active?)";
+            // Output begins after the command's input row: 133;C if the shell emits it, else the
+            // line after 133;B (the input row), else after the prompt.
+            int from = m.OutputLine >= 0 ? m.OutputLine : m.CommandLine >= 0 ? m.CommandLine + 1 : m.PromptLine + 1;
+            return from > m.EndLine - 1 ? "" : RowsText(pane, from, m.EndLine - 1);
+        }
+
         public string SessionCopy(string? target)
         {
             var s = Resolve(target);
@@ -2437,6 +2457,51 @@ internal partial class Program : ISessionHost, IWindowHost
     }
 
     /// <summary>Scroll the active pane's scrollback by delta lines (or to top/bottom for ±int.MaxValue).</summary>
+    /// <summary>Jump the active pane's scrollback to the previous/next FTCS prompt line.</summary>
+    private void JumpPrompt(int dir)
+    {
+        var p = ActiveSurface();
+        if (p is null) return;
+        var em = p.S.Emulator;
+        List<int> lines;
+        int hist;
+        lock (p.S.SyncRoot) { lines = em.Marks.Select(m => m.PromptLine).ToList(); hist = em.HistoryCount; }
+        if (lines.Count == 0) { ShowToast("no shell marks yet (FTCS comes from the pwsh prompt wrap)"); return; }
+        int curTop = hist - p.ScrollOffset;
+        int target = dir < 0 ? lines.Where(l => l < curTop).DefaultIfEmpty(-1).Max()
+                             : lines.Where(l => l > curTop).DefaultIfEmpty(-1).Min();
+        if (target < 0) { ShowToast(dir < 0 ? "no earlier prompt" : "no later prompt"); return; }
+        p.ScrollOffset = Math.Clamp(hist - target, 0, hist);
+        RequestRedraw();
+    }
+
+    /// <summary>Plain-text rows [from..to] of a pane's buffer (history + live), trailing spaces trimmed.</summary>
+    private static string RowsText(Pane pane, int from, int to)
+    {
+        var em = pane.S.Emulator;
+        var sb = new StringBuilder();
+        lock (pane.S.SyncRoot)
+        {
+            int cols = em.Screen.Cols, rows = em.Screen.Rows, hist = em.HistoryCount;
+            from = Math.Max(0, from);
+            to = Math.Min(hist + rows - 1, to);
+            for (int line = from; line <= to; line++)
+            {
+                var row = new StringBuilder();
+                for (int c = 0; c < cols; c++)
+                {
+                    Cell cell = CellAbs(em, hist, rows, cols, line, c);
+                    if (cell.Width == 0 && cell.Rune == '\0') continue;
+                    if (cell.Rune > 0xFFFF) row.Append(char.ConvertFromUtf32(cell.Rune));
+                    else row.Append(cell.Rune == '\0' ? ' ' : (char)cell.Rune);
+                }
+                sb.Append(row.ToString().TrimEnd(' '));
+                if (line != to) sb.Append("\r\n");
+            }
+        }
+        return sb.ToString();
+    }
+
     private bool ScrollActivePane(int deltaLines)
     {
         var p = ActiveSurface();
@@ -2495,6 +2560,8 @@ internal partial class Program : ISessionHost, IWindowHost
             case "close_cover": CloseCover(); break;
             case "toggle_fullscreen": ToggleFullscreen(); break;
             case "toggle_broadcast": ToggleBroadcast(); break;
+            case "previous_prompt": JumpPrompt(-1); break;
+            case "next_prompt": JumpPrompt(1); break;
             case "select_all": if (ActiveSurface() is { } sa) SelectAll(sa); break;
             case "copy_selection": if (ActiveSurface() is { } sc && sc.HasSel) CopySelection(sc); break;
             case "paste": if (ActiveSurface() is { } sp2) PasteInto(sp2); break;
@@ -3718,6 +3785,18 @@ internal partial class Program : ISessionHost, IWindowHost
                 rt.FillRectangle(new Rect(trackX, oy, 3f, trackH), brush);
                 brush.Color = WithA(ChromeText, 0.35f);
                 rt.FillRectangle(new Rect(trackX, thumbY, 3f, thumbH), brush);
+            }
+            if (!em.IsAltScreen && em.Marks.Count > 0)  // FTCS prompt pips (green ok / red fail / accent running)
+            {
+                float pipX = ox + cols * cw - 3f, pipTrackH = rows * ch, pipTotal = MathF.Max(1f, hist + rows);
+                foreach (var m in em.Marks)
+                {
+                    float py2 = oy + pipTrackH * m.PromptLine / pipTotal;
+                    brush.Color = m.ExitCode is int ec2
+                        ? (ec2 == 0 ? new Color4(0.24f, 0.78f, 0.35f, 0.9f) : new Color4(0.9f, 0.3f, 0.3f, 0.9f))
+                        : WithA(ChromeAccent, 0.9f);
+                    rt.FillRectangle(new Rect(pipX, py2, 3f, 2f), brush);
+                }
             }
 
             if (em.CursorVisible && off == 0)

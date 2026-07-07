@@ -70,8 +70,7 @@ public class OscTests
         Assert.Equal("", t.Cwd);
     }
 
-    // Control characters embedded in OSC payloads are an injection vector (the title is re-shown
-    // in the title bar; the cwd is expanded into custom-command text). They must be stripped.
+    // Control characters embedded in OSC payloads are an injection vector; they must be stripped.
 
     [Fact]
     public void OscTitle_StripsControlCharacters()
@@ -91,7 +90,7 @@ public class OscTests
     public void OscTitle_StripsDelAndC1Controls()
     {
         var t = new TerminalEmulator(40, 3);
-        t.OscDispatch(2, "a\u007Fb\u009Cc");   // DEL + C1 (ST)
+        t.OscDispatch(2, "a\u007Fb\u009Cc");
         Assert.Equal("abc", t.Title);
     }
 
@@ -126,8 +125,8 @@ public class OscTests
         var t = new TerminalEmulator(40, 3);
         var got = new List<(int, int)>();
         t.Progress += (s, v) => got.Add((s, v));
-        t.OscDispatch(9, "4;1;250");   // clamped to 100
-        t.OscDispatch(9, "4;0");       // clear, no value
+        t.OscDispatch(9, "4;1;250");
+        t.OscDispatch(9, "4;0");
         Assert.Equal(new[] { (1, 100), (0, 0) }, got.ToArray());
     }
 
@@ -137,12 +136,38 @@ public class OscTests
         var t = new TerminalEmulator(40, 3);
         string? body = null;
         t.Notified += (_, b) => body = b;
-        t.OscDispatch(9, "42 done");   // not "4;" -> a normal notification
+        t.OscDispatch(9, "42 done");
         Assert.Equal("42 done", body);
     }
 
-    // Regression: the parser must UTF-8-decode OSC payloads (byte-as-char accumulation
-    // mojibakes multibyte text and lets the C1 stripper eat continuation bytes).
+    // FTCS (OSC 133) shell-integration marks: prompt/output boundaries + exit codes.
+
+    [Fact]
+    public void Ftcs_RecordsPromptOutputAndExit()
+    {
+        var t = new TerminalEmulator(40, 6);
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]133;A\x07PS> dir\r\n"));
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]133;C\afile1\r\nfile2\r\n"));
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]133;D;0\x07\x1b]133;A\x07PS> "));
+        Assert.Equal(2, t.Marks.Count);
+        Assert.Equal(0, t.Marks[0].PromptLine);
+        Assert.Equal(1, t.Marks[0].OutputLine);
+        Assert.Equal(3, t.Marks[0].EndLine);
+        Assert.Equal(0, t.Marks[0].ExitCode);
+        Assert.Equal(3, t.Marks[1].PromptLine);
+        Assert.Null(t.Marks[1].ExitCode);
+    }
+
+    [Fact]
+    public void Ftcs_FailureExitCodeRecorded()
+    {
+        var t = new TerminalEmulator(40, 6);
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]133;A\x07PS> boom\r\nerr\r\n\x1b]133;D;1\x07"));
+        Assert.Single(t.Marks);
+        Assert.Equal(1, t.Marks[0].ExitCode);
+    }
+
+    // Regression: the parser must UTF-8-decode OSC payloads.
 
     [Fact]
     public void OscTitle_Utf8DecodesMultibyteText()

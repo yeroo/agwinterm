@@ -70,7 +70,68 @@ public sealed class TerminalEmulator : IParserPerformer
         for (int c = 0; c < cols; c++) row[c] = Screen[0, c];
         _history.Add(row);
         if (_history.Count > ScrollbackMax + TrimSlack)
-            _history.RemoveRange(0, _history.Count - ScrollbackMax);
+        {
+            int trim = _history.Count - ScrollbackMax;
+            _history.RemoveRange(0, trim);
+            // Marks address buffer-absolute lines (history + live row): shift with the trim.
+            for (int i = _marks.Count - 1; i >= 0; i--)
+            {
+                var m = _marks[i];
+                m.PromptLine -= trim;
+                if (m.CommandLine >= 0) m.CommandLine -= trim;
+                if (m.OutputLine >= 0) m.OutputLine -= trim;
+                if (m.EndLine >= 0) m.EndLine -= trim;
+                if (m.PromptLine < 0) _marks.RemoveAt(i);
+            }
+        }
+    }
+
+    // ---- Shell-integration marks (FTCS / OSC 133): prompt + command-output boundaries ----
+
+    /// <summary>One prompt→command→output record from FTCS (OSC 133). Lines are buffer-absolute
+    /// (history + live row); they shift as history trims and drop off when trimmed away.</summary>
+    public sealed class ShellMark
+    {
+        public int PromptLine;        // 133;A — the prompt started on this line
+        public int CommandLine = -1;  // 133;B — command input line (where the user types)
+        public int OutputLine = -1;   // 133;C — command output starts here (optional)
+        public int EndLine = -1;      // 133;D — command finished (the next prompt's line)
+        public int? ExitCode;         // from 133;D;<code>
+    }
+
+    private readonly List<ShellMark> _marks = new();
+
+    /// <summary>FTCS marks, oldest first (main screen only; capped at 512).</summary>
+    public IReadOnlyList<ShellMark> Marks => _marks;
+
+    private void FtcsDispatch(string text)
+    {
+        if (IsAltScreen || text.Length == 0) return;
+        int abs = _history.Count + CursorRow;
+        switch (char.ToUpperInvariant(text[0]))
+        {
+            case 'A':   // prompt start (dedupe re-renders on the same line)
+                if (_marks.Count == 0 || _marks[^1].PromptLine != abs)
+                    _marks.Add(new ShellMark { PromptLine = abs });
+                break;
+            case 'B':   // command-line start (user input row)
+                if (_marks.Count > 0 && _marks[^1].CommandLine < 0) _marks[^1].CommandLine = abs;
+                break;
+            case 'C':   // output start
+                if (_marks.Count > 0 && _marks[^1].OutputLine < 0) _marks[^1].OutputLine = abs;
+                break;
+            case 'D':   // command finished (+ optional exit code)
+                if (_marks.Count > 0 && _marks[^1].EndLine < 0)
+                {
+                    var m = _marks[^1];
+                    m.EndLine = abs;
+                    int semi = text.IndexOf(';');
+                    if (semi >= 0 && int.TryParse(text[(semi + 1)..], out int ec)) m.ExitCode = ec;
+                }
+                break;
+            // 'B' (command-line start) isn't tracked separately in v1.
+        }
+        if (_marks.Count > 512) _marks.RemoveRange(0, _marks.Count - 512);
     }
 
     private Color _fg = Color.DefaultForeground;
@@ -411,6 +472,9 @@ public sealed class TerminalEmulator : IParserPerformer
                 break;
             case 7:
                 Cwd = text;
+                break;
+            case 133: // FTCS shell-integration marks: A prompt, B command, C output, D;exit done
+                FtcsDispatch(text);
                 break;
             case 9: // OSC 9 ; <message> — body-only desktop notification; OSC 9;4 = ConEmu/WT progress
                 if (text.StartsWith("4;", StringComparison.Ordinal))
