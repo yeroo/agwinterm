@@ -79,13 +79,17 @@ Valuable but bigger, nichier, or partially covered by an agwinterm-native answer
 
 ---
 
-## Suggested backlog order (if Tier 1 is accepted wholesale)
+## Triage outcome (2026-07-07)
 
-1. **FTCS marks + jump-to-prompt + select-output** — the agent-workflow multiplier
-2. **BEL bell + Ctrl+wheel zoom + word delimiters** — one small polish PR
-3. **Drag & drop paths** — also closes the agterm-list item
-4. **Broadcast input** — pairs with a `session.broadcast` control verb for orchestrators
-5. **CLI args → Explorer "Open here" → jumplist** — one integration arc, in that order
-6. **Copy as HTML** — RTF optional
-7. **Vertical splits (+ zoom)** — the big structural one; schedule deliberately
-8. **Taskbar progress (OSC 9;4)** — quick win after marks land
+**Accepted backlog** (owner triage), in suggested execution order:
+
+1. **Ctrl+wheel font zoom** (T1 #7, S) — quick win
+2. **CLI launch args on the exe** (T1 #8, S–M) — `-p profile`, `-d dir`, window placement
+3. **Drag & drop file paths** (T1 #4, S–M) — quoted + bracketed paste; also closes the agterm-list item
+4. **Broadcast input** (T1 #2, S–M) — UI toggle + a `session.broadcast` control verb for orchestrators
+5. **Taskbar progress OSC 9;4** (T1 #10, S–M) — taskbar + sidebar progress from agent tasks
+6. **FTCS shell-integration marks** (T1 #1, M) — OSC 133 parsing, jump-to-prompt, select-command/output; the agent-workflow multiplier, scheduled last as the largest
+
+**Rejected in triage** (revisit on demand): vertical splits + pane zoom (T1 #3), copy as
+HTML/RTF (T1 #5), BEL bell styles (T1 #6), Explorer "Open here" (T1 #9). Tier 2 remains
+undecided — pull items up as needed.
