@@ -62,6 +62,9 @@ public interface ISessionHost
     /// <summary>Sidebar state read-back: "visible tree" | "hidden flagged" | ….</summary>
     string SidebarState();
 
+    /// <summary>Broadcast-input toggle for the frontmost window: op = on|off|toggle|state. Returns "on"/"off".</summary>
+    string BroadcastOp(string op);
+
     bool WorkspaceRename(string? target, string name);
     bool WorkspaceDelete(string? target);
     bool WorkspaceSelect(string? target);
@@ -188,6 +191,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionRename(string? target, string name) => false;
     public bool SessionSeen(string? target) => false;
     public string SidebarState() => "visible tree";
+    public string BroadcastOp(string op) => "off";
     public bool WorkspaceRename(string? target, string name) => false;
     public bool WorkspaceDelete(string? target) => false;
     public bool WorkspaceSelect(string? target) => false;
