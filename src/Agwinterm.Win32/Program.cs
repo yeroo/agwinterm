@@ -476,6 +476,33 @@ internal partial class Program : ISessionHost, IWindowHost
         return f;
     }
 
+    private IDWriteTypography? _noLig;
+    /// <summary>Typography disabling ligature-forming features (calt/liga/clig/dlig/hlig) — the
+    /// ligatures=off path. Cached; created lazily on first use.</summary>
+    private IDWriteTypography NoLigTypography()
+    {
+        if (_noLig is null)
+        {
+            _noLig = _dwrite.CreateTypography();
+            foreach (var tag in new[] { FontFeatureTag.StandardLigatures, FontFeatureTag.ContextualAlternates,
+                                        FontFeatureTag.ContextualLigatures, FontFeatureTag.DiscretionaryLigatures,
+                                        FontFeatureTag.HistoricalLigatures })
+                _noLig.AddFontFeature(new FontFeature { NameTag = tag, Parameter = 0 });
+        }
+        return _noLig;
+    }
+
+    /// <summary>Draw a same-colour text run — plain DrawText (font default: ligatures on), or a text
+    /// layout with ligature features disabled when <c>ligatures = false</c>.</summary>
+    private void DrawRun(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, string text, IDWriteTextFormat fmt,
+        float rx, float y, float w, float h)
+    {
+        if (_config.Ligatures) { rt.DrawText(text, fmt, new Rect(rx, y, rx + w, y + h), brush); return; }
+        using var layout = _dwrite.CreateTextLayout(text, fmt, w, h);
+        layout.SetTypography(NoLigTypography(), new TextRange(0, (uint)text.Length));
+        rt.DrawTextLayout(new System.Numerics.Vector2(rx, y), layout, brush);
+    }
+
     private static IDWriteTextFormat NewChromeFormat(string family, float px, bool center)
     {
         IDWriteTextFormat f;
@@ -4027,7 +4054,7 @@ internal partial class Program : ISessionHost, IWindowHost
                         _run.Length = lastNonBlank;
                         brush.Color = C4(runFg);
                         float rx = ox + start * cw;
-                        rt.DrawText(_run.ToString(), fmt, new Rect(rx, y, rx + _run.Length * cw, y + ch), brush);
+                        DrawRun(rt, brush, _run.ToString(), fmt, rx, y, _run.Length * cw, ch);
                     }
                 }
             }
@@ -6229,7 +6256,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private static readonly string[] ConfigKeys =
     {
         "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
-        "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "window-opacity", "sidebar-tint", "scroll-speed",
+        "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "ligatures", "window-opacity", "sidebar-tint", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "word-delimiters", "desktop-notifications", "shell-integration",
         "restore-commands", "restore-buffer", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "notification-badges",
@@ -6267,6 +6294,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "inactive-pane-dim" => _config.InactivePaneDim.ToString(),
         "unfocused-dim" => _config.UnfocusedDim.ToString(),
         "builtin-glyphs" => _config.BuiltinGlyphs ? "true" : "false",
+        "ligatures" => _config.Ligatures ? "true" : "false",
         "window-opacity" => _config.WindowOpacity.ToString(),
         "sidebar-tint" => _config.SidebarTint.ToString(),
         "scroll-speed" => _config.ScrollSpeed.ToString(),
