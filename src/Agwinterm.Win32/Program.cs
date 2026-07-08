@@ -306,6 +306,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
     // ---- CLI launch args (wt-style, applied to the first window): ----
     //   Agwinterm.Win32.exe [-p|--profile NAME] [-d|--dir PATH] [--maximized] [--fullscreen]
+    private static bool _argNoRestore;   // --no-restore: fresh window, don't reopen the saved tree (elevated launch)
     private static string? _argProfile;
     private static string? _argDir;
     private static bool _argMaximized, _argFullscreen;
@@ -320,6 +321,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 case "-d" or "--dir" or "--startingdirectory" when i + 1 < args.Length: _argDir = args[++i]; break;
                 case "--maximized": _argMaximized = true; break;
                 case "--fullscreen": _argFullscreen = true; break;
+                case "--no-restore": _argNoRestore = true; break;
                 // unknown args are ignored (forward compatibility)
             }
         }
@@ -572,7 +574,8 @@ internal partial class Program : ISessionHost, IWindowHost
         string? argProfile = _argProfile, argDir = _argDir;
         _argProfile = null; _argDir = null;
 
-        if (TryRestoreState())
+        // --no-restore (elevated relaunch): a fresh window with just the requested profile, no tree reopen.
+        if (!_argNoRestore && TryRestoreState())
         {
             // Restored: an explicit -p/-d still means "and open me this session".
             if (argProfile is not null || argDir is not null)
@@ -638,6 +641,7 @@ internal partial class Program : ISessionHost, IWindowHost
         session.SoundRequested += PlayStatusSound;
         session.Emulator.Notified += (title, body) => Post(() => OnNotified(pane, title, body));
         session.Emulator.Progress += (st, val) => Post(() => OnProgress(st, val));   // OSC 9;4 -> taskbar
+        session.Emulator.Respond += reply => { session.NotifyActivity(); session.Write(Encoding.UTF8.GetBytes(reply)); };   // Kitty query response -> PTY
         var env = new Dictionary<string, string>
         {
             ["AGWINTERM"] = "1",
@@ -762,9 +766,36 @@ internal partial class Program : ISessionHost, IWindowHost
             _ = session.StartAsync(cmd, pargs ?? Array.Empty<string>(), extraEnv: env, cwd: pcwd); // raw shell
     }
 
+    /// <summary>True if this process is running elevated (admin).</summary>
+    private static bool IsElevated()
+    {
+        try { using var id = System.Security.Principal.WindowsIdentity.GetCurrent();
+              return new System.Security.Principal.WindowsPrincipal(id).IsInRole(0x220); } // Administrators RID
+        catch { return false; }
+    }
+
+    /// <summary>Open a separate ELEVATED agwinterm window for a profile (WT's elevate model — elevated
+    /// and unelevated sessions can't share a window). UAC prompts; a fresh window opens with the profile.</summary>
+    private void LaunchElevated(string profileName)
+    {
+        try
+        {
+            string exe = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "Agwinterm.Win32.exe");
+            ShellExecuteW(_hwnd, "runas", exe, $"--profile \"{profileName}\" --no-restore", null, SW_SHOW);
+        }
+        catch (Exception ex) { ShowToast("elevated launch failed: " + ex.Message); }
+    }
+
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null)
     {
+        // Elevated profile from a non-elevated app: hand off to a separate elevated window (UAC).
+        if (profileName is not null && !IsElevated()
+            && _profileCfg.Profiles.FirstOrDefault(p => p.Name.Equals(profileName, StringComparison.OrdinalIgnoreCase)) is { Elevate: true })
+        {
+            LaunchElevated(profileName);
+            return _active ?? ws.Sessions.FirstOrDefault() ?? CreateSession(id, name, cwd, ws, makeActive, fontSize, command, interactive, extraEnv, null);
+        }
         float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
         // No explicit cwd → resolve by the new-session-directory mode (home | current | custom).
         if (string.IsNullOrEmpty(cwd))
@@ -2165,6 +2196,7 @@ internal partial class Program : ISessionHost, IWindowHost
             case WM_CHAR:
                 {
                     char c = (char)wParam;
+                    if (_kittyAteChar) { _kittyAteChar = false; return IntPtr.Zero; }   // OnKeyDown already CSI-u-encoded this key
                     if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return IntPtr.Zero; }
                     if (_setOpen)
                     {
@@ -3395,6 +3427,10 @@ internal partial class Program : ISessionHost, IWindowHost
 
         if (_session is null) return false;
 
+        // Kitty keyboard protocol: when an app has enabled it, encode keys in CSI-u form.
+        if ((ActiveSurface()?.S.Emulator.KeyboardFlags ?? 0) != 0 && KittyKeyEncode(vk, ctrl, alt, shift) is { } ku)
+        { Send(ku); _kittyAteChar = true; return true; }
+
         if (ctrl && !alt)
         {
             if (vk >= VK_A && vk <= VK_Z) { Send(((char)(vk - VK_A + 1)).ToString()); return true; }
@@ -3427,6 +3463,41 @@ internal partial class Program : ISessionHost, IWindowHost
         };
         if (seq is not null) { Send(seq); return true; }
         return false;
+    }
+
+    // Kitty keyboard: OnKeyDown encoded this key, so its following WM_CHAR must be dropped (else
+    // e.g. Ctrl+A would send both the CSI-u sequence and a literal 0x01).
+    private bool _kittyAteChar;
+
+    /// <summary>Encode a key press in the Kitty keyboard protocol's CSI-u form, or null to fall back
+    /// to legacy/WM_CHAR. Conservative: functional keys + Enter/Tab/Backspace/Esc + Ctrl/Alt-modified
+    /// text keys are escape-encoded; plain typing (no Ctrl/Alt) still flows through WM_CHAR.</summary>
+    private static string? KittyKeyEncode(int vk, bool ctrl, bool alt, bool shift)
+    {
+        int mods = (shift ? 1 : 0) | (alt ? 2 : 0) | (ctrl ? 4 : 0);
+        string m = mods > 0 ? $";{mods + 1}" : "";
+        // Arrows / Home / End — letter-final CSI (legacy form, with modifier when present).
+        string? fin = vk switch { VK_UP => "A", VK_DOWN => "B", VK_RIGHT => "C", VK_LEFT => "D", VK_HOME => "H", VK_END => "F", _ => null };
+        if (fin is not null) return mods > 0 ? $"\x1b[1{m}{fin}" : $"\x1b[{fin}";
+        // PgUp/Dn, Insert, Delete, F5-F12 — number-final CSI ~.
+        int num = vk switch { VK_PRIOR => 5, VK_NEXT => 6, VK_INSERT => 2, VK_DELETE => 3,
+            0x74 => 15, 0x75 => 17, 0x76 => 18, 0x77 => 19, 0x78 => 20, 0x79 => 21, 0x7A => 23, 0x7B => 24, _ => -1 };
+        if (num >= 0) return $"\x1b[{num}{m}~";
+        // F1-F4.
+        string? pf = vk switch { 0x70 => "P", 0x71 => "Q", 0x72 => "R", 0x73 => "S", _ => null };
+        if (pf is not null) return mods > 0 ? $"\x1b[1{m}{pf}" : $"\x1bO{pf}";
+        // Text/special keys → CSI codepoint u (Kitty uses the unshifted/base codepoint).
+        int cp = vk switch
+        {
+            VK_RETURN => 13, VK_TAB => 9, VK_BACK => 127, VK_ESCAPE => 27, VK_SPACE => 32,
+            >= VK_A and <= VK_Z => 97 + (vk - VK_A),   // lowercase base letter
+            >= 0x30 and <= 0x39 => vk,                  // digits
+            _ => -1,
+        };
+        if (cp < 0) return null;   // unmapped (e.g. OEM punctuation) → legacy / WM_CHAR
+        bool special = vk is VK_RETURN or VK_TAB or VK_BACK or VK_ESCAPE;
+        if (!special && !ctrl && !alt) return null;   // plain typing → WM_CHAR unchanged
+        return mods > 0 ? $"\x1b[{cp};{mods + 1}u" : $"\x1b[{cp}u";
     }
 
     private static Color4 C4(Color c) => new(c.R / 255f, c.G / 255f, c.B / 255f, 1f);
