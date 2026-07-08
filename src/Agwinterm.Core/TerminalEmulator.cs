@@ -67,7 +67,7 @@ public sealed class TerminalEmulator : IParserPerformer
     {
         int cols = Screen.Cols;
         var row = new Cell[cols];
-        for (int c = 0; c < cols; c++) row[c] = Screen[0, c];
+        Screen.CopyRowTo(0, row);
         _history.Add(row);
         if (_history.Count > ScrollbackMax + TrimSlack)
         {
@@ -686,46 +686,34 @@ public sealed class TerminalEmulator : IParserPerformer
                     if (np.Row + Math.Max(1, np.Rows) <= 0) { _placements.RemoveAt(i); _images.Remove(np.ImageId); }
                     else _placements[i] = np;
                 }
-        for (int r = _scrollTop + 1; r <= _scrollBottom; r++)
-            for (int c = 0; c < Screen.Cols; c++)
-                Screen[r - 1, c] = Screen[r, c];
-        for (int c = 0; c < Screen.Cols; c++)
-            Screen[_scrollBottom, c] = Blank();
+        // One memmove for the region, not rows×cols indexer calls (this is the hottest path
+        // under sustained output — every LF at the bottom row lands here).
+        Screen.MoveRows(_scrollTop + 1, _scrollTop, _scrollBottom - _scrollTop);
+        Screen.FillRow(_scrollBottom, Blank());
     }
 
     private void ScrollRegionDown()
     {
-        for (int r = _scrollBottom; r > _scrollTop; r--)
-            for (int c = 0; c < Screen.Cols; c++)
-                Screen[r, c] = Screen[r - 1, c];
-        for (int c = 0; c < Screen.Cols; c++)
-            Screen[_scrollTop, c] = Blank();
+        Screen.MoveRows(_scrollTop, _scrollTop + 1, _scrollBottom - _scrollTop);
+        Screen.FillRow(_scrollTop, Blank());
     }
 
     private void InsertLines(int n) // IL: insert n blank lines at cursor row, within scroll region
     {
         if (CursorRow < _scrollTop || CursorRow > _scrollBottom) return;
-        for (int i = 0; i < n; i++)
-        {
-            for (int r = _scrollBottom; r > CursorRow; r--)
-                for (int c = 0; c < Screen.Cols; c++)
-                    Screen[r, c] = Screen[r - 1, c];
-            for (int c = 0; c < Screen.Cols; c++)
-                Screen[CursorRow, c] = Blank();
-        }
+        n = Math.Min(n, _scrollBottom - CursorRow + 1);
+        int shift = _scrollBottom - CursorRow + 1 - n;
+        if (shift > 0) Screen.MoveRows(CursorRow, CursorRow + n, shift);
+        for (int r = CursorRow; r < CursorRow + n; r++) Screen.FillRow(r, Blank());
     }
 
     private void DeleteLines(int n) // DL: delete n lines at cursor row, pulling region up
     {
         if (CursorRow < _scrollTop || CursorRow > _scrollBottom) return;
-        for (int i = 0; i < n; i++)
-        {
-            for (int r = CursorRow; r < _scrollBottom; r++)
-                for (int c = 0; c < Screen.Cols; c++)
-                    Screen[r, c] = Screen[r + 1, c];
-            for (int c = 0; c < Screen.Cols; c++)
-                Screen[_scrollBottom, c] = Blank();
-        }
+        n = Math.Min(n, _scrollBottom - CursorRow + 1);
+        int shift = _scrollBottom - CursorRow + 1 - n;
+        if (shift > 0) Screen.MoveRows(CursorRow + n, CursorRow, shift);
+        for (int r = _scrollBottom - n + 1; r <= _scrollBottom; r++) Screen.FillRow(r, Blank());
     }
 
     private void InsertChars(int n) // ICH: shift cells right at cursor, blank the gap

@@ -310,32 +310,59 @@ internal partial class Program
     }
 
     /// <summary>Draw one terminal surface (cells, images, cursor) at origin (ox,oy) with its font metrics.</summary>
+    private Cell[] _cellSnap = Array.Empty<Cell>();   // reusable viewport snapshot; drawing reads it lock-free
+
     private void RenderTerminal(TerminalSession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch, int scrollOffset, Pane? selPane = null)
     {
         var rt = _rt!;
         var brush = _brush!;
+        // Snapshot the visible viewport under the session lock (sub-ms), then draw OUTSIDE it.
+        // Holding the lock for the whole frame serializes rendering against the PTY pump's Feed,
+        // capping sustained-output throughput (dotnet-stack showed the UI thread in Monitor.Enter
+        // here while the pump held the lock — see docs/memory-profile-2026-07-09.md).
+        var em = session.Emulator;
+        int cols, rows, hist, off;
+        bool cursorVisible; int cursorCol, cursorRow;
+        bool drawImages;
+        (int PromptLine, int? ExitCode)[] marks;
         lock (session.SyncRoot)
         {
-            var em = session.Emulator;
             em.CellPixelWidth = Math.Max(1, (int)cw); em.CellPixelHeight = Math.Max(1, (int)ch);  // for sixel cell-span
             var screen = em.Screen;
-            int cols = screen.Cols, rows = screen.Rows;
-            int hist = em.HistoryCount;
-            int off = em.IsAltScreen ? 0 : Math.Clamp(scrollOffset, 0, hist);
+            cols = screen.Cols; rows = screen.Rows;
+            hist = em.HistoryCount;
+            bool isAlt = em.IsAltScreen;
+            off = isAlt ? 0 : Math.Clamp(scrollOffset, 0, hist);
+            cursorVisible = em.CursorVisible; cursorCol = em.CursorCol; cursorRow = em.CursorRow;
+            drawImages = !_noImages && em.Placements.Count > 0 && off == 0;
+            marks = !isAlt && em.Marks.Count > 0
+                ? em.Marks.Select(m => (m.PromptLine, m.ExitCode)).ToArray()
+                : Array.Empty<(int, int?)>();
+            if (_cellSnap.Length < rows * cols) _cellSnap = new Cell[rows * cols];
+            for (int r = 0; r < rows; r++)
+                for (int c = 0; c < cols; c++)
+                {
+                    // Visible row r maps into [history ++ live grid], shifted up by `off`.
+                    Cell v;
+                    if (off <= 0) v = screen[r, c];
+                    else
+                    {
+                        int vi = hist - off + r;
+                        if (vi < 0) v = Cell.Empty;
+                        else if (vi < hist) v = em.GetHistoryCell(vi, c);
+                        else { int live = vi - hist; v = live < rows ? screen[live, c] : Cell.Empty; }
+                    }
+                    _cellSnap[r * cols + c] = v;
+                }
+        }
+        // Drawing below reads only the snapshot + UI-thread state — no session lock held.
+        {
+            var snap = _cellSnap;
+            Cell CellAt(int r, int c) => snap[r * cols + c];
             bool hasSel = selPane is { HasSel: true };
             int sl0 = 0, sc0 = 0, sl1 = 0, sc1 = 0;
             if (hasSel) NormSel(selPane!, out sl0, out sc0, out sl1, out sc1);
             bool searchHere = _searchActive && selPane is not null && ReferenceEquals(selPane, ActiveSurface());
-            // Visible row r maps into [history ++ live grid], shifted up by `off`.
-            Cell CellAt(int r, int c)
-            {
-                if (off <= 0) return screen[r, c];
-                int vi = hist - off + r;
-                if (vi < 0) return Cell.Empty;
-                if (vi < hist) return em.GetHistoryCell(vi, c);
-                int live = vi - hist;
-                return live < rows ? screen[live, c] : Cell.Empty;
-            }
             for (int r = 0; r < rows; r++)
             {
                 float y = oy + r * ch;
@@ -437,8 +464,8 @@ internal partial class Program
                 }
             }
 
-            if (!_noImages && em.Placements.Count > 0 && off == 0)
-                DrawImages(em, ox, oy, cw, ch);
+            if (drawImages)
+                lock (session.SyncRoot) DrawImages(em, ox, oy, cw, ch);   // image placements read emulator state
 
             if (off > 0) // scrollback position indicator on the pane's right edge
             {
@@ -450,10 +477,10 @@ internal partial class Program
                 brush.Color = WithA(ChromeText, 0.35f);
                 rt.FillRectangle(new Rect(trackX, thumbY, 3f, thumbH), brush);
             }
-            if (!em.IsAltScreen && em.Marks.Count > 0)  // FTCS prompt pips (green ok / red fail / accent running)
+            if (marks.Length > 0)  // FTCS prompt pips (green ok / red fail / accent running)
             {
                 float pipX = ox + cols * cw - 3f, pipTrackH = rows * ch, pipTotal = MathF.Max(1f, hist + rows);
-                foreach (var m in em.Marks)
+                foreach (var m in marks)
                 {
                     float py2 = oy + pipTrackH * m.PromptLine / pipTotal;
                     brush.Color = m.ExitCode is int ec2
@@ -463,9 +490,9 @@ internal partial class Program
                 }
             }
 
-            if (em.CursorVisible && off == 0)
+            if (cursorVisible && off == 0)
             {
-                float cx = ox + em.CursorCol * cw, cy = oy + em.CursorRow * ch;
+                float cx = ox + cursorCol * cw, cy = oy + cursorRow * ch;
                 brush.Color = C4(_theme.Cursor);
                 if (!_config.CursorBlink || _cursorOn)
                 {

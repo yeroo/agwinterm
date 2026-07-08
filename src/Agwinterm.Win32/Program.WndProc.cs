@@ -140,13 +140,24 @@ internal partial class Program
             case WM_PAINT:
                 BeginPaint(hwnd, out PAINTSTRUCT ps);
                 Render();
+                _lastPaintTick = Environment.TickCount64;
                 EndPaint(hwnd, ref ps);
                 return IntPtr.Zero;
 
             case WM_APP_REDRAW:
+            {
                 System.Threading.Interlocked.Exchange(ref _redrawPending, 0);
-                InvalidateRect(hwnd, IntPtr.Zero, false);
+                // Frame cap (RedrawMinIntervalMs): paint immediately when quiet; under sustained
+                // output defer to a one-shot timer so floods render at ~66fps instead of per chunk.
+                long since = Environment.TickCount64 - _lastPaintTick;
+                if (since >= RedrawMinIntervalMs) InvalidateRect(hwnd, IntPtr.Zero, false);
+                else if (!_redrawTimerArmed)
+                {
+                    _redrawTimerArmed = true;
+                    SetTimer(hwnd, (IntPtr)RedrawTimer, (uint)Math.Max(1, RedrawMinIntervalMs - (int)since), IntPtr.Zero);
+                }
                 return IntPtr.Zero;
+            }
 
             case WM_APP_ACTION:
                 while (_uiActions.TryDequeue(out var act))
@@ -162,6 +173,12 @@ internal partial class Program
                 if ((int)wParam == SelAutoTimer) { SelAutoscrollTick(); return IntPtr.Zero; }
                 if ((int)wParam == HoverTimer) { HoverTick(); return IntPtr.Zero; }
                 if ((int)wParam == PromptPreviewTimer) { PromptPreviewTick(); return IntPtr.Zero; }
+                if ((int)wParam == RedrawTimer)
+                {
+                    KillTimer(hwnd, (IntPtr)RedrawTimer); _redrawTimerArmed = false;
+                    InvalidateRect(hwnd, IntPtr.Zero, false);
+                    return IntPtr.Zero;
+                }
                 _cursorOn = !_cursorOn;
                 InvalidateRect(hwnd, IntPtr.Zero, false);
                 return IntPtr.Zero;
