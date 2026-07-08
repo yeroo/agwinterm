@@ -99,7 +99,12 @@ internal partial class Program : ISessionHost, IWindowHost
 
     // Chrome geometry (custom title bar + status bar, drawn in Direct2D).
     // Compact toolbar (agterm) shrinks the custom title bar; read live so a config toggle reflows everything.
-    private static float TitleBarH => _config is { CompactToolbar: true } ? 30f : 40f;
+    /// <summary>Effective toolbar mode: explicit toolbar-mode, else derived from the legacy compact-toolbar bool.</summary>
+    private static string ToolbarModeResolved =>
+        _config?.ToolbarMode is "normal" or "compact" or "hidden" ? _config.ToolbarMode!
+        : (_config is { CompactToolbar: true } ? "compact" : "normal");
+    private static float TitleBarH => ToolbarModeResolved switch { "hidden" => 0f, "compact" => 30f, _ => 40f };
+    private static bool ToolbarHidden => ToolbarModeResolved == "hidden";
     private const float FooterH = 34f;       // toolbar at the bottom of the sidebar
     private const float SidebarWFull = 220f;
     private const float CaptionBtnW = 46f;   // native min/max/close hit width
@@ -5507,6 +5512,7 @@ internal partial class Program : ISessionHost, IWindowHost
         ScreenToClient(hwnd, ref pt);
         int cw = ClientW(), ch = ClientH();
         const int B = 8;
+        bool hidden = ToolbarHidden;
         if (!IsZoomed(hwnd))
         {
             bool top = pt.y < B, bot = pt.y >= ch - B, left = pt.x < B, right = pt.x >= cw - B;
@@ -5514,11 +5520,13 @@ internal partial class Program : ISessionHost, IWindowHost
             if (top && right) return HTTOPRIGHT;
             if (bot && left) return HTBOTTOMLEFT;
             if (bot && right) return HTBOTTOMRIGHT;
-            if (top) return HTTOP;
+            if (top) return hidden ? HTCAPTION : HTTOP;   // hidden: top edge drags (no chrome to grab)
             if (bot) return HTBOTTOM;
             if (left) return HTLEFT;
             if (right) return HTRIGHT;
         }
+        if (hidden)   // maximized/full-bleed: a thin top strip still drags + double-click-zooms
+            return pt.y < 6 ? HTCAPTION : HTCLIENT;
         if (pt.y < (int)TitleBarH)
         {
             int cap = CaptionButtonAt(pt.x, cw);
@@ -5799,6 +5807,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private void DrawTitleBar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         _titleButtons.Clear();
+        if (ToolbarHidden) return;   // hidden toolbar: no chrome at all (full-bleed terminal)
         int cw = ClientW();
         brush.Color = ChromeBg;
         rt.FillRectangle(new Rect(0, 0, cw, TitleBarH), brush);
@@ -6321,7 +6330,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "ligatures", "window-opacity", "sidebar-tint", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "word-delimiters", "desktop-notifications", "shell-integration",
         "restore-commands", "restore-buffer", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
-        "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "notification-badges",
+        "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
     };
 
@@ -6376,6 +6385,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "new-session-dir-mode" => _config.NewSessionDirMode,
         "confirm-close-session" => _config.ConfirmCloseSession ? "true" : "false",
         "compact-toolbar" => _config.CompactToolbar ? "true" : "false",
+        "toolbar-mode" => ToolbarModeResolved,
         "notification-badges" => _config.NotificationBadges ? "true" : "false",
         "attention-button" => _config.AttentionButton ? "true" : "false",
         "status-color-active" => _config.StatusColorActive,
@@ -6395,7 +6405,7 @@ internal partial class Program : ISessionHost, IWindowHost
         if (key == "cursor-blink-ms" && _hwnd != IntPtr.Zero) SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
         RecomputeChrome();
         ApplyWindowOpacity();
-        if (key == "compact-toolbar")                     // title-bar height changed → reflow the terminal grid
+        if (key is "compact-toolbar" or "toolbar-mode")   // title-bar height changed → reflow the terminal grid
         { if (_active is not null) RegridSession(_active); if (_cover is not null) RegridCover(); }
         RequestRedraw();
         RefreshSettingsControls();                        // keep an open Settings window in sync
