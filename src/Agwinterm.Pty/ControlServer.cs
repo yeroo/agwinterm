@@ -219,6 +219,7 @@ public sealed class ControlServer : IDisposable
                 "session.text" => HandleText(s),
                 "session.status" => HandleStatus(s, args),
                 "image.show" => HandleImageShow(s, args),
+                "image.sixel" => HandleImageSixel(s, args),
                 "image.clear" => HandleImageClear(s),
                 "image.frame" => HandleImageFrame(s, args),
                 _ => Err($"unknown command '{cmd}'"),
@@ -342,6 +343,18 @@ public sealed class ControlServer : IDisposable
         sb.Append('\x1b').Append('[').Append(row + 1).Append(';').Append(col + 1).Append('H');
         sb.Append('\x1b').Append("_Gf=100,a=T,i=").Append(id).Append(';').Append(b64).Append('\x1b').Append('\\');
         s.Inject(Encoding.ASCII.GetBytes(sb.ToString()));
+        return Ok("shown");
+    }
+
+    private static string HandleImageSixel(TerminalSession s, JsonElement args)
+    {
+        string? path = GetString(args, "path");
+        if (path is null || !File.Exists(path)) return Err("sixel file not found: " + (path ?? "<null>"));
+        int row = GetInt(args, "row", -1), col = GetInt(args, "col", -1);
+        // Inject straight into the emulator's parser — ConPTY strips DCS through the shell, so sixel is
+        // delivered out-of-band here (same as Kitty images). Optional CUP positions it first.
+        if (row >= 0 && col >= 0) s.Inject(Encoding.ASCII.GetBytes($"\x1b[{row + 1};{col + 1}H"));
+        s.Inject(File.ReadAllBytes(path));
         return Ok("shown");
     }
 

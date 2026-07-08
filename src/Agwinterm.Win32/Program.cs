@@ -3746,6 +3746,7 @@ internal partial class Program : ISessionHost, IWindowHost
         lock (session.SyncRoot)
         {
             var em = session.Emulator;
+            em.CellPixelWidth = Math.Max(1, (int)cw); em.CellPixelHeight = Math.Max(1, (int)ch);  // for sixel cell-span
             var screen = em.Screen;
             int cols = screen.Cols, rows = screen.Rows;
             int hist = em.HistoryCount;

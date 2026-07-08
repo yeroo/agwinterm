@@ -12,4 +12,6 @@ internal enum ParserState
     OscEsc,
     ApcString,
     ApcEsc,
+    DcsString,
+    DcsEsc,
 }

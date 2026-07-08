@@ -16,6 +16,7 @@ public sealed class VtParser(IParserPerformer performer)
 
     // OSC / APC string accumulators.
     private readonly List<byte> _osc = new();   // raw payload bytes; UTF-8-decoded at dispatch
+    private readonly List<byte> _dcs = new();   // DCS payload bytes (sixel etc.)
     private readonly System.Text.StringBuilder _apc = new();
 
     public void Feed(ReadOnlySpan<byte> bytes)
@@ -26,9 +27,10 @@ public sealed class VtParser(IParserPerformer performer)
 
     private void Step(byte b)
     {
-        // ESC inside an OSC/APC string may be the start of a String Terminator (ESC \).
+        // ESC inside an OSC/APC/DCS string may be the start of a String Terminator (ESC \).
         if (b == 0x1b && _state == ParserState.OscString) { _state = ParserState.OscEsc; return; }
         if (b == 0x1b && _state == ParserState.ApcString) { _state = ParserState.ApcEsc; return; }
+        if (b == 0x1b && _state == ParserState.DcsString) { _state = ParserState.DcsEsc; return; }
 
         // ESC otherwise restarts an escape sequence from any state.
         if (b == 0x1b) { FlushIncompleteUtf8(); EnterEscape(); return; }
@@ -43,6 +45,7 @@ public sealed class VtParser(IParserPerformer performer)
                 if (b == (byte)'[') { _state = ParserState.CsiEntry; ResetParams(); }
                 else if (b == (byte)']') { _state = ParserState.OscString; _osc.Clear(); }
                 else if (b == (byte)'_') { _state = ParserState.ApcString; _apc.Clear(); }
+                else if (b == (byte)'P') { _state = ParserState.DcsString; _dcs.Clear(); }   // DCS (sixel etc.)
                 else if (b is >= 0x30 and <= 0x7e) { performer.EscDispatch((char)b); _state = ParserState.Ground; }
                 else if (IsControl(b)) performer.Execute(b);
                 else _state = ParserState.Ground;
@@ -66,6 +69,17 @@ public sealed class VtParser(IParserPerformer performer)
 
             case ParserState.ApcEsc:
                 DispatchApc();
+                _state = ParserState.Ground;
+                if (b != (byte)'\\') Step(b);
+                break;
+
+            case ParserState.DcsString:
+                if (b == 0x07) { DispatchDcs(); _state = ParserState.Ground; } // BEL terminator
+                else if (_dcs.Count < 8_000_000) _dcs.Add(b);                  // cap runaway payloads
+                break;
+
+            case ParserState.DcsEsc:
+                DispatchDcs();
                 _state = ParserState.Ground;
                 if (b != (byte)'\\') Step(b);
                 break;
@@ -135,6 +149,12 @@ public sealed class VtParser(IParserPerformer performer)
     {
         if (_apc.Length > 0)
             performer.ApcDispatch(_apc.ToString());
+    }
+
+    private void DispatchDcs()
+    {
+        if (_dcs.Count > 0)
+            performer.DcsDispatch(_dcs.ToArray());
     }
 
     private void EmitScalar(int scalar)

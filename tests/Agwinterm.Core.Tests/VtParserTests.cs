@@ -15,6 +15,7 @@ public class VtParserTests
         public void EscDispatch(char final) => Events.Add($"esc:{final}");
         public void OscDispatch(int command, string text) => Events.Add($"osc:{command}:{text}");
         public void ApcDispatch(string data) => Events.Add($"apc:{data}");
+        public void DcsDispatch(byte[] data) => Events.Add($"dcs:{data.Length}");
     }
 
     private static Recorder Run(string input)
