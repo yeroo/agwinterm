@@ -597,6 +597,11 @@ internal partial class Program : ISessionHost, IWindowHost
         {
             _control = new ControlServer(this, this, "agwinterm");
             _control.Start();
+            // Default-terminal handoff (T2-13): register the COM class factory so conhost can hand
+            // console sessions to this instance. Each handoff opens a new attached session.
+            DefTerm.OnHandoff = args => Post(() =>
+                CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true, handoff: args));
+            try { DefTerm.RegisterServer(); } catch { /* defterm not registered / unsupported */ }
         }
         // CLI args (first window only; consumed so extra windows don't re-apply them).
         string? argProfile = _argProfile, argDir = _argDir;
@@ -648,7 +653,7 @@ internal partial class Program : ISessionHost, IWindowHost
     /// When <paramref name="command"/> is set, that argv runs as the pane's process instead of the shell.</summary>
     private Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null,
         bool shellWrap = false, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
-        bool deElevate = false)
+        bool deElevate = false, HandoffArgs? handoff = null)
     {
         var (cols, rows) = GridSizeFor(fontSize);
         var session = new TerminalSession(cols, rows);
@@ -682,7 +687,12 @@ internal partial class Program : ISessionHost, IWindowHost
             ["AGWINTERM_WINDOW_ID"] = Id,
         };
         if (extraEnv is not null) foreach (var kv in extraEnv) env[kv.Key] = kv.Value; // custom-command $AGW_* context
-        if (!string.IsNullOrWhiteSpace(command) && interactive)
+        if (handoff is { } h)
+            // Default-terminal handoff: attach to conhost's existing PTY instead of spawning a shell.
+            session.Attach(new Microsoft.Win32.SafeHandles.SafeFileHandle(h.ConOut, true),
+                           new Microsoft.Win32.SafeHandles.SafeFileHandle(h.ConIn, true),
+                           new Microsoft.Win32.SafeHandles.SafeFileHandle(h.Signal, true), h.Client, h.ClientPid);
+        else if (!string.IsNullOrWhiteSpace(command) && interactive)
             // Run the command in a fresh shell that STAYS OPEN afterwards (custom-command "new" mode):
             // the user's profile loads (oh-my-posh etc.), the command runs, then it's an interactive shell.
             _ = session.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoExit", "-Command", command! }, extraEnv: env, cwd: cwd);
@@ -861,7 +871,7 @@ internal partial class Program : ISessionHost, IWindowHost
 
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
-        bool deElevate = false)
+        bool deElevate = false, HandoffArgs? handoff = null)
     {
         // Elevated profile from a non-elevated app: hand off to a separate elevated window (UAC).
         if (profileName is not null && !IsElevated()
@@ -885,7 +895,7 @@ internal partial class Program : ISessionHost, IWindowHost
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName, Elevated = IsElevated() && !deElevate };
-        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate));   // first pane shares the session id (control-API back-compat)
+        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff));   // first pane shares the session id (control-API back-compat)
         ses.Active = 0;
         DetectSessionElevation(ses);   // refine ⚡ from the shell's real integrity once it's running
 
