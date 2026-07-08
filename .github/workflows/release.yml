@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write        # for build-provenance attestation (free, keyless via Sigstore)
+  attestations: write
 
 jobs:
   installer:
@@ -31,6 +33,16 @@ jobs:
       - name: Build portable exe
         shell: pwsh
         run: ./installer/build-portable.ps1
+
+      # Free, certless supply-chain signing: a Sigstore-backed attestation binding each artifact to
+      # this commit + workflow. Verify with:  gh attestation verify <file> --repo yeroo/agwinterm
+      # (Doesn't remove SmartScreen — that needs Authenticode, e.g. a SignPath Foundation OSS cert.)
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            installer/Output/agwinterm-setup-*.exe
+            installer/Output/agwinterm-portable-*.exe
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
