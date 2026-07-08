@@ -94,5 +94,6 @@ public class KittyGraphicsTests
         public void EscDispatch(char final) { }
         public void OscDispatch(int command, string text) { }
         public void ApcDispatch(string data) => LastApc = data;
+        public void DcsDispatch(byte[] data) { }
     }
 }

@@ -177,6 +177,8 @@ public static class AgentSkill
 
         ## Show an image inline
         - `agwintermctl image show C:\path\pic.png --row 2 --col 4`
+        - `agwintermctl image sixel C:\path\pic.six [--row R --col C]` — render a sixel file (delivered
+          out-of-band; ConPTY strips sixel through the shell, so use this to display one)
         Note: Windows ConPTY strips inline terminal-graphics sequences, so images MUST be delivered
         through this control channel — not by printing escape codes to stdout.
 

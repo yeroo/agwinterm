@@ -300,6 +300,14 @@ switch (area)
         if (int.TryParse(Opt("col"), out var col)) cargs["col"] = col;
         if (int.TryParse(Opt("id"), out var id)) cargs["id"] = id;
         break;
+    case "image" when sub == "sixel":
+        cmd = "image.sixel";
+        target = DefaultTarget();
+        if (rest.Count == 0) { Console.Error.WriteLine("image sixel needs a path"); return 2; }
+        cargs["path"] = System.IO.Path.GetFullPath(rest[0]);
+        if (int.TryParse(Opt("row"), out var srow)) cargs["row"] = srow;
+        if (int.TryParse(Opt("col"), out var scol)) cargs["col"] = scol;
+        break;
     default:
         Console.Error.WriteLine($"unknown command '{area} {sub}'"); return 2;
 }

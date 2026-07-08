@@ -365,6 +365,33 @@ public sealed class TerminalEmulator : IParserPerformer
         _placements.Add(new ImagePlacement(id, row, col, cols, rows, srcX, srcY, srcW, srcH));
     }
 
+    /// <summary>Cell size in pixels (set by the host from its font metrics) — used to lay a sixel
+    /// image onto the grid and advance the cursor below it. Sane defaults for headless use.</summary>
+    public int CellPixelWidth { get; set; } = 8;
+    public int CellPixelHeight { get; set; } = 18;
+
+    /// <summary>Next free image id for host-generated (sixel) images; negative to avoid clashing with
+    /// Kitty ids (which are app-chosen positive numbers).</summary>
+    private int _sixelSeq = -1;
+
+    public void DcsDispatch(byte[] data) => PlaceSixel(data);
+
+    /// <summary>Decode a sixel DCS payload and place it at the cursor (advancing below it). Returns
+    /// false if it isn't a valid sixel. Reused by the out-of-band control path (ConPTY strips DCS
+    /// through the shell, so sixel is also deliverable via the control pipe, like Kitty images).</summary>
+    public bool PlaceSixel(byte[] data)
+    {
+        if (Sixel.Decode(data) is not { } s || s.Width <= 0 || s.Height <= 0) return false;
+        int id = _sixelSeq--;
+        _images[id] = new KittyImage(id, KittyFormat.Rgba, s.Width, s.Height, s.Rgba);
+        int cols = Math.Max(1, (s.Width + CellPixelWidth - 1) / CellPixelWidth);
+        int rows = Math.Max(1, (s.Height + CellPixelHeight - 1) / CellPixelHeight);
+        _placements.Add(new ImagePlacement(id, CursorRow, CursorCol, cols, rows));   // visible grid row
+        for (int k = 0; k < rows; k++) Index();   // advance the cursor below the image (sixel scrolling)
+        CursorCol = 0;
+        return true;
+    }
+
     public void ApcDispatch(string data)
     {
         if (data.Length == 0 || data[0] != 'G') return; // only Kitty graphics (_G...)
@@ -616,6 +643,15 @@ public sealed class TerminalEmulator : IParserPerformer
         // A full-height scroll on the main screen pushes the top row into scrollback.
         if (!IsAltScreen && ScrollbackMax > 0 && _scrollTop == 0 && _scrollBottom == Screen.Rows - 1)
             PushHistory();
+        // Sixel images (negative ids; not host-managed like Kitty) scroll up with the text.
+        if (_placements.Count > 0)
+            for (int i = _placements.Count - 1; i >= 0; i--)
+                if (_placements[i].ImageId < 0)
+                {
+                    var np = _placements[i] with { Row = _placements[i].Row - 1 };
+                    if (np.Row + Math.Max(1, np.Rows) <= 0) { _placements.RemoveAt(i); _images.Remove(np.ImageId); }
+                    else _placements[i] = np;
+                }
         for (int r = _scrollTop + 1; r <= _scrollBottom; r++)
             for (int c = 0; c < Screen.Cols; c++)
                 Screen[r - 1, c] = Screen[r, c];
