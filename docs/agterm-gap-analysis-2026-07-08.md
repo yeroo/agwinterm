@@ -45,7 +45,20 @@ parity, a zero-chrome toolbar mode, and a few small verbs.
 
 ---
 
-## Triage recommendation
+## Status (2026-07-08, PR #38)
+
+**Done** — the whole actionable delta:
+- ✅ #162 reveal file:// in Explorer · ✅ #163 `session.overlay.resize` · ✅ #167/168/169 read-back
+  parity (`window.state` + paneCount/focusedPane/splitRatios/statusBlink/overlaySize in `tree`) ·
+  ✅ #173 hidden toolbar mode · ✅ #164 clear badge on refocus · ✅ #161 shifted-symbol keymaps
+  (already worked; documented) · ✅ #174 reopen closed **workspaces** + unified most-recent reopen.
+- #160 native fullscreen and reopen-closed-**sessions** were already shipped.
+
+**Deferred (polish, not core):** #174's grace-period **undo toast** (Ctrl-Z right after a close) and
+**persisting the reopen ring across restarts** — the in-memory ring matches the browser model and
+full-tree restore covers a clean relaunch.
+
+## Triage recommendation (original)
 
 1. **Read-back parity (#167/168/169)** — highest leverage for the automation/agent story (agterm's
    differentiator). Additive snapshot fields; do this first. **M.**
