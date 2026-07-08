@@ -256,6 +256,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public readonly List<Pane> Panes = new();
         public int Active;         // index of the focused pane
         public bool Flagged;       // durable working-set flag (survives moves; persisted; drives flagged sidebar mode)
+        public bool Elevated;      // shell runs at High integrity (admin) — shown with a ⚡; false for de-elevated sessions
         public string? CustomName; // user-renamed title (null = show the cwd/OSC title in the title bar, agterm-style)
         public string? ProfileName; // shell profile this session launched with (null = default; persisted)
         public Pane? Scratch;      // per-session scratch terminal (lazy; kept alive when hidden; not restored)
@@ -766,12 +767,26 @@ internal partial class Program : ISessionHost, IWindowHost
             _ = session.StartAsync(cmd, pargs ?? Array.Empty<string>(), extraEnv: env, cwd: pcwd); // raw shell
     }
 
-    /// <summary>True if this process is running elevated (admin).</summary>
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(IntPtr h);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetTokenInformation(IntPtr token, int tokenInformationClass, out uint info, uint length, out uint returnLength);
+
+    /// <summary>True if this process is running elevated (admin). Uses the token's actual elevation
+    /// state (TokenElevation), NOT group membership — a non-elevated admin user is correctly false.</summary>
     private static bool IsElevated()
     {
-        try { using var id = System.Security.Principal.WindowsIdentity.GetCurrent();
-              return new System.Security.Principal.WindowsPrincipal(id).IsInRole(0x220); } // Administrators RID
+        IntPtr token = IntPtr.Zero;
+        try
+        {
+            if (!OpenProcessToken(GetCurrentProcess(), 0x0008 /*TOKEN_QUERY*/, out token)) return false;
+            // TokenElevation (20): nonzero => the token is elevated.
+            return GetTokenInformation(token, 20, out uint elevated, sizeof(uint), out _) && elevated != 0;
+        }
         catch { return false; }
+        finally { if (token != IntPtr.Zero) CloseHandle(token); }
     }
 
     /// <summary>Open a separate ELEVATED agwinterm window for a profile (WT's elevate model — elevated
@@ -810,7 +825,7 @@ internal partial class Program : ISessionHost, IWindowHost
         }
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
-        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName };
+        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName, Elevated = IsElevated() };
         ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName));   // first pane shares the session id (control-API back-compat)
         ses.Active = 0;
 
@@ -4299,10 +4314,18 @@ internal partial class Program : ISessionHost, IWindowHost
             brush.Color = new Color4(0.96f, 0.76f, 0.26f, 1f); // amber flag
             rt.DrawText("", _iconSmall, new Rect(6f, y, 18f, rowH), brush);
         }
+        // Elevated (admin) sessions carry a ⚡ before the name (mixed elevated/non-elevated windows).
+        float nameX = 26f;
+        if (s.Elevated)
+        {
+            brush.Color = new Color4(0.98f, 0.82f, 0.25f, 1f); // gold lightning
+            rt.DrawText("⚡", _uiSmall, new Rect(23f, y, 16f, rowH), brush);
+            nameX = 40f;
+        }
         bool isDrag = _dragging && ReferenceEquals(s, _dragItem);
         brush.Color = isDrag ? new Color4(0.5f, 0.53f, 0.57f, 0.45f) : (active ? SbActiveText : SbDimText);
         if (!ReferenceEquals(_editing, s)) // the rename box covers the name while editing
-            rt.DrawText(s.Name, _uiFont, new Rect(26f, y, _sidebarW - 26f - 22f, rowH), brush);
+            rt.DrawText(s.Name, _uiFont, new Rect(nameX, y, _sidebarW - nameX - 22f, rowH), brush);
         // Unread-notification count badge, just left of the status circle (can be hidden; the count still tracks).
         int unread = UnreadOf(s);
         if (unread > 0 && _config.NotificationBadges)
