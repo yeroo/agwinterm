@@ -66,6 +66,10 @@ public sealed class TerminalConfig
     /// and solid blocks at any size) instead of using the font's glyphs. WT's font.builtinGlyphs. On.</summary>
     public bool BuiltinGlyphs { get; set; } = true;
 
+    /// <summary>Render font ligatures (e.g. -&gt; ⇒ ≠ with Cascadia Code / Fira Code). On by default;
+    /// set false to disable the calt/liga/clig/dlig features so each character draws standalone.</summary>
+    public bool Ligatures { get; set; } = true;
+
     /// <summary>Whole-window opacity, 30–100 (%). 100 = opaque. Clamped so the window never disappears.</summary>
     public int WindowOpacity { get; set; } = 100;
 
@@ -178,6 +182,9 @@ public sealed class TerminalConfig
         # Draw box-drawing / block-element glyphs as vectors (crisp, seamless borders at any size).
         builtin-glyphs = true
 
+        # Render font ligatures (-> ⇒ ≠ …) with a ligature font. Set false to disable them.
+        ligatures = true
+
         # Whole-window opacity, 30-100 (%). 100 = opaque.
         window-opacity = 100
 
@@ -258,6 +265,7 @@ public sealed class TerminalConfig
                 case "inactive-pane-dim": if (int.TryParse(val, out var ipd)) cfg.InactivePaneDim = System.Math.Clamp(ipd, 0, 100); break;
                 case "unfocused-dim": if (int.TryParse(val, out var ufd)) cfg.UnfocusedDim = System.Math.Clamp(ufd, 0, 90); break;
                 case "builtin-glyphs": cfg.BuiltinGlyphs = ParseBool(val, cfg.BuiltinGlyphs); break;
+                case "ligatures": cfg.Ligatures = ParseBool(val, cfg.Ligatures); break;
                 case "window-opacity": if (int.TryParse(val, out var wo)) cfg.WindowOpacity = System.Math.Clamp(wo, 30, 100); break;
                 case "sidebar-tint": if (int.TryParse(val, out var st)) cfg.SidebarTint = System.Math.Clamp(st, -100, 100); break;
                 case "new-session-dir": cfg.NewSessionDir = val; break;
