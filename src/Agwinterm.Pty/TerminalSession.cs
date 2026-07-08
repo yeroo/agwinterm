@@ -1,4 +1,5 @@
 using Agwinterm.Core;
+using Microsoft.Win32.SafeHandles;
 using Porta.Pty;
 
 namespace Agwinterm.Pty;
@@ -207,6 +208,27 @@ public sealed class TerminalSession : IDisposable
             ExitCode = code; HasExited = true;
             try { Exited?.Invoke(code); } catch { }
         }, ct);
+    }
+
+    /// <summary>Attach to an <b>externally-created</b> pseudoconsole (the Windows default-terminal handoff,
+    /// or a test harness) instead of spawning our own. <paramref name="conOut"/> is where console VT output
+    /// is read; <paramref name="conIn"/> is where user input is written; <paramref name="signal"/> is the
+    /// ConPTY signal pipe; <paramref name="clientProcess"/> is the console client's handle (optional, for
+    /// exit detection). Pumps output into the emulator and reports exit on client death or output EOF.</summary>
+    public void Attach(SafeFileHandle conOut, SafeFileHandle conIn, SafeFileHandle signal, IntPtr clientProcess, int pid)
+    {
+        var conn = new AttachedPty(conOut, conIn, signal, clientProcess, pid);
+        _connection = conn;
+        var pump = Task.Run(() => InteractivePumpAsync(conn.ReaderStream));
+        _ = Task.Run(async () =>
+        {
+            if (clientProcess != IntPtr.Zero) await Task.Run(() => conn.WaitForExit(Timeout.Infinite)).ConfigureAwait(false);
+            else await pump.ConfigureAwait(false);   // no client handle → exit when the output pipe hits EOF
+            int code = 0; try { code = conn.ExitCode; } catch { }
+            ExitCode = code; HasExited = true;
+            try { Exited?.Invoke(code); } catch { }
+        });
+        conn.Resize(Cols, Rows);   // tell the console our initial size
     }
 
     /// <summary>The child's exit code once <see cref="HasExited"/> is true (null while still running).</summary>
