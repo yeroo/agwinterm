@@ -46,6 +46,7 @@ internal static class Keymap
         ("ctrl+shift+up", "previous_prompt"),
         ("ctrl+shift+down", "next_prompt"),
         ("ctrl+shift+m", "mark_mode"),
+        ("ctrl+shift+r", "reopen_session"),
     };
 
     public static readonly HashSet<string> ValidActions = new(StringComparer.OrdinalIgnoreCase)
@@ -55,7 +56,7 @@ internal static class Keymap
         "toggle_sidebar", "rename_session", "delete_workspace", "session_palette", "action_palette",
         "attention_list", "custom_palette", "next_attention", "previous_attention", "reload_keymap",
         "toggle_search", "toggle_scratch", "quick_terminal", "close_cover", "toggle_fullscreen", "toggle_broadcast", "mark_mode", "toggle_read_only",
-        "previous_prompt", "next_prompt",
+        "previous_prompt", "next_prompt", "reopen_session",
         "toggle_flag", "toggle_flagged_view", "focus_workspace",
         "select_all", "copy_selection", "paste",
         "new_window", "close_window", "switch_window",
