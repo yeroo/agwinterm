@@ -91,9 +91,15 @@ internal sealed class DeElevatedPty : IPtyConnection
 
             var pi = new PROCESS_INFORMATION();
             var cmd = new string(commandLine.ToCharArray());   // mutable buffer for CreateProcess*
-            token = GetShellUserToken();   // explorer.exe's Medium primary token
-            if (!CreateProcessWithTokenW(token, 0, null, cmd, EXTENDED_STARTUPINFO_PRESENT,
-                IntPtr.Zero, string.IsNullOrEmpty(cwd) ? null : cwd, ref siEx, out pi)) throw Fail("CreateProcessWithTokenW");
+            // A Medium-integrity token derived from OUR (elevated) token via SAFER. Because it's a
+            // restricted version of the caller's own token, CreateProcessAsUserW doesn't need
+            // SeAssignPrimaryTokenPrivilege (which admins lack). CreateProcessWithTokenW can't be used —
+            // it rejects the pseudoconsole attribute (error 87).
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            token = GetDeElevatedToken();
+            if (!CreateProcessAsUserW(token, null, cmd, IntPtr.Zero, IntPtr.Zero, false, EXTENDED_STARTUPINFO_PRESENT,
+                IntPtr.Zero, string.IsNullOrEmpty(cwd) ? null : cwd, ref siEx, out pi)) throw Fail("CreateProcessAsUserW");
 
             var writer = new FileStream(new SafeFileHandle(inPipeWrite, ownsHandle: true), FileAccess.Write);
             var reader = new FileStream(new SafeFileHandle(outPipeRead, ownsHandle: true), FileAccess.Read);
@@ -114,27 +120,36 @@ internal sealed class DeElevatedPty : IPtyConnection
         finally { if (token != IntPtr.Zero) CloseHandle(token); }
     }
 
-    /// <summary>Duplicate the interactive shell (explorer.exe) primary token — the logged-in user's
-    /// normal Medium-integrity token — so the child launches de-elevated.</summary>
-    private static IntPtr GetShellUserToken()
+    /// <summary>Derive a Medium-integrity "normal user" primary token from this (elevated) process's own
+    /// token via the SAFER API — the standard self-de-elevation technique.</summary>
+    private static IntPtr GetDeElevatedToken()
     {
-        IntPtr shell = GetShellWindow();
-        if (shell == IntPtr.Zero) throw new InvalidOperationException("no shell window (explorer.exe) to de-elevate against");
-        GetWindowThreadProcessId(shell, out uint pid);
-        IntPtr hProc = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid);
-        if (hProc == IntPtr.Zero) throw Fail("OpenProcess(explorer)");
+        if (!SaferCreateLevel(SAFER_SCOPEID_USER, SAFER_LEVELID_NORMALUSER, SAFER_LEVEL_OPEN, out IntPtr level, IntPtr.Zero))
+            throw Fail("SaferCreateLevel");
         try
         {
-            if (!OpenProcessToken(hProc, TOKEN_DUPLICATE | TOKEN_QUERY, out IntPtr hTok)) throw Fail("OpenProcessToken(explorer)");
+            if (!SaferComputeTokenFromLevel(level, IntPtr.Zero, out IntPtr token, 0, IntPtr.Zero))
+                throw Fail("SaferComputeTokenFromLevel");
+            return token;   // SAFER_LEVELID_NORMALUSER yields a Medium-integrity, admin-disabled token
+        }
+        finally { SaferCloseLevel(level); }
+    }
+
+    /// <summary>Best-effort enable a privilege on this process's token (no-op if absent).</summary>
+    private static void EnablePrivilege(string name)
+    {
+        try
+        {
+            if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out IntPtr tok)) return;
             try
             {
-                if (!DuplicateTokenEx(hTok, MAXIMUM_ALLOWED, IntPtr.Zero, SecurityImpersonation, TokenPrimary, out IntPtr hPrimary))
-                    throw Fail("DuplicateTokenEx");
-                return hPrimary;
+                if (!LookupPrivilegeValue(null, name, out LUID luid)) return;
+                var tp = new TOKEN_PRIVILEGES { PrivilegeCount = 1, Luid = luid, Attributes = SE_PRIVILEGE_ENABLED };
+                AdjustTokenPrivileges(tok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
             }
-            finally { CloseHandle(hTok); }
+            finally { CloseHandle(tok); }
         }
-        finally { CloseHandle(hProc); }
+        catch { }
     }
 
     private static InvalidOperationException Fail(string what) =>
@@ -143,12 +158,14 @@ internal sealed class DeElevatedPty : IPtyConnection
     // ---- P/Invoke ----
     private const int PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016;
     private const int EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
-    private const uint PROCESS_QUERY_INFORMATION = 0x0400;
-    private const uint TOKEN_DUPLICATE = 0x0002, TOKEN_QUERY = 0x0008, MAXIMUM_ALLOWED = 0x02000000;
-    private const int SecurityImpersonation = 2, TokenPrimary = 1;
+    private const uint TOKEN_QUERY = 0x0008, TOKEN_ADJUST_PRIVILEGES = 0x0020;
+    private const uint SE_PRIVILEGE_ENABLED = 0x0002;
+    private const uint SAFER_SCOPEID_USER = 2, SAFER_LEVELID_NORMALUSER = 0x20000, SAFER_LEVEL_OPEN = 1;
 
     [StructLayout(LayoutKind.Sequential)] private struct COORD { public short X, Y; }
     [StructLayout(LayoutKind.Sequential)] private struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+    [StructLayout(LayoutKind.Sequential)] private struct LUID { public uint Low; public int High; }
+    [StructLayout(LayoutKind.Sequential)] private struct TOKEN_PRIVILEGES { public int PrivilegeCount; public LUID Luid; public uint Attributes; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFO
     {
@@ -163,18 +180,20 @@ internal sealed class DeElevatedPty : IPtyConnection
     [DllImport("kernel32.dll", SetLastError = true)] private static extern int ResizePseudoConsole(IntPtr hPC, COORD size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern void ClosePseudoConsole(IntPtr hPC);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(IntPtr h, uint ms);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(IntPtr h, out int code);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(IntPtr h, uint code);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr prev, IntPtr ret);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern void DeleteProcThreadAttributeList(IntPtr list);
-    [DllImport("user32.dll")] private static extern IntPtr GetShellWindow();
-    [DllImport("user32.dll", SetLastError = true)] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
-    [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
-    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool DuplicateTokenEx(IntPtr existing, uint access, IntPtr attrs, int impLevel, int tokenType, out IntPtr newToken);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern bool LookupPrivilegeValue(string? system, string name, out LUID luid);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState, int bufferLength, IntPtr prevState, IntPtr returnLength);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool SaferCreateLevel(uint scopeId, uint levelId, uint openFlags, out IntPtr levelHandle, IntPtr reserved);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool SaferComputeTokenFromLevel(IntPtr levelHandle, IntPtr inAccessToken, out IntPtr outAccessToken, uint flags, IntPtr reserved);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool SaferCloseLevel(IntPtr levelHandle);
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern bool CreateProcessWithTokenW(IntPtr token, int logonFlags, string? appName, string commandLine,
-        int creationFlags, IntPtr environment, string? currentDir, ref STARTUPINFOEX startupInfo, out PROCESS_INFORMATION processInfo);
+    private static extern bool CreateProcessAsUserW(IntPtr token, string? appName, string commandLine, IntPtr procAttrs, IntPtr threadAttrs,
+        bool inherit, int creationFlags, IntPtr environment, string? currentDir, ref STARTUPINFOEX startupInfo, out PROCESS_INFORMATION processInfo);
 }
