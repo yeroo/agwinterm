@@ -293,6 +293,13 @@ internal partial class Program : ISessionHost, IWindowHost
     private bool _cursorOn = true;
     private readonly StringBuilder _run = new(256);   // reused per text run (no per-cell alloc)
     private int _redrawPending;                       // coalesces redraw requests into one paint
+    // Frame cap for output-driven repaints: under sustained PTY output, paint at most ~66fps instead
+    // of back-to-back full renders (which saturate a core and starve the pump via grid-lock contention).
+    // The first frame after a quiet period still paints immediately — no interactive latency cost.
+    private const int RedrawTimer = 10;               // WM_TIMER id for the deferred frame
+    private const int RedrawMinIntervalMs = 15;
+    private long _lastPaintTick;                      // Environment.TickCount64 of the last WM_PAINT render
+    private bool _redrawTimerArmed;
 
     // Decoded Kitty images, keyed by the current KittyImage instance so a retransmit
     // (new bytes, same id) re-decodes and the stale texture is pruned/disposed.

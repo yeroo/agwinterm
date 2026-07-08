@@ -164,7 +164,7 @@ public sealed class TerminalSession : IDisposable
                 return;
             }
             _connection = dc;
-            _ = Task.Run(() => InteractivePumpAsync(dc.ReaderStream), ct);
+            _ = StartPump(dc.ReaderStream);
             _ = Task.Run(() =>
             {
                 try { dc.WaitForExit(Timeout.Infinite); } catch { }
@@ -198,7 +198,7 @@ public sealed class TerminalSession : IDisposable
 
         _connection = await PtyProvider.SpawnAsync(options, ct).ConfigureAwait(false);
         var conn = _connection;
-        _ = Task.Run(() => InteractivePumpAsync(conn.ReaderStream), ct);
+        _ = StartPump(conn.ReaderStream);
         // Watch for the child exiting so overlays (and anyone else) get the real ConPTY exit code,
         // reliably even for programs that finish faster than a PID poll could catch them.
         _ = Task.Run(() =>
@@ -219,7 +219,7 @@ public sealed class TerminalSession : IDisposable
     {
         var conn = new AttachedPty(conOut, conIn, signal, clientProcess, pid);
         _connection = conn;
-        var pump = Task.Run(() => InteractivePumpAsync(conn.ReaderStream));
+        var pump = StartPump(conn.ReaderStream);
         _ = Task.Run(async () =>
         {
             if (clientProcess != IntPtr.Zero) await Task.Run(() => conn.WaitForExit(Timeout.Infinite)).ConfigureAwait(false);
@@ -240,14 +240,22 @@ public sealed class TerminalSession : IDisposable
     private static readonly string? DumpPath =
         Environment.GetEnvironmentVariable("AGWINTERM_DUMP") is { Length: > 0 } d ? d : null;
 
-    private async Task InteractivePumpAsync(Stream stream)
+    /// <summary>Run the output pump on a dedicated thread (LongRunning → not a pool thread, still awaitable).
+    /// The ConPTY read pipe is a synchronous handle, so Stream.ReadAsync on it goes through the
+    /// async-over-sync layer — profiling showed that machinery dominating CPU under sustained output
+    /// (~3k lines/s). A plain blocking Read on a dedicated thread is a bare syscall per chunk.</summary>
+    private Task StartPump(Stream stream) =>
+        Task.Factory.StartNew(() => PumpLoop(stream), CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+    private void PumpLoop(Stream stream)
     {
-        var buffer = new byte[8192];
+        var buffer = new byte[64 * 1024];
         try
         {
             while (true)
             {
-                int n = await stream.ReadAsync(buffer).ConfigureAwait(false);
+                int n = stream.Read(buffer, 0, buffer.Length);
                 if (n <= 0) break;
                 if (DumpPath is not null)
                     lock (_sync) System.IO.File.AppendAllBytes(DumpPath, buffer.AsSpan(0, n).ToArray());
