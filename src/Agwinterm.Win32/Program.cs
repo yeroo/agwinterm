@@ -770,10 +770,40 @@ internal partial class Program : ISessionHost, IWindowHost
 
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool GetTokenInformation(IntPtr token, int tokenInformationClass, out uint info, uint length, out uint returnLength);
+
+    /// <summary>Whether the process <paramref name="pid"/> runs elevated (High integrity), by reading its
+    /// token's actual elevation state. Null if it can't be queried (already exited / access denied).</summary>
+    private static bool? IsProcessElevated(int pid)
+    {
+        IntPtr proc = IntPtr.Zero, token = IntPtr.Zero;
+        try
+        {
+            proc = OpenProcess(0x1000 /*PROCESS_QUERY_LIMITED_INFORMATION*/, false, (uint)pid);
+            if (proc == IntPtr.Zero) return null;
+            if (!OpenProcessToken(proc, 0x0008 /*TOKEN_QUERY*/, out token)) return null;
+            return GetTokenInformation(token, 20 /*TokenElevation*/, out uint elevated, sizeof(uint), out _) ? elevated != 0 : null;
+        }
+        catch { return null; }
+        finally { if (token != IntPtr.Zero) CloseHandle(token); if (proc != IntPtr.Zero) CloseHandle(proc); }
+    }
+
+    /// <summary>Refine a session's ⚡ flag from its shell's ACTUAL integrity once the child is running
+    /// (the constructor value is only the spawn intent). Cheap, one-shot, off the UI thread.</summary>
+    private void DetectSessionElevation(Ses ses)
+    {
+        var s = ses.ActivePane.S;
+        _ = Task.Run(async () =>
+        {
+            for (int i = 0; i < 50 && s.ChildProcessId is null; i++) await Task.Delay(100);
+            if (s.ChildProcessId is int pid && IsProcessElevated(pid) is bool elev)
+                Post(() => { if (ses.Elevated != elev) { ses.Elevated = elev; RequestRedraw(); } });
+        });
+    }
 
     /// <summary>True if this process is running elevated (admin). Uses the token's actual elevation
     /// state (TokenElevation), NOT group membership — a non-elevated admin user is correctly false.</summary>
@@ -830,6 +860,7 @@ internal partial class Program : ISessionHost, IWindowHost
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName, Elevated = IsElevated() && !deElevate };
         ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate));   // first pane shares the session id (control-API back-compat)
         ses.Active = 0;
+        DetectSessionElevation(ses);   // refine ⚡ from the shell's real integrity once it's running
 
         lock (_workspaces) { ws.Sessions.Add(ses); ws.Expanded = true; }
 
