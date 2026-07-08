@@ -103,6 +103,10 @@ sixel graphics (M–L) · win32-input-mode + Kitty keyboard protocol (M) ·
 **Default Terminal Application delegation (L)** · **UIA screen-reader accessibility (L)** ·
 buffer-content restore (M)
 
+**Dropped after review**: acrylic/Mica backdrop — Acrylic's live DWM blur is a real
+GPU/battery cost for an all-day terminal, the effect is pure cosmetics, and it needs an
+opaque→alpha-composited render-pipeline rework. Not worth it; owner doesn't want it (2026-07-08).
+
 **Rejected**: search regex/case toggle, global summon hotkey, hidden profiles,
 one-keystroke duplicate session.
 
