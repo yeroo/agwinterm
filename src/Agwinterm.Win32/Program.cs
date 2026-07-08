@@ -2621,6 +2621,9 @@ internal partial class Program : ISessionHost, IWindowHost
                 {
                     Frontmost = this; _frontmostId = Id; SaveIndex();
                 }
+                // Refocusing the app clears the badge of the session you're now looking at (agterm #164).
+                if (_windowActive && _active is not null && _cover is null && UnreadOf(_active) > 0)
+                { ClearUnread(_active); RequestRedraw(); }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
 
             case WM_DESTROY:
@@ -5654,8 +5657,10 @@ internal partial class Program : ISessionHost, IWindowHost
     private void OnNotified(Pane p, string title, string body)
     {
         var ses = OwningSes(p);
-        // Count it against the session unless that pane is the surface you're looking at right now.
-        if (!ReferenceEquals(p, ActiveSurface())) p.Unread++;
+        // Count it against the session unless you're looking at that pane right now (app focused AND it's
+        // the active surface). If the app is in the background, even the active pane accrues a badge — which
+        // then clears on refocus (agterm #164).
+        if (!ReferenceEquals(p, ActiveSurface()) || !_windowActive) p.Unread++;
         string label = string.IsNullOrEmpty(title) ? body : $"{title}: {body}";
         _toastText = label.Length == 0 ? "(notification)" : label;
         _toastTarget = ses;                       // clicking the banner jumps to the raising session

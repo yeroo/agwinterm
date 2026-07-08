@@ -13,7 +13,9 @@ namespace Agwinterm.Win32;
 ///   map leader &lt;chord&gt; = &lt;action|command:Label&gt;   bind a leader sequence
 ///   '#' starts a comment; blank lines ignored.
 /// A canonical chord is "[ctrl+][alt+][shift+]&lt;key&gt;" where key ∈ a–z, 0–9, f1–f12,
-/// tab, enter, escape, space, up, down, left, right.
+/// tab, enter, escape, space, up, down, left, right, or an OEM punctuation name
+/// (comma, period, slash, semicolon, quote, backtick, minus, equals, lbracket, rbracket, backslash) —
+/// so shifted-symbol chords bind via shift+&lt;base&gt; (e.g. shift+slash for '?', shift+semicolon for ':').
 /// The command &lt;text&gt; may contain {AGW_*} tokens (expanded from the active session) and the
 /// launched process receives $AGW_* environment variables — see the agent skill for the list.
 /// </summary>
