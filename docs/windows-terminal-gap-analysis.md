@@ -107,6 +107,19 @@ buffer-content restore (M)
 GPU/battery cost for an all-day terminal, the effect is pure cosmetics, and it needs an
 opaque→alpha-composited render-pipeline rework. Not worth it; owner doesn't want it (2026-07-08).
 
+**In progress / notes**:
+- Default Terminal delegation (T2-13): Stages A+B+C implemented & merged (attach-to-external-PTY,
+  ITerminalHandoff3 COM server, registration tooling). CoRegisterClassObject returns S_OK. Remaining:
+  the host handoff test (tools/defterm-register.ps1 → launch cmd → tools/defterm-restore-conhost.ps1);
+  needs OpenConsole.exe + OpenConsoleProxy.dll (tools/defterm-fetch-openconsole.ps1).
+- UIA accessibility (T2-14): first attempt (raw source-gen COM IRawElementProviderSimple via
+  WM_GETOBJECT + UiaReturnRawElementProvider, VARIANT via Marshal.GetNativeVariantForObject) built
+  cleanly but **crashed natively** when a UIA client queried it (crash persisted with a null host
+  provider, so it's in the return-provider / property-VARIANT marshalling, not the host round-trip).
+  Reverted — a crashing a11y provider is worse than none. Needs a dedicated debugger-driven session;
+  consider a separate assembly with DisableRuntimeMarshalling + ComVariant, or the managed
+  UIAutomationProvider API (WPF-stack size cost). inspect via scripted UIAutomationClient / Narrator.
+
 **Rejected**: search regex/case toggle, global summon hotkey, hidden profiles,
 one-keystroke duplicate session.
 
