@@ -620,7 +620,8 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>Create one terminal pane (its own ConPTY, env, wiring) sized for the given font.
     /// When <paramref name="command"/> is set, that argv runs as the pane's process instead of the shell.</summary>
     private Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null,
-        bool shellWrap = false, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null)
+        bool shellWrap = false, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
+        bool deElevate = false)
     {
         var (cols, rows) = GridSizeFor(fontSize);
         var session = new TerminalSession(cols, rows);
@@ -669,9 +670,9 @@ internal partial class Program : ISessionHost, IWindowHost
             if (argv.Length > 0)
                 _ = session.StartAsync(argv[0], argv[1..], extraEnv: env, cwd: cwd);
             else
-                LaunchShell(session, profileName, env, cwd);
+                LaunchShell(session, profileName, env, cwd, deElevate);
         }
-        else LaunchShell(session, profileName, env, cwd);   // launch the chosen shell profile (default = Windows PowerShell)
+        else LaunchShell(session, profileName, env, cwd, deElevate);   // launch the chosen shell profile (default = Windows PowerShell)
         return pane;
     }
 
@@ -749,7 +750,7 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>Launch a session's shell from its profile. PowerShell profiles (powershell.exe / pwsh) with
     /// no custom args get the OSC-7 cwd wrap + omp injection (today's default behavior); everything else
     /// (cmd, Git Bash, WSL, custom) launches its raw command + args. AGWINTERM_* env is passed regardless.</summary>
-    private void LaunchShell(TerminalSession session, string? profileName, Dictionary<string, string> env, string? cwd)
+    private void LaunchShell(TerminalSession session, string? profileName, Dictionary<string, string> env, string? cwd, bool deElevate = false)
     {
         var prof = ResolveProfile(profileName);
         string cmd = prof?.Command is { Length: > 0 } c ? c : "powershell.exe";
@@ -762,9 +763,9 @@ internal partial class Program : ISessionHost, IWindowHost
         string exe = Path.GetFileName(cmd).ToLowerInvariant();
         bool isPwsh = exe is "powershell.exe" or "pwsh.exe" or "pwsh";
         if (isPwsh && (pargs is null || pargs.Length == 0))
-            _ = session.StartAsync(cmd, ShellArgs(), extraEnv: env, cwd: pcwd);        // wrap + omp (cwd-in-title)
+            _ = session.StartAsync(cmd, ShellArgs(), extraEnv: env, cwd: pcwd, deElevate: deElevate);        // wrap + omp (cwd-in-title)
         else
-            _ = session.StartAsync(cmd, pargs ?? Array.Empty<string>(), extraEnv: env, cwd: pcwd); // raw shell
+            _ = session.StartAsync(cmd, pargs ?? Array.Empty<string>(), extraEnv: env, cwd: pcwd, deElevate: deElevate); // raw shell
     }
 
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
@@ -802,7 +803,8 @@ internal partial class Program : ISessionHost, IWindowHost
     }
 
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
-        string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null)
+        string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
+        bool deElevate = false)
     {
         // Elevated profile from a non-elevated app: hand off to a separate elevated window (UAC).
         if (profileName is not null && !IsElevated()
@@ -825,8 +827,8 @@ internal partial class Program : ISessionHost, IWindowHost
         }
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
-        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName, Elevated = IsElevated() };
-        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName));   // first pane shares the session id (control-API back-compat)
+        var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName, Elevated = IsElevated() && !deElevate };
+        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate));   // first pane shares the session id (control-API back-compat)
         ses.Active = 0;
 
         lock (_workspaces) { ws.Sessions.Add(ses); ws.Expanded = true; }
@@ -4518,6 +4520,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 foreach (var p in _profileCfg.Profiles)
                 { var nm = p.Name; A($"New Session — {nm}", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true, profileName: nm)); }
             else A("New Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true));
+            if (IsElevated()) A("New Non-Elevated Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true, deElevate: true));
             A("Open Directory…", "", () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ses.Ws, true); });
             A("Rename", "F2", () => StartRename(ses));
             A(ses.Flagged ? "Unflag Session" : "Flag Session", "", () => FlagOp(ses, "toggle"));
@@ -4536,6 +4539,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 foreach (var p in _profileCfg.Profiles)
                 { var nm = p.Name; A($"New Session — {nm}", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, cws, true, profileName: nm)); }
             else A("New Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, cws, true));
+            if (IsElevated()) A("New Non-Elevated Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, cws, true, deElevate: true));
             A("Open Directory…", "", () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, cws, true); });
             A("Rename", "", () => StartRename(cws));
             A(wsFocused ? "Unfocus" : "Focus", "", () => WorkspaceFocusOp(wsFocused ? "off" : "on", cws.Id));

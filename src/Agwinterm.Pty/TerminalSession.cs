@@ -122,10 +122,58 @@ public sealed class TerminalSession : IDisposable
         catch (IOException) { }
     }
 
-    /// <summary>Spawn an interactive shell and pump its output in the background until it exits or is disposed.</summary>
-    public async Task StartAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
-        IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null, CancellationToken ct = default)
+    /// <summary>Quote one argument per the CommandLineToArgvW rules, so a joined command line round-trips
+    /// back to the same argv (handles the -Command &lt;multiline script&gt; case).</summary>
+    private static string QuoteArg(string arg)
     {
+        if (arg.Length > 0 && arg.IndexOfAny(new[] { ' ', '\t', '\n', '\v', '"' }) < 0) return arg;
+        var sb = new System.Text.StringBuilder("\"");
+        for (int i = 0; ; i++)
+        {
+            int slashes = 0;
+            while (i < arg.Length && arg[i] == '\\') { i++; slashes++; }
+            if (i == arg.Length) { sb.Append('\\', slashes * 2); break; }
+            if (arg[i] == '"') sb.Append('\\', slashes * 2 + 1).Append('"');
+            else sb.Append('\\', slashes).Append(arg[i]);
+        }
+        return sb.Append('"').ToString();
+    }
+
+    /// <summary>Spawn an interactive shell and pump its output in the background until it exits or is disposed.
+    /// When <paramref name="deElevate"/> is set, the shell runs at the interactive user's Medium integrity
+    /// (only valid from an elevated agwinterm) so an elevated window can host a normal session.</summary>
+    public async Task StartAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
+        IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null, bool deElevate = false, CancellationToken ct = default)
+    {
+        if (deElevate)
+        {
+            // Manual pseudoconsole with the interactive user's token (Porta.Pty can't drop integrity).
+            string cmd = commandLine is { Length: > 0 }
+                ? QuoteArg(app) + " " + string.Join(' ', Array.ConvertAll(commandLine, QuoteArg))
+                : QuoteArg(app);
+            IPtyConnection dc;
+            try { dc = DeElevatedPty.Spawn(cmd, string.IsNullOrEmpty(cwd) ? Environment.CurrentDirectory : cwd, Cols, Rows); }
+            catch (Exception ex)
+            {
+                // Surface the failure in the pane instead of leaving it dead (or crashing on the unobserved task).
+                var msg = $"\r\n\x1b[31m[agwinterm] could not start a non-elevated session:\x1b[0m\r\n  {ex.Message}\r\n";
+                lock (_sync) Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(msg));
+                OutputReceived?.Invoke();
+                ExitCode = 1; HasExited = true;
+                return;
+            }
+            _connection = dc;
+            _ = Task.Run(() => InteractivePumpAsync(dc.ReaderStream), ct);
+            _ = Task.Run(() =>
+            {
+                try { dc.WaitForExit(Timeout.Infinite); } catch { }
+                int code = 0; try { code = dc.ExitCode; } catch { }
+                ExitCode = code; HasExited = true;
+                try { Exited?.Invoke(code); } catch { }
+            }, ct);
+            return;
+        }
+
         var options = new PtyOptions
         {
             Name = "agwinterm",
