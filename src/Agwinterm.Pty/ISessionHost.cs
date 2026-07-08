@@ -2,11 +2,21 @@ using Agwinterm.Core;
 
 namespace Agwinterm.Pty;
 
-/// <summary>A session's metadata for the control-API tree.</summary>
-public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status, bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false);
+/// <summary>A session's metadata for the control-API tree. <see cref="FocusedPane"/>/<see cref="PaneCount"/>/
+/// <see cref="SplitRatios"/> describe its split layout; <see cref="StatusBlink"/> is the attention pulse;
+/// <see cref="OverlaySize"/> is an open overlay's size-percent (0 = none/full).</summary>
+public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
+    bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
+    int FocusedPane = 0, int PaneCount = 1, bool StatusBlink = false, int OverlaySize = 0,
+    IReadOnlyList<double>? SplitRatios = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
+
+/// <summary>Window-level UI state for the control-API read side (sidebar/fullscreen/zoom/quick-terminal
+/// visibility + which workspace/session is active).</summary>
+public sealed record WindowStateSnapshot(bool SidebarVisible, bool Fullscreen, bool Maximized,
+    bool QuickTerminalVisible, string? ActiveWorkspace, string? ActiveSession);
 
 /// <summary>
 /// The control server's view of the app. Lets it target a session by id / unique-prefix /
@@ -20,6 +30,9 @@ public interface ISessionHost
 
     /// <summary>The full workspace→session tree.</summary>
     IReadOnlyList<WorkspaceSnapshot> Tree();
+
+    /// <summary>Window-level UI state (sidebar/fullscreen/zoom/quick-terminal visibility + active ws/session).</summary>
+    WindowStateSnapshot WindowState();
 
     /// <summary>
     /// Create a session; returns its id. Optionally in a workspace (by id/prefix via
@@ -181,6 +194,7 @@ public sealed class SingleSessionHost : ISessionHost
     public IReadOnlyList<WorkspaceSnapshot> Tree() =>
         new[] { new WorkspaceSnapshot("ws", "workspace", true,
             new[] { new SessionSnapshot("single", "session", true, _session.Status) }) };
+    public WindowStateSnapshot WindowState() => new(true, false, false, false, "ws", "single");
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null) => "single";
     public string ProfilesList() => "Windows PowerShell";

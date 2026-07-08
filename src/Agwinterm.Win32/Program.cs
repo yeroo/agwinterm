@@ -99,7 +99,12 @@ internal partial class Program : ISessionHost, IWindowHost
 
     // Chrome geometry (custom title bar + status bar, drawn in Direct2D).
     // Compact toolbar (agterm) shrinks the custom title bar; read live so a config toggle reflows everything.
-    private static float TitleBarH => _config is { CompactToolbar: true } ? 30f : 40f;
+    /// <summary>Effective toolbar mode: explicit toolbar-mode, else derived from the legacy compact-toolbar bool.</summary>
+    private static string ToolbarModeResolved =>
+        _config?.ToolbarMode is "normal" or "compact" or "hidden" ? _config.ToolbarMode!
+        : (_config is { CompactToolbar: true } ? "compact" : "normal");
+    private static float TitleBarH => ToolbarModeResolved switch { "hidden" => 0f, "compact" => 30f, _ => 40f };
+    private static bool ToolbarHidden => ToolbarModeResolved == "hidden";
     private const float FooterH = 34f;       // toolbar at the bottom of the sidebar
     private const float SidebarWFull = 220f;
     private const float CaptionBtnW = 46f;   // native min/max/close hit width
@@ -1300,25 +1305,54 @@ internal partial class Program : ISessionHost, IWindowHost
 
     /// <summary>A recently-closed session's restorable identity (IDE "reopen closed" / browser Ctrl+Shift+T).</summary>
     private sealed record ClosedSession(string? CustomName, string? ProfileName, string Cwd,
-        string WorkspaceId, string WorkspaceName, bool Flagged, string Display);
+        string WorkspaceId, string WorkspaceName, bool Flagged, string Display, string Name, long Seq = 0);
+    /// <summary>A recently-closed workspace (its name + all its sessions), so it can be reopened whole.</summary>
+    private sealed record ClosedWorkspace(string Name, IReadOnlyList<ClosedSession> Sessions, long Seq);
     private readonly List<ClosedSession> _closedSessions = new();
+    private readonly List<ClosedWorkspace> _closedWorkspaces = new();
     private const int MaxClosedSessions = 25;
+    private long _closeSeq;   // monotonic; orders closed sessions vs workspaces for "most recent"
+
+    /// <summary>Snapshot a session's restorable identity (stamped with the next close sequence).</summary>
+    private ClosedSession CaptureClosedSessionData(Ses ses)
+    {
+        var p = ses.ActivePane;
+        string live = PrettyCwd(SafeCwd(p));
+        string cwd = live.Length > 0 ? live : (p.StartCwd ?? "");
+        string display = !string.IsNullOrEmpty(ses.CustomName) ? ses.CustomName!
+            : (!string.IsNullOrEmpty(cwd) ? Path.GetFileName(cwd.TrimEnd('\\', '/')) : ses.Name);
+        if (string.IsNullOrEmpty(display)) display = ses.Name;
+        return new ClosedSession(ses.CustomName, ses.ProfileName, cwd, ses.Ws.Id, ses.Ws.Name, ses.Flagged, display, ses.Name, ++_closeSeq);
+    }
 
     /// <summary>Remember a session's identity so it can be reopened after it's closed.</summary>
     private void CaptureClosedSession(Ses ses)
     {
+        try { _closedSessions.Add(CaptureClosedSessionData(ses)); if (_closedSessions.Count > MaxClosedSessions) _closedSessions.RemoveAt(0); }
+        catch { }
+    }
+
+    /// <summary>Remember a whole workspace (name + its sessions) so it can be reopened after it's deleted.</summary>
+    private void CaptureClosedWorkspace(Workspace ws, IReadOnlyList<Ses> sessions)
+    {
         try
         {
-            var p = ses.ActivePane;
-            string live = PrettyCwd(SafeCwd(p));
-            string cwd = live.Length > 0 ? live : (p.StartCwd ?? "");
-            string display = !string.IsNullOrEmpty(ses.CustomName) ? ses.CustomName!
-                : (!string.IsNullOrEmpty(cwd) ? Path.GetFileName(cwd.TrimEnd('\\', '/')) : ses.Name);
-            if (string.IsNullOrEmpty(display)) display = ses.Name;
-            _closedSessions.Add(new ClosedSession(ses.CustomName, ses.ProfileName, cwd, ses.Ws.Id, ses.Ws.Name, ses.Flagged, display));
-            if (_closedSessions.Count > MaxClosedSessions) _closedSessions.RemoveAt(0);
+            if (sessions.Count == 0) return;
+            var items = sessions.Select(CaptureClosedSessionData).ToList();
+            _closedWorkspaces.Add(new ClosedWorkspace(ws.Name, items, ++_closeSeq));
+            if (_closedWorkspaces.Count > MaxClosedSessions) _closedWorkspaces.RemoveAt(0);
         }
         catch { }
+    }
+
+    /// <summary>Reopen the most recently closed item — a session or a whole workspace, whichever was closed last.</summary>
+    private void ReopenMostRecent()
+    {
+        long sSeq = _closedSessions.Count > 0 ? _closedSessions[^1].Seq : -1;
+        long wSeq = _closedWorkspaces.Count > 0 ? _closedWorkspaces[^1].Seq : -1;
+        if (sSeq < 0 && wSeq < 0) { ShowToast("No recently closed items"); return; }
+        if (wSeq > sSeq) ReopenClosedWorkspace(_closedWorkspaces[^1]);
+        else ReopenClosedSession();
     }
 
     /// <summary>Reopen the most recently closed session (or a specific one) — restoring its profile, cwd,
@@ -1338,7 +1372,28 @@ internal partial class Program : ISessionHost, IWindowHost
         string? cwd = !string.IsNullOrEmpty(c.Cwd) && Directory.Exists(c.Cwd) ? c.Cwd : null;
         var ses = CreateSession(Guid.NewGuid().ToString(), null, cwd, ws, makeActive: true, profileName: c.ProfileName);
         if (!string.IsNullOrEmpty(c.CustomName)) { ses.CustomName = c.CustomName; ses.Name = c.CustomName!; } // mirror rename
+        else if (!string.IsNullOrEmpty(c.Name)) ses.Name = c.Name;   // restore the original label
         if (c.Flagged) ses.Flagged = true;
+        RequestRedraw();
+        SaveState();
+    }
+
+    /// <summary>Reopen a closed workspace whole — recreate it and all its sessions (profile/cwd/name/flag).</summary>
+    private void ReopenClosedWorkspace(ClosedWorkspace c)
+    {
+        _closedWorkspaces.Remove(c);
+        var ws = CreateWorkspace(Guid.NewGuid().ToString(), c.Name);
+        Ses? first = null;
+        foreach (var cs in c.Sessions)
+        {
+            string? cwd = !string.IsNullOrEmpty(cs.Cwd) && Directory.Exists(cs.Cwd) ? cs.Cwd : null;
+            var ses = CreateSession(Guid.NewGuid().ToString(), null, cwd, ws, makeActive: false, profileName: cs.ProfileName);
+            if (!string.IsNullOrEmpty(cs.CustomName)) { ses.CustomName = cs.CustomName; ses.Name = cs.CustomName!; }
+            else if (!string.IsNullOrEmpty(cs.Name)) ses.Name = cs.Name;
+            if (cs.Flagged) ses.Flagged = true;
+            first ??= ses;
+        }
+        if (first is not null) SetActive(first);
         RequestRedraw();
         SaveState();
     }
@@ -1767,8 +1822,22 @@ internal partial class Program : ISessionHost, IWindowHost
             lock (_workspaces)
                 return _workspaces.Select(w => new WorkspaceSnapshot(
                     w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
-                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), AggStatus(s), s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null)).ToList()
+                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), AggStatus(s),
+                        s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
+                        FocusedPane: Math.Clamp(s.Active, 0, Math.Max(0, s.Panes.Count - 1)), PaneCount: s.Panes.Count,
+                        StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
+                        SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList())).ToList()
                 )).ToList();
+        }
+
+        // Read-back snapshot: plain field reads + a Win32 query, safe from the pipe thread (worst case slightly stale).
+        public WindowStateSnapshot WindowState()
+        {
+            var a = _active;
+            return new WindowStateSnapshot(
+                SidebarVisible: _sidebarW > 0, Fullscreen: _fullscreen, Maximized: IsZoomed(_hwnd),
+                QuickTerminalVisible: _coverKind == 2 && _cover is not null && ReferenceEquals(_cover, _quick),
+                ActiveWorkspace: a?.Ws.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
         }
 
         public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
@@ -2059,6 +2128,14 @@ internal partial class Program : ISessionHost, IWindowHost
                     if (ses?.Overlay is null) return "no overlay";
                     Post(() => CloseOverlayOf(ses));
                     return "closed";
+                }
+                case "resize":
+                {
+                    var ses = FindSesForTarget(target);
+                    if (ses?.Overlay is null) return "no overlay";
+                    int sp = Math.Clamp(sizePercent, 0, 100);   // 0 = full content region; 1..100 = centered panel
+                    Post(() => { ses.OverlaySizePercent = sp; if (ReferenceEquals(_ovlOwner, ses)) RegridCover(); RequestRedraw(); });
+                    return $"resized {sp}%";
                 }
                 default: // "open"
                 {
@@ -2594,6 +2671,9 @@ internal partial class Program : ISessionHost, IWindowHost
                 {
                     Frontmost = this; _frontmostId = Id; SaveIndex();
                 }
+                // Refocusing the app clears the badge of the session you're now looking at (agterm #164).
+                if (_windowActive && _active is not null && _cover is null && UnreadOf(_active) > 0)
+                { ClearUnread(_active); RequestRedraw(); }
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
 
             case WM_DESTROY:
@@ -2723,7 +2803,7 @@ internal partial class Program : ISessionHost, IWindowHost
         switch (action)
         {
             case "new_session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true); break;
-            case "reopen_session": ReopenClosedSession(); break;
+            case "reopen_session": ReopenMostRecent(); break;
             case "new_workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
             case "close_session": case "close_pane": if (_coverKind == 3) CloseActiveOverlay(); else if (_cover is not null) HideCover(); else CloseActivePane(); break;
             case "split_pane": SplitOp("toggle"); break;   // toggle 1<->2 panes (agterm-style), not add
@@ -3039,7 +3119,7 @@ internal partial class Program : ISessionHost, IWindowHost
     // ---- Clickable links: Ctrl+hover underlines a URL (hand cursor); Ctrl+click opens it ----
 
     private static readonly System.Text.RegularExpressions.Regex LinkRx = new(
-        @"https?://[^\s""'<>\[\]{}|\\^`]+", System.Text.RegularExpressions.RegexOptions.Compiled);
+        @"(?:https?|file)://[^\s""'<>\[\]{}|\\^`]+", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private string? _linkUrl;      // hovered link (null = none); drawn underlined in RenderTerminal
     private Pane? _linkPane;
@@ -3089,12 +3169,27 @@ internal partial class Program : ISessionHost, IWindowHost
         _linkUrl = null; _linkPane = null; RequestRedraw();
     }
 
-    /// <summary>Validated open: absolute http/https only, handed to the shell.</summary>
+    /// <summary>Validated open: http/https to the shell; file:// reveals the target in Explorer
+    /// (selects the file, or opens the folder for a directory). Everything else is blocked.</summary>
     private void OpenLink(string url)
     {
-        if (Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme is "http" or "https")
-            ShellExecuteW(IntPtr.Zero, "open", url, null, null, SW_SHOW);
-        else ShowToast("blocked non-http(s) link");
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) { ShowToast("invalid link"); return; }
+        if (u.Scheme is "http" or "https") { ShellExecuteW(IntPtr.Zero, "open", url, null, null, SW_SHOW); return; }
+        if (u.Scheme == "file")
+        {
+            string path = u.LocalPath;
+            try
+            {
+                if (Directory.Exists(path))
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
+                else if (File.Exists(path))
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+                else ShowToast("path not found: " + path);
+            }
+            catch (Exception ex) { ShowToast("reveal failed: " + ex.Message); }
+            return;
+        }
+        ShowToast("blocked non-http(s) link");
     }
 
     // ---- Text selection + clipboard ----
@@ -4797,6 +4892,7 @@ internal partial class Program : ISessionHost, IWindowHost
         lock (_workspaces)
         {
             sessions = ws.Sessions.ToList();
+            CaptureClosedWorkspace(ws, sessions);   // remember it so Reopen Closed can bring the whole workspace back
             ws.Sessions.Clear();
             _workspaces.Remove(ws);
             if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
@@ -4977,12 +5073,17 @@ internal partial class Program : ISessionHost, IWindowHost
                 void A(string label, string hint, Action run) => _palAll.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
                 A("New Session", "Ctrl+Shift+T", () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true));
                 A("New Session…", "", () => TogglePalette(PaletteKind.NewSession));   // pick a shell profile
-                if (_closedSessions.Count > 0)
+                if (_closedSessions.Count > 0 || _closedWorkspaces.Count > 0)
                 {
-                    A($"Reopen Closed Session ({_closedSessions[^1].Display})", "Ctrl+Shift+R", () => ReopenClosedSession());
-                    // Older closed sessions, most-recent first (skip the top one already offered above).
-                    for (int ci = _closedSessions.Count - 2; ci >= 0 && ci >= _closedSessions.Count - 10; ci--)
-                    { var cs = _closedSessions[ci]; A($"Reopen — {cs.Display}", "", () => ReopenClosedSession(cs)); }
+                    long sSeq = _closedSessions.Count > 0 ? _closedSessions[^1].Seq : -1;
+                    long wSeq = _closedWorkspaces.Count > 0 ? _closedWorkspaces[^1].Seq : -1;
+                    string top = wSeq > sSeq ? $"workspace {_closedWorkspaces[^1].Name}" : _closedSessions[^1].Display;
+                    A($"Reopen Closed ({top})", "Ctrl+Shift+R", ReopenMostRecent);
+                    // Recent closed sessions, then closed workspaces (most-recent first), each reopenable directly.
+                    for (int ci = _closedSessions.Count - 1; ci >= 0 && ci >= _closedSessions.Count - 8; ci--)
+                    { var cs = _closedSessions[ci]; A($"Reopen Session — {cs.Display}", "", () => ReopenClosedSession(cs)); }
+                    for (int wi = _closedWorkspaces.Count - 1; wi >= 0 && wi >= _closedWorkspaces.Count - 8; wi--)
+                    { var cw = _closedWorkspaces[wi]; A($"Reopen Workspace — {cw.Name} ({cw.Sessions.Count})", "", () => ReopenClosedWorkspace(cw)); }
                 }
                 A("New Workspace", "Ctrl+Shift+N", () => CreateWorkspace(Guid.NewGuid().ToString(), null));
                 A("New Window", "Ctrl+Alt+N", () => WindowNew(null));
@@ -5470,6 +5571,7 @@ internal partial class Program : ISessionHost, IWindowHost
         ScreenToClient(hwnd, ref pt);
         int cw = ClientW(), ch = ClientH();
         const int B = 8;
+        bool hidden = ToolbarHidden;
         if (!IsZoomed(hwnd))
         {
             bool top = pt.y < B, bot = pt.y >= ch - B, left = pt.x < B, right = pt.x >= cw - B;
@@ -5477,11 +5579,13 @@ internal partial class Program : ISessionHost, IWindowHost
             if (top && right) return HTTOPRIGHT;
             if (bot && left) return HTBOTTOMLEFT;
             if (bot && right) return HTBOTTOMRIGHT;
-            if (top) return HTTOP;
+            if (top) return hidden ? HTCAPTION : HTTOP;   // hidden: top edge drags (no chrome to grab)
             if (bot) return HTBOTTOM;
             if (left) return HTLEFT;
             if (right) return HTRIGHT;
         }
+        if (hidden)   // maximized/full-bleed: a thin top strip still drags + double-click-zooms
+            return pt.y < 6 ? HTCAPTION : HTCLIENT;
         if (pt.y < (int)TitleBarH)
         {
             int cap = CaptionButtonAt(pt.x, cw);
@@ -5609,8 +5713,10 @@ internal partial class Program : ISessionHost, IWindowHost
     private void OnNotified(Pane p, string title, string body)
     {
         var ses = OwningSes(p);
-        // Count it against the session unless that pane is the surface you're looking at right now.
-        if (!ReferenceEquals(p, ActiveSurface())) p.Unread++;
+        // Count it against the session unless you're looking at that pane right now (app focused AND it's
+        // the active surface). If the app is in the background, even the active pane accrues a badge — which
+        // then clears on refocus (agterm #164).
+        if (!ReferenceEquals(p, ActiveSurface()) || !_windowActive) p.Unread++;
         string label = string.IsNullOrEmpty(title) ? body : $"{title}: {body}";
         _toastText = label.Length == 0 ? "(notification)" : label;
         _toastTarget = ses;                       // clicking the banner jumps to the raising session
@@ -5762,6 +5868,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private void DrawTitleBar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         _titleButtons.Clear();
+        if (ToolbarHidden) return;   // hidden toolbar: no chrome at all (full-bleed terminal)
         int cw = ClientW();
         brush.Color = ChromeBg;
         rt.FillRectangle(new Rect(0, 0, cw, TitleBarH), brush);
@@ -6284,7 +6391,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "ligatures", "window-opacity", "sidebar-tint", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "word-delimiters", "desktop-notifications", "shell-integration",
         "restore-commands", "restore-buffer", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
-        "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "notification-badges",
+        "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
     };
 
@@ -6339,6 +6446,7 @@ internal partial class Program : ISessionHost, IWindowHost
         "new-session-dir-mode" => _config.NewSessionDirMode,
         "confirm-close-session" => _config.ConfirmCloseSession ? "true" : "false",
         "compact-toolbar" => _config.CompactToolbar ? "true" : "false",
+        "toolbar-mode" => ToolbarModeResolved,
         "notification-badges" => _config.NotificationBadges ? "true" : "false",
         "attention-button" => _config.AttentionButton ? "true" : "false",
         "status-color-active" => _config.StatusColorActive,
@@ -6358,7 +6466,7 @@ internal partial class Program : ISessionHost, IWindowHost
         if (key == "cursor-blink-ms" && _hwnd != IntPtr.Zero) SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
         RecomputeChrome();
         ApplyWindowOpacity();
-        if (key == "compact-toolbar")                     // title-bar height changed → reflow the terminal grid
+        if (key is "compact-toolbar" or "toolbar-mode")   // title-bar height changed → reflow the terminal grid
         { if (_active is not null) RegridSession(_active); if (_cover is not null) RegridCover(); }
         RequestRedraw();
         RefreshSettingsControls();                        // keep an open Settings window in sync

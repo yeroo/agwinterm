@@ -159,7 +159,7 @@ switch (area)
             case "split": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break;
             case "readonly": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|state; block input to the pane
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
-            case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay result
+            case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay resize --size-percent N | overlay result
                 cargs["action"] = rest.Count > 0 ? rest[0] : "open";
                 if (rest.Count > 1) cargs["command"] = string.Join(' ', rest.Skip(1));
                 else if (Opt("command") is { } ovcmd) cargs["command"] = ovcmd;
@@ -270,7 +270,7 @@ switch (area)
                 if (Opt("name") is { } wn) cargs["name"] = wn;
                 else if (rest.Count > 0) cargs["name"] = string.Join(' ', rest);
                 break;
-            case "list": break;
+            case "list": case "state": break;   // state = read-back of window UI flags
             case "select": case "close": case "delete": case "zoom":
                 target = rest.Count > 0 ? rest[0] : (Opt("target") ?? "active");
                 break;

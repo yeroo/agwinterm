@@ -108,8 +108,14 @@ public sealed class TerminalConfig
     /// <summary>Ask for confirmation before a user closes a session (Ctrl+Shift+W / menu Close). Off by default.</summary>
     public bool ConfirmCloseSession { get; set; } = false;
 
-    /// <summary>Compact toolbar: a shorter title bar. Off by default.</summary>
+    /// <summary>Compact toolbar: a shorter title bar. Off by default. Legacy — superseded by
+    /// <see cref="ToolbarMode"/>; kept as a decode shim so old settings still open.</summary>
     public bool CompactToolbar { get; set; } = false;
+
+    /// <summary>Title-bar chrome: "normal" (40px), "compact" (30px), or "hidden" (0 — full-bleed terminal
+    /// with a thin top drag strip, no title/buttons). Null = derive from <see cref="CompactToolbar"/>.
+    /// Stored raw so an unknown future value degrades to the default rather than failing the whole parse.</summary>
+    public string? ToolbarMode { get; set; }
 
     /// <summary>Draw the red unread-count pill on sidebar rows (the count still tracks when off). On by default.</summary>
     public bool NotificationBadges { get; set; } = true;
@@ -220,8 +226,8 @@ public sealed class TerminalConfig
         # Ask before closing a session (Ctrl+Shift+W / right-click Close).
         confirm-close-session = false
 
-        # Compact toolbar: a shorter title bar.
-        compact-toolbar = false
+        # Title-bar chrome: normal | compact | hidden (hidden = full-bleed terminal, thin top drag strip).
+        toolbar-mode = normal
 
         # Notifications: show the red unread-count pill on sidebar rows; show the title-bar attention bell.
         notification-badges = true
@@ -283,6 +289,7 @@ public sealed class TerminalConfig
                 case "new-session-dir-mode": { var m = val.ToLowerInvariant(); if (m is "home" or "current" or "custom") cfg.NewSessionDirMode = m; break; }
                 case "confirm-close-session": cfg.ConfirmCloseSession = ParseBool(val, cfg.ConfirmCloseSession); break;
                 case "compact-toolbar": cfg.CompactToolbar = ParseBool(val, cfg.CompactToolbar); break;
+                case "toolbar-mode": { var m = val.Trim().ToLowerInvariant(); if (m is "normal" or "compact" or "hidden") cfg.ToolbarMode = m; break; }
                 case "notification-badges": cfg.NotificationBadges = ParseBool(val, cfg.NotificationBadges); break;
                 case "attention-button": cfg.AttentionButton = ParseBool(val, cfg.AttentionButton); break;
                 case "status-color-active": if (val.Length > 0) cfg.StatusColorActive = val; break;

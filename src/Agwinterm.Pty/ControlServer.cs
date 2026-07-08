@@ -127,6 +127,7 @@ public sealed class ControlServer : IDisposable
             switch (cmd)
             {
                 case "tree": return HandleTree(host);
+                case "window.state": return HandleWindowState(host);
                 case "session.new": return Ok(host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace"),
                     GetString(args, "command"), GetString(args, "workspace-name"), GetBool(args, "create-workspace"), GetString(args, "profile")));
                 case "profiles.list": return Ok(host.ProfilesList());
@@ -270,11 +271,38 @@ public sealed class ControlServer : IDisposable
                 if (n.Flagged) sb.Append(",\"flagged\":true");
                 if (n.Background) sb.Append(",\"background\":true");
                 if (n.Notifications > 0) sb.Append(",\"notifications\":").Append(n.Notifications);
+                if (n.StatusBlink) sb.Append(",\"statusBlink\":true");
+                if (n.OverlaySize > 0) sb.Append(",\"overlaySize\":").Append(n.OverlaySize);
+                if (n.PaneCount > 1)
+                {
+                    sb.Append(",\"paneCount\":").Append(n.PaneCount).Append(",\"focusedPane\":").Append(n.FocusedPane);
+                    if (n.SplitRatios is { Count: > 0 })
+                    {
+                        sb.Append(",\"splitRatios\":[");
+                        for (int r = 0; r < n.SplitRatios.Count; r++)
+                        { if (r > 0) sb.Append(','); sb.Append(n.SplitRatios[r].ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)); }
+                        sb.Append(']');
+                    }
+                }
                 sb.Append('}');
             }
             sb.Append("]}");
         }
         sb.Append("]}");
+        return OkRaw(sb.ToString());
+    }
+
+    private static string HandleWindowState(ISessionHost host)
+    {
+        var s = host.WindowState();
+        var sb = new StringBuilder("{");
+        sb.Append("\"sidebarVisible\":").Append(s.SidebarVisible ? "true" : "false")
+          .Append(",\"fullscreen\":").Append(s.Fullscreen ? "true" : "false")
+          .Append(",\"maximized\":").Append(s.Maximized ? "true" : "false")
+          .Append(",\"quickTerminalVisible\":").Append(s.QuickTerminalVisible ? "true" : "false");
+        if (s.ActiveWorkspace is not null) sb.Append(",\"activeWorkspace\":").Append(JsonSerializer.Serialize(s.ActiveWorkspace));
+        if (s.ActiveSession is not null) sb.Append(",\"activeSession\":").Append(JsonSerializer.Serialize(s.ActiveSession));
+        sb.Append('}');
         return OkRaw(sb.ToString());
     }
 
