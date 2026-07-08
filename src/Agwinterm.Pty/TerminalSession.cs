@@ -257,6 +257,7 @@ public sealed class TerminalSession : IDisposable
         }
         catch (IOException) { }
         catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }   // Dispose() closed the stream mid-read — normal shutdown
     }
 
     /// <summary>
@@ -305,6 +306,13 @@ public sealed class TerminalSession : IDisposable
 
     public void Dispose()
     {
-        try { _connection?.Kill(); } catch { /* already exited */ }
+        var c = _connection;
+        _connection = null;
+        try { c?.Kill(); } catch { /* already exited */ }
+        // Dispose closes the pseudoconsole + pipes. Without it the ConPTY output pipe never EOFs
+        // (killing the child is not enough), so the pump task stays blocked in ReadAsync forever —
+        // leaking one thread-pool thread (~1MB stack) plus the ConPTY/pipe/process handles per
+        // closed session. Found by tools/profile-memory.ps1.
+        try { c?.Dispose(); } catch { }
     }
 }
