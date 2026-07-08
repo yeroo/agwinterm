@@ -1305,25 +1305,54 @@ internal partial class Program : ISessionHost, IWindowHost
 
     /// <summary>A recently-closed session's restorable identity (IDE "reopen closed" / browser Ctrl+Shift+T).</summary>
     private sealed record ClosedSession(string? CustomName, string? ProfileName, string Cwd,
-        string WorkspaceId, string WorkspaceName, bool Flagged, string Display);
+        string WorkspaceId, string WorkspaceName, bool Flagged, string Display, string Name, long Seq = 0);
+    /// <summary>A recently-closed workspace (its name + all its sessions), so it can be reopened whole.</summary>
+    private sealed record ClosedWorkspace(string Name, IReadOnlyList<ClosedSession> Sessions, long Seq);
     private readonly List<ClosedSession> _closedSessions = new();
+    private readonly List<ClosedWorkspace> _closedWorkspaces = new();
     private const int MaxClosedSessions = 25;
+    private long _closeSeq;   // monotonic; orders closed sessions vs workspaces for "most recent"
+
+    /// <summary>Snapshot a session's restorable identity (stamped with the next close sequence).</summary>
+    private ClosedSession CaptureClosedSessionData(Ses ses)
+    {
+        var p = ses.ActivePane;
+        string live = PrettyCwd(SafeCwd(p));
+        string cwd = live.Length > 0 ? live : (p.StartCwd ?? "");
+        string display = !string.IsNullOrEmpty(ses.CustomName) ? ses.CustomName!
+            : (!string.IsNullOrEmpty(cwd) ? Path.GetFileName(cwd.TrimEnd('\\', '/')) : ses.Name);
+        if (string.IsNullOrEmpty(display)) display = ses.Name;
+        return new ClosedSession(ses.CustomName, ses.ProfileName, cwd, ses.Ws.Id, ses.Ws.Name, ses.Flagged, display, ses.Name, ++_closeSeq);
+    }
 
     /// <summary>Remember a session's identity so it can be reopened after it's closed.</summary>
     private void CaptureClosedSession(Ses ses)
     {
+        try { _closedSessions.Add(CaptureClosedSessionData(ses)); if (_closedSessions.Count > MaxClosedSessions) _closedSessions.RemoveAt(0); }
+        catch { }
+    }
+
+    /// <summary>Remember a whole workspace (name + its sessions) so it can be reopened after it's deleted.</summary>
+    private void CaptureClosedWorkspace(Workspace ws, IReadOnlyList<Ses> sessions)
+    {
         try
         {
-            var p = ses.ActivePane;
-            string live = PrettyCwd(SafeCwd(p));
-            string cwd = live.Length > 0 ? live : (p.StartCwd ?? "");
-            string display = !string.IsNullOrEmpty(ses.CustomName) ? ses.CustomName!
-                : (!string.IsNullOrEmpty(cwd) ? Path.GetFileName(cwd.TrimEnd('\\', '/')) : ses.Name);
-            if (string.IsNullOrEmpty(display)) display = ses.Name;
-            _closedSessions.Add(new ClosedSession(ses.CustomName, ses.ProfileName, cwd, ses.Ws.Id, ses.Ws.Name, ses.Flagged, display));
-            if (_closedSessions.Count > MaxClosedSessions) _closedSessions.RemoveAt(0);
+            if (sessions.Count == 0) return;
+            var items = sessions.Select(CaptureClosedSessionData).ToList();
+            _closedWorkspaces.Add(new ClosedWorkspace(ws.Name, items, ++_closeSeq));
+            if (_closedWorkspaces.Count > MaxClosedSessions) _closedWorkspaces.RemoveAt(0);
         }
         catch { }
+    }
+
+    /// <summary>Reopen the most recently closed item — a session or a whole workspace, whichever was closed last.</summary>
+    private void ReopenMostRecent()
+    {
+        long sSeq = _closedSessions.Count > 0 ? _closedSessions[^1].Seq : -1;
+        long wSeq = _closedWorkspaces.Count > 0 ? _closedWorkspaces[^1].Seq : -1;
+        if (sSeq < 0 && wSeq < 0) { ShowToast("No recently closed items"); return; }
+        if (wSeq > sSeq) ReopenClosedWorkspace(_closedWorkspaces[^1]);
+        else ReopenClosedSession();
     }
 
     /// <summary>Reopen the most recently closed session (or a specific one) — restoring its profile, cwd,
@@ -1343,7 +1372,28 @@ internal partial class Program : ISessionHost, IWindowHost
         string? cwd = !string.IsNullOrEmpty(c.Cwd) && Directory.Exists(c.Cwd) ? c.Cwd : null;
         var ses = CreateSession(Guid.NewGuid().ToString(), null, cwd, ws, makeActive: true, profileName: c.ProfileName);
         if (!string.IsNullOrEmpty(c.CustomName)) { ses.CustomName = c.CustomName; ses.Name = c.CustomName!; } // mirror rename
+        else if (!string.IsNullOrEmpty(c.Name)) ses.Name = c.Name;   // restore the original label
         if (c.Flagged) ses.Flagged = true;
+        RequestRedraw();
+        SaveState();
+    }
+
+    /// <summary>Reopen a closed workspace whole — recreate it and all its sessions (profile/cwd/name/flag).</summary>
+    private void ReopenClosedWorkspace(ClosedWorkspace c)
+    {
+        _closedWorkspaces.Remove(c);
+        var ws = CreateWorkspace(Guid.NewGuid().ToString(), c.Name);
+        Ses? first = null;
+        foreach (var cs in c.Sessions)
+        {
+            string? cwd = !string.IsNullOrEmpty(cs.Cwd) && Directory.Exists(cs.Cwd) ? cs.Cwd : null;
+            var ses = CreateSession(Guid.NewGuid().ToString(), null, cwd, ws, makeActive: false, profileName: cs.ProfileName);
+            if (!string.IsNullOrEmpty(cs.CustomName)) { ses.CustomName = cs.CustomName; ses.Name = cs.CustomName!; }
+            else if (!string.IsNullOrEmpty(cs.Name)) ses.Name = cs.Name;
+            if (cs.Flagged) ses.Flagged = true;
+            first ??= ses;
+        }
+        if (first is not null) SetActive(first);
         RequestRedraw();
         SaveState();
     }
@@ -2753,7 +2803,7 @@ internal partial class Program : ISessionHost, IWindowHost
         switch (action)
         {
             case "new_session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true); break;
-            case "reopen_session": ReopenClosedSession(); break;
+            case "reopen_session": ReopenMostRecent(); break;
             case "new_workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
             case "close_session": case "close_pane": if (_coverKind == 3) CloseActiveOverlay(); else if (_cover is not null) HideCover(); else CloseActivePane(); break;
             case "split_pane": SplitOp("toggle"); break;   // toggle 1<->2 panes (agterm-style), not add
@@ -4842,6 +4892,7 @@ internal partial class Program : ISessionHost, IWindowHost
         lock (_workspaces)
         {
             sessions = ws.Sessions.ToList();
+            CaptureClosedWorkspace(ws, sessions);   // remember it so Reopen Closed can bring the whole workspace back
             ws.Sessions.Clear();
             _workspaces.Remove(ws);
             if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
@@ -5022,12 +5073,17 @@ internal partial class Program : ISessionHost, IWindowHost
                 void A(string label, string hint, Action run) => _palAll.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
                 A("New Session", "Ctrl+Shift+T", () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true));
                 A("New Session…", "", () => TogglePalette(PaletteKind.NewSession));   // pick a shell profile
-                if (_closedSessions.Count > 0)
+                if (_closedSessions.Count > 0 || _closedWorkspaces.Count > 0)
                 {
-                    A($"Reopen Closed Session ({_closedSessions[^1].Display})", "Ctrl+Shift+R", () => ReopenClosedSession());
-                    // Older closed sessions, most-recent first (skip the top one already offered above).
-                    for (int ci = _closedSessions.Count - 2; ci >= 0 && ci >= _closedSessions.Count - 10; ci--)
-                    { var cs = _closedSessions[ci]; A($"Reopen — {cs.Display}", "", () => ReopenClosedSession(cs)); }
+                    long sSeq = _closedSessions.Count > 0 ? _closedSessions[^1].Seq : -1;
+                    long wSeq = _closedWorkspaces.Count > 0 ? _closedWorkspaces[^1].Seq : -1;
+                    string top = wSeq > sSeq ? $"workspace {_closedWorkspaces[^1].Name}" : _closedSessions[^1].Display;
+                    A($"Reopen Closed ({top})", "Ctrl+Shift+R", ReopenMostRecent);
+                    // Recent closed sessions, then closed workspaces (most-recent first), each reopenable directly.
+                    for (int ci = _closedSessions.Count - 1; ci >= 0 && ci >= _closedSessions.Count - 8; ci--)
+                    { var cs = _closedSessions[ci]; A($"Reopen Session — {cs.Display}", "", () => ReopenClosedSession(cs)); }
+                    for (int wi = _closedWorkspaces.Count - 1; wi >= 0 && wi >= _closedWorkspaces.Count - 8; wi--)
+                    { var cw = _closedWorkspaces[wi]; A($"Reopen Workspace — {cw.Name} ({cw.Sessions.Count})", "", () => ReopenClosedWorkspace(cw)); }
                 }
                 A("New Workspace", "Ctrl+Shift+N", () => CreateWorkspace(Guid.NewGuid().ToString(), null));
                 A("New Window", "Ctrl+Alt+N", () => WindowNew(null));
