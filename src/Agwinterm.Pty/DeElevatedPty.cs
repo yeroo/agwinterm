@@ -130,9 +130,25 @@ internal sealed class DeElevatedPty : IPtyConnection
         {
             if (!SaferComputeTokenFromLevel(level, IntPtr.Zero, out IntPtr token, 0, IntPtr.Zero))
                 throw Fail("SaferComputeTokenFromLevel");
-            return token;   // SAFER_LEVELID_NORMALUSER yields a Medium-integrity, admin-disabled token
+            // SAFER strips admin privileges/group but leaves the integrity level HIGH — drop it to Medium
+            // explicitly, or the child still runs elevated-in-all-but-name.
+            SetMediumIntegrity(token);
+            return token;
         }
         finally { SaferCloseLevel(level); }
+    }
+
+    /// <summary>Lower a token's mandatory integrity level to Medium (S-1-16-8192).</summary>
+    private static void SetMediumIntegrity(IntPtr token)
+    {
+        if (!ConvertStringSidToSid("S-1-16-8192", out IntPtr sid)) throw Fail("ConvertStringSidToSid");
+        try
+        {
+            var label = new TOKEN_MANDATORY_LABEL { Label = new SID_AND_ATTRIBUTES { Sid = sid, Attributes = SE_GROUP_INTEGRITY } };
+            uint size = (uint)(Marshal.SizeOf<TOKEN_MANDATORY_LABEL>() + GetLengthSid(sid));
+            if (!SetTokenInformation(token, TokenIntegrityLevel, ref label, size)) throw Fail("SetTokenInformation(integrity)");
+        }
+        finally { LocalFree(sid); }
     }
 
     /// <summary>Best-effort enable a privilege on this process's token (no-op if absent).</summary>
@@ -159,13 +175,16 @@ internal sealed class DeElevatedPty : IPtyConnection
     private const int PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016;
     private const int EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
     private const uint TOKEN_QUERY = 0x0008, TOKEN_ADJUST_PRIVILEGES = 0x0020;
-    private const uint SE_PRIVILEGE_ENABLED = 0x0002;
+    private const uint SE_PRIVILEGE_ENABLED = 0x0002, SE_GROUP_INTEGRITY = 0x0020;
+    private const int TokenIntegrityLevel = 25;
     private const uint SAFER_SCOPEID_USER = 2, SAFER_LEVELID_NORMALUSER = 0x20000, SAFER_LEVEL_OPEN = 1;
 
     [StructLayout(LayoutKind.Sequential)] private struct COORD { public short X, Y; }
     [StructLayout(LayoutKind.Sequential)] private struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
     [StructLayout(LayoutKind.Sequential)] private struct LUID { public uint Low; public int High; }
     [StructLayout(LayoutKind.Sequential)] private struct TOKEN_PRIVILEGES { public int PrivilegeCount; public LUID Luid; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)] private struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)] private struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFO
     {
@@ -193,6 +212,10 @@ internal sealed class DeElevatedPty : IPtyConnection
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool SaferCreateLevel(uint scopeId, uint levelId, uint openFlags, out IntPtr levelHandle, IntPtr reserved);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool SaferComputeTokenFromLevel(IntPtr levelHandle, IntPtr inAccessToken, out IntPtr outAccessToken, uint flags, IntPtr reserved);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool SaferCloseLevel(IntPtr levelHandle);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool SetTokenInformation(IntPtr token, int cls, ref TOKEN_MANDATORY_LABEL info, uint length);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] private static extern bool ConvertStringSidToSid(string sid, out IntPtr pSid);
+    [DllImport("advapi32.dll")] private static extern uint GetLengthSid(IntPtr pSid);
+    [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr h);
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool CreateProcessAsUserW(IntPtr token, string? appName, string commandLine, IntPtr procAttrs, IntPtr threadAttrs,
         bool inherit, int creationFlags, IntPtr environment, string? currentDir, ref STARTUPINFOEX startupInfo, out PROCESS_INFORMATION processInfo);
