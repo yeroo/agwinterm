@@ -112,13 +112,13 @@ opaque→alpha-composited render-pipeline rework. Not worth it; owner doesn't wa
   ITerminalHandoff3 COM server, registration tooling). CoRegisterClassObject returns S_OK. Remaining:
   the host handoff test (tools/defterm-register.ps1 → launch cmd → tools/defterm-restore-conhost.ps1);
   needs OpenConsole.exe + OpenConsoleProxy.dll (tools/defterm-fetch-openconsole.ps1).
-- UIA accessibility (T2-14): first attempt (raw source-gen COM IRawElementProviderSimple via
-  WM_GETOBJECT + UiaReturnRawElementProvider, VARIANT via Marshal.GetNativeVariantForObject) built
-  cleanly but **crashed natively** when a UIA client queried it (crash persisted with a null host
-  provider, so it's in the return-provider / property-VARIANT marshalling, not the host round-trip).
-  Reverted — a crashing a11y provider is worse than none. Needs a dedicated debugger-driven session;
-  consider a separate assembly with DisableRuntimeMarshalling + ComVariant, or the managed
-  UIAutomationProvider API (WPF-stack size cost). inspect via scripted UIAutomationClient / Narrator.
+- UIA accessibility (T2-14): **Stage 1 done** (PR #37). Raw source-gen COM IRawElementProviderSimple via
+  WM_GETOBJECT — WPF-free. Reports ControlType=Document, LocalizedControlType "terminal", Name = the
+  visible screen text. The first attempt crashed natively because it handed UiaReturnRawElementProvider
+  the CCW's raw IUnknown* instead of a QueryInterface'd IRawElementProviderSimple* (different vtables) —
+  fixed. Verified via scripted UIAutomationClient (no screen reader needed). **Stage 2 (remaining):**
+  ITextProvider/ITextRangeProvider for line/caret navigation + selection — big (≈20 range methods,
+  SAFEARRAY/VARIANT marshalling), best validated against a live Narrator/NVDA.
 
 **Rejected**: search regex/case toggle, global summon hotkey, hidden profiles,
 one-keystroke duplicate session.

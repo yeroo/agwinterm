@@ -602,6 +602,18 @@ internal partial class Program : ISessionHost, IWindowHost
             DefTerm.OnHandoff = args => Post(() =>
                 CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true, handoff: args));
             try { DefTerm.RegisterServer(); } catch { /* defterm not registered / unsupported */ }
+            // UIA (T2-14): expose the active pane's visible text to screen readers.
+            Uia.GetVisibleText = () =>
+            {
+                var p = ActiveSurface();
+                if (p is null) return "terminal";
+                lock (p.S.SyncRoot)
+                {
+                    var em = p.S.Emulator; var sb = new StringBuilder();
+                    for (int r = 0; r < em.Screen.Rows; r++) sb.Append(em.DumpRow(r)).Append('\n');
+                    return sb.ToString().TrimEnd() is { Length: > 0 } t ? t : "terminal";
+                }
+            };
         }
         // CLI args (first window only; consumed so extra windows don't re-apply them).
         string? argProfile = _argProfile, argDir = _argDir;
@@ -2159,6 +2171,9 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         switch (msg)
         {
+            case 0x003D: // WM_GETOBJECT — expose the terminal to screen readers (UIA, T2-14)
+                { nint r = Uia.OnGetObject(hwnd, wParam, lParam); if (r != 0) return r; break; }
+
             case WM_NCCALCSIZE:
                 if (wParam != IntPtr.Zero) { AdjustClientRect(hwnd, lParam); return IntPtr.Zero; }
                 break;
