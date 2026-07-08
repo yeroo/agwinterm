@@ -2060,6 +2060,14 @@ internal partial class Program : ISessionHost, IWindowHost
                     Post(() => CloseOverlayOf(ses));
                     return "closed";
                 }
+                case "resize":
+                {
+                    var ses = FindSesForTarget(target);
+                    if (ses?.Overlay is null) return "no overlay";
+                    int sp = Math.Clamp(sizePercent, 0, 100);   // 0 = full content region; 1..100 = centered panel
+                    Post(() => { ses.OverlaySizePercent = sp; if (ReferenceEquals(_ovlOwner, ses)) RegridCover(); RequestRedraw(); });
+                    return $"resized {sp}%";
+                }
                 default: // "open"
                 {
                     if (string.IsNullOrWhiteSpace(command)) return "no command";
@@ -3039,7 +3047,7 @@ internal partial class Program : ISessionHost, IWindowHost
     // ---- Clickable links: Ctrl+hover underlines a URL (hand cursor); Ctrl+click opens it ----
 
     private static readonly System.Text.RegularExpressions.Regex LinkRx = new(
-        @"https?://[^\s""'<>\[\]{}|\\^`]+", System.Text.RegularExpressions.RegexOptions.Compiled);
+        @"(?:https?|file)://[^\s""'<>\[\]{}|\\^`]+", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private string? _linkUrl;      // hovered link (null = none); drawn underlined in RenderTerminal
     private Pane? _linkPane;
@@ -3089,12 +3097,27 @@ internal partial class Program : ISessionHost, IWindowHost
         _linkUrl = null; _linkPane = null; RequestRedraw();
     }
 
-    /// <summary>Validated open: absolute http/https only, handed to the shell.</summary>
+    /// <summary>Validated open: http/https to the shell; file:// reveals the target in Explorer
+    /// (selects the file, or opens the folder for a directory). Everything else is blocked.</summary>
     private void OpenLink(string url)
     {
-        if (Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme is "http" or "https")
-            ShellExecuteW(IntPtr.Zero, "open", url, null, null, SW_SHOW);
-        else ShowToast("blocked non-http(s) link");
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) { ShowToast("invalid link"); return; }
+        if (u.Scheme is "http" or "https") { ShellExecuteW(IntPtr.Zero, "open", url, null, null, SW_SHOW); return; }
+        if (u.Scheme == "file")
+        {
+            string path = u.LocalPath;
+            try
+            {
+                if (Directory.Exists(path))
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
+                else if (File.Exists(path))
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+                else ShowToast("path not found: " + path);
+            }
+            catch (Exception ex) { ShowToast("reveal failed: " + ex.Message); }
+            return;
+        }
+        ShowToast("blocked non-http(s) link");
     }
 
     // ---- Text selection + clipboard ----
