@@ -14,6 +14,9 @@ public sealed class ShellProfile
     public string[]? Args { get; set; }
     public string? Cwd { get; set; }
     public string? Icon { get; set; }
+    /// <summary>Launch this profile elevated (WT's elevate) — opens a separate elevated agwinterm
+    /// window via UAC, since elevated and unelevated sessions can't share a window.</summary>
+    public bool Elevate { get; set; }
     /// <summary>Environment variables injected into this profile's sessions (WT's per-profile environment).</summary>
     public Dictionary<string, string>? Env { get; set; }
 }

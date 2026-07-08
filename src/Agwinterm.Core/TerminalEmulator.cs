@@ -223,10 +223,44 @@ public sealed class TerminalEmulator : IParserPerformer
         }
     }
 
+    // ---- Kitty keyboard protocol (progressive enhancement) ----
+    // Flags: 1 disambiguate escape codes, 2 report event types, 4 report alternate keys,
+    // 8 report all keys as escape codes, 16 report associated text. Apps push/pop a stack.
+    private readonly Stack<int> _kbdStack = new();
+
+    /// <summary>Active Kitty keyboard flags (0 = legacy encoding).</summary>
+    public int KeyboardFlags => _kbdStack.Count > 0 ? _kbdStack.Peek() : 0;
+
+    /// <summary>Raised when the terminal must write a reply to the shell (Kitty query response, etc.).
+    /// The host wires this to the PTY's input.</summary>
+    public event Action<string>? Respond;
+
     public void CsiDispatch(char final, IReadOnlyList<int> parameters, char prefix)
     {
         int P(int index, int def) =>
             index < parameters.Count && parameters[index] != 0 ? parameters[index] : def;
+
+        // Kitty keyboard protocol: CSI ? u (query), CSI > flags u (push), CSI = flags;mode u (set),
+        // CSI < n u (pop n).
+        if (final == 'u' && prefix is '?' or '>' or '=' or '<')
+        {
+            switch (prefix)
+            {
+                case '?': Respond?.Invoke($"\x1b[?{KeyboardFlags}u"); break;   // report current flags
+                case '>': _kbdStack.Push(parameters.Count > 0 ? parameters[0] : 0); break;
+                case '=':
+                {
+                    int flags = parameters.Count > 0 ? parameters[0] : 0;
+                    int mode = parameters.Count > 1 ? parameters[1] : 1;   // 1 set, 2 or-in, 3 and-not
+                    int cur = KeyboardFlags, next = mode switch { 2 => cur | flags, 3 => cur & ~flags, _ => flags };
+                    if (_kbdStack.Count > 0) _kbdStack.Pop();
+                    _kbdStack.Push(next);
+                    break;
+                }
+                case '<': for (int n = Math.Max(1, parameters.Count > 0 ? parameters[0] : 1); n > 0 && _kbdStack.Count > 0; n--) _kbdStack.Pop(); break;
+            }
+            return;
+        }
 
         if (prefix == '?')
         {
