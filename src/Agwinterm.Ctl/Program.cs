@@ -270,7 +270,7 @@ switch (area)
                 if (Opt("name") is { } wn) cargs["name"] = wn;
                 else if (rest.Count > 0) cargs["name"] = string.Join(' ', rest);
                 break;
-            case "list": break;
+            case "list": case "state": break;   // state = read-back of window UI flags
             case "select": case "close": case "delete": case "zoom":
                 target = rest.Count > 0 ? rest[0] : (Opt("target") ?? "active");
                 break;

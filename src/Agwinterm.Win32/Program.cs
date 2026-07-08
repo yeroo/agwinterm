@@ -1767,8 +1767,22 @@ internal partial class Program : ISessionHost, IWindowHost
             lock (_workspaces)
                 return _workspaces.Select(w => new WorkspaceSnapshot(
                     w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
-                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), AggStatus(s), s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null)).ToList()
+                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), AggStatus(s),
+                        s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
+                        FocusedPane: Math.Clamp(s.Active, 0, Math.Max(0, s.Panes.Count - 1)), PaneCount: s.Panes.Count,
+                        StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
+                        SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList())).ToList()
                 )).ToList();
+        }
+
+        // Read-back snapshot: plain field reads + a Win32 query, safe from the pipe thread (worst case slightly stale).
+        public WindowStateSnapshot WindowState()
+        {
+            var a = _active;
+            return new WindowStateSnapshot(
+                SidebarVisible: _sidebarW > 0, Fullscreen: _fullscreen, Maximized: IsZoomed(_hwnd),
+                QuickTerminalVisible: _coverKind == 2 && _cover is not null && ReferenceEquals(_cover, _quick),
+                ActiveWorkspace: a?.Ws.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
         }
 
         public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
