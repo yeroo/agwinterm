@@ -684,4 +684,45 @@ public sealed class TerminalEmulator : IParserPerformer
         }
         return sb.ToString().TrimEnd();
     }
+
+    /// <summary>The whole buffer as plain-text lines (history + visible), trailing blank rows dropped —
+    /// for buffer-content persistence.</summary>
+    public IReadOnlyList<string> DumpBuffer()
+    {
+        var lines = new List<string>();
+        for (int h = 0; h < _history.Count; h++)
+        {
+            var row = _history[h];
+            var sb = new System.Text.StringBuilder();
+            foreach (var cell in row)
+            {
+                if (cell.Width == 0) continue;
+                if (cell.Rune > 0xFFFF) sb.Append(char.ConvertFromUtf32(cell.Rune));
+                else sb.Append(cell.Rune == 0 ? ' ' : (char)cell.Rune);
+            }
+            lines.Add(sb.ToString().TrimEnd());
+        }
+        for (int r = 0; r < Screen.Rows; r++) lines.Add(DumpRow(r));
+        while (lines.Count > 0 && lines[^1].Length == 0) lines.RemoveAt(lines.Count - 1);
+        return lines;
+    }
+
+    /// <summary>Seed the scrollback with plain-text lines (dimmed) — restores a prior session's buffer
+    /// above the fresh shell without touching the live screen.</summary>
+    public void SeedScrollback(IReadOnlyList<string> lines)
+    {
+        int cols = Screen.Cols;
+        foreach (var line in lines)
+        {
+            var row = new Cell[cols];
+            for (int c = 0; c < cols; c++)
+            {
+                char ch = c < line.Length ? line[c] : ' ';
+                row[c] = new Cell(ch, Color.DefaultForeground, Color.DefaultBackground, CellAttributes.Dim);
+            }
+            _history.Add(row);
+        }
+        if (_history.Count > ScrollbackMax + TrimSlack)
+            _history.RemoveRange(0, _history.Count - ScrollbackMax);
+    }
 }
