@@ -38,6 +38,11 @@ internal partial class Program
     private int _setTab;
     private float _setScroll;
     private readonly List<SetRow> _setRows = new();
+    private SetRow? _setFocus;   // keyboard-focused row (Tab / arrows), drawn with a focus ring
+
+    private static bool Interactive(SW k) =>
+        k is SW.Toggle or SW.Slider or SW.Dropdown or SW.Color or SW.Sound or SW.Path or SW.Button or SW.Profile;
+    private List<SetRow> FocusableRows() => _setRows.FindAll(r => r.Tab == _setTab && Interactive(r.Kind));
     private readonly float[] _navHit = new float[6 * 2];   // per-tab nav row y0,y1
     private Rect _setCard;
     private float _setCloseX0, _setCloseY0, _setCloseX1, _setCloseY1;
@@ -62,7 +67,8 @@ internal partial class Program
         if (_palette != PaletteKind.None) ClosePalette();
         BuildSettingsRows();
         _setOpen = true; _setTab = 0; _setScroll = 0; _ddRow = null; _setDragRow = null;
-        Uia.Announce("Settings, General tab");
+        _setFocus = FocusableRows().FirstOrDefault();
+        Uia.Announce("Settings, General tab. Tab to move, Space to change, Escape to close.");
         RequestRedraw();
     }
 
@@ -254,7 +260,17 @@ internal partial class Program
             if (r.Tab != _setTab) continue;
             float rowH = r.Kind == SW.Section ? SetSecH : r.Kind == SW.Diag ? 150f : r.Kind == SW.Profile ? 46f : SetRowH;
             bool onscreen = y + rowH > _setPaneTop && y < _setPaneBottom;
-            if (onscreen) DrawRow(rt, brush, r, lblX, rightX, y, rowH, paneW);
+            if (onscreen)
+            {
+                if (ReferenceEquals(r, _setFocus))   // keyboard focus ring (drawn behind the widget)
+                {
+                    brush.Color = Mix(PalBg, ChromeAccent, 0.16f);
+                    rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(paneX + 4f, y - 2f, paneW - 8f, rowH + 4f), RadiusX = 6f, RadiusY = 6f }, brush);
+                    brush.Color = ChromeAccent;
+                    rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(paneX + 4f, y - 2f, paneW - 8f, rowH + 4f), RadiusX = 6f, RadiusY = 6f }, brush, 1.5f);
+                }
+                DrawRow(rt, brush, r, lblX, rightX, y, rowH, paneW);
+            }
             y += rowH + (r.Kind == SW.Section ? 2f : 4f);
         }
         _setContentH = (y + _setScroll) - (_setPaneTop + 6f);
@@ -535,7 +551,7 @@ internal partial class Program
         // nav
         if (mx >= _setCard.Left + 8f && mx <= _setCard.Left + SetNavW - 8f)
             for (int i = 0; i < SetTabNames.Length; i++)
-                if (my >= _navHit[i * 2] && my < _navHit[i * 2 + 1]) { _setTab = i; _setScroll = 0; Uia.Announce(SetTabNames[i] + " tab"); RequestRedraw(); return; }
+                if (my >= _navHit[i * 2] && my < _navHit[i * 2 + 1]) { _setTab = i; _setScroll = 0; _setFocus = FocusableRows().FirstOrDefault(); Uia.Announce(SetTabNames[i] + " tab"); RequestRedraw(); return; }
         // outside the card → dismiss
         if (mx < _setCard.Left || mx > _setCard.Right || my < _setCard.Top || my > _setCard.Bottom) { CloseSettings(); return; }
         // widgets (only within the visible pane)
@@ -546,6 +562,7 @@ internal partial class Program
             if (r.Kind == SW.Path && Hit(r.Bx0, r.By0, r.Bx1, r.By1, mx, my))
             { var d = PickFolder(); if (d is not null) { ConfigSetInternal("new-session-dir", d); ConfigSetInternal("new-session-dir-mode", "custom"); } return; }
             if (!r.Vis || !Hit(r.Hx0, r.Hy0, r.Hx1, r.Hy1, mx, my)) continue;
+            _setFocus = r;   // clicking a control also focuses it (keyboard + mouse stay in sync)
             switch (r.Kind)
             {
                 case SW.Toggle:
@@ -614,8 +631,129 @@ internal partial class Program
             }
             return true; // swallow everything while the popup is open
         }
-        if (vk == VK_ESCAPE) { CloseSettings(); return true; }
+        bool ctrl = KeyDown(VK_CONTROL), shift = KeyDown(VK_SHIFT);
+        var rows = FocusableRows();
+        int idx = _setFocus is not null ? rows.IndexOf(_setFocus) : -1;
+        switch (vk)
+        {
+            case VK_ESCAPE: CloseSettings(); return true;
+            case VK_TAB:
+                if (ctrl) CycleSetTab(shift ? -1 : 1);
+                else MoveSetFocus(rows, idx, shift ? -1 : 1);
+                return true;
+            case VK_DOWN: MoveSetFocus(rows, idx, 1); return true;
+            case VK_UP: MoveSetFocus(rows, idx, -1); return true;
+            case VK_HOME: if (rows.Count > 0) { _setFocus = rows[0]; AfterSetFocus(); } return true;
+            case VK_END: if (rows.Count > 0) { _setFocus = rows[^1]; AfterSetFocus(); } return true;
+            case VK_PRIOR: CycleSetTab(-1); return true;   // PageUp → previous tab
+            case VK_NEXT: CycleSetTab(1); return true;     // PageDown → next tab
+            case VK_RETURN: case VK_SPACE: ActivateSetFocus(); return true;
+            case VK_LEFT: AdjustSetFocus(-1); return true;
+            case VK_RIGHT: AdjustSetFocus(1); return true;
+        }
         return true; // panel is modal-ish: swallow other keys so they don't reach the terminal
+    }
+
+    private void MoveSetFocus(List<SetRow> rows, int idx, int dir)
+    {
+        if (rows.Count == 0) return;
+        int ni = idx < 0 ? (dir > 0 ? 0 : rows.Count - 1) : (idx + dir + rows.Count) % rows.Count;
+        _setFocus = rows[ni];
+        AfterSetFocus();
+    }
+
+    private void CycleSetTab(int dir)
+    {
+        _setTab = (_setTab + dir + SetTabNames.Length) % SetTabNames.Length;
+        _setScroll = 0;
+        _setFocus = FocusableRows().FirstOrDefault();
+        Uia.Announce($"{SetTabNames[_setTab]} tab");
+        AfterSetFocus();
+    }
+
+    private void AfterSetFocus()
+    {
+        ScrollSetFocusIntoView();
+        AnnounceSetFocus();
+        RequestRedraw();
+    }
+
+    private void AnnounceSetFocus()
+    {
+        var r = _setFocus;
+        if (r is null) return;
+        string val = r.Kind switch
+        {
+            SW.Toggle => IsOn(ConfigValue(r.Key)) ? "on" : "off",
+            SW.Slider => ConfigValue(r.Key),
+            SW.Dropdown or SW.Sound => CurrentDropdownText(r),
+            SW.Path => ConfigValue(r.Key) is { Length: > 0 } p ? p : "not set",
+            SW.Profile => string.Equals(r.Key, _profileCfg.Default, StringComparison.OrdinalIgnoreCase) ? "default" : "",
+            _ => "",
+        };
+        string kind = r.Kind switch
+        {
+            SW.Toggle => "toggle", SW.Slider => "slider", SW.Dropdown or SW.Sound => "dropdown",
+            SW.Button => "button", SW.Color => "color", SW.Path => "folder", SW.Profile => "profile", _ => "",
+        };
+        Uia.Announce($"{r.Label}{(val.Length > 0 ? ", " + val : "")}, {kind}");
+    }
+
+    private void ActivateSetFocus()
+    {
+        var r = _setFocus;
+        if (r is null) return;
+        switch (r.Kind)
+        {
+            case SW.Toggle:
+                bool on = !IsOn(ConfigValue(r.Key));
+                ConfigSetInternal(r.Key, on ? "true" : "false");
+                Uia.Announce($"{r.Label}, {(on ? "on" : "off")}");
+                break;
+            case SW.Dropdown: case SW.Sound: OpenDropdown(r); break;
+            case SW.Color: PickColorKey(r.Key); break;
+            case SW.Path:
+                var d = PickFolder();
+                if (d is not null) { ConfigSetInternal("new-session-dir", d); ConfigSetInternal("new-session-dir-mode", "custom"); }
+                break;
+            case SW.Profile: SetProfileDefault(r.Key); Uia.Announce($"{r.Key} is now the default profile"); break;
+            case SW.Button: Uia.Announce(r.Label); r.OnClick?.Invoke(); break;
+        }
+        RequestRedraw();
+    }
+
+    private void AdjustSetFocus(int dir)
+    {
+        var r = _setFocus;
+        if (r is null) return;
+        if (r.Kind == SW.Slider)
+        {
+            int cur = int.TryParse(ConfigValue(r.Key), out var v) ? v : r.Min;
+            int nv = Math.Clamp(cur + dir, r.Min, r.Max);
+            if (nv != cur) { ConfigSetInternal(r.Key, nv.ToString()); Uia.Announce($"{r.Label}, {nv}"); }
+            RequestRedraw();
+        }
+        else if (r.Kind is SW.Dropdown or SW.Sound) OpenDropdown(r);
+    }
+
+    private void ScrollSetFocusIntoView()
+    {
+        if (_setFocus is null) return;
+        float y = 6f;
+        foreach (var r in _setRows)
+        {
+            if (r.Tab != _setTab) continue;
+            float rowH = r.Kind == SW.Section ? SetSecH : r.Kind == SW.Diag ? 150f : r.Kind == SW.Profile ? 46f : SetRowH;
+            if (ReferenceEquals(r, _setFocus))
+            {
+                float viewH = _setPaneBottom - _setPaneTop - 12f;
+                if (y - _setScroll < 0f) _setScroll = y;
+                else if (y + rowH - _setScroll > viewH) _setScroll = y + rowH - viewH;
+                _setScroll = Math.Clamp(_setScroll, 0f, Math.Max(0f, _setContentH - viewH));
+                return;
+            }
+            y += rowH + (r.Kind == SW.Section ? 2f : 4f);
+        }
     }
 
     private void PickColorKey(string key)
