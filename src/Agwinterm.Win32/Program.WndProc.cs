@@ -183,6 +183,7 @@ internal partial class Program
                 if ((int)wParam == 2) { _toastText = null; _toastTarget = null; KillTimer(hwnd, (IntPtr)2); InvalidateRect(hwnd, IntPtr.Zero, false); return IntPtr.Zero; }
                 if ((int)wParam == SelAutoTimer) { SelAutoscrollTick(); return IntPtr.Zero; }
                 if ((int)wParam == HoverTimer) { HoverTick(); return IntPtr.Zero; }
+                if ((int)wParam == TipTimer) { TipTick(); return IntPtr.Zero; }
                 if ((int)wParam == PromptPreviewTimer) { PromptPreviewTick(); return IntPtr.Zero; }
                 if ((int)wParam == RedrawTimer)
                 {

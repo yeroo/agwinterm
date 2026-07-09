@@ -546,6 +546,46 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         var nodes = new List<Uia.Node> { new() { Kind = Uia.NodeKind.Root, Name = "agwinterm" } };
 
+        // Settings is modal: while it's open, expose ONLY the dialog (tabs + the current tab's
+        // controls) so a reader can't wander into the inert main-window elements behind it.
+        if (_setOpen)
+        {
+            int grp = nodes.Count;
+            nodes.Add(new Uia.Node
+            {
+                Kind = Uia.NodeKind.SettingsGroup, Name = "Settings", Parent = 0,
+                Rect = ScreenRect(_setCard.Left, _setCard.Top, _setCard.Right - _setCard.Left, _setCard.Bottom - _setCard.Top),
+            });
+            var gkids = new List<int>();
+            for (int i = 0; i < SetTabNames.Length; i++)   // tab items (invokable; current one marked)
+            {
+                gkids.Add(nodes.Count);
+                nodes.Add(new Uia.Node
+                {
+                    Kind = Uia.NodeKind.SettingsTab, Index = i, Parent = grp,
+                    Name = SetTabNames[i] + (i == _setTab ? " tab, selected" : " tab"),
+                    Selected = i == _setTab,
+                    Rect = ScreenRect(_setCard.Left + 8f, _navHit[i * 2], SetNavW - 16f, _navHit[i * 2 + 1] - _navHit[i * 2]),
+                });
+            }
+            var srows = FocusableRows();
+            for (int i = 0; i < srows.Count; i++)
+            {
+                var r = srows[i];
+                gkids.Add(nodes.Count);
+                nodes.Add(new Uia.Node
+                {
+                    Kind = Uia.NodeKind.SettingsControl, Index = i, Parent = grp,
+                    Name = SettingsControlName(r),
+                    Focused = ReferenceEquals(r, _setFocus),
+                    Rect = r.Vis ? ScreenRect(r.Hx0, r.Hy0, Math.Max(1, r.Hx1 - r.Hx0), Math.Max(1, r.Hy1 - r.Hy0)) : default,
+                });
+            }
+            nodes[grp].Children = gkids.ToArray();
+            nodes[0].Children = new[] { grp };
+            return new Uia.TreeSnapshot { Nodes = nodes.ToArray() };
+        }
+
         int term = nodes.Count;
         float contentBottom = ClientH() - FooterH;
         nodes.Add(new Uia.Node
@@ -592,28 +632,6 @@ internal partial class Program : ISessionHost, IWindowHost
             rootKids.Add(nodes.Count);
             nodes.Add(new Uia.Node { Kind = Uia.NodeKind.ChromeButton, Index = i, Name = btns[i].label, Parent = 0, Rect = btns[i].rect });
         }
-        // Settings dialog controls (when open) under a Settings group.
-        if (_setOpen)
-        {
-            int grp = nodes.Count;
-            rootKids.Add(grp);
-            nodes.Add(new Uia.Node { Kind = Uia.NodeKind.SettingsGroup, Name = "Settings", Parent = 0 });
-            var srows = FocusableRows();
-            var gkids = new List<int>();
-            for (int i = 0; i < srows.Count; i++)
-            {
-                var r = srows[i];
-                gkids.Add(nodes.Count);
-                nodes.Add(new Uia.Node
-                {
-                    Kind = Uia.NodeKind.SettingsControl, Index = i, Parent = grp,
-                    Name = SettingsControlName(r),
-                    Focused = ReferenceEquals(r, _setFocus),
-                    Rect = r.Vis ? ScreenRect(r.Hx0, r.Hy0, Math.Max(1, r.Hx1 - r.Hx0), Math.Max(1, r.Hy1 - r.Hy0)) : default,
-                });
-            }
-            nodes[grp].Children = gkids.ToArray();
-        }
         nodes[0].Children = rootKids.ToArray();
         return new Uia.TreeSnapshot { Nodes = nodes.ToArray() };
     }
@@ -657,6 +675,13 @@ internal partial class Program : ISessionHost, IWindowHost
         {
             var rows = FocusableRows();
             if (index >= 0 && index < rows.Count) { _setFocus = rows[index]; ActivateSetFocus(); }
+        }
+        else if (kind == Uia.NodeKind.SettingsTab && _setOpen && index >= 0 && index < SetTabNames.Length)
+        {
+            _setTab = index; _setScroll = 0;
+            _setFocus = FocusableRows().FirstOrDefault();
+            Uia.Announce($"{SetTabNames[index]} tab");
+            RequestRedraw();
         }
     }
 

@@ -38,7 +38,7 @@ internal partial interface IRawElementProviderFragmentRoot
 
 partial class Uia
 {
-    internal enum NodeKind { Root, Terminal, Sidebar, Session, ChromeButton, SettingsGroup, SettingsControl }
+    internal enum NodeKind { Root, Terminal, Sidebar, Session, ChromeButton, SettingsGroup, SettingsControl, SettingsTab }
 
     /// <summary>One node in the accessibility tree snapshot (built by Program.BuildUiaTree).</summary>
     internal sealed class Node
@@ -52,7 +52,7 @@ partial class Uia
         public int[] Children = Array.Empty<int>();
     }
 
-    private static bool IsButton(NodeKind k) => k is NodeKind.ChromeButton or NodeKind.SettingsControl;
+    private static bool IsButton(NodeKind k) => k is NodeKind.ChromeButton or NodeKind.SettingsControl or NodeKind.SettingsTab;
 
     internal sealed class TreeSnapshot { public required Node[] Nodes; }   // Nodes[0] is the root
 
@@ -105,7 +105,7 @@ partial class Uia
 
     // UIA control-type ids + common property ids (shared by all fragments).
     internal const int CT_Pane = 50033, CT_Document = 50030, CT_List = 50008, CT_ListItem = 50007,
-        CT_Button = 50000, CT_Group = 50026;
+        CT_Button = 50000, CT_Group = 50026, CT_TabItem = 50019;
     internal const int P_ControlType = 30003, P_Name = 30005, P_LocalizedControlType = 30004,
         P_IsControlElement = 30016, P_IsContentElement = 30017, P_IsKeyboardFocusable = 30009,
         P_HasKeyboardFocus = 30008;
@@ -275,7 +275,12 @@ internal partial class UiaButton : UiaNodeBase, IRawElementProviderSimple, IRawE
     public ProviderOptions GetProviderOptions() => ProviderOptions.ServerSideProvider;
     public nint GetPatternProvider(int patternId) => patternId == 10000 /* Invoke */ ? Uia.AsInterface(this, Uia.IID_IInvokeProvider) : 0;
     public nint GetHostRawElementProvider() => 0;
-    public void GetPropertyValue(int propertyId, nint pRetVal) { VariantInit(pRetVal); FillProperty(propertyId, pRetVal, Uia.CT_Button, "button", true); }
+    public void GetPropertyValue(int propertyId, nint pRetVal)
+    {
+        VariantInit(pRetVal);
+        var (ct, lct) = Kind == Uia.NodeKind.SettingsTab ? (Uia.CT_TabItem, "tab") : (Uia.CT_Button, "button");
+        FillProperty(propertyId, pRetVal, ct, lct, true);
+    }
     public void Invoke() { try { Uia.OnInvoke?.Invoke(Kind, Index); } catch { } }
     [LibraryImport("oleaut32.dll")] private static partial void VariantInit(nint pvarg);
 }
