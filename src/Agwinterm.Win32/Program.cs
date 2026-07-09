@@ -230,6 +230,7 @@ internal partial class Program : ISessionHost, IWindowHost
     // Chrome fonts (native Segoe UI for text, icon font for glyphs).
     private static IDWriteTextFormat _uiFont = null!;
     private static IDWriteTextFormat _uiSmall = null!;
+    private static IDWriteTextFormat _uiSmallCenter = null!;   // horizontally centered (panel buttons)
     private static IDWriteTextFormat _uiTitle = null!;      // single centered title-bar line (vertically centered + ellipsized)
     private static IDWriteInlineObject _ellipsis = null!;   // "…" trimming sign for the title (kept alive)
     private static IDWriteTextFormat _iconFont = null!;
@@ -374,6 +375,7 @@ internal partial class Program : ISessionHost, IWindowHost
         _format = CreateTextFormat(_config);
         _uiFont = NewChromeFormat("Segoe UI", 13f, center: false);
         _uiSmall = NewChromeFormat("Segoe UI", 11.5f, center: false);
+        _uiSmallCenter = NewChromeFormat("Segoe UI", 11.5f, center: true);
         _uiTitle = NewChromeFormat("Segoe UI", 13f, center: true); // vertically centered single line
         _ellipsis = _dwrite.CreateEllipsisTrimmingSign(_uiTitle);
         _uiTitle.SetTrimming(new Trimming { Granularity = TrimmingGranularity.Character }, _ellipsis);
