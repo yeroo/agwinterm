@@ -48,6 +48,24 @@ internal static partial class DefTerm
 
     internal static nint MakeComObject(object o) => ComWrappers.GetOrCreateComInterfaceForObject(o, CreateComInterfaceFlags.None);
 
+    private static readonly string? LogPath = Environment.GetEnvironmentVariable("AGWINTERM_PTYLOG");
+    internal static void Log(string m) { if (LogPath is not null) try { File.AppendAllText(LogPath, $"[defterm] {m}\n"); } catch { } }
+
+    /// <summary>Duplicate a marshalled [in] system_handle into this process. COM in-param handles are
+    /// only valid for the DURATION of the call (the stub closes them on return), so anything kept past
+    /// EstablishPtyHandoff must be duplicated synchronously inside it.</summary>
+    internal static nint DupIntoSelf(nint h)
+    {
+        if (h == 0) return 0;
+        nint self = GetCurrentProcess();
+        return DuplicateHandle(self, h, self, out nint dup, 0, false, 2 /* DUPLICATE_SAME_ACCESS */) ? dup : 0;
+    }
+
+    [LibraryImport("kernel32.dll")] private static partial nint GetCurrentProcess();
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DuplicateHandle(nint srcProc, nint src, nint dstProc, out nint dst, uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint options);
+
     private const int CLSCTX_LOCAL_SERVER = 0x4;
     private const int REGCLS_MULTIPLEUSE = 0x1;
 
@@ -61,7 +79,7 @@ internal static partial class DefTerm
 /// <summary>Handles/PID delivered to the app when a console session is handed off. <c>conOut</c> is where
 /// we read the console's VT output; <c>conIn</c> is where we write user input; <c>signal</c> is the
 /// ConPTY signal pipe (resize); <c>client</c> is the console app process (for exit detection).</summary>
-internal readonly record struct HandoffArgs(nint ConOut, nint ConIn, nint Signal, nint Client, int ClientPid, nint StartupInfo);
+internal readonly record struct HandoffArgs(nint ConOut, nint ConIn, nint Signal, nint Client, int ClientPid, string? Title);
 
 /// <summary>MIDL <c>TERMINAL_STARTUP_INFO</c> — title/icon/show-window for the handed-off session.
 /// BSTR fields are just pointers here; we only peek at the title.</summary>
@@ -103,7 +121,24 @@ internal partial class TerminalHandoffImpl : ITerminalHandoff3
         @in = inRead;
         @out = outWrite;
         int pid = client != 0 ? DefTerm.GetProcessId(client) : 0;
-        DefTerm.OnHandoff?.Invoke(new HandoffArgs(outRead, inWrite, signal, client, pid, startupInfo));
+        // The stub closes every [in] handle when this call returns, and OnHandoff defers session
+        // creation to the UI thread — duplicate what we keep (signal for resize, client for exit
+        // detection) SYNCHRONOUSLY here, or they're dead by the time the session attaches.
+        nint sigDup = DefTerm.DupIntoSelf(signal);
+        nint clientDup = DefTerm.DupIntoSelf(client);
+        // The startupInfo pointer is call-lifetime too: peek the title now, pass the string.
+        string? title = null;
+        try
+        {
+            if (startupInfo != 0)
+            {
+                var si = Marshal.PtrToStructure<TerminalStartupInfo>(startupInfo);
+                if (si.pszTitle != 0) title = Marshal.PtrToStringBSTR(si.pszTitle);
+            }
+        }
+        catch { }
+        DefTerm.Log($"handoff: signal=0x{signal:X}->0x{sigDup:X} client=0x{client:X}->0x{clientDup:X} pid={pid} title='{title}'");
+        DefTerm.OnHandoff?.Invoke(new HandoffArgs(outRead, inWrite, sigDup, clientDup, pid, title));
     }
 }
 

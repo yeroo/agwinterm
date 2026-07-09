@@ -292,6 +292,7 @@ internal partial class Program
         }
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
+        if (name is null && handoff is { Title.Length: > 0 } ht) name = ht.Title;   // label handoff sessions with the app's title
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName, Elevated = IsElevated() && !deElevate };
         ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff));   // first pane shares the session id (control-API back-compat)
         ses.Active = 0;
