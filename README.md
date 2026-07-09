@@ -6,8 +6,9 @@
 
 **A native Windows terminal built for AI coding agents.**
 
-Workspaces, sessions, splits, live agent-status, and a scriptable control API — in a fast,
-custom-drawn Win32 + Direct2D shell. A Windows homage to [umputun's **agterm**](https://github.com/umputun/agterm).
+Workspaces, sessions, splits, live agent-status, a scriptable control API, full screen-reader
+accessibility, and OS default-terminal integration — in a fast, custom-drawn Win32 + Direct2D shell.
+A Windows homage to [umputun's **agterm**](https://github.com/umputun/agterm).
 
 [![CI](https://github.com/yeroo/agwinterm/actions/workflows/ci.yml/badge.svg)](https://github.com/yeroo/agwinterm/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yeroo/agwinterm/badge)](https://scorecard.dev/viewer/?uri=github.com/yeroo/agwinterm)
@@ -35,26 +36,50 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
 
 ---
 
-## Features
+## Highlights
 
-- **Workspaces → sessions → panes** in a custom-drawn sidebar (drag-reorder, rename, flag, focus).
+### Agent-first
+- **Workspaces → sessions → panes** in a custom-drawn sidebar (drag-reorder, rename, flag, focus,
+  unread badges, reopen closed sessions *and workspaces* with `Ctrl+Shift+R`).
 - **Agent status** per session (idle / active / blocked / completed) as a colored dot + title-bar
-  bell — driven by your agent via hooks or the control API.
-- **Splits** (toggle two panes), **scratch** & **quick** terminals, and ephemeral **overlays**.
-- **Multi-window** — independent windows, each with its own tree; address any of them from the CLI.
-- **MRU `Ctrl+Tab` switcher**, fuzzy **command / session / action palettes**, **search**, scrollback,
-  full **selection & clipboard** — Windows Terminal-style defaults (`Ctrl+C` copies the selection,
-  right-click pastes, `Shift`+drag forces selection in mouse-mode apps), plus word/line/select-all,
-  drag-autoscroll, and opt-in copy-on-select.
-- **Whole-window theming** with **~580 bundled themes** (the ghostty / iTerm2 color-scheme set) —
-  the sidebar, title bar, and terminal all retint together, light or dark.
-- **cwd in the title, out of the box** (composes with oh-my-posh), plus an **oh-my-posh theme picker**.
-- **A themed, tabbed Settings dialog** (General · Appearance · Notifications · Agent Status · Key Mapping)
-  drawn in-app — no stock Windows chrome.
-- **Custom commands** in `keymap.conf` — `{AGW_*}` tokens, `$AGW_*` env, run modes
-  (send / new session / overlay / detached), and tmux-style **leader chords**.
-- A **scriptable control API**: `agwintermctl` (or newline-JSON over a named pipe) — any language can
-  drive it. Plus opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.
+  bell — driven by your agent via hooks or the control API, with blink, auto-reset, and sounds.
+- **A scriptable control API**: `agwintermctl` (or newline-JSON over a named pipe) — any language can
+  drive it, including full **read-back** (tree with split ratios, window state, session output).
+  Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.
+- **Splits**, **scratch** & **quick** terminals, ephemeral **overlays** (open/resize/close via API),
+  **multi-window** with per-window addressing.
+
+### A real Windows terminal
+- **Default Terminal Application**: register agwinterm from *Settings → General* (per-user, no admin,
+  one-click revert) and every console app you launch — `cmd` from Win+R, double-clicked `.exe`s —
+  opens as an agwinterm session via the ConPTY handoff, titled by the app.
+- **Fast**: sustained output at **~33k lines/s** (~87 % of a bare conhost window), 0.4 s cold start,
+  ~0 % idle CPU, and a leak-hunted session lifecycle (`tools/profile-memory.ps1` keeps it honest).
+- Sixel + Kitty graphics, win32-input-mode + Kitty keyboard protocol, ligatures (toggleable),
+  builtin box-drawing glyphs, buffer restore, block selection + keyboard mark mode, read-only panes,
+  elevated & de-elevated sessions side by side (⚡ marker), FTCS/OSC-133 prompt marks with
+  jump-to-prompt, taskbar progress (OSC 9;4).
+
+### Accessible — screen readers are first-class
+- The terminal is a **UIA text document**: Narrator/NVDA read it line by line, track the caret
+  (tight one-cell focus box), and **new output is announced automatically** after it settles.
+- **Everything is in the UIA tree**: sessions, every chrome button, settings tabs and controls —
+  scannable (Caps Lock + arrows), focusable, and invokable. Dialogs are **modally scoped** so the
+  reader can't wander behind them.
+- **F6** moves keyboard focus between the terminal and the session list (arrows + Enter there);
+  the **Settings dialog is fully keyboard-navigable** (Tab / Space / PageUp / PageDown) with a
+  visible focus ring; buttons **speak on hover** and show **tooltips**.
+- **F1 help** lists the *effective* keybindings and — when a reader is attached — speaks a spoken
+  orientation guide for low-vision users.
+
+### Looks & feel
+- **Whole-window theming** with **~580 bundled themes** (the ghostty / iTerm2 set) — sidebar, title
+  bar, and terminal retint together. **Fonts apply live** from Settings.
+- **cwd in the title** out of the box (composes with oh-my-posh) + an **oh-my-posh theme picker**.
+- Toolbar modes (normal / compact / **hidden** full-bleed), window opacity, unfocused dim,
+  per-session background watermarks.
+- **MRU `Ctrl+Tab` switcher**, fuzzy **command / session / action palettes**, search, tmux-style
+  **leader chords**, custom commands with `{AGW_*}` tokens and run modes.
 
 ## Install
 
@@ -66,10 +91,12 @@ Grab either from the [**Releases**](https://github.com/yeroo/agwinterm/releases)
 
 Both are **self-contained** (no .NET runtime needed) and need **no admin rights**.
 
-- Binaries are currently **unsigned**, so SmartScreen will warn on first run → *More info → Run anyway*.
+- Binaries are currently **unsigned**, so SmartScreen will warn on first run → *More info → Run
+  anyway*. Release artifacts carry **Sigstore build-provenance attestations** — verify with
+  `gh attestation verify <file> --repo yeroo/agwinterm`.
 - The installer is deliberately minimal (copies files + shortcuts). The integrations
-  (put `agwintermctl` on PATH, agent status hooks, agent skill, shell integration) are **opt-in from
-  inside the app** — open the command palette (`Ctrl+Shift+P`) and pick the matching *Install…* entry.
+  (put `agwintermctl` on PATH, agent status hooks, agent skill, shell integration, default-terminal
+  registration) are **opt-in from inside the app** — command palette (`Ctrl+Shift+P`) or Settings.
 
 ## Build from source
 
@@ -96,17 +123,32 @@ agwinterm is scriptable through a local named pipe speaking newline-delimited JS
 `agwintermctl` as the CLI wrapper. A few examples:
 
 ```powershell
-agwintermctl tree --json                     # the workspace/session tree
+agwintermctl tree --json                     # workspace/session tree (+ splits, badges, overlays)
+agwintermctl window state                    # sidebar/fullscreen/active read-back
 agwintermctl session status blocked --sound  # report agent status (a dot + bell in the UI)
 agwintermctl session new --name build --workspace-name CI --create-workspace
 agwintermctl session type "npm test`n"       # type into the active session
+agwintermctl session overlay open "git diff" --size-percent 60
 agwintermctl theme set "Tokyo Night"         # retint the whole window
 agwintermctl window new --name scratchpad    # open a second window
-agwintermctl omp set pure                     # switch the oh-my-posh theme live
 ```
 
 Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
 Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.
+
+## Keyboard essentials
+
+| Key | Action |
+|---|---|
+| `F1` | Help (effective keybindings + accessibility guide) |
+| `F6` | Move focus terminal ⇄ session list |
+| `Ctrl+Shift+T` / `Ctrl+Shift+R` | New session / reopen closed |
+| `Ctrl+Tab` | MRU session switcher |
+| `Ctrl+D` | Split pane · `` Ctrl+` `` quick terminal · `Ctrl+J` scratch |
+| `Ctrl+Shift+P` | Action palette |
+| `F11` | Fullscreen |
+
+Everything is rebindable in `keymap.conf` (see `F1` for the live list).
 
 ## Configuration
 
@@ -121,8 +163,10 @@ Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / C
   bit of this project's UX. 💜
 - **[Ghostty](https://ghostty.org)** & **[iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes)**
   — the bundled color themes are the community ghostty/iTerm2 set.
-- **[Vortice.Windows](https://github.com/amerkoleci/Vortice.Windows)** (Direct2D/DirectWrite) and
-  **[Porta.Pty](https://www.nuget.org/packages/Porta.Pty)** (ConPTY).
+- **[Vortice.Windows](https://github.com/amerkoleci/Vortice.Windows)** (Direct2D/DirectWrite),
+  **[Porta.Pty](https://www.nuget.org/packages/Porta.Pty)** (ConPTY), and
+  **[microsoft/terminal](https://github.com/microsoft/terminal)**'s OpenConsole for the
+  default-terminal handoff.
 
 ## License
 
