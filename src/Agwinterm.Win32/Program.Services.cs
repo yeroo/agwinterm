@@ -17,6 +17,38 @@ namespace Agwinterm.Win32;
 /// <summary>Services: notifications, taskbar progress, config, theming, omp, persistence, fullscreen.</summary>
 internal partial class Program
 {
+    // ---- Screen-reader output announcements (UIA notification events; T2-14 Stage 1.5) ----
+
+    /// <summary>Speak the active pane's NEW output since the last announcement (debounced via
+    /// UiaAnnounceTimer; only runs while a UIA client listens). Tracks an absolute buffer line
+    /// (history + cursor row) per pane; the delta rows are read as plain text. Alt-screen apps
+    /// (full-screen TUIs redrawing in place) are skipped — line diffs there are meaningless.</summary>
+    private void AnnounceNewOutput()
+    {
+        if (!Uia.ClientsListening) return;
+        var p = ActiveSurface();
+        if (p is null) return;
+        string text;
+        lock (p.S.SyncRoot)
+        {
+            var em = p.S.Emulator;
+            if (em.IsAltScreen) { p.UiaAnnouncedAbs = -1; return; }
+            int curAbs = em.HistoryCount + em.CursorRow;
+            int prev = p.UiaAnnouncedAbs;
+            p.UiaAnnouncedAbs = curAbs;
+            if (prev < 0 || prev >= curAbs) return;             // first sight / scroll trim — set baseline only
+            int lines = Math.Min(curAbs - prev, 40);            // cap floods; the reader can't keep up anyway
+            var sb = new StringBuilder();
+            for (int abs = curAbs - lines; abs < curAbs; abs++)
+            {
+                string row = abs < em.HistoryCount ? em.DumpHistoryRow(abs) : em.DumpRow(abs - em.HistoryCount);
+                if (row.Length > 0) sb.Append(row).Append('\n');
+            }
+            text = sb.ToString();
+        }
+        Uia.Announce(text);
+    }
+
     // ---- Notifications (OSC 9 / OSC 777 / notify) ----
 
     /// <summary>Find the session that owns a pane (any pane, its scratch, or its overlay; or the quick cover).</summary>

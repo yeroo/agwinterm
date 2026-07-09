@@ -743,6 +743,20 @@ public sealed class TerminalEmulator : IParserPerformer
         return sb.ToString().TrimEnd();
     }
 
+    /// <summary>Plain text of one scrollback row (same conventions as <see cref="DumpRow"/>).</summary>
+    public string DumpHistoryRow(int index)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (int c = 0; c < Screen.Cols; c++)
+        {
+            Cell cell = GetHistoryCell(index, c);
+            if (cell.Width == 0) continue;
+            if (cell.Rune > 0xFFFF) sb.Append(char.ConvertFromUtf32(cell.Rune));
+            else sb.Append((char)cell.Rune);
+        }
+        return sb.ToString().TrimEnd();
+    }
+
     /// <summary>The whole buffer as plain-text lines (history + visible), trailing blank rows dropped —
     /// for buffer-content persistence.</summary>
     public IReadOnlyList<string> DumpBuffer()
