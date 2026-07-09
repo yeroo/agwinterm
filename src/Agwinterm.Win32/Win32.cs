@@ -29,6 +29,7 @@ internal static class Win32
     public const uint WM_MBUTTONDOWN = 0x0207, WM_MBUTTONUP = 0x0208;
     public const uint WM_MOUSEWHEEL = 0x020A;
     public const uint WM_ACTIVATE = 0x0006;   // sent on window activation/deactivation (frontmost tracking)
+    public const uint WM_SETFOCUS = 0x0007, WM_KILLFOCUS = 0x0008;   // keyboard-focus in/out (system caret lifetime)
     public const uint WM_APP_REDRAW = 0x8000; // WM_APP: cross-thread "please repaint"
     public const uint WM_APP_ACTION = 0x8001; // WM_APP+1: drain queued UI-thread actions (pipe callbacks)
     public const uint WM_APP_SYNC = 0x8002;   // WM_APP+2: run a queued func on the UI thread and return its result
@@ -396,6 +397,14 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+    // System caret — a11y anchor: Magnifier "follow the text cursor", IME composition placement, and
+    // Narrator caret tracking all read the system caret position (even when it's hidden so it doesn't
+    // double-draw over our rendered cursor).
+    [DllImport("user32.dll")] public static extern bool CreateCaret(IntPtr hWnd, IntPtr hBitmap, int nWidth, int nHeight);
+    [DllImport("user32.dll")] public static extern bool SetCaretPos(int x, int y);
+    [DllImport("user32.dll")] public static extern bool HideCaret(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool DestroyCaret();
 
     [DllImport("user32.dll")]
     public static extern bool GetCursorPos(out POINT lpPoint);
