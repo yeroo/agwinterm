@@ -583,8 +583,81 @@ internal partial class Program : ISessionHost, IWindowHost
             });
         }
         nodes[list].Children = kids.ToArray();
-        nodes[0].Children = new[] { term, list };
+
+        var rootKids = new List<int> { term, list };
+        // Chrome buttons (title bar + footer) as invokable Button elements.
+        var btns = ChromeButtonsForUia();
+        for (int i = 0; i < btns.Count; i++)
+        {
+            rootKids.Add(nodes.Count);
+            nodes.Add(new Uia.Node { Kind = Uia.NodeKind.ChromeButton, Index = i, Name = btns[i].label, Parent = 0, Rect = btns[i].rect });
+        }
+        // Settings dialog controls (when open) under a Settings group.
+        if (_setOpen)
+        {
+            int grp = nodes.Count;
+            rootKids.Add(grp);
+            nodes.Add(new Uia.Node { Kind = Uia.NodeKind.SettingsGroup, Name = "Settings", Parent = 0 });
+            var srows = FocusableRows();
+            var gkids = new List<int>();
+            for (int i = 0; i < srows.Count; i++)
+            {
+                var r = srows[i];
+                gkids.Add(nodes.Count);
+                nodes.Add(new Uia.Node
+                {
+                    Kind = Uia.NodeKind.SettingsControl, Index = i, Parent = grp,
+                    Name = SettingsControlName(r),
+                    Focused = ReferenceEquals(r, _setFocus),
+                    Rect = r.Vis ? ScreenRect(r.Hx0, r.Hy0, Math.Max(1, r.Hx1 - r.Hx0), Math.Max(1, r.Hy1 - r.Hy0)) : default,
+                });
+            }
+            nodes[grp].Children = gkids.ToArray();
+        }
+        nodes[0].Children = rootKids.ToArray();
         return new Uia.TreeSnapshot { Nodes = nodes.ToArray() };
+    }
+
+    /// <summary>Title-bar + footer chrome buttons as (action, spoken label, screen rect) for the UIA tree.</summary>
+    private List<(string action, string label, UiaRect rect)> ChromeButtonsForUia()
+    {
+        var list = new List<(string, string, UiaRect)>();
+        foreach (var (x0, x1, action) in _titleButtons)
+            list.Add((action, ChromeButtonLabel(action), ScreenRect(x0, 0, x1 - x0, TitleBarH)));
+        float fy = ClientH() - FooterH;
+        foreach (var (x0, x1, action) in _footerButtons)
+            list.Add((action, ChromeButtonLabel(action), ScreenRect(x0, fy, x1 - x0, FooterH)));
+        return list;
+    }
+
+    private string SettingsControlName(SetRow r)
+    {
+        if (r.Kind == SW.Button) return r.Label;
+        string val = r.Kind switch
+        {
+            SW.Toggle => IsOn(ConfigValue(r.Key)) ? "on" : "off",
+            SW.Slider => ConfigValue(r.Key),
+            SW.Dropdown or SW.Sound => CurrentDropdownText(r),
+            SW.Path => ConfigValue(r.Key) is { Length: > 0 } p ? p : "not set",
+            SW.Profile => string.Equals(r.Key, _profileCfg.Default, StringComparison.OrdinalIgnoreCase) ? "default" : "not default",
+            _ => "",
+        };
+        return val.Length > 0 ? $"{r.Label}, {val}" : r.Label;
+    }
+
+    /// <summary>UIA Invoke on a button/control — run the same action a click/keypress would.</summary>
+    private void HandleUiaInvoke(Uia.NodeKind kind, int index)
+    {
+        if (kind == Uia.NodeKind.ChromeButton)
+        {
+            var b = ChromeButtonsForUia();
+            if (index >= 0 && index < b.Count) ChromeAction(b[index].action);
+        }
+        else if (kind == Uia.NodeKind.SettingsControl && _setOpen)
+        {
+            var rows = FocusableRows();
+            if (index >= 0 && index < rows.Count) { _setFocus = rows[index]; ActivateSetFocus(); }
+        }
     }
 
     /// <summary>A UIA client (or Narrator) called SetFocus on a tree element — move our internal focus.</summary>
@@ -870,6 +943,7 @@ internal partial class Program : ISessionHost, IWindowHost
             // Fragment tree (root → terminal + sidebar/sessions) so the reader scans/Tabs the controls.
             Uia.GetTree = BuildUiaTree;
             Uia.OnSetFocus = (kind, index) => Post(() => HandleUiaSetFocus(kind, index));
+            Uia.OnInvoke = (kind, index) => Post(() => HandleUiaInvoke(kind, index));
         }
         // CLI args (first window only; consumed so extra windows don't re-apply them).
         string? argProfile = _argProfile, argDir = _argDir;

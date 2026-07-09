@@ -38,19 +38,21 @@ internal partial interface IRawElementProviderFragmentRoot
 
 partial class Uia
 {
-    internal enum NodeKind { Root, Terminal, Sidebar, Session }
+    internal enum NodeKind { Root, Terminal, Sidebar, Session, ChromeButton, SettingsGroup, SettingsControl }
 
     /// <summary>One node in the accessibility tree snapshot (built by Program.BuildUiaTree).</summary>
     internal sealed class Node
     {
         public NodeKind Kind;
-        public int Index;                 // session index (Session nodes)
+        public int Index;                 // per-kind ordinal (session / button / settings-row index)
         public string Name = "";
         public bool Focused, Selected;
         public UiaRect Rect;              // screen px (all zero → fall back to the host/window rect)
         public int Parent = -1;          // index into TreeSnapshot.Nodes
         public int[] Children = Array.Empty<int>();
     }
+
+    private static bool IsButton(NodeKind k) => k is NodeKind.ChromeButton or NodeKind.SettingsControl;
 
     internal sealed class TreeSnapshot { public required Node[] Nodes; }   // Nodes[0] is the root
 
@@ -75,10 +77,14 @@ partial class Uia
         {
             NodeKind.Root => new UiaRoot(_treeHwnd),
             NodeKind.Terminal => new UiaTerminal(_treeHwnd),
+            _ when IsButton(kind) => new UiaButton(kind, index),
             _ => new UiaFragment(kind, index),
         };
         return AsInterface(obj, IID_IRawElementProviderFragment);
     }
+
+    internal static Action<NodeKind, int>? OnInvoke;   // app activates a button/control when UIA invokes it
+    internal static readonly Guid IID_IInvokeProvider = new("54fcb24b-e18e-47a2-b4d3-eccbe77599a2");
 
     internal static readonly Guid IID_IRawElementProviderFragment = new("f7063da8-8359-439c-9297-bbc5299a7d87");
     internal static readonly Guid IID_IRawElementProviderFragmentRoot = new("620ce2a5-ab8f-40a9-86cb-de3c75599b58");
@@ -98,7 +104,8 @@ partial class Uia
     private const int UIA_AutomationFocusChangedEventId = 20005;
 
     // UIA control-type ids + common property ids (shared by all fragments).
-    internal const int CT_Pane = 50033, CT_Document = 50030, CT_List = 50008, CT_ListItem = 50007;
+    internal const int CT_Pane = 50033, CT_Document = 50030, CT_List = 50008, CT_ListItem = 50007,
+        CT_Button = 50000, CT_Group = 50026;
     internal const int P_ControlType = 30003, P_Name = 30005, P_LocalizedControlType = 30004,
         P_IsControlElement = 30016, P_IsContentElement = 30017, P_IsKeyboardFocusable = 30009,
         P_HasKeyboardFocus = 30008;
@@ -245,10 +252,31 @@ internal partial class UiaFragment : UiaNodeBase, IRawElementProviderSimple, IRa
         {
             Uia.NodeKind.Sidebar => (Uia.CT_List, "session list", false),
             Uia.NodeKind.Session => (Uia.CT_ListItem, "session", true),
+            Uia.NodeKind.SettingsGroup => (Uia.CT_Group, "settings", false),
             _ => (Uia.CT_Pane, "group", false),
         };
         FillProperty(propertyId, pRetVal, ct, lct, content);
     }
+    [LibraryImport("oleaut32.dll")] private static partial void VariantInit(nint pvarg);
+}
+
+/// <summary>UIA Invoke pattern — lets a screen reader activate a button/control.</summary>
+[GeneratedComInterface]
+[Guid("54fcb24b-e18e-47a2-b4d3-eccbe77599a2")]
+internal partial interface IInvokeProvider { void Invoke(); }
+
+/// <summary>A focusable, invokable Button element — chrome buttons (Quick/Scratch terminal, Split,
+/// Settings, …) and the settings-dialog controls. Invoke runs the same action a click would.</summary>
+[GeneratedComClass]
+internal partial class UiaButton : UiaNodeBase, IRawElementProviderSimple, IRawElementProviderFragment, IInvokeProvider
+{
+    public UiaButton(Uia.NodeKind kind, int index) : base(kind, index) { }
+
+    public ProviderOptions GetProviderOptions() => ProviderOptions.ServerSideProvider;
+    public nint GetPatternProvider(int patternId) => patternId == 10000 /* Invoke */ ? Uia.AsInterface(this, Uia.IID_IInvokeProvider) : 0;
+    public nint GetHostRawElementProvider() => 0;
+    public void GetPropertyValue(int propertyId, nint pRetVal) { VariantInit(pRetVal); FillProperty(propertyId, pRetVal, Uia.CT_Button, "button", true); }
+    public void Invoke() { try { Uia.OnInvoke?.Invoke(Kind, Index); } catch { } }
     [LibraryImport("oleaut32.dll")] private static partial void VariantInit(nint pvarg);
 }
 
