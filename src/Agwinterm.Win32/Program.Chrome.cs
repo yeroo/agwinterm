@@ -1240,9 +1240,48 @@ internal partial class Program
         {
             _hotPaint = hit; _hotAlpha = 1f;   // light instantly on hover-in
             if (Uia.ClientsListening) Uia.Announce(ChromeButtonLabel(hit) + " button");   // speak the hovered button
+            _tipText = null;
+            SetTimer(_hwnd, (IntPtr)TipTimer, 550, IntPtr.Zero);    // tooltip after a short hover dwell
         }
-        else SetTimer(_hwnd, (IntPtr)HoverTimer, 15, IntPtr.Zero);  // fade out when leaving
+        else
+        {
+            KillTimer(_hwnd, (IntPtr)TipTimer);
+            _tipText = null;
+            SetTimer(_hwnd, (IntPtr)HoverTimer, 15, IntPtr.Zero);   // fade out when leaving
+        }
         RequestRedraw();
+    }
+
+    // ---- Hover tooltips for chrome buttons ----
+    private const int TipTimer = 12;      // WM_TIMER id: show the tip after a hover dwell
+    private string? _tipText;             // visible tooltip text (null = none)
+
+    /// <summary>TipTimer fired: show the tooltip for the still-hovered button.</summary>
+    private void TipTick()
+    {
+        KillTimer(_hwnd, (IntPtr)TipTimer);
+        if (_hotBtn is null) return;
+        _tipText = ChromeButtonLabel(_hotBtn);
+        RequestRedraw();
+    }
+
+    /// <summary>Draw the hover tooltip near its button (below title-bar buttons, above footer ones).</summary>
+    private void DrawButtonTip(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
+        if (_tipText is null || _hotBtn is null) return;
+        float bx0 = -1, bx1 = -1; bool footer = false;
+        foreach (var b in _titleButtons) if (b.action == _hotBtn) { bx0 = b.x0; bx1 = b.x1; }
+        if (bx0 < 0) foreach (var b in _footerButtons) if (b.action == _hotBtn) { bx0 = b.x0; bx1 = b.x1; footer = true; }
+        if (bx0 < 0) return;
+        float tw = MeasureText(_tipText, _uiSmall) + 16f, th = 22f;
+        float tx = Math.Clamp((bx0 + bx1) / 2f - tw / 2f, 4f, ClientW() - tw - 4f);
+        float ty = footer ? ClientH() - FooterH - th - 6f : TitleBarH + 6f;
+        brush.Color = Mix(PalBg, ChromeText, 0.10f);
+        rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(tx, ty, tw, th), RadiusX = 5f, RadiusY = 5f }, brush);
+        brush.Color = PalBorder;
+        rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(tx, ty, tw, th), RadiusX = 5f, RadiusY = 5f }, brush, 1f);
+        brush.Color = ChromeText;
+        rt.DrawText(_tipText, _uiSmallCenter, new Rect(tx, ty, tw, th), brush);
     }
 
     /// <summary>Friendly spoken name for a chrome button action id (screen-reader hover announcements).</summary>

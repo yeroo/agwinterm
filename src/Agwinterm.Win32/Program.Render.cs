@@ -558,6 +558,7 @@ internal partial class Program
         DrawTitleBar(rt, brush);
         DrawSearchBar(rt, brush);
         DrawToast(rt, brush);
+        DrawButtonTip(rt, brush);
         DrawLeaderHint(rt, brush);
         DrawPalette(rt, brush);
         DrawSettingsPanel(rt, brush);
