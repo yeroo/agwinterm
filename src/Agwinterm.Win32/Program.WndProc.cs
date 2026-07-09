@@ -271,6 +271,11 @@ internal partial class Program
                 {
                     int mx = LoWord(lParam), my = HiWord(lParam);
                     if (_chromeFocus) ExitChromeFocus(announce: false);   // a click leaves the F6 sidebar zone
+                    if (_helpOpen)
+                    {
+                        if (mx < _helpCard.Left || mx > _helpCard.Right || my < _helpCard.Top || my > _helpCard.Bottom) CloseHelp();
+                        return IntPtr.Zero;
+                    }
                     if (_setOpen) { SettingsClick(mx, my); return IntPtr.Zero; }
                     if (_palette != PaletteKind.None) { PaletteClick(mx, my); return IntPtr.Zero; }
                     // Notification banner: clicking it jumps to the raising session and dismisses.
@@ -454,6 +459,7 @@ internal partial class Program
 
             case WM_MOUSEWHEEL:
                 {
+                    if (_helpOpen) { HelpKey(HiWord(wParam) > 0 ? VK_UP : VK_DOWN); return IntPtr.Zero; }
                     if (_setOpen) { SettingsWheel(HiWord(wParam) > 0 ? 1 : -1); return IntPtr.Zero; }
                     var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
                     ScreenToClient(_hwnd, ref pt);

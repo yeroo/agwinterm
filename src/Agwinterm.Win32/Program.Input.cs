@@ -903,6 +903,16 @@ internal partial class Program
         // While the find bar is open it owns the keyboard (Enter/F3 nav, Esc close, Backspace edit).
         if (_searchActive) return SearchKeyDown(vk);
 
+        // F1 help overlay: modal while open; plain F1 opens it from the shell prompt (full-screen
+        // TUIs on the alt screen — Far, vim — keep their own F1).
+        if (_helpOpen) return HelpKey(vk);
+        if (vk == 0x70 /* F1 */ && !ctrl && !alt && !shift)
+        {
+            var helpSurf = ActiveSurface();
+            bool altScreen = helpSurf is not null && helpSurf.S.Emulator.IsAltScreen;
+            if (!altScreen) { OpenHelp(); return true; }
+        }
+
         // Focus zones (F6): the sidebar zone owns the keyboard while active; plain F6 from the terminal
         // lifts focus out to the sidebar (the accessible "leave the terminal" gesture).
         if (_chromeFocus) return SidebarZoneKey(vk);
