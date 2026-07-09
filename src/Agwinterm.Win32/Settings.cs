@@ -202,7 +202,7 @@ internal partial class Program
         rt.FillRectangle(new Rect(0, 0, cw, ch), brush);
 
         float cardW = MathF.Min(680f, cw - 60f);
-        float cardH = MathF.Min(600f, ch - 80f);
+        float cardH = MathF.Min(700f, ch - 80f);   // tall enough for General incl. the Default Terminal section
         float cardX = (cw - cardW) / 2f;
         float cardY = MathF.Max(TitleBarH + 16f, (ch - cardH) / 2f);
         _setCard = new Rect(cardX, cardY, cardW, cardH);
