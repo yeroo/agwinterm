@@ -573,6 +573,63 @@ internal partial class Program : ISessionHost, IWindowHost
         }
     }
 
+    // ---- Focus zones (F6): move keyboard focus between the terminal and the sidebar ----
+    // The terminal owns the keyboard by default (everything goes to the shell). F6 lifts focus OUT
+    // to the sidebar so it can be walked without the mouse — the accessible way to leave the terminal.
+    private bool _chromeFocus;    // keyboard focus is in the sidebar zone (not the terminal)
+    private Ses? _focusRow;       // the focused sidebar session while _chromeFocus
+
+    private void EnterChromeFocus()
+    {
+        if (_sidebarW <= 0) ToggleSidebar();   // reveal the sidebar so the focus ring is visible
+        _chromeFocus = true;
+        _focusRow = _active ?? AllSessions().FirstOrDefault();
+        Uia.Announce("Sidebar");
+        AnnounceFocusRow();
+        RequestRedraw();
+    }
+
+    private void ExitChromeFocus(bool announce = true)
+    {
+        if (!_chromeFocus) return;
+        _chromeFocus = false;
+        if (announce) Uia.Announce("Terminal");
+        RequestRedraw();
+    }
+
+    private void AnnounceFocusRow()
+    {
+        if (_focusRow is null) return;
+        ShowToast(_focusRow.Name);   // a visible hint alongside the spoken one
+        bool current = ReferenceEquals(_focusRow, _active);
+        int unread = UnreadOf(_focusRow);
+        string extra = (current ? ", current" : "") + (unread > 0 ? $", {unread} unread" : "");
+        Uia.Announce($"{_focusRow.Name}, session{extra}");
+    }
+
+    /// <summary>Keyboard handling while the sidebar zone has focus (F6). Up/Down walk sessions, Enter/Space
+    /// opens one, Escape/F6 returns to the terminal. Swallows everything else so it can't reach the shell.</summary>
+    private bool SidebarZoneKey(int vk)
+    {
+        var list = AllSessions();
+        if (list.Count == 0) { ExitChromeFocus(); return true; }
+        int idx = _focusRow is not null ? list.IndexOf(_focusRow) : 0;
+        if (idx < 0) idx = 0;
+        switch (vk)
+        {
+            case VK_DOWN: _focusRow = list[Math.Min(idx + 1, list.Count - 1)]; AnnounceFocusRow(); RequestRedraw(); return true;
+            case VK_UP: _focusRow = list[Math.Max(idx - 1, 0)]; AnnounceFocusRow(); RequestRedraw(); return true;
+            case VK_HOME: _focusRow = list[0]; AnnounceFocusRow(); RequestRedraw(); return true;
+            case VK_END: _focusRow = list[^1]; AnnounceFocusRow(); RequestRedraw(); return true;
+            case VK_RETURN: case VK_SPACE:
+                if (_focusRow is not null) SetActive(_focusRow);
+                ExitChromeFocus();
+                return true;
+            case VK_ESCAPE: case 0x75 /* F6 */: ExitChromeFocus(); return true;
+        }
+        return true;
+    }
+
     // ---- System caret (accessibility: Magnifier follow, IME placement, screen-reader caret) ----
     // We render our own cursor, so the system caret is created HIDDEN — it exists only so assistive
     // tech can read the text-cursor position (via GetCaretPos / the caret's location-change events).
