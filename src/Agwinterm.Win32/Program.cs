@@ -252,6 +252,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public int SelAncLine, SelAncCol, SelFocLine, SelFocCol;
         public bool BlockSel;   // rectangular (Alt+drag) selection: clip each row to [minCol,maxCol]
         public void ClearSel() => HasSel = false;
+        public int UiaAnnouncedAbs = -1;   // absolute buffer line (history + cursor row) last spoken to a screen reader
     }
 
     private sealed class Ses
@@ -299,6 +300,8 @@ internal partial class Program : ISessionHost, IWindowHost
     // The first frame after a quiet period still paints immediately — no interactive latency cost.
     private const int RedrawTimer = 10;               // WM_TIMER id for the deferred frame
     private const int RedrawMinIntervalMs = 15;
+    private const int UiaAnnounceTimer = 11;          // debounce: announce new output to a screen reader
+    private const int UiaAnnounceQuietMs = 350;       // speak once output has settled this long
     private long _lastPaintTick;                      // Environment.TickCount64 of the last WM_PAINT render
     private bool _redrawTimerArmed;
 

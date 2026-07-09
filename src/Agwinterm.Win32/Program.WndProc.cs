@@ -156,6 +156,8 @@ internal partial class Program
                     _redrawTimerArmed = true;
                     SetTimer(hwnd, (IntPtr)RedrawTimer, (uint)Math.Max(1, RedrawMinIntervalMs - (int)since), IntPtr.Zero);
                 }
+                // Screen reader active: (re)arm the announce debounce — speaks once output settles.
+                if (Uia.ClientsListening) SetTimer(hwnd, (IntPtr)UiaAnnounceTimer, UiaAnnounceQuietMs, IntPtr.Zero);
                 return IntPtr.Zero;
             }
 
@@ -177,6 +179,12 @@ internal partial class Program
                 {
                     KillTimer(hwnd, (IntPtr)RedrawTimer); _redrawTimerArmed = false;
                     InvalidateRect(hwnd, IntPtr.Zero, false);
+                    return IntPtr.Zero;
+                }
+                if ((int)wParam == UiaAnnounceTimer)
+                {
+                    KillTimer(hwnd, (IntPtr)UiaAnnounceTimer);
+                    AnnounceNewOutput();
                     return IntPtr.Zero;
                 }
                 _cursorOn = !_cursorOn;

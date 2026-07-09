@@ -40,6 +40,35 @@ internal static partial class Uia
     private static readonly Guid IID_IRawElementProviderSimple = new("d6dd68d1-86fd-4332-8666-9abedea2d24c");
     private const int UiaRootObjectId = -25;
     [LibraryImport("uiautomationcore.dll")] private static partial nint UiaReturnRawElementProvider(nint hwnd, nint wParam, nint lParam, nint provider);
+
+    /// <summary>True while a UIA client (Narrator, NVDA, …) is subscribed — gates all announcement work.</summary>
+    internal static bool ClientsListening
+    {
+        get { try { return UiaClientsAreListening(); } catch { return false; } }
+    }
+
+    /// <summary>Push text to the active screen reader via a UIA notification event (new terminal output,
+    /// settings interactions). Cheap alternative to a full ITextProvider: the reader simply speaks the
+    /// string. No-op until the provider exists (first WM_GETOBJECT) or when nothing is listening.</summary>
+    internal static void Announce(string text)
+    {
+        if (_providerSimple == 0 || string.IsNullOrWhiteSpace(text)) return;
+        try
+        {
+            // NotificationKind_Other = 4, NotificationProcessing_All = 2 (queue, don't drop).
+            UiaRaiseNotificationEvent(_providerSimple, 4, 2, text, "agwinterm-announce");
+        }
+        catch { }
+    }
+
+    [LibraryImport("uiautomationcore.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UiaClientsAreListening();
+
+    [LibraryImport("uiautomationcore.dll")]
+    private static partial int UiaRaiseNotificationEvent(nint provider, int kind, int processing,
+        [MarshalUsing(typeof(BStrStringMarshaller))] string displayString,
+        [MarshalUsing(typeof(BStrStringMarshaller))] string activityId);
 }
 
 [Flags]
