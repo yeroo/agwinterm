@@ -531,6 +531,22 @@ internal partial class Program : ISessionHost, IWindowHost
         return f;
     }
 
+    /// <summary>Apply a font-family / default-font-size change live: rebuild the base format, dispose and
+    /// clear the per-size metrics cache (each entry bakes in the family), remeasure, and reflow every
+    /// session so the change is visible immediately instead of only on new sessions.</summary>
+    private void RebuildFont()
+    {
+        var old = _format;
+        _format = CreateTextFormat(_config);
+        try { old?.Dispose(); } catch { }
+        foreach (var m in _metrics.Values) { try { m.Fmt.Dispose(); } catch { } }   // COM formats — dispose before dropping
+        _metrics.Clear();
+        MeasureCell();
+        foreach (var s in AllSessions()) RegridSession(s);
+        if (_cover is not null) RegridCover();
+        RequestRedraw();
+    }
+
     private void MeasureCell()
     {
         using var run = _dwrite.CreateTextLayout(new string('M', 10), _format, 4096f, 4096f);
