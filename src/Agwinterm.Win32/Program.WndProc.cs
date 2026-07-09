@@ -141,7 +141,16 @@ internal partial class Program
                 BeginPaint(hwnd, out PAINTSTRUCT ps);
                 Render();
                 _lastPaintTick = Environment.TickCount64;
+                UpdateCaretPos();   // keep the (hidden) system caret on the text cursor for a11y follow
                 EndPaint(hwnd, ref ps);
+                return IntPtr.Zero;
+
+            case WM_SETFOCUS:
+                EnsureCaret();
+                return IntPtr.Zero;
+
+            case WM_KILLFOCUS:
+                DropCaret();
                 return IntPtr.Zero;
 
             case WM_APP_REDRAW:

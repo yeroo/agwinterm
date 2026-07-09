@@ -97,7 +97,14 @@ internal partial class UiaProvider : IRawElementProviderSimple
 
     public nint GetPatternProvider(int patternId) => 0; // no control patterns yet (ITextProvider next)
 
-    public nint GetHostRawElementProvider() => 0;        // no host provider in this stage
+    // Return the HWND host provider so UIA properly *hosts* this element: without it the provider is
+    // unparented — Narrator can't anchor its focus rectangle (it lands somewhere random) and
+    // notification/property events don't route reliably. UiaHostProviderFromHwnd supplies the window's
+    // default bounding rectangle + the event-routing plumbing.
+    public nint GetHostRawElementProvider()
+        => UiaHostProviderFromHwnd(_hwnd, out nint host) >= 0 ? host : 0;
+
+    [LibraryImport("uiautomationcore.dll")] private static partial int UiaHostProviderFromHwnd(nint hwnd, out nint provider);
 
     public void GetPropertyValue(int propertyId, nint pRetVal)
     {

@@ -531,6 +531,42 @@ internal partial class Program : ISessionHost, IWindowHost
         return f;
     }
 
+    // ---- System caret (accessibility: Magnifier follow, IME placement, screen-reader caret) ----
+    // We render our own cursor, so the system caret is created HIDDEN — it exists only so assistive
+    // tech can read the text-cursor position (via GetCaretPos / the caret's location-change events).
+    private bool _caretOwned;
+
+    private void EnsureCaret()
+    {
+        if (_caretOwned || _hwnd == IntPtr.Zero) return;
+        var (_, _, cw, ch) = ActivePaneView();
+        if (CreateCaret(_hwnd, IntPtr.Zero, Math.Max(1, (int)cw), Math.Max(1, (int)ch)))
+        {
+            _caretOwned = true;
+            HideCaret(_hwnd);   // don't double-draw over our rendered cursor
+            UpdateCaretPos();
+        }
+    }
+
+    private void DropCaret()
+    {
+        if (!_caretOwned) return;
+        DestroyCaret();
+        _caretOwned = false;
+    }
+
+    /// <summary>Move the hidden system caret onto the active pane's text cursor (client px).</summary>
+    private void UpdateCaretPos()
+    {
+        if (!_caretOwned || _active is null) return;
+        var (ox, oy, cw, ch) = ActivePaneView();
+        var p = ActiveSurface();
+        if (p is null) return;
+        int col, row;
+        lock (p.S.SyncRoot) { col = p.S.Emulator.CursorCol; row = p.S.Emulator.CursorRow; }
+        SetCaretPos((int)(ox + col * cw), (int)(oy + row * ch));
+    }
+
     /// <summary>Apply a font-family / default-font-size change live: rebuild the base format, dispose and
     /// clear the per-size metrics cache (each entry bakes in the family), remeasure, and reflow every
     /// session so the change is visible immediately instead of only on new sessions.</summary>
