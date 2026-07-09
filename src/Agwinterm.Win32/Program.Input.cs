@@ -903,6 +903,11 @@ internal partial class Program
         // While the find bar is open it owns the keyboard (Enter/F3 nav, Esc close, Backspace edit).
         if (_searchActive) return SearchKeyDown(vk);
 
+        // Focus zones (F6): the sidebar zone owns the keyboard while active; plain F6 from the terminal
+        // lifts focus out to the sidebar (the accessible "leave the terminal" gesture).
+        if (_chromeFocus) return SidebarZoneKey(vk);
+        if (vk == 0x75 /* F6 */ && !ctrl && !alt && !shift) { EnterChromeFocus(); return true; }
+
         // Leader/prefix sequence (tmux-style). When pending, the next chord resolves against the leader
         // bindings; Esc / timeout cancels; modifier-only keydowns stay pending. Checked before the normal
         // chord/clipboard/terminal paths so the leader chord and its follow-up key are captured.

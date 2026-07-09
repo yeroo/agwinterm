@@ -143,6 +143,12 @@ internal partial class Program
             brush.Color = SbHighlight;
             rt.FillRectangle(new Rect(0, y, _sidebarW, rowH), brush);
         }
+        // F6 focus ring: the sidebar zone's focused row (keyboard navigation, without the mouse).
+        if (_chromeFocus && ReferenceEquals(_focusRow, s))
+        {
+            brush.Color = ChromeAccent;
+            rt.DrawRectangle(new Rect(1.5f, y + 1.5f, _sidebarW - 3f, rowH - 3f), brush, 2f);
+        }
         // Flag marker in the left gutter (before the name, which starts at x=26).
         if (s.Flagged)
         {
@@ -1230,10 +1236,30 @@ internal partial class Program
         else if (mx < (int)_sidebarW && my >= ClientH() - (int)FooterH) hit = ChromeHit(_footerButtons, mx);
         if (hit == _hotBtn) return;
         _hotBtn = hit;
-        if (hit is not null) { _hotPaint = hit; _hotAlpha = 1f; }   // light instantly on hover-in
+        if (hit is not null)
+        {
+            _hotPaint = hit; _hotAlpha = 1f;   // light instantly on hover-in
+            if (Uia.ClientsListening) Uia.Announce(ChromeButtonLabel(hit) + " button");   // speak the hovered button
+        }
         else SetTimer(_hwnd, (IntPtr)HoverTimer, 15, IntPtr.Zero);  // fade out when leaving
         RequestRedraw();
     }
+
+    /// <summary>Friendly spoken name for a chrome button action id (screen-reader hover announcements).</summary>
+    private static string ChromeButtonLabel(string a) => a switch
+    {
+        "toggle" => "Toggle sidebar",
+        "add-session" => "New session",
+        "new-workspace" => "New workspace",
+        "attention" => "Next attention",
+        "scratch" => "Scratch terminal",
+        "split" => "Split pane",
+        "quick terminal" => "Quick terminal",
+        "flag" => "Flagged view",
+        "unfocus" => "Unfocus workspace",
+        "settings" => "Settings",
+        _ => a,
+    };
 
     /// <summary>Ease the hover-fill alpha toward the target; stop the timer once settled.</summary>
     private void HoverTick()

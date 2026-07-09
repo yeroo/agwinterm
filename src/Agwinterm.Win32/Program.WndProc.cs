@@ -269,6 +269,7 @@ internal partial class Program
             case WM_LBUTTONDOWN:
                 {
                     int mx = LoWord(lParam), my = HiWord(lParam);
+                    if (_chromeFocus) ExitChromeFocus(announce: false);   // a click leaves the F6 sidebar zone
                     if (_setOpen) { SettingsClick(mx, my); return IntPtr.Zero; }
                     if (_palette != PaletteKind.None) { PaletteClick(mx, my); return IntPtr.Zero; }
                     // Notification banner: clicking it jumps to the raising session and dismisses.
