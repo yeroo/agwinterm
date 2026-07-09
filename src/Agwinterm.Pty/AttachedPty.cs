@@ -42,13 +42,26 @@ internal sealed class AttachedPty : IPtyConnection
     public void Resize(int cols, int rows)
     {
         // ConPTY signal-pipe resize packet: [PTY_SIGNAL_RESIZE_WINDOW=8][cols][rows] as little-endian UINT16s.
+        // NOTE: byte[] (not Span) — classic DllImport can't marshal Span without assembly-wide
+        // DisableRuntimeMarshalling; the old Span overload threw MarshalDirectiveException on every
+        // call (swallowed below), so attached consoles never saw resizes and painted at a stale width.
         if (_signal is null || _signal.IsInvalid || _signal.IsClosed) return;
-        Span<byte> pkt = stackalloc byte[6];
-        pkt[0] = 8; pkt[1] = 0;
-        pkt[2] = (byte)(cols & 0xFF); pkt[3] = (byte)((cols >> 8) & 0xFF);
-        pkt[4] = (byte)(rows & 0xFF); pkt[5] = (byte)((rows >> 8) & 0xFF);
-        try { uint written; WriteFile(_signal, pkt, (uint)pkt.Length, out written, IntPtr.Zero); } catch { }
+        byte[] pkt =
+        {
+            8, 0,
+            (byte)(cols & 0xFF), (byte)((cols >> 8) & 0xFF),
+            (byte)(rows & 0xFF), (byte)((rows >> 8) & 0xFF),
+        };
+        try
+        {
+            if (!WriteFile(_signal, pkt, (uint)pkt.Length, out _, IntPtr.Zero))
+                Log($"resize signal write failed: err={Marshal.GetLastWin32Error()}");
+        }
+        catch (Exception ex) { Log($"resize signal write threw: {ex.GetType().Name} {ex.Message}"); }
     }
+
+    private static readonly string? LogPath = Environment.GetEnvironmentVariable("AGWINTERM_PTYLOG");
+    private static void Log(string m) { if (LogPath is not null) try { File.AppendAllText(LogPath, $"[attached] {m}\n"); } catch { } }
 
     public bool WaitForExit(int milliseconds)
     {
@@ -69,7 +82,7 @@ internal sealed class AttachedPty : IPtyConnection
         if (_clientProcess != IntPtr.Zero) { CloseHandle(_clientProcess); _clientProcess = IntPtr.Zero; }
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool WriteFile(SafeFileHandle h, ReadOnlySpan<byte> buf, uint n, out uint written, IntPtr overlapped);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool WriteFile(SafeFileHandle h, byte[] buf, uint n, out uint written, IntPtr overlapped);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(IntPtr h, uint ms);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(IntPtr h, out int code);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(IntPtr h, uint code);
