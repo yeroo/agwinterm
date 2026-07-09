@@ -546,6 +546,20 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         var nodes = new List<Uia.Node> { new() { Kind = Uia.NodeKind.Root, Name = "agwinterm" } };
 
+        // Help is modal: only the help document is exposed while it's open, named with the full
+        // help text so a reader can read the whole guide via the element.
+        if (_helpOpen)
+        {
+            int doc = nodes.Count;
+            nodes.Add(new Uia.Node
+            {
+                Kind = Uia.NodeKind.HelpDoc, Name = HelpText(), Parent = 0, Focused = true,
+                Rect = ScreenRect(_helpCard.Left, _helpCard.Top, _helpCard.Right - _helpCard.Left, _helpCard.Bottom - _helpCard.Top),
+            });
+            nodes[0].Children = new[] { doc };
+            return new Uia.TreeSnapshot { Nodes = nodes.ToArray() };
+        }
+
         // Settings is modal: while it's open, expose ONLY the dialog (tabs + the current tab's
         // controls) so a reader can't wander into the inert main-window elements behind it.
         if (_setOpen)

@@ -38,7 +38,7 @@ internal partial interface IRawElementProviderFragmentRoot
 
 partial class Uia
 {
-    internal enum NodeKind { Root, Terminal, Sidebar, Session, ChromeButton, SettingsGroup, SettingsControl, SettingsTab }
+    internal enum NodeKind { Root, Terminal, Sidebar, Session, ChromeButton, SettingsGroup, SettingsControl, SettingsTab, HelpDoc }
 
     /// <summary>One node in the accessibility tree snapshot (built by Program.BuildUiaTree).</summary>
     internal sealed class Node
@@ -253,6 +253,7 @@ internal partial class UiaFragment : UiaNodeBase, IRawElementProviderSimple, IRa
             Uia.NodeKind.Sidebar => (Uia.CT_List, "session list", false),
             Uia.NodeKind.Session => (Uia.CT_ListItem, "session", true),
             Uia.NodeKind.SettingsGroup => (Uia.CT_Group, "settings", false),
+            Uia.NodeKind.HelpDoc => (Uia.CT_Document, "help", true),
             _ => (Uia.CT_Pane, "group", false),
         };
         FillProperty(propertyId, pRetVal, ct, lct, content);
