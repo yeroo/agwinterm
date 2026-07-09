@@ -821,9 +821,10 @@ internal partial class Program
         ApplyWindowOpacity();
         if (key is "compact-toolbar" or "toolbar-mode")   // title-bar height changed → reflow the terminal grid
         { if (_active is not null) RegridSession(_active); if (_cover is not null) RegridCover(); }
+        if (key is "font-family" or "font-size") RebuildFont();   // apply live to the running window
         RequestRedraw();
         RefreshSettingsControls();                        // keep an open Settings window in sync
-        bool deferred = key is "font-family" or "font-size" or "scrollback-lines" or "shell-integration" or "restore-commands";
+        bool deferred = key is "scrollback-lines" or "shell-integration" or "restore-commands";
         return $"{key} = {ConfigValue(key)}" + (deferred ? "  (applies to new sessions)" : "");
     }
 
