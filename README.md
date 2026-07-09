@@ -91,6 +91,14 @@ Grab either from the [**Releases**](https://github.com/yeroo/agwinterm/releases)
 
 Both are **self-contained** (no .NET runtime needed) and need **no admin rights**.
 
+Or install with [**Scoop**](https://scoop.sh) (uses the portable build; `scoop update` picks up new
+releases automatically):
+
+```powershell
+scoop bucket add agwinterm https://github.com/yeroo/scoop-bucket
+scoop install agwinterm
+```
+
 - Binaries are currently **unsigned**, so SmartScreen will warn on first run → *More info → Run
   anyway*. Release artifacts carry **Sigstore build-provenance attestations** — verify with
   `gh attestation verify <file> --repo yeroo/agwinterm`.
