@@ -12,38 +12,44 @@ namespace Agwinterm.Win32;
 internal static partial class Uia
 {
     private static readonly StrategyBasedComWrappers ComWrappers = new();
-    private static UiaProvider? _provider;   // keep a managed ref alive
-    private static nint _providerSimple;     // QI'd IRawElementProviderSimple* handed to UIA
+    private static UiaRoot? _root;           // keep the singleton root alive
+    private static nint _providerSimple;     // QI'd IRawElementProviderSimple* of the root (handed to UIA)
+    private static nint _fragmentRoot;       // QI'd IRawElementProviderFragmentRoot* of the root
 
-    /// <summary>Supplies the current visible terminal text (set by the app) for the provider's Name.</summary>
+    /// <summary>Supplies the current visible terminal text (set by the app) for the terminal element's Name.</summary>
     internal static Func<string>? GetVisibleText;
 
-    /// <summary>Handle WM_GETOBJECT: return our root UIA provider when UIA asks for it.</summary>
+    /// <summary>Handle WM_GETOBJECT: return our root UIA fragment when UIA asks for it.</summary>
     internal static nint OnGetObject(nint hwnd, nint wParam, nint lParam)
     {
         if ((int)lParam != UiaRootObjectId) return 0;
         if (_providerSimple == 0)
         {
-            _provider = new UiaProvider(hwnd);
-            nint unk = ComWrappers.GetOrCreateComInterfaceForObject(_provider, CreateComInterfaceFlags.None);
+            _treeHwnd = hwnd;
+            _root = new UiaRoot(hwnd);
+            nint unk = ComWrappers.GetOrCreateComInterfaceForObject(_root, CreateComInterfaceFlags.None);
             try
             {
                 // Hand UIA a real IRawElementProviderSimple* (not the raw IUnknown* — vtables differ).
                 Guid iid = IID_IRawElementProviderSimple;
                 if (Marshal.QueryInterface(unk, in iid, out _providerSimple) < 0) _providerSimple = 0;
+                Guid fr = IID_IRawElementProviderFragmentRoot;
+                if (Marshal.QueryInterface(unk, in fr, out _fragmentRoot) < 0) _fragmentRoot = 0;
             }
             finally { Marshal.Release(unk); }
         }
         return _providerSimple != 0 ? UiaReturnRawElementProvider(hwnd, wParam, lParam, _providerSimple) : 0;
     }
 
-    /// <summary>The root terminal element (IRawElementProviderSimple*), AddRef'd — for text ranges'
-    /// GetEnclosingElement. 0 before the provider exists.</summary>
-    internal static nint RootProvider()
+    /// <summary>The fragment root (IRawElementProviderFragmentRoot*), AddRef'd — each fragment's FragmentRoot.</summary>
+    internal static nint FragmentRootPtr()
     {
-        if (_providerSimple != 0) Marshal.AddRef(_providerSimple);
-        return _providerSimple;
+        if (_fragmentRoot != 0) Marshal.AddRef(_fragmentRoot);
+        return _fragmentRoot;
     }
+
+    /// <summary>The terminal element (IRawElementProviderSimple*), AddRef'd — text ranges' GetEnclosingElement.</summary>
+    internal static nint RootProvider() => AsInterface(new UiaTerminal(_treeHwnd), IID_IRawElementProviderSimple);
 
     private static readonly Guid IID_IRawElementProviderSimple = new("d6dd68d1-86fd-4332-8666-9abedea2d24c");
     private const int UiaRootObjectId = -25;
@@ -82,8 +88,8 @@ internal static partial class Uia
 [Flags]
 internal enum ProviderOptions { ClientSideProvider = 0x1, ServerSideProvider = 0x2, NonClientAreaProvider = 0x4, OverrideProvider = 0x8, ProviderOwnsSetFocus = 0x10, UseComThreading = 0x20 }
 
-/// <summary>Minimal server-side UIA element: IRawElementProviderSimple only (control type + name). The
-/// GUID is the standard IRawElementProviderSimple IID; method order matches its COM vtable exactly.</summary>
+/// <summary>Server-side UIA element base (control type + name + patterns). GUID is the standard
+/// IRawElementProviderSimple IID; method order matches its COM vtable exactly.</summary>
 [GeneratedComInterface]
 [Guid("d6dd68d1-86fd-4332-8666-9abedea2d24c")]
 internal partial interface IRawElementProviderSimple
@@ -92,52 +98,4 @@ internal partial interface IRawElementProviderSimple
     nint GetPatternProvider(int patternId);
     void GetPropertyValue(int propertyId, nint pRetVal);   // pRetVal is a caller-allocated VARIANT*
     nint GetHostRawElementProvider();                       // IRawElementProviderSimple** (null = none)
-}
-
-[GeneratedComClass]
-internal partial class UiaProvider : IRawElementProviderSimple
-{
-    private readonly nint _hwnd;
-    public UiaProvider(nint hwnd) => _hwnd = hwnd;
-
-    // Direct (non-marshalled) calls on UIA's thread; our reads are guarded by the session lock.
-    public ProviderOptions GetProviderOptions() => ProviderOptions.ServerSideProvider;
-
-    // Expose the Text pattern so Narrator/NVDA can read & navigate the terminal by line/word/char.
-    public nint GetPatternProvider(int patternId)
-        => patternId == UIA_TextPatternId ? Uia.AsInterface(this, Uia.IID_ITextProvider) : 0;
-
-    private const int UIA_TextPatternId = 10014;
-
-    // Return the HWND host provider so UIA properly *hosts* this element: without it the provider is
-    // unparented — Narrator can't anchor its focus rectangle (it lands somewhere random) and
-    // notification/property events don't route reliably. UiaHostProviderFromHwnd supplies the window's
-    // default bounding rectangle + the event-routing plumbing.
-    public nint GetHostRawElementProvider()
-        => UiaHostProviderFromHwnd(_hwnd, out nint host) >= 0 ? host : 0;
-
-    [LibraryImport("uiautomationcore.dll")] private static partial int UiaHostProviderFromHwnd(nint hwnd, out nint provider);
-
-    public void GetPropertyValue(int propertyId, nint pRetVal)
-    {
-        VariantInit(pRetVal);   // default VT_EMPTY (= "not supported", UIA falls back)
-        object? val = propertyId switch
-        {
-            UIA_ControlTypePropertyId => UIA_DocumentControlTypeId,
-            UIA_NamePropertyId => SafeText(),
-            UIA_IsContentElementPropertyId or UIA_IsControlElementPropertyId or UIA_IsKeyboardFocusablePropertyId => true,
-            UIA_LocalizedControlTypePropertyId => "terminal",
-            _ => null,
-        };
-        if (val is not null) Marshal.GetNativeVariantForObject(val, pRetVal);
-    }
-
-    private static string SafeText() { try { return Uia.GetVisibleText?.Invoke() ?? "terminal"; } catch { return "terminal"; } }
-
-    [LibraryImport("oleaut32.dll")] private static partial void VariantInit(nint pvarg);
-
-    private const int UIA_ControlTypePropertyId = 30003, UIA_NamePropertyId = 30005,
-        UIA_IsControlElementPropertyId = 30016, UIA_IsContentElementPropertyId = 30017,
-        UIA_IsKeyboardFocusablePropertyId = 30009, UIA_LocalizedControlTypePropertyId = 30004;
-    private const int UIA_DocumentControlTypeId = 50030;
 }

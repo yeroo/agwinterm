@@ -114,8 +114,8 @@ internal partial interface ITextRangeProvider
 [StructLayout(LayoutKind.Sequential)]
 internal struct VariantBlob { public long A, B, C; }
 
-// UiaProvider (declared in Uia.cs) also implements ITextProvider.
-internal partial class UiaProvider : ITextProvider
+// UiaTerminal (declared in Uia.Tree.cs) also implements ITextProvider — the terminal Document element.
+internal partial class UiaTerminal : ITextProvider
 {
     public nint GetSelection()
     {

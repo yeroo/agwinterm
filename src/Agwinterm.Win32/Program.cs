@@ -531,6 +531,87 @@ internal partial class Program : ISessionHost, IWindowHost
         return f;
     }
 
+    // ---- UIA control tree (fragment tree the reader scans/Tabs through) ----
+
+    private UiaRect ScreenRect(float x, float y, float w, float h)
+    {
+        var p = new POINT { x = (int)x, y = (int)y };
+        ClientToScreen(_hwnd, ref p);
+        return new UiaRect { Left = p.x, Top = p.y, Width = Math.Max(0, w), Height = Math.Max(0, h) };
+    }
+
+    /// <summary>Build the accessibility tree snapshot: root → [terminal, sidebar → session items], with
+    /// names, focus, and on-screen bounding rectangles. Runs on the UIA thread.</summary>
+    private Uia.TreeSnapshot BuildUiaTree()
+    {
+        var nodes = new List<Uia.Node> { new() { Kind = Uia.NodeKind.Root, Name = "agwinterm" } };
+
+        int term = nodes.Count;
+        float contentBottom = ClientH() - FooterH;
+        nodes.Add(new Uia.Node
+        {
+            Kind = Uia.NodeKind.Terminal, Name = "terminal", Parent = 0,
+            Focused = !_chromeFocus && !_setOpen,
+            Rect = ScreenRect(_sidebarW, TitleBarH, ClientW() - _sidebarW, contentBottom - TitleBarH),
+        });
+
+        int list = nodes.Count;
+        bool sidebarShown = _sidebarW > 0;
+        nodes.Add(new Uia.Node
+        {
+            Kind = Uia.NodeKind.Sidebar, Name = "Sessions", Parent = 0,
+            Rect = sidebarShown ? ScreenRect(0, TitleBarH, _sidebarW, contentBottom - TitleBarH) : default,
+        });
+
+        // Map each session to its sidebar row rect (from the last render), for bounding rectangles.
+        var rowRect = new Dictionary<Ses, UiaRect>();
+        foreach (var (y0, y1, isWs, item) in _sidebarRows)
+            if (!isWs && item is Ses s && sidebarShown) rowRect[s] = ScreenRect(0, y0, _sidebarW, y1 - y0);
+
+        var sessions = AllSessions();
+        var kids = new List<int>();
+        for (int i = 0; i < sessions.Count; i++)
+        {
+            var s = sessions[i];
+            kids.Add(nodes.Count);
+            nodes.Add(new Uia.Node
+            {
+                Kind = Uia.NodeKind.Session, Index = i, Name = s.Name, Parent = list,
+                Focused = _chromeFocus && ReferenceEquals(_focusRow, s),
+                Selected = ReferenceEquals(_active, s),
+                Rect = rowRect.TryGetValue(s, out var r) ? r : default,
+            });
+        }
+        nodes[list].Children = kids.ToArray();
+        nodes[0].Children = new[] { term, list };
+        return new Uia.TreeSnapshot { Nodes = nodes.ToArray() };
+    }
+
+    /// <summary>A UIA client (or Narrator) called SetFocus on a tree element — move our internal focus.</summary>
+    private void HandleUiaSetFocus(Uia.NodeKind kind, int index)
+    {
+        switch (kind)
+        {
+            case Uia.NodeKind.Terminal: ExitChromeFocus(announce: false); break;
+            case Uia.NodeKind.Sidebar: EnterChromeFocus(); break;
+            case Uia.NodeKind.Session:
+                var list = AllSessions();
+                if (index >= 0 && index < list.Count)
+                {
+                    if (_sidebarW <= 0) ToggleSidebar();
+                    _chromeFocus = true; _focusRow = list[index]; RequestRedraw();
+                }
+                break;
+        }
+    }
+
+    private void RaiseUiaFocusForRow()
+    {
+        if (_focusRow is null) return;
+        int idx = AllSessions().IndexOf(_focusRow);
+        if (idx >= 0) Uia.RaiseFocus(Uia.NodeKind.Session, idx);
+    }
+
     /// <summary>Build the UIA text-pattern snapshot: the active pane's buffer (recent scrollback + the
     /// live screen) flattened into one document, with the caret offset and the mapping from document
     /// lines to on-screen rows (screen px) so ranges can report bounding rectangles. Runs on the UIA
@@ -593,7 +674,7 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         if (!_chromeFocus) return;
         _chromeFocus = false;
-        if (announce) Uia.Announce("Terminal");
+        if (announce) { Uia.Announce("Terminal"); Uia.RaiseFocus(Uia.NodeKind.Terminal, 0); }
         RequestRedraw();
     }
 
@@ -601,6 +682,7 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         if (_focusRow is null) return;
         ShowToast(_focusRow.Name);   // a visible hint alongside the spoken one
+        RaiseUiaFocusForRow();       // move UIA focus to this element (Narrator announces it)
         bool current = ReferenceEquals(_focusRow, _active);
         int unread = UnreadOf(_focusRow);
         string extra = (current ? ", current" : "") + (unread > 0 ? $", {unread} unread" : "");
@@ -785,6 +867,9 @@ internal partial class Program : ISessionHost, IWindowHost
             // Full text-pattern snapshot (ITextProvider): the flattened buffer document + caret +
             // visible-line mapping, so Narrator can read/navigate by line/word/char and box the caret.
             Uia.GetTextSnapshot = BuildUiaTextSnapshot;
+            // Fragment tree (root → terminal + sidebar/sessions) so the reader scans/Tabs the controls.
+            Uia.GetTree = BuildUiaTree;
+            Uia.OnSetFocus = (kind, index) => Post(() => HandleUiaSetFocus(kind, index));
         }
         // CLI args (first window only; consumed so extra windows don't re-apply them).
         string? argProfile = _argProfile, argDir = _argDir;
