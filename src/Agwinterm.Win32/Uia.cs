@@ -37,6 +37,14 @@ internal static partial class Uia
         return _providerSimple != 0 ? UiaReturnRawElementProvider(hwnd, wParam, lParam, _providerSimple) : 0;
     }
 
+    /// <summary>The root terminal element (IRawElementProviderSimple*), AddRef'd — for text ranges'
+    /// GetEnclosingElement. 0 before the provider exists.</summary>
+    internal static nint RootProvider()
+    {
+        if (_providerSimple != 0) Marshal.AddRef(_providerSimple);
+        return _providerSimple;
+    }
+
     private static readonly Guid IID_IRawElementProviderSimple = new("d6dd68d1-86fd-4332-8666-9abedea2d24c");
     private const int UiaRootObjectId = -25;
     [LibraryImport("uiautomationcore.dll")] private static partial nint UiaReturnRawElementProvider(nint hwnd, nint wParam, nint lParam, nint provider);
@@ -95,7 +103,11 @@ internal partial class UiaProvider : IRawElementProviderSimple
     // Direct (non-marshalled) calls on UIA's thread; our reads are guarded by the session lock.
     public ProviderOptions GetProviderOptions() => ProviderOptions.ServerSideProvider;
 
-    public nint GetPatternProvider(int patternId) => 0; // no control patterns yet (ITextProvider next)
+    // Expose the Text pattern so Narrator/NVDA can read & navigate the terminal by line/word/char.
+    public nint GetPatternProvider(int patternId)
+        => patternId == UIA_TextPatternId ? Uia.AsInterface(this, Uia.IID_ITextProvider) : 0;
+
+    private const int UIA_TextPatternId = 10014;
 
     // Return the HWND host provider so UIA properly *hosts* this element: without it the provider is
     // unparented — Narrator can't anchor its focus rectangle (it lands somewhere random) and

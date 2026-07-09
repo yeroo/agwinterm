@@ -531,6 +531,48 @@ internal partial class Program : ISessionHost, IWindowHost
         return f;
     }
 
+    /// <summary>Build the UIA text-pattern snapshot: the active pane's buffer (recent scrollback + the
+    /// live screen) flattened into one document, with the caret offset and the mapping from document
+    /// lines to on-screen rows (screen px) so ranges can report bounding rectangles. Runs on the UIA
+    /// thread; locks the session.</summary>
+    private Uia.TextSnapshot? BuildUiaTextSnapshot()
+    {
+        var p = ActiveSurface();
+        if (p is null) return null;
+        var (oxC, oyC, cw, ch) = ActivePaneView();
+        var origin = new POINT { x = (int)oxC, y = (int)oyC };
+        ClientToScreen(_hwnd, ref origin);   // bounding rectangles are screen coords
+        lock (p.S.SyncRoot)
+        {
+            var em = p.S.Emulator;
+            int hist = em.HistoryCount, rows = em.Screen.Rows;
+            const int MaxHist = 2000;                       // bound the document the reader walks
+            int keepHist = Math.Min(hist, MaxHist);
+            int histStart = hist - keepHist;
+            int n = keepHist + rows;
+            var lines = new string[n];
+            for (int i = 0; i < keepHist; i++) lines[i] = em.DumpHistoryRow(histStart + i);
+            for (int r = 0; r < rows; r++) lines[keepHist + r] = em.DumpRow(r);
+            var starts = new int[n + 1];
+            for (int i = 0; i < n; i++) starts[i + 1] = starts[i] + lines[i].Length + 1;   // +1 = '\n' joiner
+            int total = n > 0 ? starts[n] - 1 : 0;          // no trailing newline after the last line
+
+            int caretLine = keepHist + Math.Clamp(em.CursorRow, 0, rows - 1);
+            int caretCol = Math.Min(em.CursorCol, lines[caretLine].Length);
+            int caretOff = starts[caretLine] + caretCol;
+
+            int off = em.IsAltScreen ? 0 : Math.Clamp(p.ScrollOffset, 0, hist);
+            int firstVisibleDoc = (hist - off) - histStart;  // Lines[] index of the top on-screen row
+
+            return new Uia.TextSnapshot
+            {
+                Lines = lines, LineStart = starts, TotalLength = total, CaretOffset = caretOff,
+                FirstVisibleLine = firstVisibleDoc, VisibleRows = rows,
+                ScreenX = origin.x, ScreenY = origin.y, CellW = cw, CellH = ch,
+            };
+        }
+    }
+
     // ---- System caret (accessibility: Magnifier follow, IME placement, screen-reader caret) ----
     // We render our own cursor, so the system caret is created HIDDEN — it exists only so assistive
     // tech can read the text-cursor position (via GetCaretPos / the caret's location-change events).
@@ -683,6 +725,9 @@ internal partial class Program : ISessionHost, IWindowHost
                     return sb.ToString().TrimEnd() is { Length: > 0 } t ? t : "terminal";
                 }
             };
+            // Full text-pattern snapshot (ITextProvider): the flattened buffer document + caret +
+            // visible-line mapping, so Narrator can read/navigate by line/word/char and box the caret.
+            Uia.GetTextSnapshot = BuildUiaTextSnapshot;
         }
         // CLI args (first window only; consumed so extra windows don't re-apply them).
         string? argProfile = _argProfile, argDir = _argDir;

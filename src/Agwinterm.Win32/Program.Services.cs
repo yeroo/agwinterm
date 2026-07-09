@@ -46,7 +46,8 @@ internal partial class Program
             }
             text = sb.ToString();
         }
-        Uia.Announce(text);
+        Uia.RaiseTextChanged();   // let the reader's text model re-read (navigation)
+        Uia.Announce(text);       // and speak the new lines directly (reliable across readers)
     }
 
     // ---- Notifications (OSC 9 / OSC 777 / notify) ----
