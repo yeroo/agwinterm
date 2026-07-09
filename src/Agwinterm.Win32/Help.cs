@@ -20,6 +20,7 @@ internal partial class Program
     private float _helpScroll;
     private string[] _helpLines = Array.Empty<string>();
     private Rect _helpCard;
+    private float _helpCloseX0, _helpCloseY0, _helpCloseX1, _helpCloseY1;   // × button (matches Settings)
 
     private void OpenHelp()
     {
@@ -107,7 +108,12 @@ internal partial class Program
         brush.Color = ChromeText;
         rt.DrawText("Help", _uiFont, new Rect(cx + 20f, cy + 12f, 200f, 24f), brush);
         brush.Color = ChromeDim;
-        rt.DrawText("Esc to close · ↑↓ scroll", _uiSmall, new Rect(cx + cardW - 190f, cy + 15f, 180f, 20f), brush);
+        rt.DrawText("Esc to close · ↑↓ scroll", _uiSmall, new Rect(cx + cardW - 220f, cy + 15f, 170f, 20f), brush);
+        // Close (×) button, same treatment as the Settings card.
+        float cbSz = 26f, cbX = cx + cardW - cbSz - 12f, cbY = cy + 9f;
+        _helpCloseX0 = cbX; _helpCloseY0 = cbY; _helpCloseX1 = cbX + cbSz; _helpCloseY1 = cbY + cbSz;
+        brush.Color = ChromeDim;
+        rt.DrawText(GlyphClose, _iconSmall, new Rect(cbX, cbY, cbSz, cbSz), brush);
 
         float top = cy + 44f, bottom = cy + cardH - 14f;
         rt.PushAxisAlignedClip(new Rect(cx, top, cardW, bottom - top), AntialiasMode.Aliased);

@@ -273,7 +273,8 @@ internal partial class Program
                     if (_chromeFocus) ExitChromeFocus(announce: false);   // a click leaves the F6 sidebar zone
                     if (_helpOpen)
                     {
-                        if (mx < _helpCard.Left || mx > _helpCard.Right || my < _helpCard.Top || my > _helpCard.Bottom) CloseHelp();
+                        bool onClose = mx >= _helpCloseX0 && mx <= _helpCloseX1 && my >= _helpCloseY0 && my <= _helpCloseY1;
+                        if (onClose || mx < _helpCard.Left || mx > _helpCard.Right || my < _helpCard.Top || my > _helpCard.Bottom) CloseHelp();
                         return IntPtr.Zero;
                     }
                     if (_setOpen) { SettingsClick(mx, my); return IntPtr.Zero; }
