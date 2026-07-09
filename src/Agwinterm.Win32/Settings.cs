@@ -98,6 +98,18 @@ internal partial class Program
         Sec(0, "Shell");
         Tog(0, "shell-integration", "Shell integration (live cwd)");
         Tog(0, "omp-integration", "oh-my-posh integration");
+        Sec(0, "Default Terminal");
+        _setRows.Add(new SetRow
+        {
+            Kind = SW.Info, Tab = 0,
+            Label = DefTerm.IsRegisteredDefault()
+                ? "Console apps currently open in agwinterm."
+                : "Console apps currently open in the Windows default (conhost / Windows Terminal).",
+        });
+        if (DefTerm.IsRegisteredDefault())
+            Btn(0, "Restore Windows default", () => { ShowToast(DefTerm.RestoreWindowsDefault()); BuildSettingsRows(); RequestRedraw(); });
+        else
+            Btn(0, "Make agwinterm the default terminal", () => { ShowToast(DefTerm.RegisterAsDefault()); BuildSettingsRows(); RequestRedraw(); });
 
         // Appearance
         Sec(1, "Terminal");
@@ -389,7 +401,9 @@ internal partial class Program
         brush.Color = PalBorder;
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, y, w, h), RadiusX = 6f, RadiusY = 6f }, brush, 1f);
         brush.Color = ChromeText;
-        rt.DrawText(label, _uiSmall, new Rect(x, y, w, h), brush);
+        // Centered format: the leading-aligned _uiSmall put the label flush against the button's left
+        // edge (the width budget's padding all landed on the right).
+        rt.DrawText(label, _uiSmallCenter, new Rect(x, y, w, h), brush);
     }
 
     private string CurrentDropdownText(SetRow r)

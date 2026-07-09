@@ -51,6 +51,77 @@ internal static partial class DefTerm
     private static readonly string? LogPath = Environment.GetEnvironmentVariable("AGWINTERM_PTYLOG");
     internal static void Log(string m) { if (LogPath is not null) try { File.AppendAllText(LogPath, $"[defterm] {m}\n"); } catch { } }
 
+    // ---- Default-terminal registration (Settings UI; mirrors tools/defterm-register.ps1) ----
+
+    private const string ClsidOpenConsole = "{2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69}";  // DelegationConsole
+    private const string ClsidProxy = "{3171DE52-6EFA-4AEF-8A9F-D02BD67E7A4F}";        // OpenConsoleHandoffProxy
+    private const string ZeroGuid = "{00000000-0000-0000-0000-000000000000}";          // "Let Windows decide"
+    private static readonly string[] HandoffIids =                                     // interfaces the proxy marshals
+    {
+        "{E686C757-9A35-4A1C-B3CE-0BCC8B5C69F4}",
+        "{6F23DA90-15C5-4203-9DB0-64E73F1B1B00}",   // ITerminalHandoff3
+        "{746E6BC0-AB05-4E38-AB14-71E86763141F}",
+    };
+
+    /// <summary>Is agwinterm currently the OS default terminal (HKCU delegation points at our CLSID)?</summary>
+    internal static bool IsRegisteredDefault()
+    {
+        try
+        {
+            using var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Console\%%Startup");
+            return string.Equals(k?.GetValue("DelegationTerminal") as string, Clsid.ToString("B"), StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>Register agwinterm as the Windows default terminal (per-user, no admin): our exe as the
+    /// handoff COM server, OpenConsole as the delegation console, OpenConsoleProxy as the handle-marshalling
+    /// proxy/stub, then point HKCU\Console\%%Startup at them. Returns a status string for the UI.</summary>
+    internal static string RegisterAsDefault()
+    {
+        try
+        {
+            string dir = AppContext.BaseDirectory;
+            string agw = Path.Combine(dir, "Agwinterm.Win32.exe");
+            string oc = Path.Combine(dir, "OpenConsole.exe");
+            string proxy = Path.Combine(dir, "OpenConsoleProxy.dll");
+            if (!File.Exists(oc) || !File.Exists(proxy))
+                return "OpenConsole.exe / OpenConsoleProxy.dll not found next to agwinterm — run tools/defterm-fetch-openconsole.ps1";
+
+            using var classes = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Classes");
+            string us = Clsid.ToString("B").ToUpperInvariant();
+            using (var k = classes.CreateSubKey($@"CLSID\{us}")) k.SetValue(null, "agwinterm default-terminal handoff");
+            using (var k = classes.CreateSubKey($@"CLSID\{us}\LocalServer32")) k.SetValue(null, $"\"{agw}\"");
+            using (var k = classes.CreateSubKey($@"CLSID\{ClsidOpenConsole}")) k.SetValue(null, "OpenConsole");
+            using (var k = classes.CreateSubKey($@"CLSID\{ClsidOpenConsole}\LocalServer32")) k.SetValue(null, $"\"{oc}\"");
+            using (var k = classes.CreateSubKey($@"CLSID\{ClsidProxy}")) k.SetValue(null, "OpenConsoleHandoffProxy");
+            using (var k = classes.CreateSubKey($@"CLSID\{ClsidProxy}\InprocServer32"))
+            { k.SetValue(null, proxy); k.SetValue("ThreadingModel", "Both"); }
+            foreach (var iid in HandoffIids)
+                using (var k = classes.CreateSubKey($@"Interface\{iid}\ProxyStubClsid32")) k.SetValue(null, ClsidProxy);
+
+            using var startup = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Console\%%Startup");
+            startup.SetValue("DelegationConsole", ClsidOpenConsole);
+            startup.SetValue("DelegationTerminal", us);
+            return "agwinterm is now the default terminal";
+        }
+        catch (Exception ex) { return "register failed: " + ex.Message; }
+    }
+
+    /// <summary>Restore the Windows default ("Let Windows decide" = conhost). Mirrors
+    /// tools/defterm-restore-conhost.ps1 — the safety net.</summary>
+    internal static string RestoreWindowsDefault()
+    {
+        try
+        {
+            using var startup = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Console\%%Startup");
+            startup.SetValue("DelegationConsole", ZeroGuid);
+            startup.SetValue("DelegationTerminal", ZeroGuid);
+            return "default terminal restored to Windows (conhost)";
+        }
+        catch (Exception ex) { return "restore failed: " + ex.Message; }
+    }
+
     /// <summary>Duplicate a marshalled [in] system_handle into this process. COM in-param handles are
     /// only valid for the DURATION of the call (the stub closes them on return), so anything kept past
     /// EstablishPtyHandoff must be duplicated synchronously inside it.</summary>
