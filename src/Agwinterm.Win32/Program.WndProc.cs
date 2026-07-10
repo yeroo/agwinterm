@@ -499,6 +499,13 @@ internal partial class Program
                     return IntPtr.Zero;
                 }
 
+            case WM_SETTINGCHANGE:
+                // The system light/dark switch broadcasts this with lParam = "ImmersiveColorSet".
+                if (lParam != IntPtr.Zero &&
+                    System.Runtime.InteropServices.Marshal.PtrToStringUni(lParam) == "ImmersiveColorSet")
+                    ApplySystemTheme();
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
+
             case WM_ACTIVATE:
                 _windowActive = LoWord(wParam) != 0;   // WA_ACTIVE/WA_CLICKACTIVE vs WA_INACTIVE (drives unfocused dim)
                 if (_config.UnfocusedDim > 0) RequestRedraw();
