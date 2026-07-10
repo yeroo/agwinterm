@@ -125,6 +125,9 @@ internal partial class Program
         Drop(1, "font-family", "Font", fonts);
         Sld(1, "font-size", "Font size", 8, 32);
         Drop(1, "theme", "Theme", _allThemes.Select(t => t.Name).ToArray());
+        Tog(1, "theme-follow-system", "Follow Windows light/dark");
+        Drop(1, "theme-dark", "Dark theme", _allThemes.Select(t => t.Name).ToArray());
+        Drop(1, "theme-light", "Light theme", _allThemes.Select(t => t.Name).ToArray());
         Drop(1, "cursor-style", "Cursor style", new[] { "bar", "block", "underline" });
         Tog(1, "cursor-blink", "Blink cursor");
         Sec(1, "Window");

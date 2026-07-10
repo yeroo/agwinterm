@@ -467,6 +467,29 @@ internal partial class Program
 
     private void ApplyTheme(Theme t) { _theme = t; RecomputeChrome(); RequestRedraw(); }
 
+    /// <summary>Resolve the effective theme when "follow Windows light/dark" is on: pick theme-light or
+    /// theme-dark per the current OS setting; when off, fall back to the single manual <c>theme</c>.
+    /// Called at startup, on WM_SETTINGCHANGE (ImmersiveColorSet), and when any theme key changes.</summary>
+    private void ApplySystemTheme()
+    {
+        if (!_config.ThemeFollowSystem) { ApplyTheme(FindTheme(_config.Theme)); return; }
+        string want = WindowsPrefersLightTheme() ? _config.ThemeLight : _config.ThemeDark;
+        if (!string.IsNullOrWhiteSpace(want)) ApplyTheme(FindTheme(want));  // unset side → leave current
+    }
+
+    /// <summary>True when Windows apps are set to light mode (HKCU …Personalize\AppsUseLightTheme=1).
+    /// Missing value or any error → treated as dark, the Windows default.</summary>
+    private static bool WindowsPrefersLightTheme()
+    {
+        try
+        {
+            using var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return k?.GetValue("AppsUseLightTheme") is int v && v != 0;
+        }
+        catch { return false; }
+    }
+
     /// <summary>Apply the window-opacity config via a layered window (LWA_ALPHA). 100% removes the layered style.</summary>
     private void ApplyWindowOpacity()
     {
@@ -742,6 +765,7 @@ internal partial class Program
     private static readonly string[] ConfigKeys =
     {
         "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
+        "theme-follow-system", "theme-dark", "theme-light",
         "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "ligatures", "window-opacity", "sidebar-tint", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "word-delimiters", "desktop-notifications", "shell-integration",
         "restore-commands", "restore-buffer", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
@@ -776,6 +800,9 @@ internal partial class Program
         "cursor-blink" => _config.CursorBlink ? "true" : "false",
         "cursor-blink-ms" => _config.CursorBlinkMs.ToString(),
         "theme" => _config.Theme,
+        "theme-follow-system" => _config.ThemeFollowSystem ? "true" : "false",
+        "theme-dark" => _config.ThemeDark,
+        "theme-light" => _config.ThemeLight,
         "scrollback-lines" => _config.Scrollback.ToString(),
         "inactive-pane-dim" => _config.InactivePaneDim.ToString(),
         "unfocused-dim" => _config.UnfocusedDim.ToString(),
@@ -817,6 +844,7 @@ internal partial class Program
         WriteConfigKey(key, value.Trim());
         _config = TerminalConfig.Load(ConfigPath);       // reparse so clamping/validation is centralized
         if (key == "theme") _theme = FindTheme(_config.Theme);
+        if (key is "theme" or "theme-follow-system" or "theme-dark" or "theme-light") ApplySystemTheme();
         if (key == "cursor-blink-ms" && _hwnd != IntPtr.Zero) SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
         RecomputeChrome();
         ApplyWindowOpacity();

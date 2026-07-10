@@ -480,6 +480,8 @@ internal partial class Program : ISessionHost, IWindowHost
         CreateRenderTarget();
         StartSession();
 
+        ApplySystemTheme();   // if "follow Windows light/dark" is on, pick light/dark before the first paint
+
         // Apply the custom frame (WM_NCCALCSIZE strips the OS title bar) before showing.
         SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 

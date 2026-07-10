@@ -30,6 +30,7 @@ internal static class Win32
     public const uint WM_MOUSEWHEEL = 0x020A;
     public const uint WM_ACTIVATE = 0x0006;   // sent on window activation/deactivation (frontmost tracking)
     public const uint WM_SETFOCUS = 0x0007, WM_KILLFOCUS = 0x0008;   // keyboard-focus in/out (system caret lifetime)
+    public const uint WM_SETTINGCHANGE = 0x001A;   // system setting changed; lParam "ImmersiveColorSet" = light/dark toggle
     public const uint WM_APP_REDRAW = 0x8000; // WM_APP: cross-thread "please repaint"
     public const uint WM_APP_ACTION = 0x8001; // WM_APP+1: drain queued UI-thread actions (pipe callbacks)
     public const uint WM_APP_SYNC = 0x8002;   // WM_APP+2: run a queued func on the UI thread and return its result

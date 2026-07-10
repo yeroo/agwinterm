@@ -21,6 +21,14 @@ public sealed class TerminalConfig
     public int CursorBlinkMs { get; set; } = 530;
     public string Theme { get; set; } = "default";
 
+    /// <summary>Follow the Windows light/dark app setting, swapping between <see cref="ThemeLight"/> and
+    /// <see cref="ThemeDark"/> as it changes. Off = the single <see cref="Theme"/> is used.</summary>
+    public bool ThemeFollowSystem { get; set; }
+    /// <summary>Theme applied when Windows is in dark mode (used only when <see cref="ThemeFollowSystem"/>).</summary>
+    public string ThemeDark { get; set; } = "";
+    /// <summary>Theme applied when Windows is in light mode (used only when <see cref="ThemeFollowSystem"/>).</summary>
+    public string ThemeLight { get; set; } = "";
+
     /// <summary>Rows of scrollback history kept per pane (0 disables). Scroll up with the wheel / Shift+PgUp.</summary>
     public int Scrollback { get; set; } = 5000;
 
@@ -145,6 +153,12 @@ public sealed class TerminalConfig
         # Color theme (pick live from the action palette; Ctrl+Shift+P -> Select Theme)
         theme = default
 
+        # Follow the Windows light/dark app setting, swapping between theme-dark and theme-light
+        # as it changes (Settings -> Appearance). false = use the single `theme` above.
+        theme-follow-system = false
+        theme-dark =
+        theme-light =
+
         # Scrollback: rows of history to keep per pane (0 disables). Scroll with the wheel or Shift+PgUp/PgDn.
         scrollback-lines = 5000
 
@@ -260,6 +274,9 @@ public sealed class TerminalConfig
                 case "cursor-blink": cfg.CursorBlink = ParseBool(val, cfg.CursorBlink); break;
                 case "cursor-blink-ms": if (int.TryParse(val, out var ms) && ms > 0) cfg.CursorBlinkMs = ms; break;
                 case "theme": if (val.Length > 0) cfg.Theme = val; break;
+                case "theme-follow-system": cfg.ThemeFollowSystem = ParseBool(val, cfg.ThemeFollowSystem); break;
+                case "theme-dark": cfg.ThemeDark = val; break;
+                case "theme-light": cfg.ThemeLight = val; break;
                 case "shell-integration": cfg.ShellIntegration = ParseBool(val, cfg.ShellIntegration); break;
                 case "restore-commands": cfg.RestoreCommands = ParseBool(val, cfg.RestoreCommands); break;
                 case "restore-buffer": cfg.RestoreBuffer = ParseBool(val, cfg.RestoreBuffer); break;
