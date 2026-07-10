@@ -52,3 +52,26 @@ jobs:
             installer/Output/agwinterm-portable-*.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  # Opens the version-bump PR to microsoft/winget-pkgs for each release. Runs as a job here
+  # (not a `release:` workflow) because releases published with GITHUB_TOKEN don't trigger
+  # other workflows. Needs the WINGET_TOKEN secret — a classic PAT with the public_repo
+  # scope (used to fork winget-pkgs and open the PR); skips with a warning if unset.
+  # The scoop bucket needs no equivalent: its Excavator updates itself on a schedule.
+  winget:
+    needs: installer
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Submit manifest to winget-pkgs
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:WINGET_TOKEN) { Write-Warning 'WINGET_TOKEN secret not set - skipping winget publish'; exit 0 }
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$version/agwinterm-setup-$version.exe"
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          .\wingetcreate.exe update yeroo.agwinterm --version $version --urls $url --submit --token $env:WINGET_TOKEN
