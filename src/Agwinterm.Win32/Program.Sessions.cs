@@ -685,11 +685,14 @@ internal partial class Program
         SaveState();
     }
 
-    /// <summary>A recently-closed session's restorable identity (IDE "reopen closed" / browser Ctrl+Shift+T).</summary>
+    /// <summary>A recently-closed session's restorable identity (IDE "reopen closed" / browser Ctrl+Shift+T).
+    /// SessionId is the original id, reused on reopen so control-API/agent references stay stable.</summary>
     private sealed record ClosedSession(string? CustomName, string? ProfileName, string Cwd,
-        string WorkspaceId, string WorkspaceName, bool Flagged, string Display, string Name, long Seq = 0);
-    /// <summary>A recently-closed workspace (its name + all its sessions), so it can be reopened whole.</summary>
-    private sealed record ClosedWorkspace(string Name, IReadOnlyList<ClosedSession> Sessions, long Seq);
+        string WorkspaceId, string WorkspaceName, bool Flagged, string Display, string Name,
+        string SessionId = "", long Seq = 0);
+    /// <summary>A recently-closed workspace (its name + all its sessions), so it can be reopened whole.
+    /// WorkspaceId is the original id, reused on reopen to keep it stable across close→reopen.</summary>
+    private sealed record ClosedWorkspace(string Name, IReadOnlyList<ClosedSession> Sessions, long Seq, string WorkspaceId = "");
     private readonly List<ClosedSession> _closedSessions = new();
     private readonly List<ClosedWorkspace> _closedWorkspaces = new();
     private const int MaxClosedSessions = 25;
@@ -704,7 +707,7 @@ internal partial class Program
         string display = !string.IsNullOrEmpty(ses.CustomName) ? ses.CustomName!
             : (!string.IsNullOrEmpty(cwd) ? Path.GetFileName(cwd.TrimEnd('\\', '/')) : ses.Name);
         if (string.IsNullOrEmpty(display)) display = ses.Name;
-        return new ClosedSession(ses.CustomName, ses.ProfileName, cwd, ses.Ws.Id, ses.Ws.Name, ses.Flagged, display, ses.Name, ++_closeSeq);
+        return new ClosedSession(ses.CustomName, ses.ProfileName, cwd, ses.Ws.Id, ses.Ws.Name, ses.Flagged, display, ses.Name, ses.Id, ++_closeSeq);
     }
 
     /// <summary>Remember a session's identity so it can be reopened after it's closed.</summary>
@@ -721,11 +724,22 @@ internal partial class Program
         {
             if (sessions.Count == 0) return;
             var items = sessions.Select(CaptureClosedSessionData).ToList();
-            _closedWorkspaces.Add(new ClosedWorkspace(ws.Name, items, ++_closeSeq));
+            _closedWorkspaces.Add(new ClosedWorkspace(ws.Name, items, ++_closeSeq, ws.Id));
             if (_closedWorkspaces.Count > MaxClosedSessions) _closedWorkspaces.RemoveAt(0);
         }
         catch { }
     }
+
+    /// <summary>True if any live workspace currently uses this id.</summary>
+    private bool WorkspaceIdInUse(string id) { lock (_workspaces) return _workspaces.Any(w => w.Id == id); }
+    /// <summary>True if any live session (in any workspace) currently uses this id.</summary>
+    private bool SessionIdInUse(string id) { lock (_workspaces) return _workspaces.Any(w => w.Sessions.Any(s => s.Id == id)); }
+    /// <summary>Reuse the preferred id when it's non-empty and free — so ids stay stable across close→reopen
+    /// and restore (agent / control-API references survive); otherwise mint a fresh id to fold the collision.</summary>
+    private string StableWorkspaceId(string? preferred)
+        => !string.IsNullOrEmpty(preferred) && !WorkspaceIdInUse(preferred!) ? preferred! : Guid.NewGuid().ToString();
+    private string StableSessionId(string? preferred)
+        => !string.IsNullOrEmpty(preferred) && !SessionIdInUse(preferred!) ? preferred! : Guid.NewGuid().ToString();
 
     /// <summary>Reopen the most recently closed item — a session or a whole workspace, whichever was closed last.</summary>
     private void ReopenMostRecent()
@@ -752,7 +766,7 @@ internal partial class Program
                  ?? _workspaces.FirstOrDefault(w => string.Equals(w.Name, c.WorkspaceName, StringComparison.OrdinalIgnoreCase))
                  ?? ActiveWorkspace();
         string? cwd = !string.IsNullOrEmpty(c.Cwd) && Directory.Exists(c.Cwd) ? c.Cwd : null;
-        var ses = CreateSession(Guid.NewGuid().ToString(), null, cwd, ws, makeActive: true, profileName: c.ProfileName);
+        var ses = CreateSession(StableSessionId(c.SessionId), null, cwd, ws, makeActive: true, profileName: c.ProfileName);
         if (!string.IsNullOrEmpty(c.CustomName)) { ses.CustomName = c.CustomName; ses.Name = c.CustomName!; } // mirror rename
         else if (!string.IsNullOrEmpty(c.Name)) ses.Name = c.Name;   // restore the original label
         if (c.Flagged) ses.Flagged = true;
@@ -764,12 +778,12 @@ internal partial class Program
     private void ReopenClosedWorkspace(ClosedWorkspace c)
     {
         _closedWorkspaces.Remove(c);
-        var ws = CreateWorkspace(Guid.NewGuid().ToString(), c.Name);
+        var ws = CreateWorkspace(StableWorkspaceId(c.WorkspaceId), c.Name);
         Ses? first = null;
         foreach (var cs in c.Sessions)
         {
             string? cwd = !string.IsNullOrEmpty(cs.Cwd) && Directory.Exists(cs.Cwd) ? cs.Cwd : null;
-            var ses = CreateSession(Guid.NewGuid().ToString(), null, cwd, ws, makeActive: false, profileName: cs.ProfileName);
+            var ses = CreateSession(StableSessionId(cs.SessionId), null, cwd, ws, makeActive: false, profileName: cs.ProfileName);
             if (!string.IsNullOrEmpty(cs.CustomName)) { ses.CustomName = cs.CustomName; ses.Name = cs.CustomName!; }
             else if (!string.IsNullOrEmpty(cs.Name)) ses.Name = cs.Name;
             if (cs.Flagged) ses.Flagged = true;

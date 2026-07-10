@@ -413,6 +413,21 @@ internal partial class Program : ISessionHost, IWindowHost
         }
     }
 
+    /// <summary>Clamp a restored window frame onto the nearest visible monitor work area, so a frame
+    /// saved on a display that's since been unplugged or rearranged can't restore off-screen.</summary>
+    private static void ClampGeoToVisibleScreen(ref int x, ref int y, ref int w, ref int h)
+    {
+        var rc = new RECT { left = x, top = y, right = x + w, bottom = y + h };
+        IntPtr mon = MonitorFromRect(ref rc, MONITOR_DEFAULTTONEAREST);
+        var mi = new MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+        if (mon == IntPtr.Zero || !GetMonitorInfoW(mon, ref mi)) return;
+        var wa = mi.rcWork;
+        w = Math.Min(w, wa.right - wa.left);
+        h = Math.Min(h, wa.bottom - wa.top);
+        x = Math.Clamp(x, wa.left, wa.right - w);
+        y = Math.Clamp(y, wa.top, wa.bottom - h);
+    }
+
     /// <summary>Per-window bootstrap: create the HWND, its render target, and the initial session.</summary>
     private void Boot(IntPtr hInstance)
     {
@@ -422,6 +437,9 @@ internal partial class Program : ISessionHost, IWindowHost
         // Window size/position comes from the WindowLibrary entry (set by CreateWindowInstance);
         // _geoValid/_geo* are already populated for a restored/positioned window.
         // Created hidden (no WS_VISIBLE) so we can position it before the first paint; shown at the end.
+        // A restored frame can land off every monitor (a display was unplugged / rearranged since save),
+        // leaving the window invisible and unreachable — clamp it onto the nearest visible work area first.
+        if (_geoValid) ClampGeoToVisibleScreen(ref _geoX, ref _geoY, ref _geoW, ref _geoH);
         _creating = this;                    // so the WindowProc trampoline can resolve us during CreateWindowExW
         _hwnd = _geoValid
             ? CreateWindowExW(0, ClassName, "agwinterm", WS_OVERLAPPEDWINDOW,
