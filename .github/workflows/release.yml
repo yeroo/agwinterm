@@ -75,3 +75,38 @@ jobs:
           $url = "https://github.com/${{ github.repository }}/releases/download/v$version/agwinterm-setup-$version.exe"
           Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
           .\wingetcreate.exe update yeroo.agwinterm --version $version --urls $url --submit --token $env:WINGET_TOKEN
+
+  # Packs and pushes the Chocolatey package to the community feed on each release. Every version
+  # then goes through Chocolatey's moderation queue (automated validation + VM install test +
+  # human review). Needs the CHOCO_API_KEY secret (from your community.chocolatey.org account);
+  # skips with a warning if unset. Rewrites version + download URL + checksum in-place from the
+  # release asset so the committed template can stay pinned at the last released version.
+  chocolatey:
+    needs: installer
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack and push to Chocolatey
+        shell: pwsh
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+        run: |
+          if (-not $env:CHOCO_API_KEY) { Write-Warning 'CHOCO_API_KEY secret not set - skipping chocolatey publish'; exit 0 }
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          $asset = "agwinterm-portable-$version-win-x64.exe"
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$version/$asset"
+          Invoke-WebRequest $url -OutFile $asset
+          $sha = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          Push-Location packaging/chocolatey
+          (Get-Content agwinterm.nuspec -Raw) -replace '(?<=<version>)[^<]+(?=</version>)', $version | Set-Content agwinterm.nuspec
+          $ps = 'tools/chocolateyinstall.ps1'
+          $c = Get-Content $ps -Raw
+          $c = $c -replace 'download/v[^/]+/agwinterm-portable-[^'']+\.exe', "download/v$version/$asset"
+          $c = $c -replace "checksum64\s+= '[0-9a-fA-F]+'", "checksum64     = '$sha'"
+          Set-Content $ps $c
+          choco pack --outputdirectory $env:RUNNER_TEMP
+          choco push "$env:RUNNER_TEMP/agwinterm.$version.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
+          Pop-Location
