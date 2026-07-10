@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>agwinterm</id>
+    <version>0.10.0</version>
+    <packageSourceUrl>https://github.com/yeroo/agwinterm/tree/main/packaging/chocolatey</packageSourceUrl>
+    <owners>yeroo</owners>
+    <title>agwinterm</title>
+    <authors>Boris Kudriashov</authors>
+    <projectUrl>https://github.com/yeroo/agwinterm</projectUrl>
+    <iconUrl>https://cdn.jsdelivr.net/gh/yeroo/agwinterm@v0.10.0/docs/agwinterm-icon.png</iconUrl>
+    <copyright>Copyright (c) 2026 Boris Kudriashov</copyright>
+    <licenseUrl>https://github.com/yeroo/agwinterm/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/yeroo/agwinterm</projectSourceUrl>
+    <docsUrl>https://github.com/yeroo/agwinterm#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/yeroo/agwinterm/issues</bugTrackerUrl>
+    <tags>agwinterm terminal ai agent console conpty accessibility direct2d win32 portable</tags>
+    <summary>A native Windows terminal built for AI coding agents</summary>
+    <description>
+agwinterm is a fast, custom-drawn Win32 + Direct2D terminal that treats AI coding agents as
+first-class citizens.
+
+- **Agent-first**: workspaces and sessions with per-session agent status (idle / active / blocked /
+  completed), a scriptable control API (`agwintermctl` or newline-JSON over a named pipe with full
+  read-back), splits, quick &amp; scratch terminals, and multi-window support.
+- **A real Windows terminal**: ConPTY, Default Terminal Application integration, Sixel &amp; Kitty
+  graphics, win32-input-mode + Kitty keyboard protocol, ligatures, prompt marks (OSC 133).
+- **Accessible**: the terminal is a UI Automation text document — screen readers read it line by
+  line, new output is announced, and the whole UI is keyboard-navigable.
+- **Themeable**: ~580 bundled color schemes (the ghostty / iTerm2 set), live font changes,
+  whole-window theming.
+
+A Windows homage to [umputun's agterm](https://github.com/umputun/agterm).
+
+This package downloads the portable single-file build from the official GitHub release. The binary
+is unsigned but carries a Sigstore build-provenance attestation
+(`gh attestation verify &lt;file&gt; --repo yeroo/agwinterm`).
+    </description>
+    <releaseNotes>https://github.com/yeroo/agwinterm/releases/tag/v0.10.0</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

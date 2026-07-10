@@ -1,0 +1,25 @@
+VERIFICATION
+
+Verification is intended to assist the Chocolatey moderators and users in verifying that this
+package's contents are authentic.
+
+This package is published by the software vendor (yeroo / Boris Kudriashov, author of agwinterm).
+It does not embed the binary; at install time it downloads the official portable release asset
+directly from the project's GitHub Releases:
+
+  https://github.com/yeroo/agwinterm/releases/download/v0.10.0/agwinterm-portable-0.10.0-win-x64.exe
+
+The download is checksum-pinned in tools\chocolateyinstall.ps1:
+
+  SHA256: 2c6f5791b54461eb48f9fa171b6c5b5bfd01fecee529d630ca12f0e6613fd1d2
+
+To verify independently, download the asset from the URL above and compare:
+
+  Get-FileHash .\agwinterm-portable-0.10.0-win-x64.exe -Algorithm SHA256
+
+The release artifact also carries a Sigstore build-provenance attestation, verifiable with the
+GitHub CLI:
+
+  gh attestation verify .\agwinterm-portable-0.10.0-win-x64.exe --repo yeroo/agwinterm
+
+The bundled color-theme files retain their upstream (iTerm2-Color-Schemes, MIT) licensing.
