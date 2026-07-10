@@ -62,6 +62,9 @@ jobs:
     needs: installer
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
+    # Best-effort: a brand-new package can't be updated until its first version clears winget-pkgs
+    # moderation, so this can legitimately fail early on — don't fail the whole release for it.
+    continue-on-error: true
     permissions:
       contents: read
     steps:
@@ -85,6 +88,9 @@ jobs:
     needs: installer
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
+    # Best-effort: Chocolatey rejects new versions of a package whose first version is still in
+    # moderation (403), so this can legitimately fail early on — don't fail the whole release for it.
+    continue-on-error: true
     permissions:
       contents: read
     steps:
