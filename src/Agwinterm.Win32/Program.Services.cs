@@ -1305,7 +1305,8 @@ internal partial class Program
             foreach (var w in st.Workspaces)
             {
                 // Recreate every saved workspace, including empty ones (agterm keeps empty workspaces).
-                var ws = CreateWorkspace(string.IsNullOrEmpty(w.Id) ? Guid.NewGuid().ToString() : w.Id, w.Name);
+                // StableWorkspaceId folds any duplicate id already restored this pass onto a fresh one.
+                var ws = CreateWorkspace(StableWorkspaceId(w.Id), w.Name);
                 foreach (var s in w.Sessions ?? new List<SessionState>())
                 {
                     // Back-compat: a pre-splits session has no Panes — synthesize one from its Cwd/FontSize.
@@ -1314,7 +1315,7 @@ internal partial class Program
                         : new List<PaneState> { new() { Id = s.Id, Cwd = s.Cwd, FontSize = s.FontSize, Ratio = 1f } };
                     var first = pl[0];
                     var ses = CreateSession(
-                        string.IsNullOrEmpty(s.Id) ? Guid.NewGuid().ToString() : s.Id,
+                        StableSessionId(s.Id),
                         string.IsNullOrWhiteSpace(s.Name) ? null : s.Name,
                         string.IsNullOrWhiteSpace(first.Cwd) ? null : first.Cwd,
                         ws, makeActive: s.Id == st.ActiveId,
