@@ -38,7 +38,10 @@ internal partial class Program
     private int _setTab;
     private float _setScroll;
     private readonly List<SetRow> _setRows = new();
-    private SetRow? _setFocus;   // keyboard-focused row (Tab / arrows), drawn with a focus ring
+    private SetRow? _setFocus;   // keyboard-focused row (Tab / arrows), drawn with a focus rectangle
+    private int _setNav = -1;    // >=0: keyboard focus is on tab-header[_setNav] instead of a row
+    private bool _setFocusKb;    // draw the focus rectangle only when focus was last moved by keyboard
+    private ID2D1StrokeStyle? _focusStroke;   // cached dotted stroke for the classic keyboard-focus rect
 
     private static bool Interactive(SW k) =>
         k is SW.Toggle or SW.Slider or SW.Dropdown or SW.Color or SW.Sound or SW.Path or SW.Button or SW.Profile;
@@ -68,6 +71,7 @@ internal partial class Program
         BuildSettingsRows();
         _setOpen = true; _setTab = 0; _setScroll = 0; _ddRow = null; _setDragRow = null;
         _setFocus = FocusableRows().FirstOrDefault();
+        _setNav = -1; _setFocusKb = false;   // no focus rectangle until the keyboard is used
         Uia.Announce("Settings, General tab. Tab to move, Space to change, Escape to close.");
         RequestRedraw();
     }
@@ -247,6 +251,11 @@ internal partial class Program
             }
             brush.Color = i == _setTab ? SbActiveText : ChromeDim;
             rt.DrawText(SetTabNames[i], _uiFont, new Rect(cardX + 20f, ry, SetNavW - 28f, 32f), brush);
+            if (_setFocusKb && _setNav == i)   // keyboard focus on this tab header
+            {
+                brush.Color = ChromeText;
+                rt.DrawRectangle(new Rect(cardX + 8f, ry, SetNavW - 16f, 32f), brush, 1.5f, FocusStroke(rt));
+            }
         }
 
         // Right pane (clipped + scrolled)
@@ -265,14 +274,12 @@ internal partial class Program
             bool onscreen = y + rowH > _setPaneTop && y < _setPaneBottom;
             if (onscreen)
             {
-                if (ReferenceEquals(r, _setFocus))   // keyboard focus ring (drawn behind the widget)
-                {
-                    brush.Color = Mix(PalBg, ChromeAccent, 0.16f);
-                    rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(paneX + 4f, y - 2f, paneW - 8f, rowH + 4f), RadiusX = 6f, RadiusY = 6f }, brush);
-                    brush.Color = ChromeAccent;
-                    rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(paneX + 4f, y - 2f, paneW - 8f, rowH + 4f), RadiusX = 6f, RadiusY = 6f }, brush, 1.5f);
-                }
                 DrawRow(rt, brush, r, lblX, rightX, y, rowH, paneW);
+                if (_setFocusKb && _setNav < 0 && ReferenceEquals(r, _setFocus))   // keyboard-only focus rect
+                {
+                    brush.Color = ChromeText;
+                    rt.DrawRectangle(new Rect(paneX + 4f, y - 2f, paneW - 8f, rowH + 4f), brush, 1.5f, FocusStroke(rt));
+                }
             }
             y += rowH + (r.Kind == SW.Section ? 2f : 4f);
         }
@@ -281,6 +288,15 @@ internal partial class Program
 
         if (_ddRow is not null) DrawDropdown(rt, brush);
     }
+
+    /// <summary>Cached dotted stroke for the classic-Windows keyboard-focus rectangle (created lazily
+    /// from the render target's factory).</summary>
+    private ID2D1StrokeStyle FocusStroke(ID2D1HwndRenderTarget rt)
+        => _focusStroke ??= rt.Factory.CreateStrokeStyle(new StrokeStyleProperties
+        {
+            DashStyle = DashStyle.Dot,
+            DashCap = CapStyle.Round,   // round caps so the zero-length "dots" actually render (flat caps → invisible)
+        });
 
     private void DrawRow(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, SetRow r, float lblX, float rightX, float y, float rowH, float paneW)
     {
@@ -554,7 +570,7 @@ internal partial class Program
         // nav
         if (mx >= _setCard.Left + 8f && mx <= _setCard.Left + SetNavW - 8f)
             for (int i = 0; i < SetTabNames.Length; i++)
-                if (my >= _navHit[i * 2] && my < _navHit[i * 2 + 1]) { _setTab = i; _setScroll = 0; _setFocus = FocusableRows().FirstOrDefault(); Uia.Announce(SetTabNames[i] + " tab"); RequestRedraw(); return; }
+                if (my >= _navHit[i * 2] && my < _navHit[i * 2 + 1]) { _setTab = i; _setScroll = 0; _setFocus = FocusableRows().FirstOrDefault(); _setNav = -1; _setFocusKb = false; Uia.Announce(SetTabNames[i] + " tab"); RequestRedraw(); return; }
         // outside the card → dismiss
         if (mx < _setCard.Left || mx > _setCard.Right || my < _setCard.Top || my > _setCard.Bottom) { CloseSettings(); return; }
         // widgets (only within the visible pane)
@@ -565,7 +581,7 @@ internal partial class Program
             if (r.Kind == SW.Path && Hit(r.Bx0, r.By0, r.Bx1, r.By1, mx, my))
             { var d = PickFolder(); if (d is not null) { ConfigSetInternal("new-session-dir", d); ConfigSetInternal("new-session-dir-mode", "custom"); } return; }
             if (!r.Vis || !Hit(r.Hx0, r.Hy0, r.Hx1, r.Hy1, mx, my)) continue;
-            _setFocus = r;   // clicking a control also focuses it (keyboard + mouse stay in sync)
+            _setFocus = r; _setNav = -1; _setFocusKb = false;   // mouse focus: sync selection but hide the focus rect
             switch (r.Kind)
             {
                 case SW.Toggle:
@@ -642,17 +658,28 @@ internal partial class Program
             case VK_ESCAPE: CloseSettings(); return true;
             case VK_TAB:
                 if (ctrl) CycleSetTab(shift ? -1 : 1);
-                else MoveSetFocus(rows, idx, shift ? -1 : 1);
+                else MoveSetFocusLinear(shift ? -1 : 1);   // Tab order: tab headers, then this tab's rows
                 return true;
-            case VK_DOWN: MoveSetFocus(rows, idx, 1); return true;
-            case VK_UP: MoveSetFocus(rows, idx, -1); return true;
-            case VK_HOME: if (rows.Count > 0) { _setFocus = rows[0]; AfterSetFocus(); } return true;
-            case VK_END: if (rows.Count > 0) { _setFocus = rows[^1]; AfterSetFocus(); } return true;
+            case VK_DOWN: if (_setNav >= 0) MoveHeader(1); else MoveSetFocus(rows, idx, 1); return true;
+            case VK_UP: if (_setNav >= 0) MoveHeader(-1); else MoveSetFocus(rows, idx, -1); return true;
+            case VK_HOME:
+                _setFocusKb = true;
+                if (_setNav >= 0) { _setNav = 0; AfterHeaderFocus(); }
+                else if (rows.Count > 0) { _setFocus = rows[0]; AfterSetFocus(); }
+                return true;
+            case VK_END:
+                _setFocusKb = true;
+                if (_setNav >= 0) { _setNav = SetTabNames.Length - 1; AfterHeaderFocus(); }
+                else if (rows.Count > 0) { _setFocus = rows[^1]; AfterSetFocus(); }
+                return true;
             case VK_PRIOR: CycleSetTab(-1); return true;   // PageUp → previous tab
             case VK_NEXT: CycleSetTab(1); return true;     // PageDown → next tab
-            case VK_RETURN: case VK_SPACE: ActivateSetFocus(); return true;
-            case VK_LEFT: AdjustSetFocus(-1); return true;
-            case VK_RIGHT: AdjustSetFocus(1); return true;
+            case VK_RETURN: case VK_SPACE:
+                if (_setNav >= 0) ActivateHeader();        // Enter on a focused tab header switches to it
+                else ActivateSetFocus();
+                return true;
+            case VK_LEFT: if (_setNav < 0) AdjustSetFocus(-1); return true;
+            case VK_RIGHT: if (_setNav < 0) AdjustSetFocus(1); return true;
         }
         return true; // panel is modal-ish: swallow other keys so they don't reach the terminal
     }
@@ -660,13 +687,56 @@ internal partial class Program
     private void MoveSetFocus(List<SetRow> rows, int idx, int dir)
     {
         if (rows.Count == 0) return;
+        _setFocusKb = true;
         int ni = idx < 0 ? (dir > 0 ? 0 : rows.Count - 1) : (idx + dir + rows.Count) % rows.Count;
         _setFocus = rows[ni];
         AfterSetFocus();
     }
 
+    /// <summary>Linear Tab order: the tab headers first, then the current tab's rows, wrapping around —
+    /// so Tab / Shift+Tab reach the headers (press Enter there to switch tabs) as well as the controls.</summary>
+    private void MoveSetFocusLinear(int dir)
+    {
+        _setFocusKb = true;
+        var rows = FocusableRows();
+        int H = SetTabNames.Length, total = H + rows.Count;
+        if (total == 0) return;
+        int ri = _setFocus is not null ? rows.IndexOf(_setFocus) : -1;
+        int pos = _setNav >= 0 ? _setNav : (ri >= 0 ? H + ri : 0);
+        int np = ((pos + dir) % total + total) % total;
+        if (np < H) { _setNav = np; AfterHeaderFocus(); }
+        else { _setNav = -1; _setFocus = rows[np - H]; AfterSetFocus(); }
+    }
+
+    /// <summary>Move keyboard focus between tab headers (Up/Down while a header is focused).</summary>
+    private void MoveHeader(int dir)
+    {
+        _setFocusKb = true;
+        _setNav = (_setNav + dir + SetTabNames.Length) % SetTabNames.Length;
+        AfterHeaderFocus();
+    }
+
+    private void AfterHeaderFocus()
+    {
+        Uia.Announce($"{SetTabNames[_setNav]} tab{(_setNav == _setTab ? ", selected" : "")}, press Enter to open");
+        RequestRedraw();
+    }
+
+    /// <summary>Enter/Space on a focused tab header switches to that tab (focus stays on the header).</summary>
+    private void ActivateHeader()
+    {
+        if (_setNav < 0) return;
+        _setTab = _setNav;
+        _setScroll = 0;
+        _setFocus = FocusableRows().FirstOrDefault();
+        Uia.Announce($"{SetTabNames[_setTab]} tab, selected");
+        RequestRedraw();
+    }
+
     private void CycleSetTab(int dir)
     {
+        _setFocusKb = true;
+        _setNav = -1;
         _setTab = (_setTab + dir + SetTabNames.Length) % SetTabNames.Length;
         _setScroll = 0;
         _setFocus = FocusableRows().FirstOrDefault();
