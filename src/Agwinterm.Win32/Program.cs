@@ -230,6 +230,8 @@ internal partial class Program : ISessionHost, IWindowHost
     // Chrome fonts (native Segoe UI for text, icon font for glyphs).
     private static IDWriteTextFormat _uiFont = null!;
     private static IDWriteTextFormat _uiSmall = null!;
+    private static IDWriteTextFormat _sidebarFont = null!;     // sidebar names (size = config sidebar-font-size)
+    private static IDWriteTextFormat _sidebarSmall = null!;    // sidebar counts/badges (sidebar-font-size − 1.5)
     private static IDWriteTextFormat _uiSmallCenter = null!;   // horizontally centered (panel buttons)
     private static IDWriteTextFormat _uiTitle = null!;      // single centered title-bar line (vertically centered + ellipsized)
     private static IDWriteInlineObject _ellipsis = null!;   // "…" trimming sign for the title (kept alive)
@@ -378,6 +380,7 @@ internal partial class Program : ISessionHost, IWindowHost
         _format = CreateTextFormat(_config);
         _uiFont = NewChromeFormat("Segoe UI", 13f, center: false);
         _uiSmall = NewChromeFormat("Segoe UI", 11.5f, center: false);
+        RebuildSidebarFonts();
         _uiSmallCenter = NewChromeFormat("Segoe UI", 11.5f, center: true);
         _uiTitle = NewChromeFormat("Segoe UI", 13f, center: true); // vertically centered single line
         _ellipsis = _dwrite.CreateEllipsisTrimmingSign(_uiTitle);
@@ -538,6 +541,16 @@ internal partial class Program : ISessionHost, IWindowHost
         using var layout = _dwrite.CreateTextLayout(text, fmt, w, h);
         layout.SetTypography(NoLigTypography(), new TextRange(0, (uint)text.Length));
         rt.DrawTextLayout(new System.Numerics.Vector2(rx, y), layout, brush);
+    }
+
+    /// <summary>(Re)create the sidebar name/badge fonts from the configured sidebar-font-size. Shared across
+    /// windows; called at startup and when the setting changes so it applies live.</summary>
+    private static void RebuildSidebarFonts()
+    {
+        float px = System.Math.Clamp(_config.SidebarFontSize, 9, 20);
+        _sidebarFont?.Dispose(); _sidebarSmall?.Dispose();
+        _sidebarFont = NewChromeFormat("Segoe UI", px, center: false);
+        _sidebarSmall = NewChromeFormat("Segoe UI", System.Math.Max(9f, px - 1.5f), center: false);
     }
 
     private static IDWriteTextFormat NewChromeFormat(string family, float px, bool center)
