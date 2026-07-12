@@ -123,6 +123,8 @@ internal partial class Program : ISessionHost, IWindowHost
 
     // Row hit-boxes rebuilt each paint: (top, bottom, isWorkspace, item(Workspace|Ses)).
     private readonly List<(float y0, float y1, bool isWs, object item)> _sidebarRows = new();
+    private readonly HashSet<string> _selectedIds = new();   // multi-selected session ids (Ctrl/Shift+click); >1 = batch mode
+    private string? _selAnchorId;                             // anchor session for Shift+range selection
     // Chrome button hit-boxes rebuilt each paint: (x0, x1, action).
     private readonly List<(float x0, float x1, string action)> _titleButtons = new();
     private readonly List<(float x0, float x1, string action)> _footerButtons = new();
