@@ -358,6 +358,8 @@ internal partial class Program
 
     private void SetActive(Ses ses)
     {
+        // Navigating to a session outside the multi-selection drops the selection (single-select again).
+        if (!_selectedIds.Contains(ses.Id)) _selectedIds.Clear();
         _active = ses;
         ClearUnread(ses);   // visiting a session clears its notification badge (agterm's "cleared when seen")
         // Auto-reset-on-select: a status marked auto-reset clears to idle once the user looks at the session.

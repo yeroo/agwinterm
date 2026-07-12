@@ -138,10 +138,21 @@ internal partial class Program
     private void DrawSessionRow(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, Ses s, float y, float rowH)
     {
         bool active = ReferenceEquals(_active, s);
+        bool selected = _selectedIds.Count > 0 && _selectedIds.Contains(s.Id);
         if (active)
         {
             brush.Color = SbHighlight;
             rt.FillRectangle(new Rect(0, y, _sidebarW, rowH), brush);
+        }
+        else if (selected)   // multi-selected (not the active one): accent-tinted fill
+        {
+            brush.Color = Mix(SbBg, ChromeAccent, 0.20f);
+            rt.FillRectangle(new Rect(0, y, _sidebarW, rowH), brush);
+        }
+        if (selected)        // accent bar marks membership in the multi-selection (incl. the active row)
+        {
+            brush.Color = ChromeAccent;
+            rt.FillRectangle(new Rect(0, y, 3f, rowH), brush);
         }
         // F6 focus ring: the sidebar zone's focused row (keyboard navigation, without the mouse).
         if (_chromeFocus && ReferenceEquals(_focusRow, s))
@@ -248,9 +259,39 @@ internal partial class Program
             if (my < y0 || my >= y1) continue;
             if (ReferenceEquals(item, _showAllMarker)) { _focusedWorkspaceId = null; RequestRedraw(); SaveState(); }
             else if (isWs && item is Workspace ws) { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); SaveState(); }
-            else if (!isWs && item is Ses s) SetActive(s);
+            else if (!isWs && item is Ses s) SidebarSelectClick(s, KeyDown(VK_CONTROL), KeyDown(VK_SHIFT));
             return;
         }
+    }
+
+    /// <summary>Live sessions currently in the multi-selection (Ctrl/Shift+click).</summary>
+    private List<Ses> SelectedSessions()
+    { lock (_workspaces) return _workspaces.SelectMany(w => w.Sessions).Where(x => _selectedIds.Contains(x.Id)).ToList(); }
+
+    private void ClearSelection() { _selectedIds.Clear(); RequestRedraw(); }
+
+    /// <summary>Sidebar session click with modifiers: plain = single-select, Ctrl = toggle one, Shift = range.</summary>
+    private void SidebarSelectClick(Ses s, bool ctrl, bool shift)
+    {
+        var order = _sidebarRows.Where(r => !r.isWs && r.item is Ses).Select(r => (Ses)r.item).ToList();
+        if (shift && _selAnchorId is not null &&
+            order.FindIndex(x => x.Id == _selAnchorId) is var ai and >= 0 &&
+            order.FindIndex(x => x.Id == s.Id) is var ci and >= 0)
+        {
+            _selectedIds.Clear();
+            for (int i = Math.Min(ai, ci); i <= Math.Max(ai, ci); i++) _selectedIds.Add(order[i].Id);
+            SetActive(s);
+        }
+        else if (ctrl)
+        {
+            if (_selectedIds.Count == 0 && _active is not null) _selectedIds.Add(_active.Id);
+            if (!_selectedIds.Add(s.Id)) _selectedIds.Remove(s.Id);   // toggle
+            _selAnchorId = s.Id;
+            SetActive(_selectedIds.Contains(s.Id) ? s : (SelectedSessions().FirstOrDefault() ?? s));
+        }
+        else { _selectedIds.Clear(); _selAnchorId = s.Id; SetActive(s); }
+        if (_selectedIds.Count <= 1) _selectedIds.Clear();   // a lone item is not a multi-selection
+        RequestRedraw();
     }
 
     private object? RowAt(int my)
@@ -353,6 +394,22 @@ internal partial class Program
     {
         var list = new List<PalItem>();
         void A(string label, string hint, Action run) => list.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
+        // Batch menu: right-clicking a session that's part of a multi-selection acts on the whole set.
+        if (item is Ses bs && _selectedIds.Count > 1 && _selectedIds.Contains(bs.Id))
+        {
+            var sel = SelectedSessions();
+            int n = sel.Count;
+            bool allFlagged = sel.All(x => x.Flagged);
+            A(allFlagged ? $"Unflag {n} Sessions" : $"Flag {n} Sessions", "", () => { foreach (var x in sel) FlagOp(x, allFlagged ? "off" : "on"); });
+            List<Workspace> mt; lock (_workspaces) mt = _workspaces.ToList();
+            foreach (var t in mt)
+                A($"Move {n} to — {t.Name}", "", () => { foreach (var x in sel.Where(x => !ReferenceEquals(x.Ws, t))) MoveSession(x, t); ClearSelection(); });
+            if (sel.Any(x => AggStatus(x) != AgentStatus.Idle))
+                A($"Clear Status of {n}", "", () => { foreach (var x in sel) foreach (var p in x.Panes) p.S.SetStatus(AgentStatus.Idle); RequestRedraw(); });
+            list.Add(MenuSeparator());
+            A($"Close {n} Sessions", "", () => { if (ConfirmCloseOk()) { foreach (var x in sel) CloseSessionInternal(x); ClearSelection(); } });
+            return list;
+        }
         if (item is Ses ses)
         {
             if (_profileCfg.Profiles.Count > 1)
