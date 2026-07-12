@@ -283,6 +283,13 @@ public sealed class ControlServer : IDisposable
                         { if (r > 0) sb.Append(','); sb.Append(n.SplitRatios[r].ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)); }
                         sb.Append(']');
                     }
+                    if (n.PaneIds is { Count: > 0 })
+                    {
+                        sb.Append(",\"paneIds\":[");
+                        for (int r = 0; r < n.PaneIds.Count; r++)
+                        { if (r > 0) sb.Append(','); sb.Append(JsonSerializer.Serialize(n.PaneIds[r])); }
+                        sb.Append(']');
+                    }
                 }
                 sb.Append('}');
             }

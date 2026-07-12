@@ -8,7 +8,7 @@ namespace Agwinterm.Pty;
 public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
     bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
     int FocusedPane = 0, int PaneCount = 1, bool StatusBlink = false, int OverlaySize = 0,
-    IReadOnlyList<double>? SplitRatios = null);
+    IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);

@@ -180,7 +180,8 @@ internal partial class Program
                         s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
                         FocusedPane: Math.Clamp(s.Active, 0, Math.Max(0, s.Panes.Count - 1)), PaneCount: s.Panes.Count,
                         StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
-                        SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList())).ToList()
+                        SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
+                        PaneIds: s.Panes.Select(p => p.Id).ToList())).ToList()
                 )).ToList();
         }
 
@@ -242,9 +243,13 @@ internal partial class Program
 
         public bool SetFontSize(string? target, string op)
         {
+            int delta = op switch { "inc" => 1, "dec" => -1, _ => 0 }; // reset otherwise
+            // A specific pane id (split / scratch / overlay / quick terminal) zooms just that pane;
+            // a session id (or null = active) zooms the session's active pane, as before.
+            if (!string.IsNullOrEmpty(target) && FindPaneById(target!) is { } hit)
+            { Post(() => ZoomPane(hit, delta)); return true; }
             var ses = Find(target);
             if (ses is null) return false;
-            int delta = op switch { "inc" => 1, "dec" => -1, _ => 0 }; // reset otherwise
             Post(() => ChangeFontSizeOf(ses, delta));
             return true;
         }
