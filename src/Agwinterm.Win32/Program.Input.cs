@@ -997,6 +997,13 @@ internal partial class Program
 
         if (_session is null) return false;
 
+        // User interrupt: Ctrl+C or Escape to the shell clears an "active" agent-status glyph — the
+        // user has taken over the running agent (agterm #185). Falls through so the key still reaches
+        // the terminal. Blocked/Completed keep clearing on select instead.
+        if (_cover is null && (vk == VK_ESCAPE || (ctrl && !alt && vk == 0x43 /* C */))
+            && _active?.ActivePane?.S is { Status: AgentStatus.Active } asf)
+        { asf.SetStatus(AgentStatus.Idle); RequestRedraw(); }
+
         // Kitty keyboard protocol: when an app has enabled it, encode keys in CSI-u form.
         if ((ActiveSurface()?.S.Emulator.KeyboardFlags ?? 0) != 0 && KittyKeyEncode(vk, ctrl, alt, shift) is { } ku)
         { Send(ku); _kittyAteChar = true; return true; }
