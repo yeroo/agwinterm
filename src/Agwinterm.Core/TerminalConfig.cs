@@ -84,6 +84,9 @@ public sealed class TerminalConfig
     /// <summary>Shifts the themed sidebar shade relative to the theme base: -100 (darker) … +100 (lighter). Default 0.</summary>
     public int SidebarTint { get; set; } = 0;
 
+    /// <summary>Font size (pt) of the workspace/session names in the sidebar. Default 13.</summary>
+    public int SidebarFontSize { get; set; } = 13;
+
     /// <summary>Default working directory for newly created sessions (empty = inherit current behavior).</summary>
     public string NewSessionDir { get; set; } = "";
 
@@ -211,6 +214,9 @@ public sealed class TerminalConfig
         # Sidebar tint relative to the theme: -100 (darker) .. +100 (lighter).
         sidebar-tint = 0
 
+        # Sidebar font size (pt) for workspace/session names (9..20).
+        sidebar-font-size = 13
+
         # Default directory for new sessions (empty = current behavior).
         new-session-dir =
 
@@ -291,6 +297,7 @@ public sealed class TerminalConfig
                 case "ligatures": cfg.Ligatures = ParseBool(val, cfg.Ligatures); break;
                 case "window-opacity": if (int.TryParse(val, out var wo)) cfg.WindowOpacity = System.Math.Clamp(wo, 30, 100); break;
                 case "sidebar-tint": if (int.TryParse(val, out var st)) cfg.SidebarTint = System.Math.Clamp(st, -100, 100); break;
+                case "sidebar-font-size": if (int.TryParse(val, out var sfs)) cfg.SidebarFontSize = System.Math.Clamp(sfs, 9, 20); break;
                 case "new-session-dir": cfg.NewSessionDir = val; break;
                 case "scroll-speed": if (int.TryParse(val, out var ss)) cfg.ScrollSpeed = System.Math.Clamp(ss, 1, 10); break;
                 case "omp-theme": cfg.OmpTheme = val; break;

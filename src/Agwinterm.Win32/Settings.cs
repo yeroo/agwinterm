@@ -138,6 +138,7 @@ internal partial class Program
         Tog(1, "compact-toolbar", "Compact toolbar");
         Sld(1, "window-opacity", "Window opacity", 30, 100);
         Sld(1, "sidebar-tint", "Sidebar tint", -100, 100);
+        Sld(1, "sidebar-font-size", "Sidebar font size", 9, 20);
         Sec(1, "Panes");
         Sld(1, "inactive-pane-dim", "Inactive pane mute", 0, 100);
 

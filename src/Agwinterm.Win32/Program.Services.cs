@@ -766,7 +766,7 @@ internal partial class Program
     {
         "font-family", "font-size", "cursor-style", "cursor-blink", "cursor-blink-ms", "theme",
         "theme-follow-system", "theme-dark", "theme-light",
-        "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "ligatures", "window-opacity", "sidebar-tint", "scroll-speed",
+        "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "ligatures", "window-opacity", "sidebar-tint", "sidebar-font-size", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "word-delimiters", "desktop-notifications", "shell-integration",
         "restore-commands", "restore-buffer", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges",
@@ -810,6 +810,7 @@ internal partial class Program
         "ligatures" => _config.Ligatures ? "true" : "false",
         "window-opacity" => _config.WindowOpacity.ToString(),
         "sidebar-tint" => _config.SidebarTint.ToString(),
+        "sidebar-font-size" => _config.SidebarFontSize.ToString(),
         "scroll-speed" => _config.ScrollSpeed.ToString(),
         "new-session-dir" => _config.NewSessionDir,
         "right-click-paste" => _config.RightClickPaste ? "true" : "false",
@@ -851,6 +852,7 @@ internal partial class Program
         if (key is "compact-toolbar" or "toolbar-mode")   // title-bar height changed → reflow the terminal grid
         { if (_active is not null) RegridSession(_active); if (_cover is not null) RegridCover(); }
         if (key is "font-family" or "font-size") RebuildFont();   // apply live to the running window
+        if (key == "sidebar-font-size") RebuildSidebarFonts();    // apply the new sidebar name size live
         RequestRedraw();
         RefreshSettingsControls();                        // keep an open Settings window in sync
         bool deferred = key is "scrollback-lines" or "shell-integration" or "restore-commands";

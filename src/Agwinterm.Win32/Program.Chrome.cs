@@ -96,8 +96,8 @@ internal partial class Program
             brush.Color = SbHeaderText;
             rt.DrawText(expanded ? "▾" : "▸", _format, TextRect(6f, y, 18f, rowH), brush); // chevron (mono, top-aligned)
             if (!ReferenceEquals(_editing, ws)) // the rename box covers the name while editing
-                rt.DrawText(ws.Name, _uiFont, new Rect(24f, y, _sidebarW - 48f, rowH), brush);
-            rt.DrawText(sessions.Count.ToString(), _uiSmall, new Rect(_sidebarW - 28f, y, 22f, rowH), brush);
+                rt.DrawText(ws.Name, _sidebarFont, new Rect(24f, y, _sidebarW - 48f, rowH), brush);
+            rt.DrawText(sessions.Count.ToString(), _sidebarSmall, new Rect(_sidebarW - 28f, y, 22f, rowH), brush);
             _sidebarRows.Add((y, y + rowH, true, ws));
             y += rowH;
 
@@ -166,7 +166,7 @@ internal partial class Program
         bool isDrag = _dragging && ReferenceEquals(s, _dragItem);
         brush.Color = isDrag ? new Color4(0.5f, 0.53f, 0.57f, 0.45f) : (active ? SbActiveText : SbDimText);
         if (!ReferenceEquals(_editing, s)) // the rename box covers the name while editing
-            rt.DrawText(s.Name, _uiFont, new Rect(nameX, y, _sidebarW - nameX - 22f, rowH), brush);
+            rt.DrawText(s.Name, _sidebarFont, new Rect(nameX, y, _sidebarW - nameX - 22f, rowH), brush);
         // Unread-notification count badge, just left of the status circle (can be hidden; the count still tracks).
         int unread = UnreadOf(s);
         if (unread > 0 && _config.NotificationBadges)
@@ -494,7 +494,7 @@ internal partial class Program
         if (label.Length > 0)
         {
             brush.Color = new Color4(1f, 1f, 1f, 0.92f);
-            rt.DrawText(label, _uiFont, new Rect(24f, _dragY - 9f, _sidebarW - 8f, _dragY + 11f), brush);
+            rt.DrawText(label, _sidebarFont, new Rect(24f, _dragY - 9f, _sidebarW - 8f, _dragY + 11f), brush);
         }
     }
 
