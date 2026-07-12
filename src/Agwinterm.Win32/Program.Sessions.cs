@@ -614,6 +614,32 @@ internal partial class Program
     private void ChangeFontSizeOfPane(Pane p, int delta)
         => p.FontSize = delta == 0 ? (float)_config.FontSize : Math.Clamp(p.FontSize + delta, 6f, 48f);
 
+    /// <summary>Resolve a pane by id across split panes, per-session scratch/overlay, and the quick terminal
+    /// (so <c>agwintermctl font --target &lt;paneId&gt;</c> can zoom a specific pane). Null if no pane matches.</summary>
+    private (Pane pane, Ses? ses, bool cover)? FindPaneById(string id)
+    {
+        lock (_workspaces)
+            foreach (var w in _workspaces)
+                foreach (var s in w.Sessions)
+                {
+                    foreach (var p in s.Panes) if (p.Id == id) return (p, s, false);
+                    if (s.Scratch is { } sc && sc.Id == id) return (sc, s, true);
+                    if (s.Overlay is { } ov && ov.Id == id) return (ov, s, true);
+                }
+        if (_quick is { } q && q.Id == id) return (q, null, true);
+        return null;
+    }
+
+    /// <summary>Zoom one specific pane's font (delta 0 = reset) and reflow the surface it belongs to.</summary>
+    private void ZoomPane((Pane pane, Ses? ses, bool cover) hit, int delta)
+    {
+        ChangeFontSizeOfPane(hit.pane, delta);
+        if (hit.cover) { if (ReferenceEquals(_cover, hit.pane)) RegridCover(); }   // inactive covers regrid on show
+        else if (hit.ses is not null) RegridSession(hit.ses);
+        RequestRedraw();
+        SaveState();
+    }
+
     /// <summary>Change the active pane's font zoom (delta 0 = reset to config default), reflow + repaint.</summary>
     private void ChangeFontSizeOf(Ses ses, int delta)
     {

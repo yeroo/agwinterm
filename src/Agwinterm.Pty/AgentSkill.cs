@@ -150,7 +150,7 @@ public static class AgentSkill
 
         ## Splits, font, sidebar, theme
         - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
-        - `agwintermctl font inc|dec|reset [--target <id>]`      — per-session font zoom
+        - `agwintermctl font inc|dec|reset [--target <id>]`      — font zoom; target a session (active pane) or a specific split/scratch/quick pane by its id (see `tree` paneIds)
         - `agwintermctl sidebar show|hide|toggle|expand|collapse`
         - `agwintermctl session background set <image> [--opacity 0..100] [--mode fit|fill|center|tile]` — a faint per-session
           watermark drawn behind the terminal (the image is copied into app data); `session background clear` removes it.
