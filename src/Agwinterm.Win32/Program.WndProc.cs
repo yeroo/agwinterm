@@ -279,6 +279,7 @@ internal partial class Program
                     }
                     if (_setOpen) { SettingsClick(mx, my); return IntPtr.Zero; }
                     if (_palette != PaletteKind.None) { PaletteClick(mx, my); return IntPtr.Zero; }
+                    if (_dashboardOpen) { DashboardClick(mx, my, doubleClick: false); return IntPtr.Zero; }
                     // Notification banner: clicking it jumps to the raising session and dismisses.
                     if (_toastText is not null && _toastTarget is not null &&
                         mx >= _toastRect.Left && mx <= _toastRect.Right && my >= _toastRect.Top && my <= _toastRect.Bottom)
@@ -379,6 +380,7 @@ internal partial class Program
             case WM_LBUTTONDBLCLK:
                 {
                     int mx = LoWord(lParam), my = HiWord(lParam);
+                    if (_dashboardOpen) { DashboardClick(mx, my, doubleClick: true); return IntPtr.Zero; }
                     if (mx < (int)_sidebarW && my >= (int)TitleBarH && my < ClientH() - (int)FooterH)
                     {
                         var item = RowAt(my);
