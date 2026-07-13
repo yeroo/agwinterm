@@ -56,6 +56,9 @@ public interface ISessionHost
 
     /// <summary>Adjust a session's font zoom: op = "inc" | "dec" | "reset". Returns false if the target isn't found.</summary>
     bool SetFontSize(string? target, string op);
+    /// <summary>Open/close the dashboard grid: ids = comma/space-separated session ids (empty = MRU),
+    /// close dismisses it, fontSize pins a cell font size (0 = auto).</summary>
+    bool Dashboard(bool close, string? ids, int fontSize);
 
     // ---- Wave A1: verb parity for existing features (all marshal to the UI thread) ----
 
@@ -203,6 +206,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool CloseSession(string target) => false;
     public string NewWorkspace(string? name) => "ws";
     public bool SetFontSize(string? target, string op) => false; // no per-session font zoom in the single-session host
+    public bool Dashboard(bool close, string? ids, int fontSize) => false; // no dashboard in the single-session host
 
     // Wave A1 verbs — no-ops for the single-session test adapter.
     public void SessionGo(string dir) { }

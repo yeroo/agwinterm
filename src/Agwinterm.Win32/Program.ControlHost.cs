@@ -254,6 +254,22 @@ internal partial class Program
             return true;
         }
 
+        /// <summary>Control-API dashboard: open over explicit session ids (comma/space separated; empty =
+        /// most-recently-used), close it, and optionally pin a font size. (agterm #202 CLI.)</summary>
+        public bool Dashboard(bool close, string? ids, int fontSize)
+        {
+            Post(() =>
+            {
+                if (close) { CloseDashboard(); return; }
+                List<Ses>? list = null;
+                if (!string.IsNullOrWhiteSpace(ids))
+                    list = ids!.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                               .Select(id => Find(id)).Where(s => s is not null).Cast<Ses>().ToList();
+                OpenDashboard(list, fontSize);
+            });
+            return true;
+        }
+
         // ---- Wave A1 verbs ----
         public void SessionGo(string dir) => Post(() => SessionGoInternal(dir));
 

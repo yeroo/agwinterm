@@ -17,17 +17,22 @@ internal partial class Program
     private bool _dashboardOpen;
     private readonly List<Ses> _dashSessions = new();
     private int _dashSel;
+    private int _dashFontPin;   // 0 = auto-size to fit; >0 = pinned font size (agwintermctl --font-size)
     private readonly List<Rect> _dashCells = new();   // per-cell rects, for mouse hit-testing
     private const int DashMax = 9;
 
     private void ToggleDashboard() { if (_dashboardOpen) CloseDashboard(); else OpenDashboard(); }
 
-    private void OpenDashboard()
+    /// <summary>Open the dashboard over the given sessions (null/empty = the most-recently-used ones),
+    /// optionally pinning a font size (0 = auto-size to fit).</summary>
+    private void OpenDashboard(List<Ses>? sessions = null, int fontPin = 0)
     {
-        EnsureMru();
-        var order = _mru.Select(FindSes).Where(s => s is not null).Cast<Ses>().Take(DashMax).ToList();
+        List<Ses> order;
+        if (sessions is { Count: > 0 }) order = sessions.Take(DashMax).ToList();
+        else { EnsureMru(); order = _mru.Select(FindSes).Where(s => s is not null).Cast<Ses>().Take(DashMax).ToList(); }
         if (order.Count == 0) { ShowToast("No sessions to show"); return; }
         _dashSessions.Clear(); _dashSessions.AddRange(order);
+        _dashFontPin = fontPin > 0 ? Math.Clamp(fontPin, 4, 40) : 0;
         _dashSel = Math.Max(0, _dashSessions.FindIndex(s => ReferenceEquals(s, _active)));
         _dashboardOpen = true;
         Uia.Announce($"Dashboard, {_dashSessions.Count} sessions. Arrow keys to move, Enter to open, Escape to close.");
@@ -65,7 +70,9 @@ internal partial class Program
         foreach (var s in _dashSessions)
             lock (s.S.SyncRoot) { maxCols = Math.Max(maxCols, s.S.Emulator.Screen.Cols); maxRows = Math.Max(maxRows, s.S.Emulator.Screen.Rows); }
         float termW = MathF.Max(1f, cellW - 8f), termH = MathF.Max(1f, cellH - labelH - 6f);
-        float fs = Math.Clamp(MathF.Floor(MathF.Min(termW / maxCols / cwB * BASE, termH / maxRows / chB * BASE)), 5f, BASE);
+        float fs = _dashFontPin > 0
+            ? _dashFontPin   // pinned via --font-size (content may clip; the cell is clipped anyway)
+            : Math.Clamp(MathF.Floor(MathF.Min(termW / maxCols / cwB * BASE, termH / maxRows / chB * BASE)), 5f, BASE);
         var (fmt, cw, ch) = Metrics(fs);
 
         for (int i = 0; i < n; i++)

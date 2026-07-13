@@ -73,6 +73,7 @@ internal sealed class FakeSessionHost : ISessionHost
     public string ProfilesList() => "default";
     public string ProfilesReload() => "1 profile loaded";
     public bool SetFontSize(string? target, string op) => Find(target) is not null;
+    public bool Dashboard(bool close, string? ids, int fontSize) => true;
 
     public void SessionGo(string dir) { }
     public bool SessionReorder(string? target, string dir) => Find(target) is not null;

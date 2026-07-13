@@ -261,6 +261,14 @@ switch (area)
         if (sub is not ("inc" or "dec" or "reset")) { Console.Error.WriteLine("usage: agwintermctl font inc|dec|reset [--target ID]"); return 2; }
         cargs["op"] = sub;
         break;
+    case "dashboard":
+        // agwintermctl dashboard [<id> ...] [--close] [--font-size N | --auto-size]
+        cmd = "dashboard";
+        var dashIds = positionals.Skip(1).ToList();   // session ids after "dashboard"
+        if (dashIds.Count > 0) cargs["ids"] = string.Join(",", dashIds);
+        if (options.ContainsKey("close")) cargs["close"] = true;
+        if (Opt("font-size") is { } dfs && int.TryParse(dfs, out var dfsn)) cargs["font-size"] = dfsn;   // omit / --auto-size => auto
+        break;
     case "window":
         // agwintermctl window new|list|select|close|delete|rename|resize|move|zoom [<window>] ...
         cmd = "window." + sub;
