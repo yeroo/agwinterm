@@ -1418,11 +1418,11 @@ internal partial class Program
         SaveState();
     }
 
-    private void ShowToast(string text)
+    private void ShowToast(string text, int durationMs = 1900)
     {
         _toastText = text;
         _toastTarget = null;
-        SetTimer(_hwnd, (IntPtr)2, 1900, IntPtr.Zero);
+        SetTimer(_hwnd, (IntPtr)2, (uint)Math.Max(200, durationMs), IntPtr.Zero);
         RequestRedraw();
     }
 }

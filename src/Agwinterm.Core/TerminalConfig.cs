@@ -51,6 +51,10 @@ public sealed class TerminalConfig
     /// word / line select), without needing Ctrl+C. Off by default. The selection stays highlighted.</summary>
     public bool CopyOnSelect { get; set; } = false;
 
+    /// <summary>When text is selected, Ctrl+C copies it (with a brief "Text copied" flash) instead of
+    /// sending an interrupt to the shell. With no selection, Ctrl+C still interrupts. Default on.</summary>
+    public bool CopyOnCtrlC { get; set; } = true;
+
     /// <summary>Characters that DELIMIT words for double-click selection (in addition to whitespace).
     /// Empty = whitespace only (double-click grabs a whole path/URL). WT's wordDelimiters analog.</summary>
     public string WordDelimiters { get; set; } = "";
@@ -171,6 +175,10 @@ public sealed class TerminalConfig
         # Auto-copy the selection to the clipboard as soon as it's made (no Ctrl+C needed).
         copy-on-select = false
 
+        # When text is selected, Ctrl+C copies it (with a brief "Text copied" flash) instead of sending
+        # an interrupt. With nothing selected, Ctrl+C still interrupts the shell.
+        copy-on-ctrl-c = true
+
         # Extra word-delimiter characters for double-click selection (besides whitespace).
         # Empty = whitespace only, so double-click grabs a whole path or URL. Example: /\.:;,="'()[]{}
         word-delimiters =
@@ -288,6 +296,7 @@ public sealed class TerminalConfig
                 case "restore-buffer": cfg.RestoreBuffer = ParseBool(val, cfg.RestoreBuffer); break;
                 case "right-click-paste": cfg.RightClickPaste = ParseBool(val, cfg.RightClickPaste); break;
                 case "copy-on-select": cfg.CopyOnSelect = ParseBool(val, cfg.CopyOnSelect); break;
+                case "copy-on-ctrl-c": cfg.CopyOnCtrlC = ParseBool(val, cfg.CopyOnCtrlC); break;
                 case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;

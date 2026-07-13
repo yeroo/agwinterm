@@ -101,6 +101,7 @@ internal partial class Program
         Sld(0, "scroll-speed", "Scroll speed", 1, 10);
         Tog(0, "right-click-paste", "Right-click pastes clipboard");
         Tog(0, "copy-on-select", "Copy selection automatically");
+        Tog(0, "copy-on-ctrl-c", "Ctrl+C copies the selection (else interrupts)");
         Sec(0, "Sessions");
         Drop(0, "new-session-dir-mode", "New sessions open in",
             new[] { "Home directory", "Current session's dir", "Custom directory" }, new[] { "home", "current", "custom" });
