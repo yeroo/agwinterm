@@ -913,6 +913,10 @@ internal partial class Program
             if (!altScreen) { OpenHelp(); return true; }
         }
 
+        // Dashboard grid overlay (agterm #202): Ctrl+Shift+D toggles it; while open it owns the keyboard.
+        if (ctrl && shift && !alt && vk == 0x44 /* D */) { ToggleDashboard(); return true; }
+        if (_dashboardOpen) return DashboardKey(vk);
+
         // Focus zones (F6): the sidebar zone owns the keyboard while active; plain F6 from the terminal
         // lifts focus out to the sidebar (the accessible "leave the terminal" gesture).
         if (_chromeFocus) return SidebarZoneKey(vk);

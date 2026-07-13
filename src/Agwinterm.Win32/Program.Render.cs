@@ -518,6 +518,31 @@ internal partial class Program
         rt.BeginDraw();
         rt.Clear(C4(_theme.DefaultBackground));
 
+        // Dashboard grid overlay replaces the terminal content while it's up (agterm #202); the sidebar
+        // and title bar still render below.
+        if (_dashboardOpen) DrawDashboard(rt, brush);
+        else DrawWindowContent(rt, brush);
+        if (!_windowActive && _config.UnfocusedDim > 0)   // dim the content region when the window isn't focused
+        {
+            var (dx, dy, dw, dh) = ContentArea();
+            brush.Color = new Color4(0f, 0f, 0f, Math.Clamp(_config.UnfocusedDim, 0, 90) / 100f);
+            rt.FillRectangle(new Rect(dx, dy, dw, dh), brush);
+        }
+        DrawSidebar(rt, brush);
+        DrawTitleBar(rt, brush);
+        DrawSearchBar(rt, brush);
+        DrawToast(rt, brush);
+        DrawButtonTip(rt, brush);
+        DrawHelp(rt, brush);   // topmost overlay
+        DrawLeaderHint(rt, brush);
+        DrawPalette(rt, brush);
+        DrawSettingsPanel(rt, brush);
+        DrawSwitcher(rt, brush);
+    }
+
+    /// <summary>The normal terminal content: the active session's pane grid, or a cover/quick/overlay panel.</summary>
+    private void DrawWindowContent(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    {
         // Quick terminal (kind 2) and a sized floating overlay (kind 3) both render as a centered
         // panel over the live main window — a "tool window" look. Scratch (1) / full overlay fill.
         bool floatingPanel = _cover is not null && ((_coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 }) || _coverKind == 2);
@@ -548,22 +573,6 @@ internal partial class Program
                 if (_coverKind == 3) DrawOverlayFooter(rt, brush);          // overlay-only footer
             }
         }
-        if (!_windowActive && _config.UnfocusedDim > 0)   // dim the content region when the window isn't focused
-        {
-            var (dx, dy, dw, dh) = ContentArea();
-            brush.Color = new Color4(0f, 0f, 0f, Math.Clamp(_config.UnfocusedDim, 0, 90) / 100f);
-            rt.FillRectangle(new Rect(dx, dy, dw, dh), brush);
-        }
-        DrawSidebar(rt, brush);
-        DrawTitleBar(rt, brush);
-        DrawSearchBar(rt, brush);
-        DrawToast(rt, brush);
-        DrawButtonTip(rt, brush);
-        DrawHelp(rt, brush);   // topmost overlay
-        DrawLeaderHint(rt, brush);
-        DrawPalette(rt, brush);
-        DrawSettingsPanel(rt, brush);
-        DrawSwitcher(rt, brush);
     }
 
     /// <summary>The Ctrl+Tab switcher HUD: a centered panel listing sessions in recency order with the
