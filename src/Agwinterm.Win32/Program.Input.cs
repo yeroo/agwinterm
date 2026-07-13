@@ -972,9 +972,12 @@ internal partial class Program
         {
             if (vk == 0x43) // C
             {
-                if (ap.HasSel) { CopySelection(ap); return true; }
-                if (shift) return true;   // Ctrl+Shift+C, no selection: consume (don't send ^C)
-                // plain Ctrl+C with no selection falls through to the interrupt below
+                // Ctrl+Shift+C is the explicit copy shortcut (always consumed). Plain Ctrl+C copies the
+                // selection only when copy-on-ctrl-c is on — otherwise it falls through and interrupts,
+                // so with nothing selected (or the option off) the shell still gets ^C.
+                if (shift) { if (ap.HasSel) { CopySelection(ap); ShowToast("Text copied", 500); } return true; }
+                if (_config.CopyOnCtrlC && ap.HasSel) { CopySelection(ap); ShowToast("Text copied", 500); return true; }
+                // plain Ctrl+C with no selection (or option off) falls through to the interrupt below
             }
             else if (vk == 0x56) { PasteInto(ap); return true; } // Ctrl+V / Ctrl+Shift+V
         }
