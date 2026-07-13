@@ -74,6 +74,7 @@ internal partial class Program
         session.Emulator.Notified += (title, body) => Post(() => OnNotified(pane, title, body));
         session.Emulator.Progress += (st, val) => Post(() => OnProgress(st, val));   // OSC 9;4 -> taskbar
         session.Emulator.Respond += reply => { session.NotifyActivity(); session.Write(Encoding.UTF8.GetBytes(reply)); };   // Kitty query response -> PTY
+        session.Exited += _ => Post(() => OnPaneProcessExited(pane));   // split survivor promotion (agterm #121)
         var env = new Dictionary<string, string>
         {
             ["AGWINTERM"] = "1",
@@ -727,6 +728,28 @@ internal partial class Program
         _session = ses.S;
         RegridSession(ses);
         RequestRedraw();
+        SaveState();
+    }
+
+    /// <summary>A pane's shell process exited: if it was one side of a split, collapse to the survivor
+    /// (promote it into the main pane). Single-pane sessions keep the exited shell visible. (agterm #121.)</summary>
+    private void OnPaneProcessExited(Pane p)
+    {
+        Ses? ses;
+        lock (_workspaces)
+        {
+            ses = _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Panes.Contains(p));
+            if (ses is null || ses.Panes.Count <= 1) return;   // not a live split pane → leave the shell as-is
+            int idx = ses.Panes.IndexOf(p);
+            ses.Panes.RemoveAt(idx);
+            float freed = p.Ratio / ses.Panes.Count;
+            foreach (var q in ses.Panes) q.Ratio += freed;     // survivor grows to fill the freed width
+            ses.Active = Math.Clamp(idx, 0, ses.Panes.Count - 1);
+        }
+        try { p.S.Dispose(); } catch { }
+        if (ReferenceEquals(_active, ses)) _session = ses.S;
+        RegridSession(ses);
+        if (ReferenceEquals(_active, ses)) RequestRedraw();
         SaveState();
     }
 
