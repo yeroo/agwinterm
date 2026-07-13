@@ -83,6 +83,10 @@ internal partial class Program
             ["AGWINTERM_PANE_ID"] = paneId,          // explicit pane identity (unique per split pane)
             ["AGWINTERM_WORKSPACE_ID"] = ws.Id,
             ["AGWINTERM_WINDOW_ID"] = Id,
+            // Standard terminal-identification vars so shells/prompt tools (starship, oh-my-posh, tmux,
+            // scripts) can detect that they're running inside agwinterm. (agterm #203.)
+            ["TERM_PROGRAM"] = "agwinterm",
+            ["TERM_PROGRAM_VERSION"] = _termProgramVersion,
         };
         if (extraEnv is not null) foreach (var kv in extraEnv) env[kv.Key] = kv.Value; // custom-command $AGW_* context
         if (handoff is { } h)
@@ -608,6 +612,19 @@ internal partial class Program
         }
         pane.S.Exited += OnExit;
         if (pane.S.HasExited) OnExit(pane.S.ExitCode ?? 0);        // already gone before we subscribed
+    }
+
+    /// <summary>App version for TERM_PROGRAM_VERSION — the entry assembly's informational version
+    /// (stamped by release builds via -p:Version; "dev" in unstamped builds), metadata stripped.</summary>
+    private static readonly string _termProgramVersion = ComputeTermProgramVersion();
+    private static string ComputeTermProgramVersion()
+    {
+        string v = System.Reflection.Assembly.GetEntryAssembly()?
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion ?? "dev";
+        int plus = v.IndexOf('+');
+        return plus > 0 ? v[..plus] : v;
     }
 
     /// <summary>Change one pane's font zoom (delta 0 = reset to the config default). Caller reflows.</summary>
