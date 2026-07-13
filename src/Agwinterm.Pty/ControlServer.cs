@@ -136,6 +136,7 @@ public sealed class ControlServer : IDisposable
                 case "session.close": return host.CloseSession(target ?? "active") ? Ok("closed") : Err("session not found");
                 case "workspace.new": return Ok(host.NewWorkspace(GetString(args, "name")));
                 case "font": return host.SetFontSize(target, GetString(args, "op") ?? "") ? Ok("font") : Err("session not found");
+                case "dashboard": return host.Dashboard(GetBool(args, "close"), GetString(args, "ids"), GetInt(args, "font-size", 0)) ? Ok("dashboard") : Err("dashboard unavailable");
 
                 // ---- Wave A1: verb parity ----
                 case "session.go": host.SessionGo(GetString(args, "dir") ?? "next"); return Ok("go");
