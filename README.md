@@ -40,14 +40,17 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
 
 ### Agent-first
 - **Workspaces → sessions → panes** in a custom-drawn sidebar (drag-reorder, rename, flag, focus,
-  unread badges, reopen closed sessions *and workspaces* with `Ctrl+Shift+R`).
+  unread badges, **multi-select with Ctrl/Shift+click** for batch flag / move / close, reopen closed
+  sessions *and workspaces* with `Ctrl+Shift+R`).
+- **Dashboard** (`Ctrl+Shift+D`): a grid of **live** session previews — arrow-navigate, Enter or
+  double-click to jump in; or drive it with `agwintermctl dashboard <ids>`.
 - **Agent status** per session (idle / active / blocked / completed) as a colored dot + title-bar
   bell — driven by your agent via hooks or the control API, with blink, auto-reset, and sounds.
 - **A scriptable control API**: `agwintermctl` (or newline-JSON over a named pipe) — any language can
-  drive it, including full **read-back** (tree with split ratios, window state, session output).
-  Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.
-- **Splits**, **scratch** & **quick** terminals, ephemeral **overlays** (open/resize/close via API),
-  **multi-window** with per-window addressing.
+  drive it, including full **read-back** (tree with split ratios + pane ids, window state, session
+  output). Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.
+- **Splits** (a split collapses to the survivor when a pane exits), **scratch** & **quick** terminals,
+  ephemeral **overlays** (open/resize/close via API), **multi-window** with per-window addressing.
 
 ### A real Windows terminal
 - **Default Terminal Application**: register agwinterm from *Settings → General* (per-user, no admin,
@@ -59,6 +62,8 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
   builtin box-drawing glyphs, buffer restore, block selection + keyboard mark mode, read-only panes,
   elevated & de-elevated sessions side by side (⚡ marker), FTCS/OSC-133 prompt marks with
   jump-to-prompt, taskbar progress (OSC 9;4).
+- Shells are launched with `TERM_PROGRAM=agwinterm` (+ the usual `AGWINTERM_*` vars), so prompt
+  engines, tmux and scripts can detect the host terminal.
 
 ### Accessible — screen readers are first-class
 - The terminal is a **UIA text document**: Narrator/NVDA read it line by line, track the caret
@@ -67,14 +72,17 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
   scannable (Caps Lock + arrows), focusable, and invokable. Dialogs are **modally scoped** so the
   reader can't wander behind them.
 - **F6** moves keyboard focus between the terminal and the session list (arrows + Enter there);
-  the **Settings dialog is fully keyboard-navigable** (Tab / Space / PageUp / PageDown) with a
-  visible focus ring; buttons **speak on hover** and show **tooltips**.
+  the **Settings dialog is fully keyboard-navigable** — Tab reaches the tab headers too (Enter
+  switches), with a classic keyboard-only dotted focus rectangle; buttons **speak on hover** and
+  show **tooltips**.
 - **F1 help** lists the *effective* keybindings and — when a reader is attached — speaks a spoken
   orientation guide for low-vision users.
 
 ### Looks & feel
 - **Whole-window theming** with **~580 bundled themes** (the ghostty / iTerm2 set) — sidebar, title
-  bar, and terminal retint together. **Fonts apply live** from Settings.
+  bar, and terminal retint together. **Fonts apply live** from Settings, and there's an optional
+  **follow Windows light/dark** mode that swaps between a light and a dark theme you choose.
+- **Configurable sidebar font size**, sidebar tint, window opacity, and inactive-pane muting.
 - **cwd in the title** out of the box (composes with oh-my-posh) + an **oh-my-posh theme picker**.
 - Toolbar modes (normal / compact / **hidden** full-bleed), window opacity, unfocused dim,
   per-session background watermarks.
@@ -143,6 +151,7 @@ agwintermctl session status blocked --sound  # report agent status (a dot + bell
 agwintermctl session new --name build --workspace-name CI --create-workspace
 agwintermctl session type "npm test`n"       # type into the active session
 agwintermctl session overlay open "git diff" --size-percent 60
+agwintermctl dashboard build test deploy     # grid overview of chosen sessions
 agwintermctl theme set "Tokyo Night"         # retint the whole window
 agwintermctl window new --name scratchpad    # open a second window
 ```
@@ -156,6 +165,7 @@ Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / C
 |---|---|
 | `F1` | Help (effective keybindings + accessibility guide) |
 | `F6` | Move focus terminal ⇄ session list |
+| `Ctrl+Shift+D` | Dashboard — grid of live sessions |
 | `Ctrl+Shift+T` / `Ctrl+Shift+R` | New session / reopen closed |
 | `Ctrl+Tab` | MRU session switcher |
 | `Ctrl+D` | Split pane · `` Ctrl+` `` quick terminal · `Ctrl+J` scratch |
