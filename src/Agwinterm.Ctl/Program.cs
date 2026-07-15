@@ -206,6 +206,7 @@ switch (area)
         }
         break;
     case "claude" when sub == "adopt": cmd = "claude.adopt"; break; // bind existing claude convos to their panes
+    case "claude" when sub == "yolo": cmd = "claude.yolo"; target = DefaultTarget(); break; // restart the target pane's claude in --dangerously-skip-permissions, resumed
     case "theme" when sub == "list": cmd = "theme.list"; break;
     case "theme" when sub == "set":
         cmd = "theme.set";

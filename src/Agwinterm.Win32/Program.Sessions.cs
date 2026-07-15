@@ -662,34 +662,74 @@ internal partial class Program
         return sb.ToString();
     }
 
+    /// <summary>A real filesystem cwd for a pane: live OSC-7 cwd if valid, else its launch dir.</summary>
+    private static string PaneCwd(Pane p)
+    {
+        string cwd = PrettyCwd(SafeCwd(p));
+        if (string.IsNullOrWhiteSpace(cwd) || !Directory.Exists(cwd)) cwd = p.StartCwd ?? "";
+        return cwd;
+    }
+
+    /// <summary>The id of the newest Claude conversation for a folder (its current session), or null if none.
+    /// Honors CLAUDE_CONFIG_DIR; uses the same project-dir encoding as Claude Code and the launcher wrapper.</summary>
+    private static string? NewestClaudeSessionId(string cwd)
+    {
+        if (string.IsNullOrWhiteSpace(cwd)) return null;
+        string? cfg = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+        string projects = string.IsNullOrWhiteSpace(cfg)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects")
+            : Path.Combine(cfg, "projects");
+        string dir = Path.Combine(projects, EncodeClaudeProject(cwd));
+        if (!Directory.Exists(dir)) return null;
+        try
+        {
+            var newest = new DirectoryInfo(dir).GetFiles("*.jsonl").OrderByDescending(f => f.LastWriteTimeUtc).FirstOrDefault();
+            return newest is null ? null : Path.GetFileNameWithoutExtension(newest.Name);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Restart the Claude Code running in a pane in YOLO mode (--dangerously-skip-permissions),
+    /// resuming its current conversation. Sends a double Ctrl+C to quit the running Claude, then relaunches
+    /// resumed + dangerous, and persists that as the pane's relaunch command so restarts stay YOLO.</summary>
+    private string RestartClaudeYolo(Pane p)
+    {
+        string? id = NewestClaudeSessionId(PaneCwd(p));
+        // Resume the existing conversation if we found one; otherwise start a fresh YOLO session.
+        string cmd = id is null
+            ? "claude --dangerously-skip-permissions"
+            : $"claude --resume {id} --dangerously-skip-permissions";
+        p.AgentResume = cmd;   // future restarts stay YOLO
+        SaveState();
+        var pane = p;
+        _ = Task.Run(async () =>
+        {
+            // Quit the running Claude (Ctrl+C twice = exit), let the shell settle, then relaunch.
+            try { pane.S.Write(new byte[] { 0x03 }); } catch { }
+            await Task.Delay(350);
+            try { pane.S.Write(new byte[] { 0x03 }); } catch { }
+            await Task.Delay(1200);
+            try { pane.S.Write(System.Text.Encoding.UTF8.GetBytes(cmd + "\r")); } catch { }
+        });
+        return id is null ? "restarting Claude in YOLO mode (fresh session)" : "restarting Claude in YOLO mode (resumed)";
+    }
+
     /// <summary>One-time migration for sessions started BEFORE the claude launcher existed: for each pane,
     /// find the newest Claude transcript for its cwd (its current conversation) and bind the pane to resume
     /// exactly that on restart. Idempotent; re-running just refreshes the bindings. Returns a summary.</summary>
     internal string AdoptClaudeSessions()
     {
-        string? cfg = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
-        string projects = string.IsNullOrWhiteSpace(cfg)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects")
-            : Path.Combine(cfg, "projects");
-
         List<Pane> panes;
         lock (_workspaces) panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToList();
 
         int adopted = 0;
         foreach (var p in panes)
         {
-            string cwd = PrettyCwd(SafeCwd(p));
-            if (string.IsNullOrWhiteSpace(cwd) || !Directory.Exists(cwd)) cwd = p.StartCwd ?? "";
-            if (string.IsNullOrWhiteSpace(cwd)) continue;
-            string dir = Path.Combine(projects, EncodeClaudeProject(cwd));
-            if (!Directory.Exists(dir)) continue;
-            FileInfo? newest = null;
-            try { newest = new DirectoryInfo(dir).GetFiles("*.jsonl").OrderByDescending(f => f.LastWriteTimeUtc).FirstOrDefault(); }
-            catch { }
-            if (newest is null) continue;
+            string? id = NewestClaudeSessionId(PaneCwd(p));
+            if (id is null) continue;
             // Store the full resume command; the restore path types it verbatim and the claude wrapper (or the
             // real CLI) honors --resume, so the exact conversation comes back on every relaunch.
-            p.AgentResume = "claude --resume " + Path.GetFileNameWithoutExtension(newest.Name);
+            p.AgentResume = "claude --resume " + id;
             adopted++;
         }
         if (adopted > 0) { SaveState(); RequestRedraw(); }

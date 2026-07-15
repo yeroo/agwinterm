@@ -172,6 +172,16 @@ public class ControlApiTests
     }
 
     [Fact]
+    public void ClaudeYolo_RestartsWithDangerousFlag()
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "claude.yolo", target: "s1");
+        Assert.True(Ok(r));
+        Assert.Contains("YOLO", Result(r));
+        Assert.Contains("--dangerously-skip-permissions", host.ActiveSess!.AgentResume);
+    }
+
+    [Fact]
     public void CloseSession_RemovesIt()
     {
         var (server, host) = New();
