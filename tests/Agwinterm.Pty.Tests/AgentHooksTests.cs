@@ -50,4 +50,25 @@ public class AgentHooksTests
     {
         Assert.Null(AgentHooks.MergeClaudeSettings("{ not valid json", Wrapper));
     }
+
+    [Fact]
+    public void WrapperScript_RoutesStatusToItsOwnPane()
+    {
+        // The status push must carry a target = its own AGWINTERM_SESSION_ID; otherwise the server
+        // routes to the *focused* pane and multi-session status lands on the wrong dot.
+        Assert.Contains("\"target\":\"' + $env:AGWINTERM_SESSION_ID + '\"", AgentHooks.WrapperScript);
+        Assert.Contains("\"target\":\"' + $env:AGWINTERM_SESSION_ID + '\"", AgentHooks.CodexNotifyScript);
+        Assert.Contains("\"target\":\"' + $env:AGWINTERM_SESSION_ID + '\"", GenericAgentInstaller.Block);
+    }
+
+    [Fact]
+    public void ClaudeLauncher_BindsAndResumesBySessionId()
+    {
+        string block = ClaudeIntegration.Block;
+        Assert.Contains("function global:claude", block);
+        Assert.Contains("--session-id $sid", block);   // fresh session bound to the pane id
+        Assert.Contains("--resume $sid", block);        // resume when the transcript already exists
+        Assert.Contains("session.bind", block);          // marks the pane resumable in agwinterm
+        Assert.Contains("$env:AGWINTERM -eq '1'", block); // only active inside agwinterm
+    }
 }

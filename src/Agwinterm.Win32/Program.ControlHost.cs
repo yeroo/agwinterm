@@ -544,6 +544,18 @@ internal partial class Program
             return true;
         }
 
+        // Bind (or clear) a resumable agent on a specific pane, keyed by the pane id the caller used as
+        // its AGWINTERM_SESSION_ID. Persisted so restart re-launches the agent (which resumes itself).
+        public bool SessionBind(string? target, string agent)
+        {
+            if (string.IsNullOrEmpty(target)) return false;
+            var hit = FindPaneById(target!);
+            if (hit is null) return false;
+            string? val = string.IsNullOrWhiteSpace(agent) || agent.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : agent.ToLowerInvariant();
+            Post(() => { hit.Value.pane.AgentResume = val; SaveState(); });
+            return true;
+        }
+
         public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => InvokeOnUi(() =>
         {
             var ses = FindSesForTarget(target);

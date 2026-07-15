@@ -29,7 +29,7 @@ public static class GenericAgentInstaller
               $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe, [System.IO.Pipes.PipeDirection]::InOut)
               $c.Connect(300)
               $w = New-Object System.IO.StreamWriter($c); $w.AutoFlush = $true
-              $w.WriteLine('{"cmd":"session.status","args":{"status":"' + $s + '"}}')
+              $w.WriteLine('{"cmd":"session.status","target":"' + $env:AGWINTERM_SESSION_ID + '","args":{"status":"' + $s + '"}}')
               $c.Dispose()
             } catch { }
           }

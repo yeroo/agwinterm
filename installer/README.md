@@ -35,7 +35,9 @@ It does **not** touch your `PATH`, profile, or config.
 Open the action palette (**Ctrl+Shift+P**) and run the **Install …** entries when you want them:
 
 - **Install Command-Line Tool (PATH)** — adds `agwintermctl` to your user `PATH` (so shells & AI agents can call it).
-- **Install Agent Status Hooks** — Claude Code / Codex / generic-agent status reporting.
+- **Install Agent Status Hooks** — Claude Code / Codex / generic-agent status reporting, plus a
+  transparent `claude` launcher that binds Claude's session id to the agwinterm pane so restart
+  auto-resumes the conversation.
 - **Install Agent Skill** — teaches agents to drive agwinterm via `agwintermctl`.
 - **Install Shell Integration** — a `$PROFILE` OSC-7 hook for live cwd (also works out of the box without this).
 

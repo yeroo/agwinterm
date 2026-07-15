@@ -989,7 +989,7 @@ internal partial class Program
 
     // ---- Persistence: workspace/session tree + selection + sidebar state ----
 
-    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public List<string>? Buffer { get; set; } }
+    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public List<string>? Buffer { get; set; } }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
     private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; } public string? Profile { get; set; } public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
         // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
@@ -1231,7 +1231,7 @@ internal partial class Program
                         List<string>? buf = null;
                         if (_config.RestoreBuffer)
                             try { lock (p.S.SyncRoot) buf = p.S.Emulator.DumpBuffer().TakeLast(500).ToList(); } catch { }  // cap the saved lines
-                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, Buffer = buf });
+                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, Buffer = buf });
                     }
                     wss.Sessions.Add(ss);
                 }
@@ -1360,7 +1360,10 @@ internal partial class Program
                     lock (_workspaces)
                     {
                         for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
+                        {
                             ses.Panes[i].Ratio = pl[i].Ratio > 0 ? pl[i].Ratio : 1f;
+                            ses.Panes[i].AgentResume = string.IsNullOrWhiteSpace(pl[i].AgentResume) ? null : pl[i].AgentResume;
+                        }
                         ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
                     }
                     // Buffer-content restore: seed each pane's scrollback (dimmed) above the fresh shell.
@@ -1383,12 +1386,28 @@ internal partial class Program
                     if (ReferenceEquals(_active, ses)) _session = ses.S;
                     RegridSession(ses);
 
+                    // First-class agent resume (always on, independent of restore-commands): re-launch each
+                    // pane's bound resumable agent once the shell is ready. The agent's launcher wrapper
+                    // (see ClaudeIntegration) re-binds to the same stable pane id and resumes its own session.
+                    for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
+                    {
+                        string agent = pl[i].AgentResume ?? "";
+                        if (agent.Length == 0) continue;
+                        var apane = ses.Panes[i];
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(2500); // let the shell/profile settle so the wrapper function is defined
+                            try { apane.S.Write(System.Text.Encoding.UTF8.GetBytes(agent + "\r")); } catch { }
+                        });
+                    }
+
                     // Opt-in: re-run each pane's captured foreground command once the shell is ready.
                     if (_config.RestoreCommands)
                     {
                         var deny = LoadDenylist();
                         for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
                         {
+                            if (!string.IsNullOrWhiteSpace(pl[i].AgentResume)) continue; // agent panes handled above
                             string cmd = pl[i].Command ?? "";
                             if (cmd.Length == 0) continue;
                             string lead = StripExe(cmd.TrimStart('"').Split(' ', 2)[0]);
