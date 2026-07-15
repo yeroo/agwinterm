@@ -737,11 +737,22 @@ internal partial class Program
 
     private void PasteInto(Pane pane) => PasteTextInto(pane, ClipboardGet());
 
-    /// <summary>Paste literal text into a pane, honoring bracketed-paste mode (shared by Ctrl+V and the API).</summary>
-    private void PasteTextInto(Pane pane, string t)
+    /// <summary>Paste literal text into a pane, honoring bracketed-paste mode (shared by Ctrl+V and the API).
+    /// Interactive pastes are guarded by paste-protection (confirm on newlines/control chars — a shell runs
+    /// each completed line immediately); scripted control-API pastes pass <paramref name="interactive"/>=false
+    /// and never prompt, so agents are unaffected.</summary>
+    private void PasteTextInto(Pane pane, string t, bool interactive = true)
     {
         if (pane.ReadOnly) { ShowToast("pane is read-only"); return; }
         if (t.Length == 0) return;
+        if (interactive && _config.PasteProtection && PastePolicy.NeedsWarning(t, pane.S.Emulator.BracketedPaste))
+        {
+            int lines = PastePolicy.LineCount(t);
+            string msg = lines > 1
+                ? $"Paste {lines} lines into the terminal? A shell may run them immediately."
+                : "The clipboard text contains control characters. Paste anyway?";
+            if (MessageBoxW(_hwnd, msg, "Paste", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+        }
         t = t.Replace("\r\n", "\r").Replace("\n", "\r");
         if (pane.S.Emulator.BracketedPaste) t = "\x1b[200~" + t + "\x1b[201~";
         pane.ScrollOffset = 0; pane.S.NotifyActivity();
