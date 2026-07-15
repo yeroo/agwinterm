@@ -227,6 +227,8 @@ public sealed class TerminalEmulator : IParserPerformer
             case 9:                                              // HT
                 CursorCol = Math.Min(Screen.Cols - 1, ((CursorCol / 8) + 1) * 8);
                 break;
+            case 0: break; // NUL — historical padding, deliberately ignored (would flood the tap)
+            default: Host?.Unhandled("C0", $"0x{control:X2}"); break; // e.g. BEL 0x07 (no bell yet)
         }
     }
 
@@ -238,9 +240,10 @@ public sealed class TerminalEmulator : IParserPerformer
     /// <summary>Active Kitty keyboard flags (0 = legacy encoding).</summary>
     public int KeyboardFlags => _kbdStack.Count > 0 ? _kbdStack.Peek() : 0;
 
-    /// <summary>Raised when the terminal must write a reply to the shell (Kitty query response, etc.).
-    /// The host wires this to the PTY's input.</summary>
-    public event Action<string>? Respond;
+    /// <summary>The host-action seam: notifications, progress, clipboard writes, PTY responses and
+    /// unhandled-sequence taps all flow through this single interface (see <see cref="IHostActions"/>).
+    /// Null = headless (tests, buffer restore) — actions are dropped.</summary>
+    public IHostActions? Host { get; set; }
 
     public void CsiDispatch(char final, IReadOnlyList<int> parameters, char prefix)
     {
@@ -253,7 +256,7 @@ public sealed class TerminalEmulator : IParserPerformer
         {
             switch (prefix)
             {
-                case '?': Respond?.Invoke($"\x1b[?{KeyboardFlags}u"); break;   // report current flags
+                case '?': Host?.Respond($"\x1b[?{KeyboardFlags}u"); break;   // report current flags
                 case '>': _kbdStack.Push(parameters.Count > 0 ? parameters[0] : 0); break;
                 case '=':
                 {
@@ -273,6 +276,8 @@ public sealed class TerminalEmulator : IParserPerformer
         {
             if (final is 'h' or 'l')
                 SetPrivateMode(parameters, set: final == 'h');
+            else
+                Host?.Unhandled("CSI", $"? {string.Join(';', parameters)} {final}"); // e.g. DECRQM ?…$p
             return;
         }
 
@@ -302,6 +307,9 @@ public sealed class TerminalEmulator : IParserPerformer
             case 'P': DeleteChars(P(0, 1)); break;   // DCH
             case 'S': for (int i = 0; i < P(0, 1); i++) ScrollRegionUp(); break;   // SU
             case 'T': for (int i = 0; i < P(0, 1); i++) ScrollRegionDown(); break; // SD
+            default:
+                Host?.Unhandled("CSI", $"{(prefix == '\0' ? "" : prefix + " ")}{string.Join(';', parameters)} {final}");
+                break;
         }
     }
 
@@ -314,6 +322,7 @@ public sealed class TerminalEmulator : IParserPerformer
             case 'D': Index(); break;            // IND
             case 'M': ReverseIndex(); break;     // RI
             case 'E': CursorCol = 0; Index(); break; // NEL
+            default: Host?.Unhandled("ESC", final.ToString()); break;
         }
     }
 
@@ -340,6 +349,7 @@ public sealed class TerminalEmulator : IParserPerformer
                 case 1003: _mouseMotion = set; break;  // any-motion tracking
                 case 1006: _mouseSgr = set; break;     // SGR extended mouse encoding
                 case 2004: BracketedPaste = set; break; // bracketed paste
+                default: Host?.Unhandled("MODE", $"?{mode} {(set ? 'h' : 'l')}"); break;
             }
         }
     }
@@ -415,7 +425,13 @@ public sealed class TerminalEmulator : IParserPerformer
     /// Kitty ids (which are app-chosen positive numbers).</summary>
     private int _sixelSeq = -1;
 
-    public void DcsDispatch(byte[] data) => PlaceSixel(data);
+    public void DcsDispatch(byte[] data)
+    {
+        if (PlaceSixel(data)) return;
+        // Identify non-sixel DCS by its readable prefix (DECRQSS starts "$q", XTGETTCAP "+q", …).
+        string head = Encoding.ASCII.GetString(data, 0, Math.Min(16, data.Length));
+        Host?.Unhandled("DCS", $"{data.Length} bytes \"{head}\"");
+    }
 
     /// <summary>Decode a sixel DCS payload and place it at the cursor (advancing below it). Returns
     /// false if it isn't a valid sixel. Reused by the out-of-band control path (ConPTY strips DCS
@@ -435,7 +451,11 @@ public sealed class TerminalEmulator : IParserPerformer
 
     public void ApcDispatch(string data)
     {
-        if (data.Length == 0 || data[0] != 'G') return; // only Kitty graphics (_G...)
+        if (data.Length == 0 || data[0] != 'G') // only Kitty graphics (_G...)
+        {
+            Host?.Unhandled("APC", data.Length > 24 ? data[..24] + "…" : data);
+            return;
+        }
         string body = data[1..];
         int semi = body.IndexOf(';');
         string control = semi >= 0 ? body[..semi] : body;
@@ -504,20 +524,6 @@ public sealed class TerminalEmulator : IParserPerformer
     private static int GetKittyInt(Dictionary<string, string> d, string key, int def)
         => d.TryGetValue(key, out var v) && int.TryParse(v, out var n) ? n : def;
 
-    /// <summary>Raised when the program requests a desktop notification via OSC 9 or OSC 777
-    /// (title, body). Fires on the feed/pump thread — consumers must marshal to their UI thread.</summary>
-    public event Action<string, string>? Notified;
-
-    /// <summary>Raised for OSC 9;4 progress reports (ConEmu/Windows Terminal convention):
-    /// (state, value) where state = 0 clear | 1 normal | 2 error | 3 indeterminate | 4 paused,
-    /// value = 0–100 for state 1/2/4. Fires on the feed/pump thread.</summary>
-    public event Action<int, int>? Progress;
-
-    /// <summary>Raised when the program writes the clipboard via OSC 52 (decoded text) — e.g. Claude
-    /// Code's auto-copy-on-select. Write-only: read-back queries ("?") are ignored, so a hostile app
-    /// can never exfiltrate the clipboard. Fires on the feed/pump thread.</summary>
-    public event Action<string>? ClipboardWrite;
-
     /// <summary>Strip C0/C1 control characters (and DEL) from an OSC payload. OSC strings feed the
     /// window title, the tracked cwd (later expanded into custom-command text), and notification
     /// toasts — embedded control bytes there are a terminal/shell-injection vector, so they are
@@ -557,15 +563,15 @@ public sealed class TerminalEmulator : IParserPerformer
                     var pp = text.Split(';');
                     int pState = pp.Length > 1 && int.TryParse(pp[1], out int s9) ? s9 : 0;
                     int pValue = pp.Length > 2 && int.TryParse(pp[2], out int v9) ? Math.Clamp(v9, 0, 100) : 0;
-                    Progress?.Invoke(pState, pValue);
+                    Host?.Progress(pState, pValue);
                     break;
                 }
-                Notified?.Invoke("", text);
+                Host?.Notify("", text);
                 break;
             case 777: // OSC 777 ; notify ; <title> ; <body>
                 var parts = text.Split(';');
                 if (parts.Length >= 2 && parts[0] == "notify")
-                    Notified?.Invoke(parts[1], parts.Length >= 3 ? string.Join(';', parts[2..]) : "");
+                    Host?.Notify(parts[1], parts.Length >= 3 ? string.Join(';', parts[2..]) : "");
                 break;
             case 52: // OSC 52 ; Pc ; Pd — program writes the clipboard (base64 payload). Pc (which
             {        // selection) is ignored: everything goes to the system clipboard, like WT.
@@ -581,11 +587,14 @@ public sealed class TerminalEmulator : IParserPerformer
                     // Tolerate unpadded base64 (some emitters strip '=').
                     string decoded = System.Text.Encoding.UTF8.GetString(
                         Convert.FromBase64String(data.PadRight((data.Length + 3) & ~3, '=')));
-                    if (decoded.Length > 0) ClipboardWrite?.Invoke(decoded);
+                    if (decoded.Length > 0) Host?.ClipboardWrite(decoded);
                 }
                 catch (FormatException) { /* malformed base64 — drop */ }
                 break;
             }
+            default:
+                Host?.Unhandled("OSC", $"{command};{(text.Length > 40 ? text[..40] + "…" : text)}");
+                break;
         }
     }
 
