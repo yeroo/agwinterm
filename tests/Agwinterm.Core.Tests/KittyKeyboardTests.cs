@@ -51,11 +51,10 @@ public class KittyKeyboardTests
     public void Query_RespondsWithCurrentFlags()
     {
         var t = new TerminalEmulator(40, 5);
-        string? reply = null;
-        t.Respond += r => reply = r;
+        var host = new RecordingHost(); t.Host = host;
         t.Feed(Encoding.UTF8.GetBytes("\x1b[>7u"));   // enable flags 7
         t.Feed(Encoding.UTF8.GetBytes("\x1b[?u"));    // query
-        Assert.Equal("\x1b[?7u", reply);
+        Assert.Equal("\x1b[?7u", host.Responses.Single());
     }
 
     [Fact]

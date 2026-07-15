@@ -78,10 +78,7 @@ internal partial class Program
         };
         // An explicit --sound on session.status: play its spec (null => default alert).
         session.SoundRequested += PlayStatusSound;
-        session.Emulator.Notified += (title, body) => Post(() => OnNotified(pane, title, body));
-        session.Emulator.Progress += (st, val) => Post(() => OnProgress(st, val));   // OSC 9;4 -> taskbar
-        session.Emulator.ClipboardWrite += text => Post(() => ClipboardSet(text));   // OSC 52 -> system clipboard (e.g. Claude Code auto-copy)
-        session.Emulator.Respond += reply => { session.NotifyActivity(); session.Write(Encoding.UTF8.GetBytes(reply)); };   // Kitty query response -> PTY
+        session.Emulator.Host = new PaneHost(this, pane, session);   // the host-action seam (see IHostActions)
         session.Exited += _ => Post(() => OnPaneProcessExited(pane));   // split survivor promotion (agterm #121)
         var env = new Dictionary<string, string>
         {
@@ -214,6 +211,20 @@ internal partial class Program
             _ = session.StartAsync(cmd, ShellArgs(), extraEnv: env, cwd: pcwd, deElevate: deElevate);        // wrap + omp (cwd-in-title)
         else
             _ = session.StartAsync(cmd, pargs ?? Array.Empty<string>(), extraEnv: env, cwd: pcwd, deElevate: deElevate); // raw shell
+    }
+
+    /// <summary>Per-pane implementation of the emulator's host-action seam. Emulator calls arrive on
+    /// the feed/pump thread (under the session lock) — UI-touching actions marshal via Post; Respond
+    /// writes straight back to the PTY (it must not wait on the UI thread).</summary>
+    private sealed class PaneHost : IHostActions
+    {
+        private readonly Program _app; private readonly Pane _pane; private readonly TerminalSession _s;
+        public PaneHost(Program app, Pane pane, TerminalSession s) { _app = app; _pane = pane; _s = s; }
+        public void Notify(string title, string body) => _app.Post(() => _app.OnNotified(_pane, title, body));
+        public void Progress(int state, int value) => _app.Post(() => _app.OnProgress(state, value));   // OSC 9;4 -> taskbar
+        public void ClipboardWrite(string text) => _app.Post(() => _app.ClipboardSet(text));            // OSC 52 -> system clipboard
+        public void Respond(string reply) { _s.NotifyActivity(); _s.Write(Encoding.UTF8.GetBytes(reply)); } // query reply -> PTY
+        public void Unhandled(string kind, string detail) => VtLog.Write(_pane.Id, kind, detail);       // AGWINTERM_VT_LOG tap
     }
 
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
