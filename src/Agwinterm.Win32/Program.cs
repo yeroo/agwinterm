@@ -146,6 +146,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private float _hotAlpha;   // 0..1 hover-fill alpha (eased by the fade timer)
     private string? _pressBtn; // chrome button id pressed (fires on release over the same button)
     private bool _mouseTracking; // TrackMouseEvent armed (for WM_MOUSELEAVE)
+    private bool _rbtnForwarded; // right-button press was forwarded to the app (mouse reporting), so forward the release too
     private const int HoverTimer = 8;   // WM_TIMER id for the hover fade
     private bool _chromeDark = true; // active theme is dark (set by RecomputeChrome)
     private string? _toastText;
