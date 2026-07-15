@@ -1265,6 +1265,7 @@ internal partial class Program
     private int _geoX, _geoY, _geoW, _geoH;
     private bool _geoMax;
     private bool _wasMaximized;
+    private bool _sizing;                 // inside an interactive resize drag (WM_ENTER/EXITSIZEMOVE)
     private bool _windowActive = true;   // window focus state (drives unfocused-dim)
 
     // ---- Fullscreen (F11 / toggle_fullscreen): borderless over the whole monitor ----

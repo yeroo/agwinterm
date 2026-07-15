@@ -55,6 +55,7 @@ internal static class Win32
     public const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010, SWP_FRAMECHANGED = 0x0020;
 
     // Window move/resize + placement (for persisting geometry).
+    public const uint WM_ENTERSIZEMOVE = 0x0231;
     public const uint WM_EXITSIZEMOVE = 0x0232;
     public const int SIZE_RESTORED = 0, SIZE_MAXIMIZED = 2;
 
