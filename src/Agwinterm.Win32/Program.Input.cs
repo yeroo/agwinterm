@@ -169,6 +169,8 @@ internal partial class Program
     private void InstallHooks() => RunInstaller(Agwinterm.Pty.AgentHooks.Install);
     /// <summary>Migrate pre-launcher Claude sessions: bind each pane to resume its current conversation.</summary>
     private void MakeClaudeResumable() => ShowToast(AdoptClaudeSessions(), 3200);
+    /// <summary>Restart the active pane's Claude in YOLO mode (--dangerously-skip-permissions), resumed.</summary>
+    private void RestartClaudeYoloActive() { var p = ActiveSurface(); ShowToast(p is null ? "no active pane" : RestartClaudeYolo(p), 2500); }
     /// <summary>Opt-in: install the agent skill (teaches agents to drive agwinterm via agwintermctl).</summary>
     private void InstallSkill() => RunInstaller(Agwinterm.Pty.AgentSkill.Install);
 

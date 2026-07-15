@@ -165,6 +165,10 @@ public interface ISessionHost
     /// resume that conversation on restart (for sessions started before the launcher wrapper). Returns a summary.</summary>
     string AdoptClaude();
 
+    /// <summary>Restart the target pane's Claude in YOLO mode (--dangerously-skip-permissions), resuming its
+    /// current conversation, and persist that as the pane's relaunch command. Null target = the active pane.</summary>
+    string RestartClaudeYolo(string? target);
+
     /// <summary>Focus/unfocus the active workspace (hide the others in the sidebar tree): op = on|off|toggle.</summary>
     void WorkspaceFocus(string op);
 
@@ -257,6 +261,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;
     public string AdoptClaude() => "unsupported";
+    public string RestartClaudeYolo(string? target) => "unsupported";
     public void WorkspaceFocus(string op) { }
     public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => "unsupported";
     public string SessionSwitch(string op) => "unsupported";

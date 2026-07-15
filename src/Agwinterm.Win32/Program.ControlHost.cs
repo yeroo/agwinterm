@@ -558,6 +558,12 @@ internal partial class Program
 
         public string AdoptClaude() => InvokeOnUi(() => AdoptClaudeSessions());
 
+        public string RestartClaudeYolo(string? target) => InvokeOnUi(() =>
+        {
+            var p = string.IsNullOrEmpty(target) ? ActiveSurface() : (FindPaneById(target!)?.pane ?? ActiveSurface());
+            return p is null ? "no pane" : RestartClaudeYolo(p);
+        });
+
         public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => InvokeOnUi(() =>
         {
             var ses = FindSesForTarget(target);

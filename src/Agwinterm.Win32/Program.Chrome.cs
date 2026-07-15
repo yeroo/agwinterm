@@ -805,6 +805,7 @@ internal partial class Program
                 A("Install Command-Line Tool (PATH)", "", InstallCli);
                 A("Install Agent Status Hooks", "", InstallHooks);
                 A("Make Claude Sessions Resumable", "", MakeClaudeResumable);
+                A("Restart Claude in YOLO Mode", "", RestartClaudeYoloActive);
                 A("Install Agent Skill", "", InstallSkill);
                 A("Install Shell Integration", "", InstallShellIntegration);
                 A("Reload Keymap", "", ReloadKeymap);

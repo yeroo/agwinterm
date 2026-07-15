@@ -199,6 +199,8 @@ public sealed class ControlServer : IDisposable
                     return host.SessionBind(target, GetString(args, "agent") ?? "claude") ? Ok("bound") : Err("session not found");
                 case "claude.adopt":
                     return Ok(host.AdoptClaude());
+                case "claude.yolo":
+                    return Ok(host.RestartClaudeYolo(target));
                 case "workspace.focus": host.WorkspaceFocus(GetString(args, "op") ?? "toggle"); return Ok("focus");
                 case "session.background":
                     return Ok(host.SessionBackground(target, GetString(args, "action") ?? "set",
