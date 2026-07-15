@@ -246,6 +246,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public required string Id;
         public required TerminalSession S;
         public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
+        public string? AgentResume; // resumable agent bound to this pane (e.g. "claude") — relaunched on restart
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
@@ -328,6 +329,7 @@ internal partial class Program : ISessionHost, IWindowHost
     // ---- CLI launch args (wt-style, applied to the first window): ----
     //   Agwinterm.Win32.exe [-p|--profile NAME] [-d|--dir PATH] [--maximized] [--fullscreen]
     private static bool _argNoRestore;   // --no-restore: fresh window, don't reopen the saved tree (elevated launch)
+    private static string _argPipe = "agwinterm";   // --pipe <name>: control-pipe name (isolate a test instance)
     private static string? _argProfile;
     private static string? _argDir;
     private static bool _argMaximized, _argFullscreen;
@@ -343,6 +345,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 case "--maximized": _argMaximized = true; break;
                 case "--fullscreen": _argFullscreen = true; break;
                 case "--no-restore": _argNoRestore = true; break;
+                case "--pipe" when i + 1 < args.Length: _argPipe = args[++i]; break;
                 // unknown args are ignored (forward compatibility)
             }
         }
@@ -992,7 +995,7 @@ internal partial class Program : ISessionHost, IWindowHost
         // One control server for the whole app (one pipe); it resolves --window through the library.
         if (_control is null)
         {
-            _control = new ControlServer(this, this, "agwinterm");
+            _control = new ControlServer(this, this, _argPipe);
             _control.Start();
             // Default-terminal handoff (T2-13): register the COM class factory so conhost can hand
             // console sessions to this instance. Each handoff opens a new attached session.

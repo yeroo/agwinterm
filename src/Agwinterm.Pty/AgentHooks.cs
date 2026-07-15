@@ -40,7 +40,7 @@ public static class AgentHooks
           $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe, [System.IO.Pipes.PipeDirection]::InOut)
           $c.Connect(1000)
           $w = New-Object System.IO.StreamWriter($c); $w.AutoFlush = $true
-          $w.WriteLine('{"cmd":"session.status","args":{"status":"' + $state + '"}}')
+          $w.WriteLine('{"cmd":"session.status","target":"' + $env:AGWINTERM_SESSION_ID + '","args":{"status":"' + $state + '"}}')
           $c.Dispose()
         } catch { }
         exit 0
@@ -56,7 +56,7 @@ public static class AgentHooks
           $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe, [System.IO.Pipes.PipeDirection]::InOut)
           $c.Connect(1000)
           $w = New-Object System.IO.StreamWriter($c); $w.AutoFlush = $true
-          $w.WriteLine('{"cmd":"session.status","args":{"status":"' + $State + '"}}')
+          $w.WriteLine('{"cmd":"session.status","target":"' + $env:AGWINTERM_SESSION_ID + '","args":{"status":"' + $State + '"}}')
           $c.Dispose()
         } catch { }
         exit 0
@@ -170,6 +170,9 @@ public static class AgentHooks
             lines.Add("    " + tomlLine);
         }
         catch (Exception ex) { lines.Add("Codex: failed to write notify script: " + ex.Message); }
+
+        // --- Claude launcher: transparent `claude` wrapper (session-id binding + auto-resume) ---
+        lines.Add("Claude launcher: " + ClaudeIntegration.Install());
 
         // --- Generic agents: PowerShell-profile bridge keyed off $env:AGWINTERM_AGENT_RE ---
         lines.Add("Generic: " + GenericAgentInstaller.Install());

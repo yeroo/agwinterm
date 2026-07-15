@@ -46,6 +46,12 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
   double-click to jump in; or drive it with `agwintermctl dashboard <ids>`.
 - **Agent status** per session (idle / active / blocked / completed) as a colored dot + title-bar
   bell — driven by your agent via hooks or the control API, with blink, auto-reset, and sounds.
+  Run `agwintermctl install hooks` (or the palette entry) once to wire Claude Code / Codex up.
+- **Claude Code session binding & auto-resume**: the same installer adds a transparent `claude`
+  wrapper (active only inside agwinterm) that ties Claude's session id to the agwinterm pane. You
+  just type `claude` — a fresh pane starts a bound session, and a pane that already has a transcript
+  **resumes** it. On restart, agwinterm re-launches each bound pane and the conversation comes back —
+  no guessing which shell was which.
 - **A scriptable control API**: `agwintermctl` (or newline-JSON over a named pipe) — any language can
   drive it, including full **read-back** (tree with split ratios + pane ids, window state, session
   output). Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.

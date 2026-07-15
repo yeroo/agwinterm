@@ -143,6 +143,25 @@ public class ControlApiTests
     }
 
     [Fact]
+    public void SessionBind_SetsAndClearsAgent()
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "session.bind", new { agent = "claude" }, target: "s1");
+        Assert.True(Ok(r));
+        Assert.Equal("claude", host.ActiveSess!.AgentResume);
+        Dispatch(server, "session.bind", new { agent = "none" }, target: "s1");
+        Assert.Null(host.ActiveSess.AgentResume);
+    }
+
+    [Fact]
+    public void SessionBind_UnknownTarget_Fails()
+    {
+        var (server, _) = New();
+        var r = Dispatch(server, "session.bind", new { agent = "claude" }, target: "nope");
+        Assert.False(Ok(r));
+    }
+
+    [Fact]
     public void CloseSession_RemovesIt()
     {
         var (server, host) = New();

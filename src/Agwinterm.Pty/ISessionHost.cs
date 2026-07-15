@@ -156,6 +156,11 @@ public interface ISessionHost
     /// Returns false if a per-session op targets a session that isn't found; "clear" always succeeds.</summary>
     bool SessionFlag(string? target, string op);
 
+    /// <summary>Bind a resumable agent (e.g. "claude") to the target pane so restart re-launches it and the
+    /// agent resumes its own session. <paramref name="agent"/> = "" or "none" clears the binding.
+    /// Returns false if the target pane isn't found.</summary>
+    bool SessionBind(string? target, string agent);
+
     /// <summary>Focus/unfocus the active workspace (hide the others in the sidebar tree): op = on|off|toggle.</summary>
     void WorkspaceFocus(string op);
 
@@ -246,6 +251,7 @@ public sealed class SingleSessionHost : ISessionHost
     public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block) => "no overlay";
     public bool Notify(string? target, string? title, string body) => false;
     public bool SessionFlag(string? target, string op) => false;
+    public bool SessionBind(string? target, string agent) => false;
     public void WorkspaceFocus(string op) { }
     public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => "unsupported";
     public string SessionSwitch(string op) => "unsupported";

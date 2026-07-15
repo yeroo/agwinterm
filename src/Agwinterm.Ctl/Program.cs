@@ -169,6 +169,7 @@ switch (area)
                 break;
             case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
             case "flag": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|clear
+            case "bind": cargs["agent"] = rest.Count > 0 ? rest[0] : "claude"; break; // bind a resumable agent (claude) | none to clear
             case "background": // session background set <path> [--opacity N] [--mode fit|fill|center|tile] | background clear
                 cargs["action"] = rest.Count > 0 ? rest[0] : "set";
                 if (rest.Count > 1) cargs["path"] = string.Join(' ', rest.Skip(1));
