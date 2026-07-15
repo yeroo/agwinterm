@@ -145,6 +145,24 @@ dotnet run --project src/Agwinterm.Win32 -c Release
 ./installer/build-portable.ps1
 ```
 
+### Dev builds run side-by-side with the installed release
+
+A **Debug** build uses a separate instance identity, `agwinterm-dev`, so it keeps its **own** data
+dir (`%LOCALAPPDATA%\agwinterm-dev`: config, sessions, keymap, themes) and its **own** control pipe —
+it never touches, or fights over the pipe with, your installed **Release** (`agwinterm`). So you can
+daily-drive the release and run dev builds at the same time.
+
+```powershell
+dotnet run --project src/Agwinterm.Win32           # Debug -> the "agwinterm-dev" instance
+agwintermctl --pipe agwinterm-dev tree             # drive the dev instance from outside
+agwintermctl tree                                  # (default pipe) drives the release
+```
+
+Inside any session, `AGWINTERM_PIPE` is already set, so a bare `agwintermctl` auto-targets the
+instance it's running in. Force a specific identity with `--app-id <name>` or `AGWINTERM_APP_ID`
+(handy for a second throwaway instance). Dev builds also skip registering as the default-terminal
+COM server, so they never intercept the release's console handoffs.
+
 ## Control it from anything (`agwintermctl`)
 
 agwinterm is scriptable through a local named pipe speaking newline-delimited JSON, with

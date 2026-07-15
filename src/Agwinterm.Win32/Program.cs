@@ -331,8 +331,39 @@ internal partial class Program : ISessionHost, IWindowHost
     // ---- CLI launch args (wt-style, applied to the first window): ----
     //   Agwinterm.Win32.exe [-p|--profile NAME] [-d|--dir PATH] [--maximized] [--fullscreen]
     private static bool _argNoRestore;   // --no-restore: fresh window, don't reopen the saved tree (elevated launch)
-    private static string _argPipe = "agwinterm";   // --pipe <name>: control-pipe name (isolate a test instance)
+    private static string? _argPipe;     // --pipe <name>: control-pipe name (default = the instance id)
     private static string? _argProfile;
+
+    // Instance identity: namespaces the data dir (%LOCALAPPDATA%\<id>), control pipe, and window/tray title
+    // so a dev build and the installed release keep entirely separate configs, sessions, and control surface
+    // and never step on each other. A Debug build defaults to "agwinterm-dev"; the shipped Release build is
+    // "agwinterm". Override with --app-id <name> or AGWINTERM_APP_ID for extra parallel instances.
+    private static readonly string _appId = ResolveAppId();
+    private static bool IsDev => _appId != "agwinterm";
+    internal static string AppName => _appId;
+
+    private static string ResolveAppId()
+    {
+        var args = Environment.GetCommandLineArgs();
+        for (int i = 1; i < args.Length - 1; i++)
+            if (args[i].Equals("--app-id", StringComparison.OrdinalIgnoreCase))
+                return SanitizeId(args[i + 1]);
+        if (Environment.GetEnvironmentVariable("AGWINTERM_APP_ID") is { Length: > 0 } env)
+            return SanitizeId(env);
+#if DEBUG
+        return "agwinterm-dev";
+#else
+        return "agwinterm";
+#endif
+    }
+
+    /// <summary>Reduce an app-id to a safe file/pipe token (letters, digits, dash, underscore, dot).</summary>
+    private static string SanitizeId(string s)
+    {
+        var chars = s.Trim().Where(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.').ToArray();
+        var id = new string(chars);
+        return string.IsNullOrEmpty(id) ? "agwinterm" : id;
+    }
     private static string? _argDir;
     private static bool _argMaximized, _argFullscreen;
 
@@ -348,6 +379,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 case "--fullscreen": _argFullscreen = true; break;
                 case "--no-restore": _argNoRestore = true; break;
                 case "--pipe" when i + 1 < args.Length: _argPipe = args[++i]; break;
+                case "--app-id" when i + 1 < args.Length: ++i; break; // consumed by ResolveAppId (namespaces data dir + pipe)
                 // unknown args are ignored (forward compatibility)
             }
         }
@@ -359,6 +391,9 @@ internal partial class Program : ISessionHost, IWindowHost
     private static void Main(string[] args)
     {
         ParseLaunchArgs(args);
+        // Publish the resolved instance id so child processes and shared (Pty) helpers resolve the same
+        // data dir — and a nested agwinterm inherits the dev/release identity of the one that launched it.
+        Environment.SetEnvironmentVariable("AGWINTERM_APP_ID", _appId);
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         // Process-global setup (config/themes/keymap + window class + shared D2D/DWrite objects).
         _config = LoadOrCreateConfig();
@@ -452,9 +487,9 @@ internal partial class Program : ISessionHost, IWindowHost
         if (_geoValid) ClampGeoToVisibleScreen(ref _geoX, ref _geoY, ref _geoW, ref _geoH);
         _creating = this;                    // so the WindowProc trampoline can resolve us during CreateWindowExW
         _hwnd = _geoValid
-            ? CreateWindowExW(0, ClassName, "agwinterm", WS_OVERLAPPEDWINDOW,
+            ? CreateWindowExW(0, ClassName, AppName, WS_OVERLAPPEDWINDOW,
                 _geoX, _geoY, _geoW, _geoH, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero)
-            : CreateWindowExW(0, ClassName, "agwinterm", WS_OVERLAPPEDWINDOW,
+            : CreateWindowExW(0, ClassName, AppName, WS_OVERLAPPEDWINDOW,
                 CW_USEDEFAULT, CW_USEDEFAULT, 1040, 660, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
         _creating = null;
         if (_hwnd == IntPtr.Zero)
@@ -1002,13 +1037,15 @@ internal partial class Program : ISessionHost, IWindowHost
         // One control server for the whole app (one pipe); it resolves --window through the library.
         if (_control is null)
         {
-            _control = new ControlServer(this, this, _argPipe);
+            _control = new ControlServer(this, this, _argPipe ?? _appId);
             _control.Start();
             // Default-terminal handoff (T2-13): register the COM class factory so conhost can hand
             // console sessions to this instance. Each handoff opens a new attached session.
             DefTerm.OnHandoff = args => Post(() =>
                 CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true, handoff: args));
-            try { DefTerm.RegisterServer(); } catch { /* defterm not registered / unsupported */ }
+            // Dev builds don't register as the default-terminal COM server — that CLSID is owned by the
+            // installed release, and a dev instance must not intercept the OS's console handoffs.
+            if (!IsDev) { try { DefTerm.RegisterServer(); } catch { /* defterm not registered / unsupported */ } }
             // UIA (T2-14): expose the active pane's visible text to screen readers.
             Uia.GetVisibleText = () =>
             {

@@ -314,8 +314,7 @@ internal partial class Program
         return _leaderPending ? "pending" : "idle"; // "state"
     }
 
-    private static string KeymapPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "keymap.conf");
+    private static string KeymapPath => Path.Combine(AppDir, "keymap.conf");
 
     private static void LoadKeymap()
     {
