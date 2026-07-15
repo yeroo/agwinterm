@@ -26,6 +26,34 @@ public class ScrollbackTests
     }
 
     [Fact]
+    public void ScrollGeneration_BumpsOnScroll_NotOnInPlaceRewrite()
+    {
+        var t = new TerminalEmulator(10, 3);
+        // Fill the 3 visible rows without overflowing — no scroll yet.
+        Feed(t, "L1\r\nL2\r\nL3");
+        long g0 = t.ScrollGeneration;
+
+        // In-place repaint: move the cursor home and rewrite the same region (what a TUI like Claude Code
+        // does every frame). CUP to 1;1, overwrite rows — this must NOT scroll, so the generation is flat.
+        Feed(t, "\x1b[1;1HR1\x1b[2;1HR2\x1b[3;1HR3");
+        Assert.Equal(g0, t.ScrollGeneration); // selection would survive this
+
+        // A genuine newline at the bottom row scrolls one line into history — generation advances.
+        Feed(t, "\r\nNEW");
+        Assert.True(t.ScrollGeneration > g0);
+    }
+
+    [Fact]
+    public void ScrollGeneration_KeepsClimbingAfterCap()
+    {
+        var t = new TerminalEmulator(10, 3) { ScrollbackMax = 50 };
+        for (int i = 0; i < 400; i++) Feed(t, "X\r\n");
+        // HistoryCount saturates near the cap, but the monotonic generation reflects every real scroll.
+        Assert.InRange(t.HistoryCount, 50, 50 + 512);
+        Assert.InRange(t.ScrollGeneration, 390, 400); // ~398 real scrolls (3-row screen), far above the 50-row cap
+    }
+
+    [Fact]
     public void ScrollbackCap_DropsOldest()
     {
         var t = new TerminalEmulator(10, 3) { ScrollbackMax = 100 };

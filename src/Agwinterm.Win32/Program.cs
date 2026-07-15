@@ -250,6 +250,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
+        public long LastScrollGen; // emulator ScrollGeneration last seen on output (detects real scroll vs in-place repaint)
         public int Unread;         // unread desktop-notification count (OSC 9/777 / notify) since last visit
         public bool ReadOnly;      // block keyboard input to this pane (protect a running agent from stray keys)
         // Text selection (absolute line index: [0..HistoryCount) history, then the live grid rows).

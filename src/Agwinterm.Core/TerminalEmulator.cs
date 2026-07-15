@@ -55,6 +55,12 @@ public sealed class TerminalEmulator : IParserPerformer
     /// <summary>Rows of scrollback available above the live screen (main screen only).</summary>
     public int HistoryCount => _history.Count;
 
+    /// <summary>Monotonic count of lines ever scrolled into history. Unlike <see cref="HistoryCount"/> this
+    /// keeps climbing after scrollback fills (eviction), so it's a reliable "the viewport content shifted"
+    /// signal. Stays flat during in-place repaints (TUIs like Claude Code redrawing without scrolling),
+    /// which lets a mouse selection survive those repaints.</summary>
+    public long ScrollGeneration { get; private set; }
+
     /// <summary>Read a scrolled-off cell; history row 0 is the oldest. Pads to the current width.</summary>
     public Cell GetHistoryCell(int historyRow, int col)
     {
@@ -69,6 +75,7 @@ public sealed class TerminalEmulator : IParserPerformer
         var row = new Cell[cols];
         Screen.CopyRowTo(0, row);
         _history.Add(row);
+        ScrollGeneration++;
         if (_history.Count > ScrollbackMax + TrimSlack)
         {
             int trim = _history.Count - ScrollbackMax;
