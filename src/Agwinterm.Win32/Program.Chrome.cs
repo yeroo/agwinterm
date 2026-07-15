@@ -804,6 +804,7 @@ internal partial class Program
                 // Opt-in integrations (agterm's Help-menu trio + shell) — the installer stays minimal.
                 A("Install Command-Line Tool (PATH)", "", InstallCli);
                 A("Install Agent Status Hooks", "", InstallHooks);
+                A("Make Claude Sessions Resumable", "", MakeClaudeResumable);
                 A("Install Agent Skill", "", InstallSkill);
                 A("Install Shell Integration", "", InstallShellIntegration);
                 A("Reload Keymap", "", ReloadKeymap);

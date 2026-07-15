@@ -205,6 +205,7 @@ switch (area)
             default: Console.Error.WriteLine($"unknown command '{area} {sub}'"); return 2;
         }
         break;
+    case "claude" when sub == "adopt": cmd = "claude.adopt"; break; // bind existing claude convos to their panes
     case "theme" when sub == "list": cmd = "theme.list"; break;
     case "theme" when sub == "set":
         cmd = "theme.set";

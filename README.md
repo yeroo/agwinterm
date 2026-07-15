@@ -51,7 +51,9 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
   wrapper (active only inside agwinterm) that ties Claude's session id to the agwinterm pane. You
   just type `claude` — a fresh pane starts a bound session, and a pane that already has a transcript
   **resumes** it. On restart, agwinterm re-launches each bound pane and the conversation comes back —
-  no guessing which shell was which.
+  no guessing which shell was which. Already had Claude running before installing this? Run
+  `agwintermctl claude adopt` (or palette → *Make Claude Sessions Resumable*) once to bind your
+  existing conversations to their panes.
 - **A scriptable control API**: `agwintermctl` (or newline-JSON over a named pipe) — any language can
   drive it, including full **read-back** (tree with split ratios + pane ids, window state, session
   output). Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.

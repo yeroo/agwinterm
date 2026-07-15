@@ -161,6 +161,10 @@ public interface ISessionHost
     /// Returns false if the target pane isn't found.</summary>
     bool SessionBind(string? target, string agent);
 
+    /// <summary>One-time migration: bind every pane that has an existing Claude transcript for its cwd to
+    /// resume that conversation on restart (for sessions started before the launcher wrapper). Returns a summary.</summary>
+    string AdoptClaude();
+
     /// <summary>Focus/unfocus the active workspace (hide the others in the sidebar tree): op = on|off|toggle.</summary>
     void WorkspaceFocus(string op);
 
@@ -252,6 +256,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool Notify(string? target, string? title, string body) => false;
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;
+    public string AdoptClaude() => "unsupported";
     public void WorkspaceFocus(string op) { }
     public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => "unsupported";
     public string SessionSwitch(string op) => "unsupported";
