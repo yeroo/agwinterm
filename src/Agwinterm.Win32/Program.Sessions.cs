@@ -222,7 +222,13 @@ internal partial class Program
         public PaneHost(Program app, Pane pane, TerminalSession s) { _app = app; _pane = pane; _s = s; }
         public void Notify(string title, string body) => _app.Post(() => _app.OnNotified(_pane, title, body));
         public void Progress(int state, int value) => _app.Post(() => _app.OnProgress(state, value));   // OSC 9;4 -> taskbar
-        public void ClipboardWrite(string text) => _app.Post(() => _app.ClipboardSet(text));            // OSC 52 -> system clipboard
+        public void ClipboardWrite(string text)                                                        // OSC 52 -> system clipboard
+        {
+            // Policy at the seam (Ghostty's clipboard-write = allow|deny): the emulator emits the
+            // action unconditionally; the host decides. Denials are visible in the VT log.
+            if (!Program._config.ClipboardWrite) { VtLog.Write(_pane.Id, "OSC", $"52 clipboard write DENIED by config ({text.Length} chars)"); return; }
+            _app.Post(() => _app.ClipboardSet(text));
+        }
         public void Respond(string reply) { _s.NotifyActivity(); _s.Write(Encoding.UTF8.GetBytes(reply)); } // query reply -> PTY
         public void Unhandled(string kind, string detail) => VtLog.Write(_pane.Id, kind, detail);       // AGWINTERM_VT_LOG tap
     }
