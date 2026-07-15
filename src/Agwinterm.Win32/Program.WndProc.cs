@@ -413,14 +413,20 @@ internal partial class Program
                 if (InContent(lParam))
                 {
                     var em2 = _session?.Emulator;
-                    if (em2 is not null && em2.MouseReporting) SendMousePx(2, lParam, true);
-                    else if (_config.RightClickPaste && (PaneAt(LoWord(lParam), HiWord(lParam))?.pane ?? ActiveSurface()) is { } pp)
+                    // Paste-on-right-click (when enabled) wins over app mouse reporting: TUIs like
+                    // Claude Code keep mouse mode on the whole time, which used to make the setting
+                    // dead exactly where pasting matters most. Apps that need the right button can
+                    // still get it by turning the setting off.
+                    if (_config.RightClickPaste && (PaneAt(LoWord(lParam), HiWord(lParam))?.pane ?? ActiveSurface()) is { } pp)
                         PasteInto(pp);
+                    else if (em2 is not null && em2.MouseReporting) { SendMousePx(2, lParam, true); _rbtnForwarded = true; }
                     return IntPtr.Zero;
                 }
                 break; // sidebar/chrome: let DefWindowProc raise WM_CONTEXTMENU so the row menu shows
             case WM_RBUTTONUP:
-                if (InContent(lParam)) { SendMousePx(2, lParam, false); return IntPtr.Zero; }
+                // Only send the release if we forwarded the press — a paste must not leak an
+                // orphan button-2 release into the app.
+                if (InContent(lParam)) { if (_rbtnForwarded) { _rbtnForwarded = false; SendMousePx(2, lParam, false); } return IntPtr.Zero; }
                 break; // sidebar/chrome: fall through to DefWindowProc -> WM_CONTEXTMENU
 
             case WM_MOUSEMOVE:

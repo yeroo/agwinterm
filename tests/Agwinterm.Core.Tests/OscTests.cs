@@ -175,4 +175,53 @@ public class OscTests
         var t = Feed("\x1b]2;normal title \u2014 \u00FCn\u00EFcode ok\x07");
         Assert.Equal("normal title \u2014 \u00FCn\u00EFcode ok", t.Title);
     }
+
+    // ---- OSC 52: program-initiated clipboard write (e.g. Claude Code's auto-copy-on-select) ----
+
+    private static (TerminalEmulator t, List<string> writes) ClipboardHarness()
+    {
+        var t = new TerminalEmulator(40, 3);
+        var writes = new List<string>();
+        t.ClipboardWrite += s => writes.Add(s);
+        return (t, writes);
+    }
+
+    [Fact]
+    public void Osc52_DecodesBase64AndFiresClipboardWrite()
+    {
+        var (t, writes) = ClipboardHarness();
+        string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("hello clipboard"));
+        t.Feed(Encoding.UTF8.GetBytes($"\x1b]52;c;{b64}\x07"));
+        Assert.Equal(new[] { "hello clipboard" }, writes);
+    }
+
+    [Fact]
+    public void Osc52_ToleratesUnpaddedBase64AndUtf8()
+    {
+        var (t, writes) = ClipboardHarness();
+        // "\u00FCn\u00EFcode\u2122" encodes with padding; strip it to simulate emitters that drop '='.
+        string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("\u00FCn\u00EFcode\u2122")).TrimEnd('=');
+        t.Feed(Encoding.UTF8.GetBytes($"\x1b]52;c;{b64}\x1b\\"));
+        Assert.Equal(new[] { "\u00FCn\u00EFcode\u2122" }, writes);
+    }
+
+    [Fact]
+    public void Osc52_IgnoresQueryEmptyAndMalformed()
+    {
+        var (t, writes) = ClipboardHarness();
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]52;c;?\x07"));          // read-back query \u2014 never answered
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]52;c;\x07"));           // empty payload
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]52;c;!!notbase64!!\x07")); // malformed base64
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]52;justonefield\x07")); // no payload separator
+        Assert.Empty(writes);
+    }
+
+    [Fact]
+    public void Osc52_SelectionTargetIsIgnoredEverythingGoesToClipboard()
+    {
+        var (t, writes) = ClipboardHarness();
+        string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("primary"));
+        t.Feed(Encoding.UTF8.GetBytes($"\x1b]52;p;{b64}\x07"));     // "p" (primary) still lands
+        Assert.Equal(new[] { "primary" }, writes);
+    }
 }

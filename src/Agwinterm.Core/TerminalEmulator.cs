@@ -513,6 +513,11 @@ public sealed class TerminalEmulator : IParserPerformer
     /// value = 0–100 for state 1/2/4. Fires on the feed/pump thread.</summary>
     public event Action<int, int>? Progress;
 
+    /// <summary>Raised when the program writes the clipboard via OSC 52 (decoded text) — e.g. Claude
+    /// Code's auto-copy-on-select. Write-only: read-back queries ("?") are ignored, so a hostile app
+    /// can never exfiltrate the clipboard. Fires on the feed/pump thread.</summary>
+    public event Action<string>? ClipboardWrite;
+
     /// <summary>Strip C0/C1 control characters (and DEL) from an OSC payload. OSC strings feed the
     /// window title, the tracked cwd (later expanded into custom-command text), and notification
     /// toasts — embedded control bytes there are a terminal/shell-injection vector, so they are
@@ -562,6 +567,25 @@ public sealed class TerminalEmulator : IParserPerformer
                 if (parts.Length >= 2 && parts[0] == "notify")
                     Notified?.Invoke(parts[1], parts.Length >= 3 ? string.Join(';', parts[2..]) : "");
                 break;
+            case 52: // OSC 52 ; Pc ; Pd — program writes the clipboard (base64 payload). Pc (which
+            {        // selection) is ignored: everything goes to the system clipboard, like WT.
+                int semi = text.IndexOf(';');
+                if (semi < 0) break;
+                string data = text[(semi + 1)..];
+                // "?" is a read-back query — never answered (clipboard exfiltration). Cap the payload
+                // so a runaway sequence can't balloon memory (4MB base64 ≈ 3MB text, far above any
+                // real selection).
+                if (data.Length == 0 || data == "?" || data.Length > 4_000_000) break;
+                try
+                {
+                    // Tolerate unpadded base64 (some emitters strip '=').
+                    string decoded = System.Text.Encoding.UTF8.GetString(
+                        Convert.FromBase64String(data.PadRight((data.Length + 3) & ~3, '=')));
+                    if (decoded.Length > 0) ClipboardWrite?.Invoke(decoded);
+                }
+                catch (FormatException) { /* malformed base64 — drop */ }
+                break;
+            }
         }
     }
 

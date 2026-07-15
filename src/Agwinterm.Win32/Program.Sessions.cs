@@ -80,6 +80,7 @@ internal partial class Program
         session.SoundRequested += PlayStatusSound;
         session.Emulator.Notified += (title, body) => Post(() => OnNotified(pane, title, body));
         session.Emulator.Progress += (st, val) => Post(() => OnProgress(st, val));   // OSC 9;4 -> taskbar
+        session.Emulator.ClipboardWrite += text => Post(() => ClipboardSet(text));   // OSC 52 -> system clipboard (e.g. Claude Code auto-copy)
         session.Emulator.Respond += reply => { session.NotifyActivity(); session.Write(Encoding.UTF8.GetBytes(reply)); };   // Kitty query response -> PTY
         session.Exited += _ => Post(() => OnPaneProcessExited(pane));   // split survivor promotion (agterm #121)
         var env = new Dictionary<string, string>
