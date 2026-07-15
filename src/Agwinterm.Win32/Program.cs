@@ -237,6 +237,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private static IDWriteTextFormat _uiSmallCenter = null!;   // horizontally centered (panel buttons)
     private static IDWriteTextFormat _uiTitle = null!;      // single centered title-bar line (vertically centered + ellipsized)
     private static IDWriteInlineObject _ellipsis = null!;   // "…" trimming sign for the title (kept alive)
+    private static IDWriteInlineObject? _sidebarEllipsis;   // "…" trimming sign for sidebar names (rebuilt with the font)
     private static IDWriteTextFormat _iconFont = null!;
     private static IDWriteTextFormat _iconSmall = null!;   // small Fluent glyphs (e.g. the row flag marker)
 
@@ -555,8 +556,13 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         float px = System.Math.Clamp(_config.SidebarFontSize, 9, 20);
         _sidebarFont?.Dispose(); _sidebarSmall?.Dispose();
+        try { _sidebarEllipsis?.Dispose(); } catch { }
         _sidebarFont = NewChromeFormat("Segoe UI", px, center: false);
         _sidebarSmall = NewChromeFormat("Segoe UI", System.Math.Max(9f, px - 1.5f), center: false);
+        // Trim over-long names with a "…" (esp. once the font is enlarged) so they never spill over the
+        // right-aligned status dot. Paired with DrawTextOptions.Clip at the draw sites.
+        _sidebarEllipsis = _dwrite.CreateEllipsisTrimmingSign(_sidebarFont);
+        _sidebarFont.SetTrimming(new Trimming { Granularity = TrimmingGranularity.Character }, _sidebarEllipsis);
     }
 
     private static IDWriteTextFormat NewChromeFormat(string family, float px, bool center)

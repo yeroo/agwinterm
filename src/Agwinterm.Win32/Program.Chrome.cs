@@ -57,7 +57,10 @@ internal partial class Program
         rt.FillRectangle(new Rect(0, TitleBarH, _sidebarW, ClientH()), brush);
 
         float rowsBottom = ClientH() - FooterH; // stop the list above the footer toolbar
-        float rowH = _cellH + 8f;
+        // Row height tracks the LARGER of the terminal cell and the sidebar font, so enlarging the
+        // sidebar font gives the names room to breathe instead of cramping them into a cell-sized row.
+        float sbPx = System.Math.Clamp(_config.SidebarFontSize, 9, 20);
+        float rowH = MathF.Max(_cellH + 8f, MathF.Ceiling(sbPx * 1.5f) + 6f);
         float y = TitleBarH + PadY;
 
         if (_sidebarMode == SidebarMode.Flagged) { DrawFlaggedList(rt, brush, ref y, rowH, rowsBottom); }
@@ -96,7 +99,8 @@ internal partial class Program
             brush.Color = SbHeaderText;
             rt.DrawText(expanded ? "▾" : "▸", _format, TextRect(6f, y, 18f, rowH), brush); // chevron (mono, top-aligned)
             if (!ReferenceEquals(_editing, ws)) // the rename box covers the name while editing
-                rt.DrawText(ws.Name, _sidebarFont, new Rect(24f, y, _sidebarW - 48f, rowH), brush);
+                // Clip + ellipsis so a long workspace name (or enlarged font) stops before the session count.
+                rt.DrawText(ws.Name, _sidebarFont, new Rect(24f, y, _sidebarW - 56f, rowH), brush, DrawTextOptions.Clip);
             rt.DrawText(sessions.Count.ToString(), _sidebarSmall, new Rect(_sidebarW - 28f, y, 22f, rowH), brush);
             _sidebarRows.Add((y, y + rowH, true, ws));
             y += rowH;
@@ -177,7 +181,8 @@ internal partial class Program
         bool isDrag = _dragging && ReferenceEquals(s, _dragItem);
         brush.Color = isDrag ? new Color4(0.5f, 0.53f, 0.57f, 0.45f) : (active ? SbActiveText : SbDimText);
         if (!ReferenceEquals(_editing, s)) // the rename box covers the name while editing
-            rt.DrawText(s.Name, _sidebarFont, new Rect(nameX, y, _sidebarW - nameX - 22f, rowH), brush);
+            // Clip + ellipsis-trim so a long name (or an enlarged sidebar font) never spills over the dot.
+            rt.DrawText(s.Name, _sidebarFont, new Rect(nameX, y, _sidebarW - nameX - 22f, rowH), brush, DrawTextOptions.Clip);
         // Unread-notification count badge, just left of the status circle (can be hidden; the count still tracks).
         int unread = UnreadOf(s);
         if (unread > 0 && _config.NotificationBadges)
