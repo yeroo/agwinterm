@@ -1144,7 +1144,7 @@ internal partial class Program
     /// Best-effort foreground-command capture: for each shell PID, the command line of its most
     /// recently started non-denylisted child. One CIM process snapshot for all panes; ~1s at quit.
     /// </summary>
-    private static Dictionary<int, string> CaptureForegroundCommands(IEnumerable<int> shellPids)
+    private static Dictionary<int, string> CaptureForegroundCommands(IEnumerable<int> shellPids, int timeoutMs = 4000)
     {
         var result = new Dictionary<int, string>();
         var pids = shellPids.Distinct().ToHashSet();
@@ -1158,7 +1158,7 @@ internal partial class Program
             using var proc = System.Diagnostics.Process.Start(psi);
             if (proc is null) return result;
             string json = proc.StandardOutput.ReadToEnd();
-            if (!proc.WaitForExit(4000)) { try { proc.Kill(); } catch { } return result; }
+            if (!proc.WaitForExit(timeoutMs)) { try { proc.Kill(); } catch { } return result; }
             if (string.IsNullOrWhiteSpace(json)) return result;
 
             using var doc = JsonDocument.Parse(json);

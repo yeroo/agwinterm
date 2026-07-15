@@ -699,23 +699,52 @@ internal partial class Program
         return cwd;
     }
 
-    /// <summary>The id of the newest Claude conversation for a folder (its current session), or null if none.
-    /// Honors CLAUDE_CONFIG_DIR; uses the same project-dir encoding as Claude Code and the launcher wrapper.</summary>
-    private static string? NewestClaudeSessionId(string cwd)
+    /// <summary>The Claude transcript directory for a folder (honors CLAUDE_CONFIG_DIR; same project-dir
+    /// encoding as Claude Code and the launcher wrapper), or null for a blank cwd.</summary>
+    private static string? ClaudeProjectDir(string cwd)
     {
         if (string.IsNullOrWhiteSpace(cwd)) return null;
         string? cfg = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
         string projects = string.IsNullOrWhiteSpace(cfg)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects")
             : Path.Combine(cfg, "projects");
-        string dir = Path.Combine(projects, EncodeClaudeProject(cwd));
-        if (!Directory.Exists(dir)) return null;
+        return Path.Combine(projects, EncodeClaudeProject(cwd));
+    }
+
+    /// <summary>Whether a Claude conversation transcript with this exact id exists for the folder.
+    /// The launcher wrapper keys Claude's session id to the PANE id, so this is the per-pane test.</summary>
+    private static bool ClaudeTranscriptExists(string cwd, string id)
+    {
+        try { return ClaudeProjectDir(cwd) is { } dir && File.Exists(Path.Combine(dir, id + ".jsonl")); }
+        catch { return false; }
+    }
+
+    /// <summary>The id of the newest Claude conversation for a folder not already in <paramref name="claimed"/>,
+    /// or null. A folder-level heuristic: with several panes in one folder it CANNOT tell their conversations
+    /// apart, so callers must prefer per-pane evidence (pane-id transcript, running command line) first.</summary>
+    private static string? NewestClaudeSessionId(string cwd, ISet<string>? claimed = null)
+    {
+        string? dir = ClaudeProjectDir(cwd);
+        if (dir is null || !Directory.Exists(dir)) return null;
         try
         {
-            var newest = new DirectoryInfo(dir).GetFiles("*.jsonl").OrderByDescending(f => f.LastWriteTimeUtc).FirstOrDefault();
-            return newest is null ? null : Path.GetFileNameWithoutExtension(newest.Name);
+            foreach (var f in new DirectoryInfo(dir).GetFiles("*.jsonl").OrderByDescending(f => f.LastWriteTimeUtc))
+            {
+                string id = Path.GetFileNameWithoutExtension(f.Name);
+                if (claimed is null || !claimed.Contains(id)) return id;
+            }
+            return null;
         }
         catch { return null; }
+    }
+
+    /// <summary>Extract an explicit conversation id (--resume/-r/--session-id &lt;uuid&gt;) from a Claude
+    /// command line, or null when it doesn't carry one.</summary>
+    private static string? ExtractClaudeSessionArg(string commandLine)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(commandLine,
+            @"(?:--resume|-r|--session-id)[\s=]+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})");
+        return m.Success ? m.Groups[1].Value : null;
     }
 
     /// <summary>Restart the Claude Code running in a pane in YOLO mode (--dangerously-skip-permissions),
@@ -723,16 +752,31 @@ internal partial class Program
     /// resumed + dangerous, and persists that as the pane's relaunch command so restarts stay YOLO.</summary>
     private string RestartClaudeYolo(Pane p)
     {
-        string? id = NewestClaudeSessionId(PaneCwd(p));
-        // Resume the existing conversation if we found one; otherwise start a fresh YOLO session.
-        string cmd = id is null
-            ? "claude --dangerously-skip-permissions"
-            : $"claude --resume {id} --dangerously-skip-permissions";
-        p.AgentResume = cmd;   // future restarts stay YOLO
-        SaveState();
         var pane = p;
         _ = Task.Run(async () =>
         {
+            // Resolve WHICH conversation to resume — per-pane, off the UI thread, and BEFORE quitting
+            // Claude (its command line is the evidence). Precedence: the pane's own transcript (the
+            // launcher wrapper keys Claude's session id to the pane id) → an explicit id on the running
+            // Claude's command line → the folder's newest transcript. The last is folder-level and used
+            // to bind every same-folder pane to ONE conversation when it ran first.
+            string cwd = PaneCwd(pane);
+            string? id;
+            if (ClaudeTranscriptExists(cwd, pane.Id)) id = pane.Id;
+            else
+            {
+                // Generous timeout: a cold CIM/powershell start can take >4s, and we're already off
+                // the UI thread — better to wait than to mis-bind the pane.
+                id = pane.S.ChildProcessId is int spid
+                     && CaptureForegroundCommands(new[] { spid }, timeoutMs: 15000).TryGetValue(spid, out var running)
+                    ? ExtractClaudeSessionArg(running) : null;
+                id ??= NewestClaudeSessionId(cwd);
+            }
+            // Resume the existing conversation if we found one; otherwise start a fresh YOLO session.
+            string cmd = id is null
+                ? "claude --dangerously-skip-permissions"
+                : $"claude --resume {id} --dangerously-skip-permissions";
+            Post(() => { pane.AgentResume = cmd; SaveState(); });   // future restarts stay YOLO
             // Quit the running Claude (Ctrl+C twice = exit), wait for it to actually be gone, then relaunch.
             try { pane.S.Write(new byte[] { 0x03 }); } catch { }
             await Task.Delay(350);
@@ -754,7 +798,7 @@ internal partial class Program
             await Task.Delay(300);                          // let the shell repaint its prompt and start reading input
             try { pane.S.Write(System.Text.Encoding.UTF8.GetBytes(cmd + "\r")); } catch { }
         });
-        return id is null ? "restarting Claude in YOLO mode (fresh session)" : "restarting Claude in YOLO mode (resumed)";
+        return "restarting Claude in YOLO mode";
     }
 
     /// <summary>One-time migration for sessions started BEFORE the claude launcher existed: for each pane,
@@ -765,11 +809,32 @@ internal partial class Program
         List<Pane> panes;
         lock (_workspaces) panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToList();
 
+        // One process query for all panes up front: a running Claude's explicit --resume/--session-id is
+        // the best per-pane evidence. (Blocks the UI thread a moment — adopt is an explicit one-shot verb;
+        // generous timeout because a cold CIM start can take >4s and a mis-bind is worse than a wait.)
+        var byPid = CaptureForegroundCommands(
+            panes.Select(p => p.S.ChildProcessId).Where(id => id is > 0).Select(id => id!.Value), timeoutMs: 15000);
+
+        // Pass 1 — strong per-pane evidence claims its conversation: the pane's own transcript (the
+        // launcher wrapper keys Claude's session id to the pane id) or the running command line's id.
+        // Pass 2 — the rest fall back to the folder's newest UNCLAIMED transcript, so several panes in
+        // one folder can never all be bound to the same conversation (a pane gets nothing rather than
+        // a sibling's conversation — a wrong resume is worse than no resume).
+        var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var strong = new Dictionary<Pane, string>();
+        foreach (var p in panes)
+        {
+            string? id = ClaudeTranscriptExists(PaneCwd(p), p.Id) ? p.Id
+                : p.S.ChildProcessId is int pid && byPid.TryGetValue(pid, out var running)
+                    ? ExtractClaudeSessionArg(running) : null;
+            if (id is not null) { strong[p] = id; claimed.Add(id); }
+        }
         int adopted = 0;
         foreach (var p in panes)
         {
-            string? id = NewestClaudeSessionId(PaneCwd(p));
+            string? id = strong.TryGetValue(p, out var s) ? s : NewestClaudeSessionId(PaneCwd(p), claimed);
             if (id is null) continue;
+            if (!strong.ContainsKey(p)) claimed.Add(id);
             // Store the full resume command; the restore path types it verbatim and the claude wrapper (or the
             // real CLI) honors --resume, so the exact conversation comes back on every relaunch.
             p.AgentResume = "claude --resume " + id;
@@ -783,15 +848,23 @@ internal partial class Program
 
     private (Pane pane, Ses? ses, bool cover)? FindPaneById(string id)
     {
+        // Exact match first, then id prefix — the control API's documented target semantics
+        // (matches Resolve/PaneForTarget). Exact-only here made prefix-targeted verbs (e.g.
+        // `claude yolo --target <prefix>`) silently fall back to the ACTIVE pane instead.
+        return FindPaneBy(p => p.Id == id) ?? FindPaneBy(p => p.Id.StartsWith(id, StringComparison.Ordinal));
+    }
+
+    private (Pane pane, Ses? ses, bool cover)? FindPaneBy(Func<Pane, bool> match)
+    {
         lock (_workspaces)
             foreach (var w in _workspaces)
                 foreach (var s in w.Sessions)
                 {
-                    foreach (var p in s.Panes) if (p.Id == id) return (p, s, false);
-                    if (s.Scratch is { } sc && sc.Id == id) return (sc, s, true);
-                    if (s.Overlay is { } ov && ov.Id == id) return (ov, s, true);
+                    foreach (var p in s.Panes) if (match(p)) return (p, s, false);
+                    if (s.Scratch is { } sc && match(sc)) return (sc, s, true);
+                    if (s.Overlay is { } ov && match(ov)) return (ov, s, true);
                 }
-        if (_quick is { } q && q.Id == id) return (q, null, true);
+        if (_quick is { } q && match(q)) return (q, null, true);
         return null;
     }
 
