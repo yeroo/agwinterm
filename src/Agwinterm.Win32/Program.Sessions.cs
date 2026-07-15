@@ -793,7 +793,7 @@ internal partial class Program
         float half = cur.Ratio / 2f;
         cur.Ratio = half; np.Ratio = half;
         int idx = ses.Panes.IndexOf(cur);
-        ses.Panes.Insert(idx + 1, np);
+        lock (_workspaces) ses.Panes.Insert(idx + 1, np);   // exclude the control-pipe reader mid-enumeration (issue #85)
         ses.Active = idx + 1;            // focus the new pane
         _session = ses.S;
         RegridSession(ses);
@@ -825,7 +825,7 @@ internal partial class Program
         var cur = ses.ActivePane;
         int idx = ses.Panes.IndexOf(cur);
         try { cur.S.Dispose(); } catch { }
-        ses.Panes.RemoveAt(idx);
+        lock (_workspaces) ses.Panes.RemoveAt(idx);   // exclude the control-pipe reader mid-enumeration (issue #85)
         float freed = cur.Ratio / ses.Panes.Count;
         foreach (var p in ses.Panes) p.Ratio += freed;   // redistribute the freed width
         ses.Active = Math.Clamp(idx, 0, ses.Panes.Count - 1);
@@ -1115,7 +1115,9 @@ internal partial class Program
         if (ses is null || ses.Panes.Count <= 1) return;
         var keep = ses.Panes[0];   // agterm: collapsing the split keeps the primary (left) pane, not whichever is focused
         foreach (var p in ses.Panes) if (!ReferenceEquals(p, keep)) { try { p.S.Dispose(); } catch { } }
-        ses.Panes.Clear(); ses.Panes.Add(keep); keep.Ratio = 1f; ses.Active = 0;
+        // Clear+Add as one atomic step so the control-pipe reader never sees an empty pane list (issue #85).
+        lock (_workspaces) { ses.Panes.Clear(); ses.Panes.Add(keep); }
+        keep.Ratio = 1f; ses.Active = 0;
         _session = ses.S;
         RegridSession(ses); RequestRedraw(); SaveState();
     }
