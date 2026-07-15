@@ -162,6 +162,16 @@ public class ControlApiTests
     }
 
     [Fact]
+    public void ClaudeAdopt_BindsSessions()
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "claude.adopt");
+        Assert.True(Ok(r));
+        Assert.Contains("adopted", Result(r));
+        Assert.Equal("claude --resume x", host.ActiveSess!.AgentResume);
+    }
+
+    [Fact]
     public void CloseSession_RemovesIt()
     {
         var (server, host) = New();

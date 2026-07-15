@@ -556,6 +556,8 @@ internal partial class Program
             return true;
         }
 
+        public string AdoptClaude() => InvokeOnUi(() => AdoptClaudeSessions());
+
         public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => InvokeOnUi(() =>
         {
             var ses = FindSesForTarget(target);

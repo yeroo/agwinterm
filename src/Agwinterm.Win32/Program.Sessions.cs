@@ -652,6 +652,52 @@ internal partial class Program
 
     /// <summary>Resolve a pane by id across split panes, per-session scratch/overlay, and the quick terminal
     /// (so <c>agwintermctl font --target &lt;paneId&gt;</c> can zoom a specific pane). Null if no pane matches.</summary>
+    /// <summary>Claude's per-project transcript dir name: the cwd with every non-alphanumeric byte turned
+    /// into '-' (matches the encoding in the ClaudeIntegration wrapper and Claude Code itself).</summary>
+    private static string EncodeClaudeProject(string path)
+    {
+        var sb = new StringBuilder(path.Length);
+        foreach (char c in path)
+            sb.Append((c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9') ? c : '-');
+        return sb.ToString();
+    }
+
+    /// <summary>One-time migration for sessions started BEFORE the claude launcher existed: for each pane,
+    /// find the newest Claude transcript for its cwd (its current conversation) and bind the pane to resume
+    /// exactly that on restart. Idempotent; re-running just refreshes the bindings. Returns a summary.</summary>
+    internal string AdoptClaudeSessions()
+    {
+        string? cfg = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+        string projects = string.IsNullOrWhiteSpace(cfg)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects")
+            : Path.Combine(cfg, "projects");
+
+        List<Pane> panes;
+        lock (_workspaces) panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToList();
+
+        int adopted = 0;
+        foreach (var p in panes)
+        {
+            string cwd = PrettyCwd(SafeCwd(p));
+            if (string.IsNullOrWhiteSpace(cwd) || !Directory.Exists(cwd)) cwd = p.StartCwd ?? "";
+            if (string.IsNullOrWhiteSpace(cwd)) continue;
+            string dir = Path.Combine(projects, EncodeClaudeProject(cwd));
+            if (!Directory.Exists(dir)) continue;
+            FileInfo? newest = null;
+            try { newest = new DirectoryInfo(dir).GetFiles("*.jsonl").OrderByDescending(f => f.LastWriteTimeUtc).FirstOrDefault(); }
+            catch { }
+            if (newest is null) continue;
+            // Store the full resume command; the restore path types it verbatim and the claude wrapper (or the
+            // real CLI) honors --resume, so the exact conversation comes back on every relaunch.
+            p.AgentResume = "claude --resume " + Path.GetFileNameWithoutExtension(newest.Name);
+            adopted++;
+        }
+        if (adopted > 0) { SaveState(); RequestRedraw(); }
+        return adopted == 0
+            ? "no adoptable Claude sessions found (no transcript matched any pane's folder)"
+            : $"adopted {adopted} Claude session(s) — restart agwinterm to resume them (or type the resume yourself now)";
+    }
+
     private (Pane pane, Ses? ses, bool cover)? FindPaneById(string id)
     {
         lock (_workspaces)
