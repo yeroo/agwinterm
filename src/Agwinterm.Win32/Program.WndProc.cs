@@ -208,7 +208,12 @@ internal partial class Program
                     if (w > 0 && h > 0)
                     {
                         _rt.Resize(new SizeI(w, h));
-                        if (_active is not null) RegridSession(_active);
+                        // During an interactive drag, only the visible session tracks each tick (cheap +
+                        // responsive). A non-drag size change (maximize / snap / restore) is a settled size,
+                        // so sync EVERY session now — that keeps inactive PTYs window-sized and means a later
+                        // session-switch never resizes (no alt-screen clear, no blank pane on slow machines).
+                        if (_sizing) { if (_active is not null) RegridSession(_active); }
+                        else RegridAllSessions();
                         if (_cover is not null) RegridCover();
                         InvalidateRect(hwnd, IntPtr.Zero, false);
                     }
@@ -217,8 +222,14 @@ internal partial class Program
                 { bool z = IsZoomed(hwnd); if (z != _wasMaximized) { _wasMaximized = z; SaveState(); } }
                 return IntPtr.Zero;
 
+            case WM_ENTERSIZEMOVE:
+                _sizing = true;
+                return IntPtr.Zero;
+
             case WM_EXITSIZEMOVE:
-                SaveState(); // persist geometry after a manual move/resize drag
+                _sizing = false;
+                RegridAllSessions(); // drag settled: bring every inactive session up to the final size
+                SaveState();         // persist geometry after a manual move/resize drag
                 return IntPtr.Zero;
 
             case WM_KEYDOWN:

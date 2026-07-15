@@ -356,6 +356,17 @@ internal partial class Program
         return list;
     }
 
+    /// <summary>Regrid EVERY session (not just the active one) to the current window/sidebar size, so an
+    /// inactive session's PTY never lags behind the window. Without this, switching to a session that was
+    /// inactive during a resize would resize its PTY on activation — which clears a TUI's alt-screen buffer
+    /// and leaves the pane blank until the app repaints (and an idle Claude Code may not repaint until you
+    /// type). Keeping all sessions window-sized means switching never resizes, so it's instant and never blank.</summary>
+    private void RegridAllSessions()
+    {
+        foreach (var s in AllSessions()) RegridSession(s);
+        if (_cover is not null) RegridCover();
+    }
+
     /// <summary>Resize every pane's PTY grid to fit its column using the pane's own font metrics.</summary>
     private void RegridSession(Ses ses)
     {
