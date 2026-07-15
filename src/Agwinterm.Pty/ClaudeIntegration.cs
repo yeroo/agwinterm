@@ -24,14 +24,14 @@ public static class ClaudeIntegration
         """
         if ($env:AGWINTERM -eq '1' -and -not $global:__agwClaude) {
           $global:__agwClaude = $true
-          function global:__agwBindClaude([string]$sid) {
+          function global:__agwBindClaude([string]$sid, [string]$agent = 'claude') {
             if (-not $sid) { return }
             $pipe = if ($env:AGWINTERM_PIPE) { $env:AGWINTERM_PIPE } else { 'agwinterm' }
             try {
               $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe, [System.IO.Pipes.PipeDirection]::InOut)
               $c.Connect(300)
               $w = New-Object System.IO.StreamWriter($c); $w.AutoFlush = $true
-              $w.WriteLine('{"cmd":"session.bind","target":"' + $sid + '","args":{"agent":"claude"}}')
+              $w.WriteLine('{"cmd":"session.bind","target":"' + $sid + '","args":{"agent":"' + $agent + '"}}')
               $c.Dispose()
             } catch { }
           }
@@ -42,29 +42,56 @@ public static class ClaudeIntegration
             if (-not $real) { Write-Error 'claude: executable not found on PATH'; return }
             $uuid = $sid -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
             # If the user is already steering the session (resume/continue/explicit id) or running headless,
-            # don't inject or bind — just pass through untouched.
-            $ctl = $false
-            foreach ($a in $args) { if ($a -in '-r','--resume','-c','--continue','--session-id','-p','--print') { $ctl = $true; break } }
+            # don't inject or bind — just pass through untouched. Permission-mode flags are remembered in
+            # the binding so a restored session comes back with the same mode (e.g. YOLO stays YOLO).
+            $ctl = $false; $yolo = $false
+            foreach ($a in $args) {
+              if ($a -in '-r','--resume','-c','--continue','--session-id','-p','--print') { $ctl = $true }
+              if ($a -eq '--dangerously-skip-permissions') { $yolo = $true }
+            }
             if (-not $sid -or -not $uuid -or $ctl) { & $real.Source @args; return }
             $cfg = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
             $enc = ($PWD.ProviderPath -replace '[^A-Za-z0-9]','-')   # Claude's per-project dir encoding
             $tx  = Join-Path $cfg (Join-Path 'projects' (Join-Path $enc ($sid + '.jsonl')))
-            __agwBindClaude $sid
+            __agwBindClaude $sid $(if ($yolo) { 'claude --dangerously-skip-permissions' } else { 'claude' })
             if (Test-Path -LiteralPath $tx) { & $real.Source --resume $sid @args }
             else { & $real.Source --session-id $sid @args }
           }
         }
         """ + "\n" + End;
 
-    /// <summary>Append the block to the profile if not already present. Idempotent. Returns a summary.</summary>
+    internal enum BlockState { Missing, Current, Stale, Corrupted }
+
+    /// <summary>Classify the launcher block inside profile text; for <see cref="BlockState.Stale"/>,
+    /// <paramref name="updated"/> is the profile text with the block replaced by the current version.</summary>
+    internal static BlockState InspectBlock(string existing, out string updated)
+    {
+        updated = existing;
+        int b = existing.IndexOf(Begin, StringComparison.Ordinal);
+        if (b < 0) return BlockState.Missing;
+        int e = existing.IndexOf(End, b, StringComparison.Ordinal);
+        if (e < 0) return BlockState.Corrupted;
+        if (existing[b..(e + End.Length)] == Block) return BlockState.Current;
+        updated = existing[..b] + Block + existing[(e + End.Length)..];
+        return BlockState.Stale;
+    }
+
+    /// <summary>Append the block to the profile if not already present; replace an installed block whose
+    /// content is stale (older wrapper version). Idempotent. Returns a summary.</summary>
     public static string Install()
     {
         string path = ShellIntegrationInstaller.ProfilePath();
         try
         {
             string existing = File.Exists(path) ? File.ReadAllText(path) : "";
-            if (existing.Contains(Begin))
-                return "claude launcher already installed -> " + path;
+            switch (InspectBlock(existing, out string updated))
+            {
+                case BlockState.Current: return "claude launcher already installed -> " + path;
+                case BlockState.Corrupted: return "claude launcher block is corrupted (no end sentinel) — fix " + path + " by hand";
+                case BlockState.Stale:
+                    File.WriteAllText(path, updated);
+                    return "updated claude launcher to the current version -> " + path;
+            }
 
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             string sep = existing.Length == 0 ? "" : (existing.EndsWith("\n") ? "\n" : "\n\n");
@@ -75,5 +102,21 @@ public static class ClaudeIntegration
         {
             return "failed to install claude launcher: " + ex.Message;
         }
+    }
+
+    /// <summary>Refresh the installed block to the current version if (and only if) an older one is present —
+    /// run at startup so wrapper fixes reach users who installed the launcher once and never re-ran install.
+    /// Never installs fresh (that stays opt-in via install.hooks). Returns null when nothing changed.</summary>
+    public static string? RefreshIfInstalled()
+    {
+        try
+        {
+            string path = ShellIntegrationInstaller.ProfilePath();
+            if (!File.Exists(path)) return null;
+            if (InspectBlock(File.ReadAllText(path), out string updated) != BlockState.Stale) return null;
+            File.WriteAllText(path, updated);
+            return "claude launcher updated -> " + path;
+        }
+        catch { return null; }    // best-effort: a locked/readonly profile must not break startup
     }
 }

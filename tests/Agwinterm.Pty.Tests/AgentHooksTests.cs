@@ -71,4 +71,38 @@ public class AgentHooksTests
         Assert.Contains("session.bind", block);          // marks the pane resumable in agwinterm
         Assert.Contains("$env:AGWINTERM -eq '1'", block); // only active inside agwinterm
     }
+
+    [Fact]
+    public void ClaudeLauncher_PersistsDangerouslySkipPermissionsInBinding()
+    {
+        // A YOLO-launched claude must restore as YOLO: the wrapper detects the flag and binds the
+        // full relaunch command, which the restore path types verbatim.
+        string block = ClaudeIntegration.Block;
+        Assert.Contains("'--dangerously-skip-permissions'", block);                       // flag detection
+        Assert.Contains("'claude --dangerously-skip-permissions'", block);                // bound relaunch command
+        Assert.Contains("\"agent\":\"' + $agent + '\"", block);                           // bind carries the command
+    }
+
+    [Fact]
+    public void InspectBlock_MissingCurrentStaleCorrupted()
+    {
+        // Missing: no sentinel at all.
+        Assert.Equal(ClaudeIntegration.BlockState.Missing, ClaudeIntegration.InspectBlock("# my profile\n", out _));
+
+        // Current: exactly the shipped block.
+        string profile = "# above\n" + ClaudeIntegration.Block + "\n# below\n";
+        Assert.Equal(ClaudeIntegration.BlockState.Current, ClaudeIntegration.InspectBlock(profile, out _));
+
+        // Stale: an older wrapper between the same sentinels gets replaced in place, neighbors intact.
+        string stale = "# above\n# >>> agwinterm claude integration >>>\nold wrapper\n# <<< agwinterm claude integration <<<\n# below\n";
+        Assert.Equal(ClaudeIntegration.BlockState.Stale, ClaudeIntegration.InspectBlock(stale, out string updated));
+        Assert.Contains(ClaudeIntegration.Block, updated);
+        Assert.DoesNotContain("old wrapper", updated);
+        Assert.StartsWith("# above\n", updated);
+        Assert.EndsWith("\n# below\n", updated);
+
+        // Corrupted: begin sentinel without end — leave alone, report.
+        Assert.Equal(ClaudeIntegration.BlockState.Corrupted,
+            ClaudeIntegration.InspectBlock("# >>> agwinterm claude integration >>>\nhalf a block", out _));
+    }
 }
