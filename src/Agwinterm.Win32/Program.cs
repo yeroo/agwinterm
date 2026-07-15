@@ -336,23 +336,27 @@ internal partial class Program : ISessionHost, IWindowHost
 
     // Instance identity: namespaces the data dir (%LOCALAPPDATA%\<id>), control pipe, and window/tray title
     // so a dev build and the installed release keep entirely separate configs, sessions, and control surface
-    // and never step on each other. A Debug build defaults to "agwinterm-dev"; the shipped Release build is
-    // "agwinterm". Override with --app-id <name> or AGWINTERM_APP_ID for extra parallel instances.
+    // and never step on each other. A Debug build is ALWAYS "agwinterm-dev"; the shipped Release build is
+    // "agwinterm". Override with --app-id <name>; a Release build also inherits AGWINTERM_APP_ID (nesting).
     private static readonly string _appId = ResolveAppId();
     private static bool IsDev => _appId != "agwinterm";
     internal static string AppName => _appId;
 
     private static string ResolveAppId()
     {
+        // An explicit --app-id always wins.
         var args = Environment.GetCommandLineArgs();
         for (int i = 1; i < args.Length - 1; i++)
             if (args[i].Equals("--app-id", StringComparison.OrdinalIgnoreCase))
                 return SanitizeId(args[i + 1]);
-        if (Environment.GetEnvironmentVariable("AGWINTERM_APP_ID") is { Length: > 0 } env)
-            return SanitizeId(env);
 #if DEBUG
+        // A Debug build is dev PERIOD — it must not adopt a release identity just because it was launched
+        // from inside a release session (which exports AGWINTERM_APP_ID), or it would collide with it.
         return "agwinterm-dev";
 #else
+        // Release: inherit AGWINTERM_APP_ID so a nested agwinterm shares its parent's identity, else default.
+        if (Environment.GetEnvironmentVariable("AGWINTERM_APP_ID") is { Length: > 0 } env)
+            return SanitizeId(env);
         return "agwinterm";
 #endif
     }
