@@ -57,9 +57,16 @@ internal partial class Program
         var session = new TerminalSession(cols, rows);
         session.Emulator.ScrollbackMax = _config.Scrollback;
         var pane = new Pane { Id = paneId, S = session, StartCwd = cwd, FontSize = fontSize };
-        // New output snaps this pane back to the live bottom (so output jumps you out of scrollback)
-        // and clears any selection (its absolute coordinates would otherwise shift under new history).
-        session.OutputReceived += () => { pane.ScrollOffset = 0; pane.ClearSel(); RequestRedraw(); };
+        // New output only snaps this pane back to the live bottom and drops the selection when the buffer
+        // ACTUALLY scrolled (a line pushed into history) — not on every repaint. TUIs like Claude Code
+        // redraw in place without scrolling, so a mouse selection now survives those frames and Ctrl+C can
+        // copy it (previously any repaint wiped the selection microseconds after you made it). #copy-selection
+        session.OutputReceived += () =>
+        {
+            long gen = session.Emulator.ScrollGeneration;
+            if (gen != pane.LastScrollGen) { pane.LastScrollGen = gen; pane.ScrollOffset = 0; pane.ClearSel(); }
+            RequestRedraw();
+        };
         // On a transition INTO blocked, play the configured blocked-sound (best-effort, off the UI thread).
         AgentStatus lastStatus = session.Status;
         session.StatusChanged += () =>
