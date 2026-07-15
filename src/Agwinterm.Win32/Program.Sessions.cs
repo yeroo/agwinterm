@@ -252,6 +252,34 @@ internal partial class Program
         });
     }
 
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern bool Process32FirstW(IntPtr snapshot, ref PROCESSENTRY32W entry);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern bool Process32NextW(IntPtr snapshot, ref PROCESSENTRY32W entry);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct PROCESSENTRY32W
+    {
+        public uint dwSize; public uint cntUsage; public uint th32ProcessID; public UIntPtr th32DefaultHeapID;
+        public uint th32ModuleID; public uint cntThreads; public uint th32ParentProcessID; public int pcPriClassBase;
+        public uint dwFlags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
+    }
+
+    /// <summary>Whether <paramref name="pid"/> has any live direct child process — i.e. the shell is still
+    /// running a foreground command. One Toolhelp snapshot pass (~ms), no WMI. Null when the snapshot
+    /// itself fails (caller should fall back to a fixed delay rather than treat it as "idle").</summary>
+    private static bool? HasLiveChildProcess(int pid)
+    {
+        IntPtr snap = CreateToolhelp32Snapshot(0x2 /*TH32CS_SNAPPROCESS*/, 0);
+        if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return null;
+        try
+        {
+            var e = new PROCESSENTRY32W { dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32W>() };
+            if (!Process32FirstW(snap, ref e)) return null;
+            do { if (e.th32ParentProcessID == (uint)pid) return true; } while (Process32NextW(snap, ref e));
+            return false;
+        }
+        finally { CloseHandle(snap); }
+    }
+
     /// <summary>True if this process is running elevated (admin). Uses the token's actual elevation
     /// state (TokenElevation), NOT group membership — a non-elevated admin user is correctly false.</summary>
     private static bool IsElevated()
@@ -704,11 +732,25 @@ internal partial class Program
         var pane = p;
         _ = Task.Run(async () =>
         {
-            // Quit the running Claude (Ctrl+C twice = exit), let the shell settle, then relaunch.
+            // Quit the running Claude (Ctrl+C twice = exit), wait for it to actually be gone, then relaunch.
             try { pane.S.Write(new byte[] { 0x03 }); } catch { }
             await Task.Delay(350);
             try { pane.S.Write(new byte[] { 0x03 }); } catch { }
-            await Task.Delay(1200);
+            // A fixed delay raced Claude's exit on slow machines — the typed relaunch landed in Claude's
+            // own prompt instead of the shell. Poll the shell's child processes until the foreground
+            // command (Claude's node) is gone, capped so a hung/ignoring process can't stall us forever.
+            int shellPid = pane.S.ChildProcessId ?? 0;
+            bool sawIdle = false;
+            if (shellPid > 0)
+                for (int i = 0; i < 100; i++)   // ≤ 30s
+                {
+                    await Task.Delay(300);
+                    bool? busy = HasLiveChildProcess(shellPid);
+                    if (busy is null) break;               // snapshot failed → fixed-delay fallback below
+                    if (busy is false) { sawIdle = true; break; }
+                }
+            if (!sawIdle) await Task.Delay(1200);           // old behavior when we couldn't confirm the exit
+            await Task.Delay(300);                          // let the shell repaint its prompt and start reading input
             try { pane.S.Write(System.Text.Encoding.UTF8.GetBytes(cmd + "\r")); } catch { }
         });
         return id is null ? "restarting Claude in YOLO mode (fresh session)" : "restarting Claude in YOLO mode (resumed)";

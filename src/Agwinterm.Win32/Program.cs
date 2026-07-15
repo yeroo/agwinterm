@@ -1043,6 +1043,9 @@ internal partial class Program : ISessionHost, IWindowHost
         {
             _control = new ControlServer(this, this, _argPipe ?? _appId);
             _control.Start();
+            // Keep an already-installed claude launcher current (wrapper fixes ship with the app but the
+            // block lives in the user's profile). Refresh-only: never installs fresh, best-effort.
+            _ = Task.Run(Agwinterm.Pty.ClaudeIntegration.RefreshIfInstalled);
             // Default-terminal handoff (T2-13): register the COM class factory so conhost can hand
             // console sessions to this instance. Each handoff opens a new attached session.
             DefTerm.OnHandoff = args => Post(() =>

@@ -9,4 +9,7 @@
     <PackageReference Include="Porta.Pty" Version="1.0.7" />
     <ProjectReference Include="../Agwinterm.Core/Agwinterm.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Agwinterm.Pty.Tests" />
+  </ItemGroup>
 </Project>
