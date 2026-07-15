@@ -13,6 +13,26 @@ public class TerminalConfigTests
         Assert.Equal(CursorStyle.Bar, c.CursorStyle);
         Assert.True(c.CursorBlink);
         Assert.Equal(530, c.CursorBlinkMs);
+        Assert.True(c.PasteProtection);   // WT/Ghostty default: warn on risky pastes
+        Assert.True(c.ClipboardWrite);    // OSC 52 writes allowed by default
+    }
+
+    [Fact]
+    public void ClipboardPolicyKeys_Parse()
+    {
+        var c = TerminalConfig.Parse("paste-protection = false\nclipboard-write = false\n");
+        Assert.False(c.PasteProtection);
+        Assert.False(c.ClipboardWrite);
+        var on = TerminalConfig.Parse("paste-protection = on\nclipboard-write = yes\n");
+        Assert.True(on.PasteProtection);
+        Assert.True(on.ClipboardWrite);
+    }
+
+    [Fact]
+    public void Template_DocumentsClipboardPolicyKeys()
+    {
+        Assert.Contains("paste-protection", TerminalConfig.DefaultText);
+        Assert.Contains("clipboard-write", TerminalConfig.DefaultText);
     }
 
     [Fact]

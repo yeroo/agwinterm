@@ -55,6 +55,17 @@ public sealed class TerminalConfig
     /// sending an interrupt to the shell. With no selection, Ctrl+C still interrupts. Default on.</summary>
     public bool CopyOnCtrlC { get; set; } = true;
 
+    /// <summary>Warn before an interactive paste whose text contains newlines (a shell runs each
+    /// completed line immediately) or control characters (escape injection). Bracketed-paste-aware:
+    /// multi-line into a bracketed-paste app doesn't warn. Scripted pastes via the control API never
+    /// prompt. Default on (Windows Terminal / Ghostty behavior).</summary>
+    public bool PasteProtection { get; set; } = true;
+
+    /// <summary>Allow programs to write the system clipboard via OSC 52 (e.g. Claude Code's
+    /// auto-copy-on-select). Set false to deny; denials are visible in AGWINTERM_VT_LOG.
+    /// Reads are always refused regardless. Default on.</summary>
+    public bool ClipboardWrite { get; set; } = true;
+
     /// <summary>Characters that DELIMIT words for double-click selection (in addition to whitespace).
     /// Empty = whitespace only (double-click grabs a whole path/URL). WT's wordDelimiters analog.</summary>
     public string WordDelimiters { get; set; } = "";
@@ -179,6 +190,14 @@ public sealed class TerminalConfig
         # an interrupt. With nothing selected, Ctrl+C still interrupts the shell.
         copy-on-ctrl-c = true
 
+        # Warn before pasting text with newlines (a shell runs each line immediately) or control
+        # characters. Pastes into bracketed-paste apps and scripted control-API pastes never prompt.
+        paste-protection = true
+
+        # Allow programs to write the system clipboard via OSC 52 (e.g. Claude Code's auto-copy).
+        # Reads are always refused regardless of this setting.
+        clipboard-write = true
+
         # Extra word-delimiter characters for double-click selection (besides whitespace).
         # Empty = whitespace only, so double-click grabs a whole path or URL. Example: /\.:;,="'()[]{}
         word-delimiters =
@@ -297,6 +316,8 @@ public sealed class TerminalConfig
                 case "right-click-paste": cfg.RightClickPaste = ParseBool(val, cfg.RightClickPaste); break;
                 case "copy-on-select": cfg.CopyOnSelect = ParseBool(val, cfg.CopyOnSelect); break;
                 case "copy-on-ctrl-c": cfg.CopyOnCtrlC = ParseBool(val, cfg.CopyOnCtrlC); break;
+                case "paste-protection": cfg.PasteProtection = ParseBool(val, cfg.PasteProtection); break;
+                case "clipboard-write": cfg.ClipboardWrite = ParseBool(val, cfg.ClipboardWrite); break;
                 case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;

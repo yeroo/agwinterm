@@ -461,7 +461,7 @@ internal partial class Program
         public string SessionPaste(string? target, string? text) => InvokeOnUi(() =>
         {
             var p = PaneForTarget(target); if (p is null) return "no session";
-            PasteTextInto(p, text ?? ClipboardGet());
+            PasteTextInto(p, text ?? ClipboardGet(), interactive: false);   // scripted: never prompt (agents)
             return "pasted";
         });
 
