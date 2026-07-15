@@ -21,7 +21,7 @@ public static class OmpThemes
             Path.Combine(Env("LOCALAPPDATA") ?? "", "Programs", "oh-my-posh", "themes"),          // winget
             Path.Combine(Env("USERPROFILE") ?? "", "scoop", "apps", "oh-my-posh", "current", "themes"), // scoop
             Path.Combine(Env("ProgramData") ?? "", "chocolatey", "lib", "oh-my-posh", "tools", "themes"), // choco
-            Path.Combine(Env("LOCALAPPDATA") ?? "", "agwinterm", "omp-themes"),   // agwinterm-downloaded pack (Store installs ship no themes dir)
+            Path.Combine(Env("LOCALAPPDATA") ?? "", Env("AGWINTERM_APP_ID") ?? "agwinterm", "omp-themes"), // agwinterm-downloaded pack (per instance id; Store installs ship no themes dir)
         })
         {
             if (string.IsNullOrWhiteSpace(d)) continue;

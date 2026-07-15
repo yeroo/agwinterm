@@ -348,7 +348,10 @@ if (area != "window" && Opt("window") is { } winSel) req["window"] = winSel;
 if (cargs.Count > 0) req["args"] = cargs;
 string requestJson = JsonSerializer.Serialize(req);
 
+// --pipe is an alias for --socket (matches the app's --pipe flag); AGWINTERM_PIPE is set inside
+// every agwinterm session, so ctl run from within a session auto-targets that instance (dev or release).
 string pipeName = options.TryGetValue("socket", out var s) ? s
+    : options.TryGetValue("pipe", out var pp) ? pp
     : Environment.GetEnvironmentVariable("AGWINTERM_PIPE") ?? "agwinterm";
 
 try

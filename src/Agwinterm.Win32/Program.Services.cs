@@ -135,8 +135,8 @@ internal partial class Program
                 uID = 1,
                 uFlags = NIF_INFO | (_trayAdded ? 0u : (NIF_ICON | NIF_TIP)),
                 hIcon = _trayAdded ? IntPtr.Zero : LoadIconW(IntPtr.Zero, (IntPtr)32512), // IDI_APPLICATION
-                szTip = "agwinterm",
-                szInfoTitle = string.IsNullOrEmpty(title) ? "agwinterm" : title,
+                szTip = AppName,
+                szInfoTitle = string.IsNullOrEmpty(title) ? AppName : title,
                 szInfo = body.Length == 0 ? " " : body,
                 dwInfoFlags = 0,
             };
@@ -250,7 +250,7 @@ internal partial class Program
 
         // 3. Title at the terminal's leading edge (right of the sidebar): a SINGLE centered row
         // showing the path (agterm-style): custom name -> program OSC title -> full cwd path.
-        string title = _active is not null ? SessionDisplayName(_active) : "agwinterm";
+        string title = _active is not null ? SessionDisplayName(_active) : AppName;
         // 4. Attention bell (can be hidden via settings; when hidden it reserves no space).
         bool showBell = _config.AttentionButton;
         float titleX = _sidebarW > 0 ? _sidebarW + 10f : togX + togW + 8f;
@@ -677,7 +677,7 @@ internal partial class Program
         {
             try
             {
-                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "omp-themes");
+                string dir = Path.Combine(AppDir, "omp-themes");
                 Directory.CreateDirectory(dir);
                 using var http = new System.Net.Http.HttpClient();
                 http.DefaultRequestHeaders.UserAgent.ParseAdd("agwinterm");
@@ -905,7 +905,7 @@ internal partial class Program
 
         // Bundled themes ship in themes/ next to the exe; user themes live under LOCALAPPDATA.
         string bundledDir = Path.Combine(AppContext.BaseDirectory, "themes");
-        string userDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "themes");
+        string userDir = Path.Combine(AppDir, "themes");
         foreach (var dir in new[] { bundledDir, userDir })
         {
             try
@@ -1016,8 +1016,10 @@ internal partial class Program
 
     private static readonly JsonSerializerOptions _stateJson = new() { WriteIndented = true };
 
+    // Data root: %LOCALAPPDATA%\<instance-id> — "agwinterm" for the release, "agwinterm-dev" for dev builds,
+    // so the two keep separate config, sessions, themes, keymap, and window library. See Program._appId.
     private static string AppDir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm");
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppName);
     private static string WindowsIndexPath => Path.Combine(AppDir, "windows.json");
     private static string LegacyStatePath => Path.Combine(AppDir, "state.json");
     private static string BackgroundsDir => Path.Combine(AppDir, "backgrounds"); // copied per-session watermark images
@@ -1100,8 +1102,7 @@ internal partial class Program
 
     private List<Pane> PanesOf(Ses s) { lock (_workspaces) return s.Panes.ToList(); }
 
-    private static string DenylistPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "restore-denylist.conf");
+    private static string DenylistPath => Path.Combine(AppDir, "restore-denylist.conf");
 
     /// <summary>Exe/process names (no extension) that restore-commands never re-runs. Seeds a starter file.</summary>
     private static HashSet<string> LoadDenylist()
@@ -1444,8 +1445,7 @@ internal partial class Program
         return true;
     }
 
-    private static string ConfigPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "agwinterm", "agwinterm.conf");
+    private static string ConfigPath => Path.Combine(AppDir, "agwinterm.conf");
 
     private static TerminalConfig LoadOrCreateConfig()
     {
