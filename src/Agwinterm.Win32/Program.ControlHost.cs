@@ -566,6 +566,8 @@ internal partial class Program
 
         public string UpdateClaude() => InvokeOnUi(() => UpdateClaudeCode());
 
+        public string UpdateApp() => InvokeOnUi(() => UpdateAgwinterm());
+
         public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => InvokeOnUi(() =>
         {
             var ses = FindSesForTarget(target);

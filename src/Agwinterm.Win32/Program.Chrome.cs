@@ -813,6 +813,18 @@ internal partial class Program
                     Search = "update claude code upgrade version",
                     Run = () => ShowToast(UpdateClaudeCode(), 2500),
                 });
+                _palAll.Add(new PalItem
+                {
+                    Label = "Update agwinterm" + (_appLatest is { } av ? $"  — v{av} available" : ""),
+                    Secondary = AppChannel() switch
+                    {
+                        Agwinterm.Pty.UpdateChannel.PackageManager => "managed by scoop/chocolatey — update with the package manager",
+                        Agwinterm.Pty.UpdateChannel.Installed => "downloads the new installer, restarts — sessions restore",
+                        _ => "swaps the portable exe, restarts — sessions restore",
+                    },
+                    Search = "update agwinterm upgrade version self",
+                    Run = () => ShowToast(UpdateAgwinterm(), 3000),
+                });
                 A("Install Agent Skill", "", InstallSkill);
                 A("Install Shell Integration", "", InstallShellIntegration);
                 A("Reload Keymap", "", ReloadKeymap);

@@ -89,6 +89,10 @@ internal partial class Program : ISessionHost, IWindowHost
     // Update Claude Code workflow: one run at a time + the newest version the background check saw.
     private volatile bool _claudeUpdating;
     private volatile string? _claudeLatest;   // non-null = a newer Claude Code has shipped
+    // agwinterm self-update: same pattern, app-wide (static — one process, many windows).
+    private static volatile bool _appUpdating;
+    private static volatile string? _appLatest;      // non-null = a newer agwinterm release exists
+    private static volatile bool _updateQuitting;    // closing all windows to apply an update
 
     // ---- Multi-session model (agterm workspaces -> sessions), mirrors the WinUI shell ----
     private readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock(_workspaces)
@@ -1054,13 +1058,16 @@ internal partial class Program : ISessionHost, IWindowHost
                 Agwinterm.Pty.ClaudeIntegration.RefreshIfInstalled();
                 Agwinterm.Pty.GenericAgentInstaller.RefreshIfInstalled();
             });
-            // Claude Code update awareness: startup + every 12h, quiet on failure/offline. The knob
-            // is re-read every cycle so `config set claude-update-check` applies without a restart.
+            // Update awareness (Claude Code + agwinterm itself): startup + every 12h, quiet on
+            // failure/offline. Knobs are re-read every cycle so `config set ...-check` applies
+            // without a restart. Also sweep leftovers of a previously applied self-update.
             _ = Task.Run(async () =>
             {
+                CleanupUpdateLeftovers();
                 while (true)
                 {
                     if (_config.ClaudeUpdateCheck) await CheckClaudeUpdateOnce();
+                    if (_config.UpdateCheck) await CheckAppUpdateOnce();
                     await Task.Delay(TimeSpan.FromHours(12));
                 }
             });

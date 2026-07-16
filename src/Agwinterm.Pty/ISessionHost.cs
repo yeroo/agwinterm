@@ -174,6 +174,11 @@ public interface ISessionHost
     /// (each resumes its own conversation). Returns an ack / error string.</summary>
     string UpdateClaude();
 
+    /// <summary>The agwinterm self-update workflow: download + SHA-256-verify the latest release for
+    /// this install channel (installer / portable; package-manager installs are refused with a hint),
+    /// then exit, swap, relaunch — sessions restore. Returns an ack / error string.</summary>
+    string UpdateApp();
+
     /// <summary>Focus/unfocus the active workspace (hide the others in the sidebar tree): op = on|off|toggle.</summary>
     void WorkspaceFocus(string op);
 
@@ -268,6 +273,7 @@ public sealed class SingleSessionHost : ISessionHost
     public string AdoptClaude() => "unsupported";
     public string RestartClaudeYolo(string? target) => "unsupported";
     public string UpdateClaude() => "unsupported";
+    public string UpdateApp() => "unsupported";
     public void WorkspaceFocus(string op) { }
     public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => "unsupported";
     public string SessionSwitch(string op) => "unsupported";

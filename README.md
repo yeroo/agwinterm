@@ -58,6 +58,11 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
   quietly notices when a new Claude Code ships (npm registry; `claude-update-check = false` to opt
   out), then — on your command — runs `claude update` in an overlay terminal and **restarts every
   running Claude session**, each resuming its own conversation (YOLO panes stay YOLO).
+- **agwinterm self-update** (palette → *Update agwinterm*, or `agwintermctl app update`): notices new
+  releases on GitHub (`update-check = false` to opt out), then — on your command — downloads the
+  right artifact for your install (installer or portable exe), **verifies its SHA-256** against the
+  release digest, restarts, and your sessions restore. scoop/chocolatey installs are never touched —
+  the hint points at your package manager instead.
 - **A scriptable control API**: `agwintermctl` (or newline-JSON over a named pipe) — any language can
   drive it, including full **read-back** (tree with split ratios + pane ids, window state, session
   output). Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.

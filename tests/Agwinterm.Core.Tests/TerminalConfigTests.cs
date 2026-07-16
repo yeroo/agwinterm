@@ -55,6 +55,18 @@ public class TerminalConfigTests
     }
 
     [Fact]
+    public void UpdateCheck_ParsesAndIsDocumented()
+    {
+        Assert.True(TerminalConfig.Parse("").UpdateCheck);         // default: awareness on, applying stays manual
+        Assert.False(TerminalConfig.Parse("update-check = false").UpdateCheck);
+        Assert.Contains("update-check", TerminalConfig.DefaultText);
+        // The two knobs are independent.
+        var c = TerminalConfig.Parse("update-check = false\nclaude-update-check = true\n");
+        Assert.False(c.UpdateCheck);
+        Assert.True(c.ClaudeUpdateCheck);
+    }
+
+    [Fact]
     public void ParsesValues_IgnoresCommentsAndUnknown()
     {
         var c = TerminalConfig.Parse(

@@ -75,6 +75,11 @@ public sealed class TerminalConfig
     /// manual, visible <c>claude update</c> (palette → "Update Claude Code").</summary>
     public bool ClaudeUpdateCheck { get; set; } = true;
 
+    /// <summary>Periodically check GitHub for a newer agwinterm release and surface a hint (toast +
+    /// palette) when one ships. Awareness only — applying it stays a manual palette action
+    /// ("Update agwinterm"), which downloads, verifies, restarts, and restores sessions.</summary>
+    public bool UpdateCheck { get; set; } = true;
+
     /// <summary>Characters that DELIMIT words for double-click selection (in addition to whitespace).
     /// Empty = whitespace only (double-click grabs a whole path/URL). WT's wordDelimiters analog.</summary>
     public string WordDelimiters { get; set; } = "";
@@ -224,6 +229,12 @@ public sealed class TerminalConfig
         # `claude update` in an overlay terminal, then restarts your Claude sessions).
         claude-update-check = true
 
+        # Check GitHub in the background for a newer agwinterm release and show a hint when one
+        # ships. Applying it is always manual: palette -> "Update agwinterm" (downloads the release,
+        # verifies its SHA-256, restarts, and your sessions restore). Installs managed by a package
+        # manager (scoop/chocolatey) are never self-updated - the hint points at the manager instead.
+        update-check = true
+
         # Blocked sound: play a sound whenever a session enters the "blocked" agent status (needs
         # your attention). Empty / off / none = silent. Accepts a system-sound name (beep, asterisk,
         # exclamation, hand, question), a Windows sound-event alias, or a path to a .wav file.
@@ -340,6 +351,7 @@ public sealed class TerminalConfig
                     if (val is "none" or "once" or "until-focused") cfg.NotificationFlash = val;
                     break;
                 case "claude-update-check": cfg.ClaudeUpdateCheck = ParseBool(val, cfg.ClaudeUpdateCheck); break;
+                case "update-check": cfg.UpdateCheck = ParseBool(val, cfg.UpdateCheck); break;
                 case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;

@@ -126,6 +126,7 @@ internal sealed class FakeSessionHost : ISessionHost
     public string AdoptClaude() { int n = 0; foreach (var s in Workspaces.SelectMany(w => w.Sessions)) { s.AgentResume = "claude --resume x"; n++; } return $"adopted {n}"; }
     public string RestartClaudeYolo(string? target) { var s = Find(target); if (s is null) return "no pane"; s.AgentResume = "claude --resume x --dangerously-skip-permissions"; return "restarting Claude in YOLO mode (resumed)"; }
     public string UpdateClaude() => "updating Claude Code…";
+    public string UpdateApp() => "updating agwinterm…";
     public void WorkspaceFocus(string op) { }
     public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => Find(target) is not null ? "ok" : "no session";
     public string SessionSwitch(string op) => ActiveSess?.Name ?? "";

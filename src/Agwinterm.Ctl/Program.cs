@@ -208,6 +208,7 @@ switch (area)
     case "claude" when sub == "adopt": cmd = "claude.adopt"; break; // bind existing claude convos to their panes
     case "claude" when sub == "yolo": cmd = "claude.yolo"; target = DefaultTarget(); break; // restart the target pane's claude in --dangerously-skip-permissions, resumed
     case "claude" when sub == "update": cmd = "claude.update"; break; // run `claude update` in an overlay, then restart live claude panes
+    case "app" when sub == "update": cmd = "app.update"; break; // self-update agwinterm (download+verify latest release, restart, sessions restore)
     case "theme" when sub == "list": cmd = "theme.list"; break;
     case "theme" when sub == "set":
         cmd = "theme.set";
