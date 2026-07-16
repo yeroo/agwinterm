@@ -28,10 +28,10 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
 
     public string Name => "server";
 
-    public ISession Create(int cols, int rows)
+    public ISession Create(string id, int cols, int rows)
     {
         EnsureClient();   // connect/spawn NOW so an unreachable host fails here, where callers can fall back
-        return new ServerSession(this, cols, rows);
+        return new ServerSession(this, id, cols, rows);
     }
 
     internal PtyHostClient Client => EnsureClient();
@@ -73,7 +73,7 @@ public sealed class ServerSession : ISession
 {
     private readonly object _sync = new();
     private readonly ServerSessionBackend _backend;
-    private readonly string _id = Guid.NewGuid().ToString();
+    private readonly string _id;   // = the pane id; names the hosted session (the adoption key)
     private Stream? _data;
     private int? _childPid;
     private volatile bool _started;
@@ -90,13 +90,19 @@ public sealed class ServerSession : ISession
     public bool HasExited { get; private set; }
     public event Action<int>? Exited;
 
-    internal ServerSession(ServerSessionBackend backend, int cols, int rows)
+    internal ServerSession(ServerSessionBackend backend, string id, int cols, int rows)
     {
         _backend = backend;
+        _id = id;
         Cols = cols;
         Rows = rows;
         Emulator = new TerminalEmulator(cols, rows);
     }
+
+    /// <summary>True when this handle reconnected to a SURVIVING hosted session instead of spawning
+    /// a fresh shell — restore must then skip buffer seeding, agent-resume typing, and
+    /// restore-commands (the real thing is still running; typing a resume into it would be chaos).</summary>
+    public bool Adopted { get; private set; }
 
     // ---- Agent status: a UI-process concept (set via the control API), tracked locally exactly
     // like TerminalSession — the host knows nothing about it. Kept duplicated (25 lines) rather
@@ -167,6 +173,36 @@ public sealed class ServerSession : ISession
         await StartAsync(app, commandLine, verbatimCommandLine, ct: ct).ConfigureAwait(false);
         if (HasExited) return ExitCode ?? 0;                         // failed to start / exited during attach
         return await tcs.Task.ConfigureAwait(false);
+    }
+
+    /// <summary>Adopt a surviving hosted session with this pane's id (after a UI restart or crash):
+    /// attach with a repaint, seed the replica from the host's snapshot (scrollback text + modes),
+    /// and go live — the child process keeps running untouched. False = nothing to adopt, launch
+    /// fresh; an exited leftover is reaped here so the fresh launch starts clean.</summary>
+    public bool TryAdopt()
+    {
+        PtyHostAttachment att;
+        try { att = _backend.Client.Attach(_id, repaint: true); }
+        catch { return false; }                       // no such session (or host unreachable)
+        if (att.HasExited)
+        {
+            att.Dispose();
+            try { _backend.Client.Kill(_id); } catch { }
+            return false;
+        }
+        lock (_sync)
+        {
+            Emulator.SeedScrollback(att.Scrollback);
+            Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(att.Modes));
+        }
+        _data = att.Data;
+        _childPid = att.ChildPid;
+        Adopted = true;
+        _started = true;
+        _ = Task.Factory.StartNew(ReadLoop, CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        OutputReceived?.Invoke();
+        return true;
     }
 
     /// <summary>Default-terminal handoff hands us raw HANDLES — they only mean something in this
@@ -249,11 +285,19 @@ public sealed class ServerSession : ISession
         lock (_sync) return Emulator.DumpRow(row);
     }
 
+    /// <summary>Stop viewing WITHOUT killing: close the data pipe (the host sees a detach) and
+    /// leave the child running for a later <see cref="TryAdopt"/>. The app-quit path.</summary>
+    public void Detach()
+    {
+        _disposed = true;                                            // EOF now means "we left", not "it died"
+        try { _data?.Dispose(); } catch { }
+    }
+
     public void Dispose()
     {
         _disposed = true;
         if (_started)
-            try { _backend.Client.Kill(_id); } catch { }             // Phase 2b: dispose = close = kill
+            try { _backend.Client.Kill(_id); } catch { }             // explicit close = kill (pane closed)
         try { _data?.Dispose(); } catch { }
     }
 }

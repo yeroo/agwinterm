@@ -318,6 +318,9 @@ public sealed class TerminalSession : ISession
         lock (_sync) return Emulator.DumpRow(row);
     }
 
+    /// <summary>In-process sessions cannot outlive the process — detach IS dispose here.</summary>
+    public void Detach() => Dispose();
+
     public void Dispose()
     {
         var c = _connection;

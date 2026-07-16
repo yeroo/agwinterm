@@ -540,7 +540,18 @@ internal partial class Program
             case WM_DESTROY:
                 RemoveTrayIcon();                 // drop the shell tray balloon icon
                 SaveState(captureCommands: true); // persist this window's tree before tearing down its sessions
-                foreach (var s in AllSessions()) { foreach (var p in s.Panes) { try { p.S.Dispose(); } catch { } } try { s.Scratch?.S.Dispose(); } catch { } try { s.Overlay?.S.Dispose(); } catch { } }
+                // App-quit (last window, or an update-quit closing all of them) DETACHES panes —
+                // server-hosted sessions keep running and the next start adopts them (#105 2c).
+                // An explicit window close (others remain) still disposes = kills, like a pane
+                // close. Scratch/overlay/quick are never restored, so they always dispose.
+                bool quitting;
+                lock (_windowIndex) quitting = _updateQuitting || _byId.Count <= 1;
+                foreach (var s in AllSessions())
+                {
+                    foreach (var p in s.Panes) { try { if (quitting) p.S.Detach(); else p.S.Dispose(); } catch { } }
+                    try { s.Scratch?.S.Dispose(); } catch { }
+                    try { s.Overlay?.S.Dispose(); } catch { }
+                }
                 try { _quick?.S.Dispose(); } catch { }
                 bool lastWindow;
                 lock (_windowIndex)

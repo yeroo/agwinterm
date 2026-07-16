@@ -56,15 +56,22 @@ internal partial class Program
         var (cols, rows) = GridSizeFor(fontSize);
         // The ONLY session creation site (see ISessionBackend). Handoff panes are pinned in-process
         // (their ConPTY handles only mean something here); an unreachable pty-host demotes the pane
-        // to in-process with a visible note rather than a dead surface.
+        // to in-process with a visible note rather than a dead surface. During restore, a server
+        // pane first tries to ADOPT a surviving hosted session with its id (UI restart/crash/update)
+        // — the still-running shell reconnects instead of a fresh one spawning.
         ISession session;
-        if (handoff is not null) session = InProcessSessionBackend.Instance.Create(cols, rows);
-        else if (ReferenceEquals(_sessionBackend, InProcessSessionBackend.Instance)) session = _sessionBackend.Create(cols, rows);
+        bool adopted = false;
+        if (handoff is not null) session = InProcessSessionBackend.Instance.Create(paneId, cols, rows);
+        else if (ReferenceEquals(_sessionBackend, InProcessSessionBackend.Instance)) session = _sessionBackend.Create(paneId, cols, rows);
         else
-            try { session = _sessionBackend.Create(cols, rows); }
+            try
+            {
+                session = _sessionBackend.Create(paneId, cols, rows);
+                adopted = _restoring && session is ServerSession ss && ss.TryAdopt();
+            }
             catch (Exception ex)
             {
-                session = InProcessSessionBackend.Instance.Create(cols, rows);
+                session = InProcessSessionBackend.Instance.Create(paneId, cols, rows);
                 ShowToast("pty-host unavailable (" + ex.Message + ") — session created in-process", 5000);
             }
         session.Emulator.ScrollbackMax = _config.Scrollback;
@@ -112,6 +119,7 @@ internal partial class Program
             session.Attach(new Microsoft.Win32.SafeHandles.SafeFileHandle(h.ConOut, true),
                            new Microsoft.Win32.SafeHandles.SafeFileHandle(h.ConIn, true),
                            new Microsoft.Win32.SafeHandles.SafeFileHandle(h.Signal, true), h.Client, h.ClientPid);
+        else if (adopted) { /* reattached to the surviving shell — nothing to launch */ }
         else if (!string.IsNullOrWhiteSpace(command) && interactive)
             // Run the command in a fresh shell that STAYS OPEN afterwards (custom-command "new" mode):
             // the user's profile loads (oh-my-posh etc.), the command runs, then it's an interactive shell.
@@ -738,6 +746,36 @@ internal partial class Program
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects")
             : Path.Combine(cfg, "projects");
         return Path.Combine(projects, EncodeClaudeProject(cwd));
+    }
+
+    /// <summary>Kill hosted sessions no live pane claims (server mode): pane ids ARE hosted-session
+    /// ids, so anything unclaimed belongs to a closed pane (its kill lost to a crash) or already
+    /// exited. Every surface counts as a claim — panes, scratch, overlay, quick — across all
+    /// windows. Best-effort; runs once, well after restore/adoption has claimed everything.</summary>
+    private static void ReapOrphanedHostedSessions(string appId)
+    {
+        try
+        {
+            var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            List<Program> wins;
+            lock (_windowIndex) wins = _byId.Values.ToList();
+            foreach (var w in wins)
+            {
+                lock (w._workspaces)
+                    foreach (var s in w._workspaces.SelectMany(x => x.Sessions))
+                    {
+                        foreach (var p in s.Panes) claimed.Add(p.Id);
+                        if (s.Scratch is { } sc) claimed.Add(sc.Id);
+                        if (s.Overlay is { } ov) claimed.Add(ov.Id);
+                    }
+                if (w._quick is { } q) claimed.Add(q.Id);
+            }
+            using var probe = Agwinterm.Pty.PtyHostClient.Connect(appId);
+            foreach (var info in probe.List())
+                if (!claimed.Contains(info.Id) || info.HasExited)
+                    try { probe.Kill(info.Id); } catch { }
+        }
+        catch { }   // host not running / racing shutdown — nothing to reap
     }
 
     /// <summary>Whether a Claude conversation transcript with this exact id exists for the folder.

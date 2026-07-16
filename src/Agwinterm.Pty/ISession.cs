@@ -65,4 +65,10 @@ public interface ISession : IDisposable
     void Resize(int cols, int rows);
     /// <summary>Thread-safe text snapshot of one visible row.</summary>
     string SnapshotRow(int row);
+
+    /// <summary>Release the UI's hold WITHOUT necessarily killing (#105, Phase 2c): a server-backed
+    /// session detaches — the child keeps running in the pty-host for a later adoption. An
+    /// in-process session cannot outlive its process, so there this equals <see cref="IDisposable.Dispose"/>.
+    /// App-quit paths call this; explicit pane close still calls Dispose.</summary>
+    void Detach();
 }

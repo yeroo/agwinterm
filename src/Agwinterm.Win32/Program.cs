@@ -480,7 +480,17 @@ internal partial class Program : ISessionHost, IWindowHost
         // Server mode is experimental (#105) — say so once at startup, so a flipped knob is never
         // a silent mystery ("why is there a second agwinterm process?").
         if (_sessionBackend is ServerSessionBackend)
+        {
             front!.Post(() => front.ShowToast("session-host = server (experimental) — sessions live in the pty-host process", 6000));
+            // Reap hosted sessions no pane claims — leftovers of closed panes whose kill raced a
+            // crash, or exited corpses. WELL after boot: restore/adoption must claim everything
+            // (incl. slow multi-window restores) before anything is judged an orphan.
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30));
+                ReapOrphanedHostedSessions(_argPipe ?? _appId);
+            });
+        }
 
         while (GetMessageW(out MSG msg, IntPtr.Zero, 0, 0) > 0)
         {

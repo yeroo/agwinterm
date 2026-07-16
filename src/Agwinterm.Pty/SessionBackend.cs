@@ -7,11 +7,13 @@ namespace Agwinterm.Pty;
 /// </summary>
 public interface ISessionBackend
 {
-    /// <summary>Stable name for diagnostics/toasts ("in-process", later "server").</summary>
+    /// <summary>Stable name for diagnostics/toasts ("in-process", "server").</summary>
     string Name { get; }
 
-    /// <summary>Create a session sized <paramref name="cols"/>×<paramref name="rows"/> (not yet started).</summary>
-    ISession Create(int cols, int rows);
+    /// <summary>Create a session sized <paramref name="cols"/>×<paramref name="rows"/> (not yet
+    /// started). <paramref name="id"/> is the PANE id — for the server backend it names the hosted
+    /// session, which is the adoption key after a UI restart (in-process ignores it).</summary>
+    ISession Create(string id, int cols, int rows);
 }
 
 /// <summary>Today's model: the UI process owns the ConPTY (a plain <see cref="TerminalSession"/>).</summary>
@@ -19,7 +21,7 @@ public sealed class InProcessSessionBackend : ISessionBackend
 {
     public static readonly InProcessSessionBackend Instance = new();
     public string Name => "in-process";
-    public ISession Create(int cols, int rows) => new TerminalSession(cols, rows);
+    public ISession Create(string id, int cols, int rows) => new TerminalSession(cols, rows);
 }
 
 public static class SessionBackends

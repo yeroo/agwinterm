@@ -207,7 +207,7 @@ public sealed partial class MainWindow : Window, ISessionHost
     {
         StartControlServerOnce();
         var (cols, rows) = ComputeGridSize();
-        var session = InProcessSessionBackend.Instance.Create(cols, rows);
+        var session = InProcessSessionBackend.Instance.Create(Guid.NewGuid().ToString(), cols, rows);
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", S = session, Ws = ws };
