@@ -24,12 +24,12 @@ public sealed class InProcessSessionBackend : ISessionBackend
 
 public static class SessionBackends
 {
-    /// <summary>Resolve the configured <c>session-host</c> value to a backend. "server" is reserved
-    /// for the pty-host process (#105) and falls back to in-process until it ships —
-    /// <paramref name="fellBack"/> lets the caller tell the user instead of silently ignoring it.</summary>
-    public static ISessionBackend Resolve(string? configured, out bool fellBack)
-    {
-        fellBack = string.Equals(configured, "server", StringComparison.OrdinalIgnoreCase);
-        return InProcessSessionBackend.Instance;
-    }
+    /// <summary>Resolve the configured <c>session-host</c> value to a backend. "server" (#105,
+    /// experimental) hosts sessions in the pty-host process — spawned on demand from
+    /// <paramref name="exePath"/> (the same exe, <c>--pty-host</c> role) under
+    /// <paramref name="appId"/>'s pipe namespace. Anything else = in-process.</summary>
+    public static ISessionBackend Resolve(string? configured, string appId, string? exePath)
+        => string.Equals(configured, "server", StringComparison.OrdinalIgnoreCase)
+            ? new ServerSessionBackend(appId, exePath)
+            : InProcessSessionBackend.Instance;
 }

@@ -54,7 +54,19 @@ internal partial class Program
         bool deElevate = false, HandoffArgs? handoff = null)
     {
         var (cols, rows) = GridSizeFor(fontSize);
-        var session = _sessionBackend.Create(cols, rows);   // the ONLY session creation site (see ISessionBackend)
+        // The ONLY session creation site (see ISessionBackend). Handoff panes are pinned in-process
+        // (their ConPTY handles only mean something here); an unreachable pty-host demotes the pane
+        // to in-process with a visible note rather than a dead surface.
+        ISession session;
+        if (handoff is not null) session = InProcessSessionBackend.Instance.Create(cols, rows);
+        else if (ReferenceEquals(_sessionBackend, InProcessSessionBackend.Instance)) session = _sessionBackend.Create(cols, rows);
+        else
+            try { session = _sessionBackend.Create(cols, rows); }
+            catch (Exception ex)
+            {
+                session = InProcessSessionBackend.Instance.Create(cols, rows);
+                ShowToast("pty-host unavailable (" + ex.Message + ") — session created in-process", 5000);
+            }
         session.Emulator.ScrollbackMax = _config.Scrollback;
         var pane = new Pane { Id = paneId, S = session, StartCwd = cwd, FontSize = fontSize };
         // New output only snaps this pane back to the live bottom and drops the selection when the buffer

@@ -65,7 +65,7 @@ public sealed class PtyHostClient : IDisposable
 
     /// <summary>Create a session on the host (not attached yet — call <see cref="Attach"/>).</summary>
     public string Create(string id, int cols, int rows, string app, string[] args,
-        string? cwd = null, IReadOnlyDictionary<string, string>? env = null, bool verbatim = false)
+        string? cwd = null, IReadOnlyDictionary<string, string>? env = null, bool verbatim = false, bool deElevate = false)
     {
         using var ms = new MemoryStream();
         using (var w = new Utf8JsonWriter(ms))
@@ -76,6 +76,7 @@ public sealed class PtyHostClient : IDisposable
             w.WriteNumber("cols", cols); w.WriteNumber("rows", rows);
             w.WriteString("app", app);
             if (verbatim) w.WriteBoolean("verbatim", true);
+            if (deElevate) w.WriteBoolean("deElevate", true);
             w.WriteStartArray("args");
             foreach (var a in args) w.WriteStringValue(a);
             w.WriteEndArray();

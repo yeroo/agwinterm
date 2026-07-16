@@ -19,16 +19,20 @@ public class SessionBackendTests
     }
 
     [Fact]
-    public void Resolve_ServerFallsBackToInProcessAndSaysSo()
+    public void Resolve_PicksBackendByConfiguredValue()
     {
-        // "server" is reserved for the pty-host (#105). Until Phase 2 ships it must fall back —
-        // and report that it did, so the UI can tell the user instead of silently ignoring the key.
-        Assert.Same(InProcessSessionBackend.Instance, SessionBackends.Resolve("in-process", out bool fb1));
-        Assert.False(fb1);
-        Assert.Same(InProcessSessionBackend.Instance, SessionBackends.Resolve("server", out bool fb2));
-        Assert.True(fb2);
-        Assert.Same(InProcessSessionBackend.Instance, SessionBackends.Resolve(null, out bool fb3));
-        Assert.False(fb3);
+        Assert.Same(InProcessSessionBackend.Instance, SessionBackends.Resolve("in-process", "x", null));
+        Assert.Same(InProcessSessionBackend.Instance, SessionBackends.Resolve(null, "x", null));
+        Assert.IsType<ServerSessionBackend>(SessionBackends.Resolve("server", "x", null));
+        Assert.IsType<ServerSessionBackend>(SessionBackends.Resolve("SERVER", "x", null));
+    }
+
+    [Fact]
+    public void ServerBackend_WithNoHostAndNoExe_FailsAtCreate()
+    {
+        // Failure surfaces at Create — the one place the UI can catch it and fall back in-process.
+        using var backend = new ServerSessionBackend("agwinterm-test-nohost-" + Guid.NewGuid().ToString("N")[..8], exePath: null);
+        Assert.Throws<InvalidOperationException>(() => backend.Create(80, 24));
     }
 
     [Fact]
