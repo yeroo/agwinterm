@@ -86,6 +86,9 @@ internal partial class Program : ISessionHost, IWindowHost
     private int _overlayExitCode;        // the last overlay program's exit code
     private readonly System.Threading.ManualResetEventSlim _overlayDone = new(false); // signalled on overlay exit (for --block)
     private static ControlServer? _control;
+    // Update Claude Code workflow: one run at a time + the newest version the background check saw.
+    private volatile bool _claudeUpdating;
+    private volatile string? _claudeLatest;   // non-null = a newer Claude Code has shipped
 
     // ---- Multi-session model (agterm workspaces -> sessions), mirrors the WinUI shell ----
     private readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock(_workspaces)
@@ -1050,6 +1053,16 @@ internal partial class Program : ISessionHost, IWindowHost
             {
                 Agwinterm.Pty.ClaudeIntegration.RefreshIfInstalled();
                 Agwinterm.Pty.GenericAgentInstaller.RefreshIfInstalled();
+            });
+            // Claude Code update awareness: startup + every 12h, quiet on failure/offline. The knob
+            // is re-read every cycle so `config set claude-update-check` applies without a restart.
+            _ = Task.Run(async () =>
+            {
+                while (true)
+                {
+                    if (_config.ClaudeUpdateCheck) await CheckClaudeUpdateOnce();
+                    await Task.Delay(TimeSpan.FromHours(12));
+                }
             });
             // Default-terminal handoff (T2-13): register the COM class factory so conhost can hand
             // console sessions to this instance. Each handoff opens a new attached session.

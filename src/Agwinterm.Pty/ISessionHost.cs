@@ -169,6 +169,11 @@ public interface ISessionHost
     /// current conversation, and persist that as the pane's relaunch command. Null target = the active pane.</summary>
     string RestartClaudeYolo(string? target);
 
+    /// <summary>The Update Claude Code workflow: run <c>claude update</c> in an overlay terminal over the
+    /// active session, then restart every pane with a live Claude so the new version is picked up
+    /// (each resumes its own conversation). Returns an ack / error string.</summary>
+    string UpdateClaude();
+
     /// <summary>Focus/unfocus the active workspace (hide the others in the sidebar tree): op = on|off|toggle.</summary>
     void WorkspaceFocus(string op);
 
@@ -262,6 +267,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionBind(string? target, string agent) => false;
     public string AdoptClaude() => "unsupported";
     public string RestartClaudeYolo(string? target) => "unsupported";
+    public string UpdateClaude() => "unsupported";
     public void WorkspaceFocus(string op) { }
     public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => "unsupported";
     public string SessionSwitch(string op) => "unsupported";

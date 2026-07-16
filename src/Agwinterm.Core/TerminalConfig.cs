@@ -70,6 +70,11 @@ public sealed class TerminalConfig
     /// background (agterm's Dock bounce, #215): "none" (default) | "once" | "until-focused".</summary>
     public string NotificationFlash { get; set; } = "none";
 
+    /// <summary>Periodically check the npm registry for a newer Claude Code release and surface a
+    /// hint (toast + palette) when one ships. Awareness only — the update itself always stays a
+    /// manual, visible <c>claude update</c> (palette → "Update Claude Code").</summary>
+    public bool ClaudeUpdateCheck { get; set; } = true;
+
     /// <summary>Characters that DELIMIT words for double-click selection (in addition to whitespace).
     /// Empty = whitespace only (double-click grabs a whole path/URL). WT's wordDelimiters analog.</summary>
     public string WordDelimiters { get; set; } = "";
@@ -214,6 +219,11 @@ public sealed class TerminalConfig
         # none | once | until-focused
         notification-flash = none
 
+        # Check the npm registry in the background for a newer Claude Code release and show a hint
+        # when one ships. Updating is always manual: palette -> "Update Claude Code" (which runs
+        # `claude update` in an overlay terminal, then restarts your Claude sessions).
+        claude-update-check = true
+
         # Blocked sound: play a sound whenever a session enters the "blocked" agent status (needs
         # your attention). Empty / off / none = silent. Accepts a system-sound name (beep, asterisk,
         # exclamation, hand, question), a Windows sound-event alias, or a path to a .wav file.
@@ -329,6 +339,7 @@ public sealed class TerminalConfig
                 case "notification-flash":
                     if (val is "none" or "once" or "until-focused") cfg.NotificationFlash = val;
                     break;
+                case "claude-update-check": cfg.ClaudeUpdateCheck = ParseBool(val, cfg.ClaudeUpdateCheck); break;
                 case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;

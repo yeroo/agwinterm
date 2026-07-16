@@ -564,6 +564,8 @@ internal partial class Program
             return p is null ? "no pane" : RestartClaudeYolo(p);
         });
 
+        public string UpdateClaude() => InvokeOnUi(() => UpdateClaudeCode());
+
         public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => InvokeOnUi(() =>
         {
             var ses = FindSesForTarget(target);

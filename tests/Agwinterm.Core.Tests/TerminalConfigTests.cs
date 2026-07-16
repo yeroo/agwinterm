@@ -46,6 +46,15 @@ public class TerminalConfigTests
     }
 
     [Fact]
+    public void ClaudeUpdateCheck_ParsesAndIsDocumented()
+    {
+        Assert.True(TerminalConfig.Parse("").ClaudeUpdateCheck);   // default: awareness on, update stays manual
+        Assert.False(TerminalConfig.Parse("claude-update-check = false").ClaudeUpdateCheck);
+        Assert.True(TerminalConfig.Parse("claude-update-check = on").ClaudeUpdateCheck);
+        Assert.Contains("claude-update-check", TerminalConfig.DefaultText);
+    }
+
+    [Fact]
     public void ParsesValues_IgnoresCommentsAndUnknown()
     {
         var c = TerminalConfig.Parse(

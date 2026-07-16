@@ -84,6 +84,22 @@ public class AgentHooksTests
     }
 
     [Fact]
+    public void ClaudeLauncher_PassesSubcommandsThroughUntouched()
+    {
+        // `claude update` / `claude doctor` / `claude mcp` are maintenance verbs, not conversations —
+        // the wrapper must NOT rewrite them into `claude --resume <paneId> update`.
+        string block = ClaudeIntegration.Block;
+        var m = System.Text.RegularExpressions.Regex.Match(block, @"\$args\[0\]\)"" -match '([^']+)'");
+        Assert.True(m.Success, "subcommand passthrough guard missing from the wrapper");
+        string re = m.Groups[1].Value;
+        Assert.Matches(re, "update");
+        Assert.Matches(re, "doctor");
+        Assert.Matches(re, "mcp");
+        Assert.DoesNotMatch(re, "fix the login bug");   // a positional prompt still gets session binding
+        Assert.DoesNotMatch(re, "updates");             // anchored — only the exact verb passes through
+    }
+
+    [Fact]
     public void GenericAgentRegex_CoversPiWithWordBoundarySafety()
     {
         // agterm #208: Pi agent status. The bridge matches '^\s*(RE)\b', so 'pi' must be in the

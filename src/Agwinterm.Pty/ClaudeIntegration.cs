@@ -45,6 +45,9 @@ public static class ClaudeIntegration
             # don't inject or bind — just pass through untouched. Permission-mode flags are remembered in
             # the binding so a restored session comes back with the same mode (e.g. YOLO stays YOLO).
             $ctl = $false; $yolo = $false
+            # CLI subcommands (update/doctor/mcp/...) are maintenance verbs, not conversations —
+            # injecting --resume/--session-id would mangle them. Pass through untouched.
+            if ($args.Count -gt 0 -and "$($args[0])" -match '^(update|doctor|mcp|config|install|migrate-installer|setup-token|plugin|agents)$') { $ctl = $true }
             foreach ($a in $args) {
               if ($a -in '-r','--resume','-c','--continue','--session-id','-p','--print') { $ctl = $true }
               if ($a -eq '--dangerously-skip-permissions') { $yolo = $true }
