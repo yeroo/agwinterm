@@ -906,6 +906,15 @@ internal partial class Program
         _config = TerminalConfig.Load(ConfigPath);       // reparse so clamping/validation is centralized
         if (key == "theme") _theme = FindTheme(_config.Theme);
         if (key is "theme" or "theme-follow-system" or "theme-dark" or "theme-light") ApplySystemTheme();
+        if (key == "session-host")
+        {
+            // Live switch (#105 2d): NEW sessions use the chosen backend immediately; existing panes
+            // keep the one they were born with (both kinds coexist fine) and converge on restart.
+            _sessionBackend = SessionBackends.Resolve(_config.SessionHost, _argPipe ?? _appId, AppExePath);
+            ShowToast(_config.SessionHost == "server"
+                ? "server mode ON (experimental) — new sessions survive UI restarts; restart agwinterm to move existing ones"
+                : "in-process mode — new sessions run in the window process; restart agwinterm to convert existing ones", 6000);
+        }
         if (key == "cursor-blink-ms" && _hwnd != IntPtr.Zero) SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
         RecomputeChrome();
         ApplyWindowOpacity();

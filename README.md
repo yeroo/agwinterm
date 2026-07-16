@@ -63,6 +63,11 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
   right artifact for your install (installer or portable exe), **verifies its SHA-256** against the
   release digest, restarts, and your sessions restore. scoop/chocolatey installs are never touched —
   the hint points at your package manager instead.
+- **Shells that survive the UI** (EXPERIMENTAL): flip *Settings → General → Session host* to
+  **Pty-host server** (`session-host = server`) and your sessions live in a tiny headless process —
+  quit, self-update, or even crash the UI and every shell (including a running Claude conversation)
+  **keeps running**; the next start reattaches each pane to its live session, same process, same
+  state. Closing a pane still closes its shell. The tmux idea, native on Windows.
 - **A scriptable control API**: `agwintermctl` (or newline-JSON over a named pipe) — any language can
   drive it, including full **read-back** (tree with split ratios + pane ids, window state, session
   output). Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.
