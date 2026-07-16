@@ -84,6 +84,31 @@ public class AgentHooksTests
     }
 
     [Fact]
+    public void GenericAgentRegex_CoversPiWithWordBoundarySafety()
+    {
+        // agterm #208: Pi agent status. The bridge matches '^\s*(RE)\b', so 'pi' must be in the
+        // default set — and the \b anchor means 'pip install' must NOT light the status.
+        Assert.Contains("|pi'", GenericAgentInstaller.Block);
+        string re = System.Text.RegularExpressions.Regex.Match(GenericAgentInstaller.Block,
+            @"AGWINTERM_AGENT_RE = '([^']+)'").Groups[1].Value;
+        Assert.Matches(@"^\s*(" + re + @")\b", "pi do something");
+        Assert.DoesNotMatch(@"^\s*(" + re + @")\b", "pip install requests");
+    }
+
+    [Fact]
+    public void GenericAgentInstaller_SharesStaleBlockReplacement()
+    {
+        // Same Missing/Current/Stale/Corrupted machinery as the claude launcher (ProfileBlocks).
+        string begin = "# >>> agwinterm generic agent status >>>";
+        Assert.StartsWith(begin, GenericAgentInstaller.Block);
+        string stale = "# before\n" + begin + "\nold bridge\n# <<< agwinterm generic agent status <<<\n# after\n";
+        Assert.Equal(ProfileBlockState.Stale, ProfileBlocks.Inspect(stale,
+            begin, "# <<< agwinterm generic agent status <<<", GenericAgentInstaller.Block, out string updated));
+        Assert.Contains(GenericAgentInstaller.Block, updated);
+        Assert.DoesNotContain("old bridge", updated);
+    }
+
+    [Fact]
     public void InspectBlock_MissingCurrentStaleCorrupted()
     {
         // Missing: no sentinel at all.

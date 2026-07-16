@@ -85,7 +85,8 @@ internal static class Keymap
         #            (independent OS process — open a URL, launch an external tool)
         #
         # tokens (expanded in <text>) + matching $AGW_* env vars given to the process:
-        #   {AGW_SESSION} {AGW_SESSION_ID} {AGW_WORKSPACE} {AGW_CWD} {AGW_PANE_ID} {AGW_APP}
+        #   {AGW_SESSION} {AGW_SESSION_ID} {AGW_WORKSPACE} {AGW_CWD} {AGW_PANE_ID} {AGW_PANE} {AGW_APP}
+        #   ({AGW_PANE} = the surface the command fired from: left / right / scratch / overlay / quick)
         #
         # actions: new_session new_workspace close_session next_session previous_session
         #          toggle_sidebar rename_session delete_workspace session_palette

@@ -36,6 +36,16 @@ public class TerminalConfigTests
     }
 
     [Fact]
+    public void NotificationFlash_ParsesValidValuesRejectsUnknown()
+    {
+        Assert.Equal("none", TerminalConfig.Parse("").NotificationFlash);   // default: off (agterm #215)
+        Assert.Equal("once", TerminalConfig.Parse("notification-flash = once").NotificationFlash);
+        Assert.Equal("until-focused", TerminalConfig.Parse("notification-flash = until-focused").NotificationFlash);
+        Assert.Equal("none", TerminalConfig.Parse("notification-flash = bogus").NotificationFlash);
+        Assert.Contains("notification-flash", TerminalConfig.DefaultText);
+    }
+
+    [Fact]
     public void ParsesValues_IgnoresCommentsAndUnknown()
     {
         var c = TerminalConfig.Parse(

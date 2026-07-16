@@ -223,19 +223,38 @@ internal partial class Program
         return "agwintermctl";
     }
 
-    /// <summary>The {AGW_*} / $AGW_* values for a session context (active by default).</summary>
-    private static Dictionary<string, string> AgwValues(Ses? ses) => new(StringComparer.Ordinal)
+    /// <summary>The {AGW_*} / $AGW_* values for a session context (active by default). AGW_PANE names
+    /// the surface the command fired from — left/right/scratch/overlay/quick (agterm #210's $AGT_PANE) —
+    /// and AGW_PANE_ID is that surface's id, so a keybinding can route a follow-up ctl call back into it.</summary>
+    private Dictionary<string, string> AgwValues(Ses? ses)
     {
-        ["AGW_SESSION"] = ses?.Name ?? "",
-        ["AGW_SESSION_ID"] = ses?.Id ?? "",
-        ["AGW_WORKSPACE"] = ses?.Ws.Name ?? "",
-        ["AGW_CWD"] = RawCwdOf(ses),
-        ["AGW_PANE_ID"] = ses?.ActivePane.Id ?? "",
-        ["AGW_APP"] = CtlPath(),
-    };
+        var surface = ActiveSurface();
+        string paneName = "";
+        if (surface is not null && ses is not null)
+        {
+            if (_coverKind == 1 && ReferenceEquals(surface, ses.Scratch)) paneName = "scratch";
+            else if (_coverKind == 3 && ReferenceEquals(surface, ses.Overlay)) paneName = "overlay";
+            else if (_coverKind == 2 && ReferenceEquals(surface, _quick)) paneName = "quick";
+            else
+            {
+                int idx = ses.Panes.IndexOf(surface);
+                paneName = idx == 0 ? "left" : idx > 0 ? "right" : "";
+            }
+        }
+        return new(StringComparer.Ordinal)
+        {
+            ["AGW_SESSION"] = ses?.Name ?? "",
+            ["AGW_SESSION_ID"] = ses?.Id ?? "",
+            ["AGW_WORKSPACE"] = ses?.Ws.Name ?? "",
+            ["AGW_CWD"] = RawCwdOf(ses),
+            ["AGW_PANE_ID"] = surface?.Id ?? ses?.ActivePane.Id ?? "",
+            ["AGW_PANE"] = paneName,
+            ["AGW_APP"] = CtlPath(),
+        };
+    }
 
     /// <summary>Expand {AGW_*} tokens; unknown {AGW_*} tokens expand to "".</summary>
-    private static string ExpandAgwTokens(string text, Ses? ses)
+    private string ExpandAgwTokens(string text, Ses? ses)
     {
         if (string.IsNullOrEmpty(text) || text.IndexOf("{AGW_", StringComparison.Ordinal) < 0) return text;
         var vals = AgwValues(ses);
@@ -244,7 +263,7 @@ internal partial class Program
     }
 
     /// <summary>$AGW_* environment (+ AGWINTERM=1) for a launched custom-command process.</summary>
-    private static Dictionary<string, string> AgwEnv(Ses? ses)
+    private Dictionary<string, string> AgwEnv(Ses? ses)
     {
         var d = AgwValues(ses);
         d["AGWINTERM"] = "1";

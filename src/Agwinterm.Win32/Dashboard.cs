@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Agwinterm.Core;
 using Vortice.Direct2D1;
 using Vortice.Mathematics;
 using static Agwinterm.Win32.Win32;
@@ -90,8 +91,20 @@ internal partial class Program
             // Title strip
             brush.Color = sel ? ChromeAccent : Mix(C4(_theme.DefaultBackground), ChromeDim, 0.5f);
             rt.FillRectangle(new Rect(cx, cy, cellW, labelH), brush);
+            // Agent-status glyph at the strip's right edge (agterm #209) — a session needing
+            // attention stands out in the grid. Idle draws nothing.
+            var st = AggStatus(s);
+            float titleRight = cellW - 12f;
+            if (st != AgentStatus.Idle)
+            {
+                var dot = StatusDot(st);
+                if (AggBlink(s) && !_cursorOn) dot = new Color4(dot.R, dot.G, dot.B, 0.30f); // pulse with the cursor clock
+                brush.Color = dot;
+                rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(cx + cellW - 12f, cy + labelH / 2f), 4.5f, 4.5f), brush);
+                titleRight -= 14f;
+            }
             brush.Color = sel ? new Color4(1f, 1f, 1f, 1f) : ChromeText;
-            rt.DrawText($"{s.Ws.Name} / {s.Name}", _uiSmall, new Rect(cx + 6f, cy + 1f, cellW - 12f, labelH - 1f), brush, DrawTextOptions.Clip);
+            rt.DrawText($"{s.Ws.Name} / {s.Name}", _uiSmall, new Rect(cx + 6f, cy + 1f, titleRight, labelH - 1f), brush, DrawTextOptions.Clip);
 
             // Live terminal preview, clipped to the cell body
             float tx = cx + 4f, ty = cy + labelH + 2f, tw = MathF.Max(1f, cellW - 8f), th = MathF.Max(1f, cellH - labelH - 6f);
@@ -104,7 +117,7 @@ internal partial class Program
         }
 
         brush.Color = ChromeDim;
-        rt.DrawText("Dashboard — arrows move · Enter open · Esc close", _uiSmall,
+        rt.DrawText("Dashboard — arrows move · Enter/click open · Esc close", _uiSmall,
             new Rect(ax + 8f, ay + ah - footH + 3f, aw - 16f, footH - 4f), brush);
     }
 
@@ -137,7 +150,8 @@ internal partial class Program
         RequestRedraw();
     }
 
-    /// <summary>Mouse in the dashboard: single click highlights a cell, double-click drops into it.</summary>
+    /// <summary>Mouse in the dashboard: a single click enters the cell (agterm #217) — the active
+    /// frame flashes onto the clicked cell first so the click reads as acknowledged, then we jump.</summary>
     private void DashboardClick(int mx, int my, bool doubleClick)
     {
         for (int i = 0; i < _dashCells.Count; i++)
@@ -145,8 +159,17 @@ internal partial class Program
             var c = _dashCells[i];
             if (mx >= c.Left && mx < c.Right && my >= c.Top && my < c.Bottom)
             {
-                if (doubleClick) { var s = _dashSessions[i]; CloseDashboard(); SetActive(s); }
-                else DashSelect(i);
+                DashSelect(i);   // highlight now — the acknowledge flash
+                int hit = i;
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    await System.Threading.Tasks.Task.Delay(130);
+                    Post(() =>
+                    {
+                        if (!_dashboardOpen || hit >= _dashSessions.Count) return;
+                        var s = _dashSessions[hit]; CloseDashboard(); SetActive(s);
+                    });
+                });
                 return;
             }
         }

@@ -76,6 +76,19 @@ internal partial class Program
         _toastTarget = ses;                       // clicking the banner jumps to the raising session
         SetTimer(_hwnd, (IntPtr)2, 4000, IntPtr.Zero);
         if (_config.DesktopNotifications) TrayNotify(title, body);
+        // Background notification → taskbar flash (agterm's opt-in Dock bounce, #215).
+        if (!_windowActive && _config.NotificationFlash != "none")
+        {
+            var fw = new FLASHWINFO
+            {
+                cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<FLASHWINFO>(),
+                hwnd = _hwnd,
+                // once: a brief tray+caption blink; until-focused: keep flashing until the window is foregrounded.
+                dwFlags = _config.NotificationFlash == "once" ? FLASHW_ALL : FLASHW_ALL | FLASHW_TIMERNOFG,
+                uCount = _config.NotificationFlash == "once" ? 2u : 0u,
+            };
+            FlashWindowEx(ref fw);
+        }
         RequestRedraw();
     }
 
@@ -239,13 +252,15 @@ internal partial class Program
             rt.DrawText(GlyphSidebar, _iconFont, new Rect(togX, 0, togW, TitleBarH), brush);
         }
 
-        // 6. Right group (pinned left of the caption buttons): scratch, split, | , quick-terminal, gear.
+        // 6. Right group (pinned left of the caption buttons): scratch, split, | , dashboard,
+        // quick-terminal, gear — dashboard grouped with quick behind the separator (agterm #217).
         float bw = 38f;
         float rgRight = cw - 3 * CaptionBtnW - 6f;   // right edge of the gear
         float gearX = rgRight - bw;
         float quickX = gearX - bw;
-        float divX = quickX - 5f;                    // hairline divider in the gap
-        float splitX = quickX - 10f - bw;
+        float dashX = quickX - bw;
+        float divX = dashX - 5f;                     // hairline divider in the gap
+        float splitX = dashX - 10f - bw;
         float scratchX = splitX - bw;
 
         // 3. Title at the terminal's leading edge (right of the sidebar): a SINGLE centered row
@@ -283,6 +298,14 @@ internal partial class Program
                 bellBase = new Color4(bellBase.R, bellBase.G, bellBase.B, 0.30f); // pulse when a blinking session needs attention
             var c = ChromeBtnBg(rt, brush, bellX, 0, bellW, TitleBarH, "attention", _titleButtons, bellBase);
             DrawBellGlyph(rt, brush, bellX + bellW / 2f, TitleBarH / 2f, c);
+            // Recent-sessions clock next to the bell, only when the sidebar is hidden (agterm #212 —
+            // the sidebar itself is the recents list when visible). Opens the recent-sessions popover.
+            if (_sidebarW <= 0)
+            {
+                float clockX = bellX + bellW + 2f;
+                var cc = ChromeBtnBg(rt, brush, clockX, 0, bellW, TitleBarH, "recent", _titleButtons, ChromeDim);
+                DrawClockGlyph(rt, brush, clockX + bellW / 2f, TitleBarH / 2f, cc);
+            }
         }
 
         // scratch (rounded rectangle; filled when active)
@@ -300,6 +323,11 @@ internal partial class Program
         // hairline divider between per-session toggles and the window-level quick terminal
         brush.Color = WithA(ChromeText, 0.25f);
         rt.DrawLine(new System.Numerics.Vector2(divX, 12f), new System.Numerics.Vector2(divX, TitleBarH - 12f), brush, 1f);
+        // dashboard grid (accent while open) — agterm #217
+        {
+            var c = ChromeBtnBg(rt, brush, dashX, 0, bw, TitleBarH, "dashboard", _titleButtons, _dashboardOpen ? ChromeAccent : ChromeDim);
+            DrawDashGlyph(rt, brush, dashX + bw / 2f, TitleBarH / 2f, c);
+        }
         // quick terminal (accent when active)
         bool quickOn = _coverKind == 2;
         {
@@ -360,6 +388,29 @@ internal partial class Program
         g.Dispose();
         rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(cx, cy + 5.4f), 1.4f, 1.4f), brush);   // clapper
         rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(cx, cy - 6.6f), 1.1f, 1.1f), brush);   // top nub
+    }
+
+    /// <summary>Dashboard glyph: a 2×2 grid of cells (agterm #217's title-bar dashboard button).</summary>
+    private void DrawDashGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color)
+    {
+        brush.Color = color;
+        for (int r = 0; r < 2; r++)
+            for (int c = 0; c < 2; c++)
+                rt.DrawRoundedRectangle(new RoundedRectangle
+                {
+                    Rect = new Rect(cx - 7f + c * 8f, cy - 6f + r * 8f, 6f, 5f),
+                    RadiusX = 1.2f,
+                    RadiusY = 1.2f,
+                }, brush, 1.3f);
+    }
+
+    /// <summary>Recent-sessions clock glyph (agterm #212's title-bar recents button).</summary>
+    private void DrawClockGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color)
+    {
+        brush.Color = color;
+        rt.DrawEllipse(new Ellipse(new System.Numerics.Vector2(cx, cy), 6.2f, 6.2f), brush, 1.4f);
+        rt.DrawLine(new System.Numerics.Vector2(cx, cy), new System.Numerics.Vector2(cx, cy - 3.6f), brush, 1.3f);       // hour hand up
+        rt.DrawLine(new System.Numerics.Vector2(cx, cy), new System.Numerics.Vector2(cx + 2.8f, cy + 1.4f), brush, 1.3f); // minute hand
     }
 
     /// <summary>Split glyph: two side-by-side panes (right pane filled when split is active).</summary>
@@ -771,6 +822,7 @@ internal partial class Program
         "restore-commands", "restore-buffer", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
+        "paste-protection", "clipboard-write", "notification-flash",
     };
 
     /// <summary>Rewrite (or append) a single `key = value` line in agwinterm.conf, preserving the rest.</summary>
@@ -831,6 +883,9 @@ internal partial class Program
         "compact-toolbar" => _config.CompactToolbar ? "true" : "false",
         "toolbar-mode" => ToolbarModeResolved,
         "notification-badges" => _config.NotificationBadges ? "true" : "false",
+        "notification-flash" => _config.NotificationFlash,
+        "paste-protection" => _config.PasteProtection ? "true" : "false",
+        "clipboard-write" => _config.ClipboardWrite ? "true" : "false",
         "attention-button" => _config.AttentionButton ? "true" : "false",
         "status-color-active" => _config.StatusColorActive,
         "status-color-blocked" => _config.StatusColorBlocked,

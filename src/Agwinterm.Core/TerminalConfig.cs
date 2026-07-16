@@ -66,6 +66,10 @@ public sealed class TerminalConfig
     /// Reads are always refused regardless. Default on.</summary>
     public bool ClipboardWrite { get; set; } = true;
 
+    /// <summary>Flash the taskbar button when a notification arrives while the window is in the
+    /// background (agterm's Dock bounce, #215): "none" (default) | "once" | "until-focused".</summary>
+    public string NotificationFlash { get; set; } = "none";
+
     /// <summary>Characters that DELIMIT words for double-click selection (in addition to whitespace).
     /// Empty = whitespace only (double-click grabs a whole path/URL). WT's wordDelimiters analog.</summary>
     public string WordDelimiters { get; set; } = "";
@@ -206,6 +210,10 @@ public sealed class TerminalConfig
         # (the in-app banner + sidebar badge always show regardless). Set false to suppress the OS toast.
         desktop-notifications = true
 
+        # Flash the taskbar button when a notification arrives while the window is in the background:
+        # none | once | until-focused
+        notification-flash = none
+
         # Blocked sound: play a sound whenever a session enters the "blocked" agent status (needs
         # your attention). Empty / off / none = silent. Accepts a system-sound name (beep, asterisk,
         # exclamation, hand, question), a Windows sound-event alias, or a path to a .wav file.
@@ -318,6 +326,9 @@ public sealed class TerminalConfig
                 case "copy-on-ctrl-c": cfg.CopyOnCtrlC = ParseBool(val, cfg.CopyOnCtrlC); break;
                 case "paste-protection": cfg.PasteProtection = ParseBool(val, cfg.PasteProtection); break;
                 case "clipboard-write": cfg.ClipboardWrite = ParseBool(val, cfg.ClipboardWrite); break;
+                case "notification-flash":
+                    if (val is "none" or "once" or "until-focused") cfg.NotificationFlash = val;
+                    break;
                 case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;

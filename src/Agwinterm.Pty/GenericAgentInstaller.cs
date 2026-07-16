@@ -21,7 +21,7 @@ public static class GenericAgentInstaller
         """
         if ($env:AGWINTERM -eq '1' -and -not $global:__agwAgent) {
           $global:__agwAgent = $true
-          if (-not $env:AGWINTERM_AGENT_RE) { $env:AGWINTERM_AGENT_RE = 'claude|codex|aider|gemini|cursor|copilot|goose|opencode|amp' }
+          if (-not $env:AGWINTERM_AGENT_RE) { $env:AGWINTERM_AGENT_RE = 'claude|codex|aider|gemini|cursor|copilot|goose|opencode|amp|pi' }
           function global:__agwStatus([string]$s) {
             if (-not $env:AGWINTERM_SESSION_ID) { return }
             $pipe = if ($env:AGWINTERM_PIPE) { $env:AGWINTERM_PIPE } else { 'agwinterm' }
@@ -52,15 +52,22 @@ public static class GenericAgentInstaller
         }
         """ + "\n" + End;
 
-    /// <summary>Append the block to the profile if not already present. Idempotent. Returns a summary.</summary>
+    /// <summary>Append the block to the profile if not already present; replace an installed block whose
+    /// content is stale (older bridge version — e.g. before pi joined the default agent regex). Idempotent.</summary>
     public static string Install()
     {
         string path = ShellIntegrationInstaller.ProfilePath();
         try
         {
             string existing = File.Exists(path) ? File.ReadAllText(path) : "";
-            if (existing.Contains(Begin))
-                return "generic agent status already installed -> " + path;
+            switch (ProfileBlocks.Inspect(existing, Begin, End, Block, out string updated))
+            {
+                case ProfileBlockState.Current: return "generic agent status already installed -> " + path;
+                case ProfileBlockState.Corrupted: return "generic agent block is corrupted (no end sentinel) — fix " + path + " by hand";
+                case ProfileBlockState.Stale:
+                    File.WriteAllText(path, updated);
+                    return "updated generic agent status to the current version -> " + path;
+            }
 
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             string sep = existing.Length == 0 ? "" : (existing.EndsWith("\n") ? "\n" : "\n\n");
@@ -72,4 +79,7 @@ public static class GenericAgentInstaller
             return "failed to install generic agent status: " + ex.Message;
         }
     }
+
+    /// <summary>Refresh an already-installed block at startup (never installs fresh).</summary>
+    public static string? RefreshIfInstalled() => ProfileBlocks.RefreshIfInstalled(Begin, End, Block, "generic agent bridge");
 }
