@@ -1161,6 +1161,10 @@ internal partial class Program
 
     private List<Pane> PanesOf(Ses s) { lock (_workspaces) return s.Panes.ToList(); }
 
+    /// <summary>Whether a pane reconnected to a surviving pty-host session on this restore
+    /// (see <see cref="ServerSession.Adopted"/>) — such panes' shells are LIVE, not fresh.</summary>
+    private static bool IsAdopted(Pane p) => p.S is ServerSession { Adopted: true };
+
     private static string DenylistPath => Path.Combine(AppDir, "restore-denylist.conf");
 
     /// <summary>Exe/process names (no extension) that restore-commands never re-runs. Seeds a starter file.</summary>
@@ -1428,10 +1432,12 @@ internal partial class Program
                         ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
                     }
                     // Buffer-content restore: seed each pane's scrollback (dimmed) above the fresh shell.
+                    // ADOPTED panes skip it — they reconnected to the live session, whose real (and
+                    // fresher) scrollback came with the attach; seeding would duplicate it.
                     if (_config.RestoreBuffer)
                         lock (_workspaces)
                             for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
-                                if (pl[i].Buffer is { Count: > 0 } b)
+                                if (pl[i].Buffer is { Count: > 0 } b && !IsAdopted(ses.Panes[i]))
                                 {
                                     var seed = new List<string>(b) { "──── restored ────" };
                                     var pane = ses.Panes[i];
@@ -1455,6 +1461,10 @@ internal partial class Program
                         string agent = pl[i].AgentResume ?? "";
                         if (agent.Length == 0) continue;
                         var apane = ses.Panes[i];
+                        // An ADOPTED pane's agent is STILL RUNNING — typing `claude --resume ...`
+                        // into it would land in the live agent's prompt. The binding stays for
+                        // future (non-adopted) restarts; nothing to relaunch now.
+                        if (IsAdopted(apane)) continue;
                         _ = Task.Run(async () =>
                         {
                             await Task.Delay(2500); // let the shell/profile settle so the wrapper function is defined
@@ -1469,6 +1479,7 @@ internal partial class Program
                         for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
                         {
                             if (!string.IsNullOrWhiteSpace(pl[i].AgentResume)) continue; // agent panes handled above
+                            if (IsAdopted(ses.Panes[i])) continue;   // the captured command is still running
                             string cmd = pl[i].Command ?? "";
                             if (cmd.Length == 0) continue;
                             string lead = StripExe(cmd.TrimStart('"').Split(' ', 2)[0]);
