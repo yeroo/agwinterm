@@ -1354,7 +1354,9 @@ internal partial class Program
         "toggle" => "Toggle sidebar",
         "add-session" => "New session",
         "new-workspace" => "New workspace",
-        "attention" => "Next attention",
+        "attention" => "Attention",
+        "recent" => "Recent sessions",
+        "dashboard" => "Dashboard",
         "scratch" => "Scratch terminal",
         "split" => "Split pane",
         "quick terminal" => "Quick terminal",
@@ -1405,7 +1407,9 @@ internal partial class Program
             case "toggle": ToggleSidebar(); break;
             case "add-session": TogglePalette(PaletteKind.NewSession); break;   // themed picker: profiles + Open Directory…
             case "new-workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
-            case "attention": GoToNextAttention(1); break;
+            case "attention": ShowAttentionPopover(); break;   // popover of waiting sessions (agterm #212)
+            case "recent": ShowRecentPopover(); break;         // popover of recent sessions (agterm #212)
+            case "dashboard": ToggleDashboard(); break;        // title-bar dashboard button (agterm #217)
             case "scratch": if (_active is not null) ScratchOp(_active, "toggle"); break;
             case "split": SplitOp("toggle"); break;   // title-bar split button toggles the split on/off
             case "quick terminal": QuickOp("toggle"); break;
@@ -1414,6 +1418,65 @@ internal partial class Program
             case "settings": OpenSettingsWindow(); break;
             default: ShowToast(a + " not implemented yet"); break;
         }
+    }
+
+    /// <summary>Screen point just under a title-bar button (popover anchor); falls back to the
+    /// title bar's left edge if the button isn't currently laid out.</summary>
+    private (int sx, int sy) TitleButtonAnchor(string action)
+    {
+        float x = 8f;
+        foreach (var b in _titleButtons) if (b.action == action) { x = b.x0; break; }
+        var pt = new POINT { x = (int)x, y = (int)TitleBarH };
+        ClientToScreen(_hwnd, ref pt);
+        return (pt.x, pt.y);
+    }
+
+    /// <summary>Title-bar attention popover (agterm #212): the sessions that need attention,
+    /// most urgent first — click one to jump. Replaces the bell's old jump-to-next click.</summary>
+    private void ShowAttentionPopover()
+    {
+        var att = AllSessions().Where(s => AggStatus(s) != AgentStatus.Idle)
+            .OrderBy(s => AggStatus(s) == AgentStatus.Blocked ? 0 : AggStatus(s) == AgentStatus.Active ? 1 : 2)
+            .ToList();
+        var items = new List<PalItem>();
+        if (att.Count == 0) items.Add(new PalItem { Label = "No sessions need attention", Run = null });
+        foreach (var s in att)
+        {
+            var sx = s;
+            items.Add(new PalItem
+            {
+                Label = sx.Name,
+                Secondary = $"{sx.Ws.Name}  ·  {AggStatus(sx).ToString().ToLowerInvariant()}",
+                Dot = AggStatus(sx),
+                Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
+            });
+        }
+        var (ax, ay) = TitleButtonAnchor("attention");
+        ShowMenuWindow(items, ax, ay);
+    }
+
+    /// <summary>Title-bar recent-sessions popover (agterm #212): most-recently-used sessions,
+    /// current first — for jumping around while the sidebar is hidden.</summary>
+    private void ShowRecentPopover()
+    {
+        EnsureMru();
+        var recent = _mru.Select(FindSes).Where(s => s is not null).Cast<Ses>().Take(9).ToList();
+        var items = new List<PalItem>();
+        if (recent.Count == 0) items.Add(new PalItem { Label = "No recent sessions", Run = null });
+        foreach (var s in recent)
+        {
+            var sx = s;
+            var st = AggStatus(sx);
+            items.Add(new PalItem
+            {
+                Label = ReferenceEquals(sx, _active) ? sx.Name + "  (current)" : sx.Name,
+                Secondary = sx.Ws.Name,
+                Dot = st == AgentStatus.Idle ? null : st,
+                Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
+            });
+        }
+        var (ax, ay) = TitleButtonAnchor("recent");
+        ShowMenuWindow(items, ax, ay);
     }
 
     private void ToggleSidebar()

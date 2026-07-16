@@ -102,6 +102,13 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    // Taskbar-button flash (agterm's Dock bounce analog, #215).
+    [StructLayout(LayoutKind.Sequential)]
+    public struct FLASHWINFO { public uint cbSize; public IntPtr hwnd; public uint dwFlags; public uint uCount; public uint dwTimeout; }
+    [DllImport("user32.dll")]
+    public static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
+    public const uint FLASHW_STOP = 0, FLASHW_CAPTION = 1, FLASHW_TRAY = 2, FLASHW_ALL = 3, FLASHW_TIMERNOFG = 12;
     public const uint TPM_RETURNCMD = 0x0100, TPM_RIGHTBUTTON = 0x0002, TPM_LEFTALIGN = 0x0000, TPM_BOTTOMALIGN = 0x0020;
     public const uint MF_STRING = 0x0000, MF_POPUP = 0x0010, MF_SEPARATOR = 0x0800, MF_GRAYED = 0x0001;
     public const uint BIF_RETURNONLYFSDIRS = 0x0001, BIF_NEWDIALOGSTYLE = 0x0040;

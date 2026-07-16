@@ -147,6 +147,7 @@ internal partial class Program
         Sec(2, "Notifications");
         Tog(2, "desktop-notifications", "Desktop notifications (OS tray)");
         Tog(2, "notification-badges", "Unread badges on sidebar rows");
+        Drop(2, "notification-flash", "Flash taskbar when in background", new[] { "None", "Once", "Until focused" }, new[] { "none", "once", "until-focused" });
         Tog(2, "attention-button", "Title-bar attention indicator");
 
         // Agent Status

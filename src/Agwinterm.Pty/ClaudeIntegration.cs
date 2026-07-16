@@ -63,18 +63,10 @@ public static class ClaudeIntegration
     internal enum BlockState { Missing, Current, Stale, Corrupted }
 
     /// <summary>Classify the launcher block inside profile text; for <see cref="BlockState.Stale"/>,
-    /// <paramref name="updated"/> is the profile text with the block replaced by the current version.</summary>
+    /// <paramref name="updated"/> is the profile text with the block replaced by the current version.
+    /// (Thin wrapper over the shared <see cref="ProfileBlocks"/> logic.)</summary>
     internal static BlockState InspectBlock(string existing, out string updated)
-    {
-        updated = existing;
-        int b = existing.IndexOf(Begin, StringComparison.Ordinal);
-        if (b < 0) return BlockState.Missing;
-        int e = existing.IndexOf(End, b, StringComparison.Ordinal);
-        if (e < 0) return BlockState.Corrupted;
-        if (existing[b..(e + End.Length)] == Block) return BlockState.Current;
-        updated = existing[..b] + Block + existing[(e + End.Length)..];
-        return BlockState.Stale;
-    }
+        => (BlockState)ProfileBlocks.Inspect(existing, Begin, End, Block, out updated);
 
     /// <summary>Append the block to the profile if not already present; replace an installed block whose
     /// content is stale (older wrapper version). Idempotent. Returns a summary.</summary>
@@ -107,16 +99,5 @@ public static class ClaudeIntegration
     /// <summary>Refresh the installed block to the current version if (and only if) an older one is present —
     /// run at startup so wrapper fixes reach users who installed the launcher once and never re-ran install.
     /// Never installs fresh (that stays opt-in via install.hooks). Returns null when nothing changed.</summary>
-    public static string? RefreshIfInstalled()
-    {
-        try
-        {
-            string path = ShellIntegrationInstaller.ProfilePath();
-            if (!File.Exists(path)) return null;
-            if (InspectBlock(File.ReadAllText(path), out string updated) != BlockState.Stale) return null;
-            File.WriteAllText(path, updated);
-            return "claude launcher updated -> " + path;
-        }
-        catch { return null; }    // best-effort: a locked/readonly profile must not break startup
-    }
+    public static string? RefreshIfInstalled() => ProfileBlocks.RefreshIfInstalled(Begin, End, Block, "claude launcher");
 }
