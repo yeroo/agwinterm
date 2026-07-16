@@ -546,12 +546,16 @@ internal partial class Program
                 lock (_windowIndex)
                 {
                     _byId.Remove(Id);
-                    int otherOpen = _windowIndex.Count(m => m.IsOpen && m.Id != Id);
-                    lastWindow = otherOpen == 0;
+                    // "Last window" must count LIVE windows (_byId), not index metas: an update-quit
+                    // keeps metas IsOpen=true (so they reopen after relaunch), which would make the
+                    // meta count never reach zero and leave a windowless process running forever.
+                    lastWindow = _byId.Count == 0;
                     var meta = _windowIndex.FirstOrDefault(m => m.Id == Id);
                     // Explicit close (others remain) -> mark closed so it won't auto-reopen. App quit
                     // (this was the last open window) -> keep IsOpen=true so it reopens next launch.
-                    if (meta is not null && !lastWindow) meta.IsOpen = false;
+                    // Update-quit closes every window in sequence — those must ALL reopen after the
+                    // relaunch, so it never marks any of them closed.
+                    if (meta is not null && !lastWindow && !_updateQuitting) meta.IsOpen = false;
                     if (ReferenceEquals(Frontmost, this))
                     {
                         var nf = _byId.Values.FirstOrDefault();

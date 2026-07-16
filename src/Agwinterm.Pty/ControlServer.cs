@@ -203,6 +203,8 @@ public sealed class ControlServer : IDisposable
                     return Ok(host.RestartClaudeYolo(target));
                 case "claude.update":
                     return Ok(host.UpdateClaude());
+                case "app.update":
+                    return Ok(host.UpdateApp());
                 case "workspace.focus": host.WorkspaceFocus(GetString(args, "op") ?? "toggle"); return Ok("focus");
                 case "session.background":
                     return Ok(host.SessionBackground(target, GetString(args, "action") ?? "set",
