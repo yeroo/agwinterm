@@ -73,11 +73,15 @@ internal partial class Program
         // ACTUALLY scrolled (a line pushed into history) — not on every repaint. TUIs like Claude Code
         // redraw in place without scrolling, so a mouse selection now survives those frames and Ctrl+C can
         // copy it (previously any repaint wiped the selection microseconds after you made it). #copy-selection
+        // Repaints are requested ONLY when this pane is on screen: a background tab's output flood
+        // used to repaint the (unchanged!) foreground at the full frame cap, starving typing on slow
+        // machines. The emulator still consumes everything; switching to the pane shows current
+        // content, and the sidebar title catches up on the next paint (cursor blink at the latest).
         session.OutputReceived += () =>
         {
             long gen = session.Emulator.ScrollGeneration;
             if (gen != pane.LastScrollGen) { pane.LastScrollGen = gen; pane.ScrollOffset = 0; pane.ClearSel(); }
-            RequestRedraw();
+            if (IsSurfaceVisible(pane)) RequestRedraw();
         };
         // On a transition INTO blocked, play the configured blocked-sound (best-effort, off the UI thread).
         AgentStatus lastStatus = session.Status;
@@ -551,6 +555,20 @@ internal partial class Program
 
     /// <summary>The surface that receives input/render focus: a shown cover, else the active pane.</summary>
     private Pane? ActiveSurface() => _cover ?? _active?.ActivePane;
+
+    /// <summary>Whether a pane is currently on screen — i.e. whether its output warrants a repaint.
+    /// Called on session pump threads: field reads are benignly racy (a stale answer costs one
+    /// skipped-or-extra frame), but the pane-list read locks like every other cross-thread reader
+    /// (#85). Dashboard open = every session shows a live preview; a shown cover renders ABOVE the
+    /// active session's panes, which stay partially visible behind floating overlays — so both count.</summary>
+    private bool IsSurfaceVisible(Pane p)
+    {
+        if (_dashboardOpen) return true;
+        if (_cover is { } c && ReferenceEquals(c, p)) return true;
+        var act = _active;
+        if (act is null) return false;
+        lock (_workspaces) return act.Panes.Contains(p);
+    }
 
     private void SyncSession() => _session = ActiveSurface()?.S;
 
