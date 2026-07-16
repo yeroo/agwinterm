@@ -21,7 +21,7 @@ public sealed class ControlServer : IDisposable
 
     // Per-session record of the last content signature transmitted for each image id, so an
     // unchanged image can be re-placed (a=p) instead of re-transmitted (a=T) on every frame.
-    private readonly ConditionalWeakTable<TerminalSession, Dictionary<int, long>> _txState = new();
+    private readonly ConditionalWeakTable<ISession, Dictionary<int, long>> _txState = new();
 
     public ControlServer(ISessionHost host, string pipeName = "agwinterm")
     {
@@ -38,7 +38,7 @@ public sealed class ControlServer : IDisposable
     }
 
     /// <summary>Convenience: serve a single fixed session (tests / simple hosts).</summary>
-    public ControlServer(TerminalSession session, string pipeName = "agwinterm")
+    public ControlServer(ISession session, string pipeName = "agwinterm")
         : this(new SingleSessionHost(session), pipeName) { }
 
     public string PipeName => _pipeName;
@@ -324,13 +324,13 @@ public sealed class ControlServer : IDisposable
         return OkRaw(sb.ToString());
     }
 
-    private static string HandleWrite(TerminalSession s, JsonElement args)
+    private static string HandleWrite(ISession s, JsonElement args)
     {
         s.Inject(Encoding.UTF8.GetBytes(GetString(args, "text") ?? ""));
         return Ok("written");
     }
 
-    private static string HandleType(TerminalSession s, JsonElement args)
+    private static string HandleType(ISession s, JsonElement args)
     {
         string text = (GetString(args, "text") ?? "").Replace("\r\n", "\r").Replace('\n', '\r');
         s.Write(Encoding.UTF8.GetBytes(text));
@@ -338,7 +338,7 @@ public sealed class ControlServer : IDisposable
     }
 
     /// <summary>Dump the target session's active-pane buffer as plain text (trailing blank lines trimmed).</summary>
-    private static string HandleText(TerminalSession s)
+    private static string HandleText(ISession s)
     {
         var sb = new StringBuilder();
         lock (s.SyncRoot)
@@ -349,7 +349,7 @@ public sealed class ControlServer : IDisposable
         return Ok(sb.ToString().TrimEnd('\n'));
     }
 
-    private static string HandleStatus(TerminalSession s, JsonElement args)
+    private static string HandleStatus(ISession s, JsonElement args)
     {
         string st = (GetString(args, "status") ?? "").ToLowerInvariant();
         if (st.Length == 0) return Err("session.status requires args.status");
@@ -379,7 +379,7 @@ public sealed class ControlServer : IDisposable
         return Ok(status.ToString().ToLowerInvariant());
     }
 
-    private static string HandleImageShow(TerminalSession s, JsonElement args)
+    private static string HandleImageShow(ISession s, JsonElement args)
     {
         string? path = GetString(args, "path");
         if (path is null || !File.Exists(path)) return Err("image file not found: " + (path ?? "<null>"));
@@ -392,7 +392,7 @@ public sealed class ControlServer : IDisposable
         return Ok("shown");
     }
 
-    private static string HandleImageSixel(TerminalSession s, JsonElement args)
+    private static string HandleImageSixel(ISession s, JsonElement args)
     {
         string? path = GetString(args, "path");
         if (path is null || !File.Exists(path)) return Err("sixel file not found: " + (path ?? "<null>"));
@@ -404,13 +404,13 @@ public sealed class ControlServer : IDisposable
         return Ok("shown");
     }
 
-    private static string HandleImageClear(TerminalSession s)
+    private static string HandleImageClear(ISession s)
     {
         s.Inject(Encoding.ASCII.GetBytes("\x1b_Ga=d\x1b\\"));
         return Ok("cleared");
     }
 
-    private string HandleImageFrame(TerminalSession s, JsonElement args)
+    private string HandleImageFrame(ISession s, JsonElement args)
     {
         if (args.ValueKind != JsonValueKind.Object ||
             !args.TryGetProperty("images", out var images) || images.ValueKind != JsonValueKind.Array)

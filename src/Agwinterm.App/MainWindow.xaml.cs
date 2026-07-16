@@ -28,7 +28,7 @@ public sealed partial class MainWindow : Window, ISessionHost
     {
         public required string Id;
         public required string Name;
-        public required TerminalSession S;
+        public required ISession S;
         public required Workspace Ws;
     }
 
@@ -44,7 +44,7 @@ public sealed partial class MainWindow : Window, ISessionHost
     private Ses? _activeRef;
     private object? _editing; // Ses or Workspace currently being renamed inline
     private bool _windowActive = true;
-    private TerminalSession? _session;   // mirrors the active session (rendering/input use this)
+    private ISession? _session;   // mirrors the active session (rendering/input use this)
     private bool _started;
     private ControlServer? _control;
 
@@ -207,7 +207,7 @@ public sealed partial class MainWindow : Window, ISessionHost
     {
         StartControlServerOnce();
         var (cols, rows) = ComputeGridSize();
-        var session = new TerminalSession(cols, rows);
+        var session = InProcessSessionBackend.Instance.Create(cols, rows);
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", S = session, Ws = ws };
@@ -239,7 +239,7 @@ public sealed partial class MainWindow : Window, ISessionHost
         else RebuildSidebar();
     }
 
-    private async Task StartSessionAsync(TerminalSession session, Dictionary<string, string> env, string? cwd)
+    private async Task StartSessionAsync(ISession session, Dictionary<string, string> env, string? cwd)
     {
         try { await session.StartAsync("powershell.exe", new[] { "-NoLogo" }, extraEnv: env, cwd: cwd); }
         catch (Exception ex) { Title = "agwinterm — shell failed: " + ex.Message; }
@@ -485,7 +485,7 @@ public sealed partial class MainWindow : Window, ISessionHost
         }
     }
 
-    public TerminalSession? Resolve(string? target) => Find(target)?.S;
+    public ISession? Resolve(string? target) => Find(target)?.S;
 
     public IReadOnlyList<WorkspaceSnapshot> Tree()
     {

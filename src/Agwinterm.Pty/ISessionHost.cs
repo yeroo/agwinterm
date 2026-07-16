@@ -26,7 +26,7 @@ public sealed record WindowStateSnapshot(bool SidebarVisible, bool Fullscreen, b
 /// </summary>
 public interface ISessionHost
 {
-    TerminalSession? Resolve(string? target);
+    ISession? Resolve(string? target);
 
     /// <summary>The full workspace→session tree.</summary>
     IReadOnlyList<WorkspaceSnapshot> Tree();
@@ -213,10 +213,10 @@ public interface ISessionHost
 /// <summary>Adapter exposing a single fixed session as an <see cref="ISessionHost"/> (tests / simple hosts).</summary>
 public sealed class SingleSessionHost : ISessionHost
 {
-    private readonly TerminalSession _session;
-    public SingleSessionHost(TerminalSession session) => _session = session;
+    private readonly ISession _session;
+    public SingleSessionHost(ISession session) => _session = session;
 
-    public TerminalSession? Resolve(string? target) => _session;
+    public ISession? Resolve(string? target) => _session;
     public IReadOnlyList<WorkspaceSnapshot> Tree() =>
         new[] { new WorkspaceSnapshot("ws", "workspace", true,
             new[] { new SessionSnapshot("single", "session", true, _session.Status) }) };

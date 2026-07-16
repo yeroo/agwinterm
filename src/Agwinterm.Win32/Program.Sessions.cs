@@ -54,7 +54,7 @@ internal partial class Program
         bool deElevate = false, HandoffArgs? handoff = null)
     {
         var (cols, rows) = GridSizeFor(fontSize);
-        var session = new TerminalSession(cols, rows);
+        var session = _sessionBackend.Create(cols, rows);   // the ONLY session creation site (see ISessionBackend)
         session.Emulator.ScrollbackMax = _config.Scrollback;
         var pane = new Pane { Id = paneId, S = session, StartCwd = cwd, FontSize = fontSize };
         // New output only snaps this pane back to the live bottom and drops the selection when the buffer
@@ -195,7 +195,7 @@ internal partial class Program
     /// <summary>Launch a session's shell from its profile. PowerShell profiles (powershell.exe / pwsh) with
     /// no custom args get the OSC-7 cwd wrap + omp injection (today's default behavior); everything else
     /// (cmd, Git Bash, WSL, custom) launches its raw command + args. AGWINTERM_* env is passed regardless.</summary>
-    private void LaunchShell(TerminalSession session, string? profileName, Dictionary<string, string> env, string? cwd, bool deElevate = false)
+    private void LaunchShell(ISession session, string? profileName, Dictionary<string, string> env, string? cwd, bool deElevate = false)
     {
         var prof = ResolveProfile(profileName);
         string cmd = prof?.Command is { Length: > 0 } c ? c : "powershell.exe";
@@ -218,8 +218,8 @@ internal partial class Program
     /// writes straight back to the PTY (it must not wait on the UI thread).</summary>
     private sealed class PaneHost : IHostActions
     {
-        private readonly Program _app; private readonly Pane _pane; private readonly TerminalSession _s;
-        public PaneHost(Program app, Pane pane, TerminalSession s) { _app = app; _pane = pane; _s = s; }
+        private readonly Program _app; private readonly Pane _pane; private readonly ISession _s;
+        public PaneHost(Program app, Pane pane, ISession s) { _app = app; _pane = pane; _s = s; }
         public void Notify(string title, string body) => _app.Post(() => _app.OnNotified(_pane, title, body));
         public void Progress(int state, int value) => _app.Post(() => _app.OnProgress(state, value));   // OSC 9;4 -> taskbar
         public void ClipboardWrite(string text)                                                        // OSC 52 -> system clipboard

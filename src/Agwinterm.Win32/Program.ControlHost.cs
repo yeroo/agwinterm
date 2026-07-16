@@ -159,7 +159,7 @@ internal partial class Program
 
     // ---- ISessionHost bridge (Program is the host) so the control server / agwintermctl drive
     // this window. Un-scoped verbs act on this instance; the seam for future --window targeting. ----
-        public TerminalSession? Resolve(string? target)
+        public ISession? Resolve(string? target)
         {
             if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface()?.S;
             lock (_workspaces)

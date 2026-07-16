@@ -80,6 +80,11 @@ public sealed class TerminalConfig
     /// ("Update agwinterm"), which downloads, verifies, restarts, and restores sessions.</summary>
     public bool UpdateCheck { get; set; } = true;
 
+    /// <summary>Where terminal sessions live: "in-process" (default — the UI process owns the
+    /// ConPTYs) or "server" (reserved: a separate pty-host process so sessions survive UI updates
+    /// and crashes — issue #105; falls back to in-process until it ships).</summary>
+    public string SessionHost { get; set; } = "in-process";
+
     /// <summary>Characters that DELIMIT words for double-click selection (in addition to whitespace).
     /// Empty = whitespace only (double-click grabs a whole path/URL). WT's wordDelimiters analog.</summary>
     public string WordDelimiters { get; set; } = "";
@@ -235,6 +240,12 @@ public sealed class TerminalConfig
         # manager (scoop/chocolatey) are never self-updated - the hint points at the manager instead.
         update-check = true
 
+        # Where terminal sessions live. "in-process" (default): the window process owns them.
+        # "server" (EXPERIMENTAL, not shipped yet - see github issue #105): a separate pty-host
+        # process owns them, so shells survive UI updates and crashes; falls back to in-process
+        # until it ships.
+        session-host = in-process
+
         # Blocked sound: play a sound whenever a session enters the "blocked" agent status (needs
         # your attention). Empty / off / none = silent. Accepts a system-sound name (beep, asterisk,
         # exclamation, hand, question), a Windows sound-event alias, or a path to a .wav file.
@@ -352,6 +363,9 @@ public sealed class TerminalConfig
                     break;
                 case "claude-update-check": cfg.ClaudeUpdateCheck = ParseBool(val, cfg.ClaudeUpdateCheck); break;
                 case "update-check": cfg.UpdateCheck = ParseBool(val, cfg.UpdateCheck); break;
+                case "session-host":
+                    if (val is "in-process" or "server") cfg.SessionHost = val;
+                    break;
                 case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;
