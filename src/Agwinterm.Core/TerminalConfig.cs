@@ -241,9 +241,10 @@ public sealed class TerminalConfig
         update-check = true
 
         # Where terminal sessions live. "in-process" (default): the window process owns them.
-        # "server" (EXPERIMENTAL - see github issue #105): a separate pty-host process owns them -
-        # the groundwork for shells surviving UI updates and crashes. In this phase closing a pane
-        # or the app still closes its sessions (survival + adoption land next).
+        # "server" (EXPERIMENTAL - see github issue #105): a separate pty-host process owns them,
+        # so shells KEEP RUNNING when the UI quits, updates, or crashes - the next start reconnects
+        # every pane to its live session (closing a pane still closes its shell). Changing this
+        # applies to new sessions immediately; restart agwinterm to migrate existing ones.
         session-host = in-process
 
         # Blocked sound: play a sound whenever a session enters the "blocked" agent status (needs

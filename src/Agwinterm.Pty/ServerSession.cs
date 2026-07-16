@@ -65,9 +65,9 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
 /// <see cref="Emulator"/> is a REPLICA fed by the host's raw ConPTY stream (the host keeps the
 /// authoritative one); input, resize, and lifecycle travel over the host protocol.
 ///
-/// Phase 2b semantics: <see cref="Dispose"/> KILLS the hosted session — closing a pane behaves
-/// exactly like the in-process backend. Detach-and-survive (app quit leaves sessions running,
-/// next start adopts them) is Phase 2c, where dispose-for-quit and dispose-for-close diverge.
+/// Lifecycle: <see cref="Dispose"/> KILLS the hosted session (explicit pane close);
+/// <see cref="Detach"/> releases it alive (app quit) for a later <see cref="TryAdopt"/> — that
+/// split is what lets shells survive UI restarts, updates, and crashes (#105, Phase 2c).
 /// </summary>
 public sealed class ServerSession : ISession
 {
