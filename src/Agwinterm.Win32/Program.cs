@@ -423,7 +423,7 @@ internal partial class Program : ISessionHost, IWindowHost
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         // Process-global setup (config/themes/keymap + window class + shared D2D/DWrite objects).
         _config = LoadOrCreateConfig();
-        _sessionBackend = SessionBackends.Resolve(_config.SessionHost, out bool sessionHostFellBack);
+        _sessionBackend = SessionBackends.Resolve(_config.SessionHost, _argPipe ?? _appId, AppExePath);
         _allThemes = LoadThemes();
         _theme = FindTheme(_config.Theme);
         LoadKeymap();
@@ -477,10 +477,10 @@ internal partial class Program : ISessionHost, IWindowHost
             front ??= w;
         }
         Frontmost = front!;
-        // `session-host = server` is reserved for the pty-host process (#105); say so instead of
-        // silently ignoring the key while Phase 2 is unbuilt.
-        if (sessionHostFellBack)
-            front!.Post(() => front.ShowToast("session-host = server isn't available yet (#105) — using in-process", 6000));
+        // Server mode is experimental (#105) — say so once at startup, so a flipped knob is never
+        // a silent mystery ("why is there a second agwinterm process?").
+        if (_sessionBackend is ServerSessionBackend)
+            front!.Post(() => front.ShowToast("session-host = server (experimental) — sessions live in the pty-host process", 6000));
 
         while (GetMessageW(out MSG msg, IntPtr.Zero, 0, 0) > 0)
         {

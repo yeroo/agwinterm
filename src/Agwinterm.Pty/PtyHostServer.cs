@@ -134,6 +134,7 @@ public sealed class PtyHostServer : IDisposable
             ? av.EnumerateArray().Select(e => e.GetString() ?? "").ToArray() : Array.Empty<string>();
         string? cwd = GetString(root, "cwd");
         bool verbatim = root.TryGetProperty("verbatim", out var vb) && vb.ValueKind == JsonValueKind.True;
+        bool deElevate = root.TryGetProperty("deElevate", out var de) && de.ValueKind == JsonValueKind.True;
         Dictionary<string, string>? env = null;
         if (root.TryGetProperty("env", out var ev) && ev.ValueKind == JsonValueKind.Object)
         {
@@ -161,7 +162,19 @@ public sealed class PtyHostServer : IDisposable
             }
         };
         session.Exited += _ => CloseData(hosted);
-        _ = session.StartAsync(app, args, verbatimCommandLine: verbatim, extraEnv: env, cwd: cwd);
+        // Await the spawn so a failure (bad exe, bad cwd) travels back as the create's error —
+        // fire-and-forget here would leave the client attached to a session that never lived.
+        try
+        {
+            session.StartAsync(app, args, verbatimCommandLine: verbatim, extraEnv: env, cwd: cwd, deElevate: deElevate)
+                .GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            lock (_lock) _sessions.Remove(id);
+            try { session.Dispose(); } catch { }
+            return Err("spawn failed: " + ex.Message);
+        }
         return Ok(w => w.WriteString("id", id));
     }
 

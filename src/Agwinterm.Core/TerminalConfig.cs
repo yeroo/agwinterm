@@ -81,8 +81,8 @@ public sealed class TerminalConfig
     public bool UpdateCheck { get; set; } = true;
 
     /// <summary>Where terminal sessions live: "in-process" (default — the UI process owns the
-    /// ConPTYs) or "server" (reserved: a separate pty-host process so sessions survive UI updates
-    /// and crashes — issue #105; falls back to in-process until it ships).</summary>
+    /// ConPTYs) or "server" (EXPERIMENTAL, #105 — a separate pty-host process owns them; the
+    /// long-term basis for sessions surviving UI updates/crashes).</summary>
     public string SessionHost { get; set; } = "in-process";
 
     /// <summary>Characters that DELIMIT words for double-click selection (in addition to whitespace).
@@ -241,9 +241,9 @@ public sealed class TerminalConfig
         update-check = true
 
         # Where terminal sessions live. "in-process" (default): the window process owns them.
-        # "server" (EXPERIMENTAL, not shipped yet - see github issue #105): a separate pty-host
-        # process owns them, so shells survive UI updates and crashes; falls back to in-process
-        # until it ships.
+        # "server" (EXPERIMENTAL - see github issue #105): a separate pty-host process owns them -
+        # the groundwork for shells surviving UI updates and crashes. In this phase closing a pane
+        # or the app still closes its sessions (survival + adoption land next).
         session-host = in-process
 
         # Blocked sound: play a sound whenever a session enters the "blocked" agent status (needs
