@@ -312,7 +312,7 @@ internal partial class Program
     /// <summary>Draw one terminal surface (cells, images, cursor) at origin (ox,oy) with its font metrics.</summary>
     private Cell[] _cellSnap = Array.Empty<Cell>();   // reusable viewport snapshot; drawing reads it lock-free
 
-    private void RenderTerminal(TerminalSession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch, int scrollOffset, Pane? selPane = null)
+    private void RenderTerminal(ISession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch, int scrollOffset, Pane? selPane = null)
     {
         var rt = _rt!;
         var brush = _brush!;

@@ -55,6 +55,15 @@ public class TerminalConfigTests
     }
 
     [Fact]
+    public void SessionHost_ParsesValidValuesRejectsUnknown()
+    {
+        Assert.Equal("in-process", TerminalConfig.Parse("").SessionHost);   // default: today's model
+        Assert.Equal("server", TerminalConfig.Parse("session-host = server").SessionHost);
+        Assert.Equal("in-process", TerminalConfig.Parse("session-host = bogus").SessionHost);
+        Assert.Contains("session-host", TerminalConfig.DefaultText);
+    }
+
+    [Fact]
     public void UpdateCheck_ParsesAndIsDocumented()
     {
         Assert.True(TerminalConfig.Parse("").UpdateCheck);         // default: awareness on, applying stays manual

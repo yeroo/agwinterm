@@ -43,7 +43,7 @@ internal sealed class FakeSessionHost : ISessionHost
         t is null or "active" ? ActiveWs
         : Workspaces.FirstOrDefault(w => w.Id == t || w.Id.StartsWith(t) || string.Equals(w.Name, t, StringComparison.OrdinalIgnoreCase));
 
-    public TerminalSession? Resolve(string? target) => Find(target) is not null ? _session : null;
+    public ISession? Resolve(string? target) => Find(target) is not null ? _session : null;
 
     public IReadOnlyList<WorkspaceSnapshot> Tree() => Workspaces.Select(w => new WorkspaceSnapshot(
         w.Id, w.Name, ReferenceEquals(w, ActiveWs),

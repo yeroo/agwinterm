@@ -75,7 +75,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private static Theme? _themeBeforePreview;                   // saved when the theme picker opens (Esc reverts)
     private static List<Theme> _allThemes = new();
     private static Agwinterm.Pty.ShellProfiles.Config _profileCfg = new();   // shell profiles (profiles.json); app-global
-    private TerminalSession? _session;   // mirrors the ACTIVE SURFACE (active pane, or a shown cover)
+    private ISession? _session;   // mirrors the ACTIVE SURFACE (active pane, or a shown cover)
     // Auxiliary "cover" terminal drawn over the content region: scratch (per-session) or quick (per-app).
     private Pane? _cover;                // the shown cover, or null
     private int _coverKind;              // 0 none, 1 scratch, 2 quick, 3 overlay
@@ -89,6 +89,9 @@ internal partial class Program : ISessionHost, IWindowHost
     // Update Claude Code workflow: one run at a time + the newest version the background check saw.
     private volatile bool _claudeUpdating;
     private volatile string? _claudeLatest;   // non-null = a newer Claude Code has shipped
+    // Where sessions live (pty-host seam, #105): chosen once at startup from `session-host`.
+    // Every session is created through this — never via `new TerminalSession` directly.
+    private static ISessionBackend _sessionBackend = InProcessSessionBackend.Instance;
     // agwinterm self-update: same pattern, app-wide (static — one process, many windows).
     private static volatile bool _appUpdating;
     private static volatile string? _appLatest;      // non-null = a newer agwinterm release exists
@@ -253,7 +256,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private sealed class Pane
     {
         public required string Id;
-        public required TerminalSession S;
+        public required ISession S;
         public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
         public string? AgentResume; // resumable agent bound to this pane (e.g. "claude") — relaunched on restart
         public float FontSize;     // per-pane font zoom (pt)
@@ -293,7 +296,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public Pane ActivePane => Panes[Math.Clamp(Active, 0, Panes.Count - 1)];
         // Back-compat shims: existing code that said ses.S / ses.FontSize / ses.StartCwd
         // now refers to the ACTIVE PANE, so most single-pane logic is unchanged.
-        public TerminalSession S => ActivePane.S;
+        public ISession S => ActivePane.S;
         public float FontSize { get => ActivePane.FontSize; set => ActivePane.FontSize = value; }
         public string? StartCwd { get => ActivePane.StartCwd; set => ActivePane.StartCwd = value; }
     }
@@ -409,6 +412,7 @@ internal partial class Program : ISessionHost, IWindowHost
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         // Process-global setup (config/themes/keymap + window class + shared D2D/DWrite objects).
         _config = LoadOrCreateConfig();
+        _sessionBackend = SessionBackends.Resolve(_config.SessionHost, out bool sessionHostFellBack);
         _allThemes = LoadThemes();
         _theme = FindTheme(_config.Theme);
         LoadKeymap();
@@ -462,6 +466,10 @@ internal partial class Program : ISessionHost, IWindowHost
             front ??= w;
         }
         Frontmost = front!;
+        // `session-host = server` is reserved for the pty-host process (#105); say so instead of
+        // silently ignoring the key while Phase 2 is unbuilt.
+        if (sessionHostFellBack)
+            front!.Post(() => front.ShowToast("session-host = server isn't available yet (#105) — using in-process", 6000));
 
         while (GetMessageW(out MSG msg, IntPtr.Zero, 0, 0) > 0)
         {

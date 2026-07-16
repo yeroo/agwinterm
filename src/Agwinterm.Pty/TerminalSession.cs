@@ -9,7 +9,7 @@ namespace Agwinterm.Pty;
 /// spawns the process, pumps its output into the emulator on a reader loop, and
 /// exposes a thread-safe view of the resulting grid.
 /// </summary>
-public sealed class TerminalSession : IDisposable
+public sealed class TerminalSession : ISession
 {
     private readonly object _sync = new();
     private IPtyConnection? _connection;
