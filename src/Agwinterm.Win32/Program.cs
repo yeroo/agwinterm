@@ -381,6 +381,7 @@ internal partial class Program : ISessionHost, IWindowHost
     }
     private static string? _argDir;
     private static bool _argMaximized, _argFullscreen;
+    private static bool _argPtyHost;   // run as the headless pty-host (#105) instead of a window
 
     private static void ParseLaunchArgs(string[] args)
     {
@@ -394,6 +395,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 case "--fullscreen": _argFullscreen = true; break;
                 case "--no-restore": _argNoRestore = true; break;
                 case "--pipe" when i + 1 < args.Length: _argPipe = args[++i]; break;
+                case "--pty-host": _argPtyHost = true; break;
                 case "--app-id" when i + 1 < args.Length: ++i; break; // consumed by ResolveAppId (namespaces data dir + pipe)
                 // unknown args are ignored (forward compatibility)
             }
@@ -409,6 +411,15 @@ internal partial class Program : ISessionHost, IWindowHost
         // Publish the resolved instance id so child processes and shared (Pty) helpers resolve the same
         // data dir — and a nested agwinterm inherits the dev/release identity of the one that launched it.
         Environment.SetEnvironmentVariable("AGWINTERM_APP_ID", _appId);
+        // The pty-host ROLE (#105): same exe, no window — a headless server owning terminal sessions
+        // so they survive UI restarts/crashes. The UI (Phase 2b) spawns and talks to it; nothing
+        // below (config, D2D, window class, control server) applies to this process.
+        if (_argPtyHost)
+        {
+            using var ptyHost = new Agwinterm.Pty.PtyHostServer(_argPipe ?? _appId);
+            ptyHost.Completion.Wait();
+            return;
+        }
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         // Process-global setup (config/themes/keymap + window class + shared D2D/DWrite objects).
         _config = LoadOrCreateConfig();

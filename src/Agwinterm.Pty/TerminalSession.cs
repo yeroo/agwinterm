@@ -24,6 +24,11 @@ public sealed class TerminalSession : ISession
     /// <summary>Raised (on a background thread) after each chunk of output is fed to the emulator.</summary>
     public event Action? OutputReceived;
 
+    /// <summary>Raw-output tap (pty-host): each ConPTY chunk, verbatim, after it fed the emulator.
+    /// The copy is made only while subscribed. Raised on the pump thread — a slow handler stalls
+    /// THIS session's feed, so consumers must be quick or buffer themselves.</summary>
+    public event Action<byte[]>? RawOutput;
+
     /// <summary>Push-based agent status (set via the control API), and a change notification.</summary>
     public AgentStatus Status { get; private set; } = AgentStatus.Idle;
     public event Action? StatusChanged;
@@ -260,6 +265,7 @@ public sealed class TerminalSession : ISession
                 if (DumpPath is not null)
                     lock (_sync) System.IO.File.AppendAllBytes(DumpPath, buffer.AsSpan(0, n).ToArray());
                 lock (_sync) Emulator.Feed(buffer.AsSpan(0, n));
+                if (RawOutput is { } tap) tap(buffer[..n]);
                 OutputReceived?.Invoke();
             }
         }

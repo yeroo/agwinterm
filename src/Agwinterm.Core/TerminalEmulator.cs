@@ -819,6 +819,26 @@ public sealed class TerminalEmulator : IParserPerformer
         return lines;
     }
 
+    /// <summary>Serialize the terminal's MODE state (not content) as VT sequences that reproduce it
+    /// when fed to a fresh emulator — the pty-host reattach handshake. Content is carried separately
+    /// (scrollback seed + a ConPTY repaint); modes must travel explicitly or a reattached view
+    /// wouldn't know, e.g., that the running app enabled mouse reporting or bracketed paste.
+    /// Covers exactly the private modes this emulator tracks; extend alongside SetPrivateMode.</summary>
+    public string DumpModes()
+    {
+        var sb = new System.Text.StringBuilder();
+        if (IsAltScreen) sb.Append("\x1b[?1049h");
+        if (!CursorVisible) sb.Append("\x1b[?25l");
+        if (_mouseClick) sb.Append("\x1b[?1000h");
+        if (_mouseDrag) sb.Append("\x1b[?1002h");
+        if (_mouseMotion) sb.Append("\x1b[?1003h");
+        if (_mouseSgr) sb.Append("\x1b[?1006h");
+        if (BracketedPaste) sb.Append("\x1b[?2004h");
+        if (Title.Length > 0) sb.Append("\x1b]0;").Append(Title).Append('\x07');
+        if (Cwd.Length > 0) sb.Append("\x1b]7;").Append(Cwd).Append('\x07');
+        return sb.ToString();
+    }
+
     /// <summary>Seed the scrollback with plain-text lines (dimmed) — restores a prior session's buffer
     /// above the fresh shell without touching the live screen.</summary>
     public void SeedScrollback(IReadOnlyList<string> lines)
