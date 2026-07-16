@@ -54,6 +54,10 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
   no guessing which shell was which. Already had Claude running before installing this? Run
   `agwintermctl claude adopt` (or palette → *Make Claude Sessions Resumable*) once to bind your
   existing conversations to their panes.
+- **Update Claude Code** (palette → *Update Claude Code*, or `agwintermctl claude update`): agwinterm
+  quietly notices when a new Claude Code ships (npm registry; `claude-update-check = false` to opt
+  out), then — on your command — runs `claude update` in an overlay terminal and **restarts every
+  running Claude session**, each resuming its own conversation (YOLO panes stay YOLO).
 - **A scriptable control API**: `agwintermctl` (or newline-JSON over a named pipe) — any language can
   drive it, including full **read-back** (tree with split ratios + pane ids, window state, session
   output). Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.

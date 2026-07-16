@@ -794,28 +794,165 @@ internal partial class Program
                 ? "claude --dangerously-skip-permissions"
                 : $"claude --resume {id} --dangerously-skip-permissions";
             Post(() => { pane.AgentResume = cmd; SaveState(); });   // future restarts stay YOLO
-            // Quit the running Claude (Ctrl+C twice = exit), wait for it to actually be gone, then relaunch.
-            try { pane.S.Write(new byte[] { 0x03 }); } catch { }
-            await Task.Delay(350);
-            try { pane.S.Write(new byte[] { 0x03 }); } catch { }
-            // A fixed delay raced Claude's exit on slow machines — the typed relaunch landed in Claude's
-            // own prompt instead of the shell. Poll the shell's child processes until the foreground
-            // command (Claude's node) is gone, capped so a hung/ignoring process can't stall us forever.
-            int shellPid = pane.S.ChildProcessId ?? 0;
-            bool sawIdle = false;
-            if (shellPid > 0)
-                for (int i = 0; i < 100; i++)   // ≤ 30s
-                {
-                    await Task.Delay(300);
-                    bool? busy = HasLiveChildProcess(shellPid);
-                    if (busy is null) break;               // snapshot failed → fixed-delay fallback below
-                    if (busy is false) { sawIdle = true; break; }
-                }
-            if (!sawIdle) await Task.Delay(1200);           // old behavior when we couldn't confirm the exit
-            await Task.Delay(300);                          // let the shell repaint its prompt and start reading input
-            try { pane.S.Write(System.Text.Encoding.UTF8.GetBytes(cmd + "\r")); } catch { }
+            await QuitClaudeAndRelaunch(pane, cmd);
         });
         return "restarting Claude in YOLO mode";
+    }
+
+    /// <summary>Quit the Claude running in a pane and type <paramref name="cmd"/> into the freed shell.
+    /// Sends Ctrl+C twice (= Claude's exit), then WAITS for the foreground child to actually be gone —
+    /// a fixed delay raced Claude's exit on slow machines and the relaunch landed in Claude's own
+    /// prompt instead of the shell. Polling is capped so a hung/ignoring process can't stall forever.</summary>
+    private async Task QuitClaudeAndRelaunch(Pane pane, string cmd)
+    {
+        try { pane.S.Write(new byte[] { 0x03 }); } catch { }
+        await Task.Delay(350);
+        try { pane.S.Write(new byte[] { 0x03 }); } catch { }
+        int shellPid = pane.S.ChildProcessId ?? 0;
+        bool sawIdle = false;
+        if (shellPid > 0)
+            for (int i = 0; i < 100; i++)   // ≤ 30s
+            {
+                await Task.Delay(300);
+                bool? busy = HasLiveChildProcess(shellPid);
+                if (busy is null) break;               // snapshot failed → fixed-delay fallback below
+                if (busy is false) { sawIdle = true; break; }
+            }
+        if (!sawIdle) await Task.Delay(1200);           // old behavior when we couldn't confirm the exit
+        await Task.Delay(300);                          // let the shell repaint its prompt and start reading input
+        try { pane.S.Write(System.Text.Encoding.UTF8.GetBytes(cmd + "\r")); } catch { }
+    }
+
+    /// <summary>One background version check ("be aware when a new Claude Code ships"): compare the
+    /// installed CLI against the npm registry; when a NEW newer version appears, toast once and arm
+    /// the palette hint. Silent when claude isn't installed, offline, or already current.</summary>
+    private async Task CheckClaudeUpdateOnce()
+    {
+        string? installed = Agwinterm.Pty.ClaudeUpdate.InstalledVersion();
+        if (installed is null) return;
+        string? latest = await Agwinterm.Pty.ClaudeUpdate.FetchLatestAsync();
+        if (latest is null) return;
+        if (!Agwinterm.Pty.ClaudeUpdate.IsNewer(latest, installed)) { _claudeLatest = null; return; }
+        bool fresh = !string.Equals(_claudeLatest, latest, StringComparison.Ordinal);
+        _claudeLatest = latest;
+        if (fresh) Post(() => ShowToast($"Claude Code {latest} is out (you have {installed}) — palette → Update Claude Code", 6000));
+    }
+
+    /// <summary>The "Update Claude Code" workflow (palette / <c>agwintermctl claude update</c>):
+    /// check installed vs shipped, run <c>claude update</c> in an overlay terminal over the active
+    /// session (visible progress), and when it exits cleanly restart every pane with a live Claude
+    /// so the new version is picked up — each resumes its own conversation, YOLO stays YOLO.</summary>
+    private string UpdateClaudeCode()
+    {
+        var ses = _active;
+        if (ses is null) return "open a session first";
+        if (_claudeUpdating) return "Claude Code update already running";
+        _claudeUpdating = true;
+        _ = Task.Run(async () =>
+        {
+            string? installed = Agwinterm.Pty.ClaudeUpdate.InstalledVersion();
+            if (installed is null)
+            {
+                Post(() => { _claudeUpdating = false; ShowToast("claude not found on PATH — install Claude Code first", 4000); });
+                return;
+            }
+            string? latest = await Agwinterm.Pty.ClaudeUpdate.FetchLatestAsync();
+            if (latest is not null && !Agwinterm.Pty.ClaudeUpdate.IsNewer(latest, installed))
+            {
+                Post(() => { _claudeUpdating = false; _claudeLatest = null; ShowToast($"Claude Code {installed} is already the latest", 4000); });
+                return;
+            }
+            // A newer version shipped — or the registry was unreachable, in which case `claude update`
+            // itself is the authority (it no-ops harmlessly when already current).
+            Post(() =>
+            {
+                OverlayOpen(ses, "claude update", 60, wait: true);
+                var ovl = ses.Overlay;
+                if (ovl is null) { _claudeUpdating = false; return; }
+                ShowToast(latest is null ? $"running claude update (you have {installed})…"
+                                         : $"updating Claude Code {installed} → {latest}…", 4000);
+                int fired = 0;   // one-shot: the event and the already-exited fallback can race
+                void Once(int code) { if (Interlocked.Exchange(ref fired, 1) == 0) OnClaudeUpdateExited(code, installed); }
+                ovl.S.Exited += Once;
+                if (ovl.S.HasExited) Once(ovl.S.ExitCode ?? 0);
+            });
+        });
+        return "updating Claude Code…";
+    }
+
+    /// <summary>Continuation for the update overlay: verify the install actually moved, then fan out
+    /// the session restarts. Never restarts on a failed or no-op update — bouncing every Claude for
+    /// nothing is worse than asking the user to re-run.</summary>
+    private void OnClaudeUpdateExited(int code, string wasInstalled)
+    {
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                if (code != 0)
+                {
+                    Post(() => ShowToast($"claude update failed (exit {code}) — sessions not restarted", 5000));
+                    return;
+                }
+                string? now = Agwinterm.Pty.ClaudeUpdate.InstalledVersion();
+                if (now is null || !Agwinterm.Pty.ClaudeUpdate.IsNewer(now, wasInstalled))
+                {
+                    Post(() => ShowToast($"Claude Code unchanged ({now ?? wasInstalled}) — sessions not restarted", 5000));
+                    return;
+                }
+                Post(() => { _claudeLatest = null; RequestRedraw(); });
+                int n = RestartAllClaudeSessions();
+                Post(() => ShowToast(n == 0
+                    ? $"Claude Code updated {wasInstalled} → {now} (no running Claude sessions to restart)"
+                    : $"Claude Code updated {wasInstalled} → {now} — restarting {n} Claude session(s)…", 6000));
+            }
+            finally { _claudeUpdating = false; }
+        });
+    }
+
+    /// <summary>Restart every pane whose shell is currently running Claude Code (foreground-child
+    /// evidence), so a freshly-installed version is picked up. Relaunch command precedence: the pane's
+    /// bound AgentResume (the wrapper re-binds and resumes by pane id) → derived from the running
+    /// command line (explicit --resume id + permission flags survive) → the pane's own transcript →
+    /// bare "claude" (the wrapper resolves the conversation). Runs OFF the UI thread. Returns the
+    /// number of panes being restarted.</summary>
+    private int RestartAllClaudeSessions()
+    {
+        var panes = new List<Pane>();
+        lock (_workspaces)
+            foreach (var s in _workspaces.SelectMany(w => w.Sessions))
+            {
+                panes.AddRange(s.Panes);
+                if (s.Scratch is { } sc) panes.Add(sc);   // claude runs in scratch terminals too
+            }
+        if (_quick is { } q) panes.Add(q);
+
+        var byPid = CaptureForegroundCommands(
+            panes.Select(p => p.S.ChildProcessId).Where(id => id is > 0).Select(id => id!.Value), timeoutMs: 15000);
+
+        int n = 0;
+        foreach (var p in panes)
+        {
+            if (p.S.ChildProcessId is not int pid || !byPid.TryGetValue(pid, out var running)) continue;
+            if (!System.Text.RegularExpressions.Regex.IsMatch(running, @"(?i)\bclaude\b")) continue;
+            string cmd = p.AgentResume ?? DeriveClaudeRelaunch(p, running);
+            var pane = p;
+            Post(() => { pane.AgentResume = cmd; SaveState(); });
+            _ = QuitClaudeAndRelaunch(pane, cmd);
+            n++;
+        }
+        return n;
+    }
+
+    /// <summary>Build a relaunch command for a Claude pane with no binding, from the running command
+    /// line: keep its permission mode, resume an explicit id or the pane's own transcript. Falls back
+    /// to bare "claude" — inside agwinterm the launcher wrapper resolves the pane's conversation.</summary>
+    private static string DeriveClaudeRelaunch(Pane pane, string running)
+    {
+        bool yolo = running.Contains("--dangerously-skip-permissions", StringComparison.Ordinal);
+        string? id = ExtractClaudeSessionArg(running);
+        if (id is null && ClaudeTranscriptExists(PaneCwd(pane), pane.Id)) id = pane.Id;
+        return "claude" + (id is null ? "" : $" --resume {id}") + (yolo ? " --dangerously-skip-permissions" : "");
     }
 
     /// <summary>One-time migration for sessions started BEFORE the claude launcher existed: for each pane,

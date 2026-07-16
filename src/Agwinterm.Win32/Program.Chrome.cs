@@ -806,6 +806,13 @@ internal partial class Program
                 A("Install Agent Status Hooks", "", InstallHooks);
                 A("Make Claude Sessions Resumable", "", MakeClaudeResumable);
                 A("Restart Claude in YOLO Mode", "", RestartClaudeYoloActive);
+                _palAll.Add(new PalItem
+                {
+                    Label = "Update Claude Code" + (_claudeLatest is { } cl ? $"  — v{cl} available" : ""),
+                    Secondary = "runs `claude update` in an overlay, then restarts your Claude sessions",
+                    Search = "update claude code upgrade version",
+                    Run = () => ShowToast(UpdateClaudeCode(), 2500),
+                });
                 A("Install Agent Skill", "", InstallSkill);
                 A("Install Shell Integration", "", InstallShellIntegration);
                 A("Reload Keymap", "", ReloadKeymap);

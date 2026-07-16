@@ -822,7 +822,7 @@ internal partial class Program
         "restore-commands", "restore-buffer", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
-        "paste-protection", "clipboard-write", "notification-flash",
+        "paste-protection", "clipboard-write", "notification-flash", "claude-update-check",
     };
 
     /// <summary>Rewrite (or append) a single `key = value` line in agwinterm.conf, preserving the rest.</summary>
@@ -884,6 +884,7 @@ internal partial class Program
         "toolbar-mode" => ToolbarModeResolved,
         "notification-badges" => _config.NotificationBadges ? "true" : "false",
         "notification-flash" => _config.NotificationFlash,
+        "claude-update-check" => _config.ClaudeUpdateCheck ? "true" : "false",
         "paste-protection" => _config.PasteProtection ? "true" : "false",
         "clipboard-write" => _config.ClipboardWrite ? "true" : "false",
         "attention-button" => _config.AttentionButton ? "true" : "false",
