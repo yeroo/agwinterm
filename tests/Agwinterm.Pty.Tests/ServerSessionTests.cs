@@ -31,6 +31,22 @@ public class ServerSessionTests : IDisposable
         lock (s.SyncRoot) return string.Join("\n", s.Emulator.DumpBuffer());
     }
 
+    /// <summary>Type a line and make sure it took: input written while cmd/conhost is still
+    /// initializing can be silently DISCARDED (bit main's CI on 0.14.3), and there is no portable
+    /// readiness signal (`cmd /q` prints no prompt on newer Windows). So: type, and if the marker
+    /// hasn't echoed shortly, type again — a duplicate echo is harmless for Contains asserts.</summary>
+    private static void TypeLine(ISession s, string line, string marker)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(line + "\r");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 20000)
+        {
+            s.Write(bytes);
+            if (WaitFor(() => GridText(s).Contains(marker), 2500)) return;
+        }
+        Assert.Fail($"typed line never echoed: {line}\ngrid:\n" + GridText(s));
+    }
+
     [Fact]
     public async Task TypeEcho_LandsInTheReplicaEmulator()
     {
@@ -43,9 +59,7 @@ public class ServerSessionTests : IDisposable
         Assert.True(s.ChildProcessId > 0);
         Assert.False(s.HasExited);
 
-        s.Write("echo replica+works\r"u8);
-        Assert.True(WaitFor(() => GridText(s).Contains("replica+works")),
-            "typed echo never reached the replica emulator; grid:\n" + GridText(s));
+        TypeLine(s, "echo replica+works", "replica+works");   // asserts the echo reached the replica
         Assert.True(outputEvents > 0);
     }
 
@@ -110,8 +124,7 @@ public class ServerSessionTests : IDisposable
         var gen1 = _backend.Create(paneId, 100, 24);
         await gen1.StartAsync("cmd.exe", new[] { "/q" }, verbatimCommandLine: true);
         int? pid = gen1.ChildProcessId;
-        gen1.Write("echo pre+restart\r"u8);
-        Assert.True(WaitFor(() => GridText(gen1).Contains("pre+restart")));
+        TypeLine(gen1, "echo pre+restart", "pre+restart");
         Thread.Sleep(300);   // let the echo reach the HOST emulator too (its snapshot feeds adoption)
         gen1.Detach();
 
