@@ -13,6 +13,34 @@ public class PtyHostTests : IDisposable
     public PtyHostTests() => _server = new PtyHostServer(_appId);
     public void Dispose() => _server.Dispose();
 
+    /// <summary>Type a line and make sure it took (raw-stream twin of ServerSessionTests.TypeLine):
+    /// input during cmd/conhost console init can be silently discarded, and `cmd /q` prints no
+    /// prompt on newer Windows — so retype every ~2.5s until the echo shows up in the stream.</summary>
+    private static string TypeUntilEcho(Stream data, string line, string marker, int timeoutMs = 20000)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(line + "\r");
+        var all = new System.Text.StringBuilder();
+        var buf = new byte[16 * 1024];
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        long nextTypeAt = 0;
+        Task<int>? pending = null;
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            if (sw.ElapsedMilliseconds >= nextTypeAt)
+            {
+                data.Write(bytes); data.Flush();
+                nextTypeAt = sw.ElapsedMilliseconds + 2500;
+            }
+            pending ??= data.ReadAsync(buf, 0, buf.Length);
+            if (!pending.Wait(250)) continue;             // keep ONE read in flight across retries
+            int n = pending.Result; pending = null;
+            if (n <= 0) break;
+            all.Append(System.Text.Encoding.UTF8.GetString(buf, 0, n));
+            if (all.ToString().Contains(marker, StringComparison.Ordinal)) break;
+        }
+        return all.ToString();
+    }
+
     private static string ReadUntil(Stream data, Func<string, bool> done, int timeoutMs = 15000)
     {
         var all = new System.Text.StringBuilder();
@@ -47,9 +75,7 @@ public class PtyHostTests : IDisposable
         Assert.True(att.ChildPid > 0);
 
         // Type through the data pipe; the echo must come back as raw ConPTY output.
-        byte[] line = System.Text.Encoding.UTF8.GetBytes("echo host+work\r");
-        att.Data.Write(line); att.Data.Flush();
-        string seen = ReadUntil(att.Data, s => s.Contains("host+work", StringComparison.Ordinal));
+        string seen = TypeUntilEcho(att.Data, "echo host+work", "host+work");
         Assert.Contains("host+work", seen);
 
         client.Kill(id);
@@ -64,8 +90,7 @@ public class PtyHostTests : IDisposable
 
         using (var first = client.Attach(id))
         {
-            first.Data.Write("echo before-detach\r"u8.ToArray()); first.Data.Flush();
-            ReadUntil(first.Data, s => s.Contains("before-detach"));
+            Assert.Contains("before-detach", TypeUntilEcho(first.Data, "echo before-detach", "before-detach"));
         }   // disposing the data pipe = detach; the shell must keep running
 
         var info = Assert.Single(client.List());
