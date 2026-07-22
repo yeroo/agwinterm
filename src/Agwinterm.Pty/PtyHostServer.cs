@@ -135,6 +135,7 @@ public sealed class PtyHostServer : IDisposable
         string? cwd = GetString(root, "cwd");
         bool verbatim = root.TryGetProperty("verbatim", out var vb) && vb.ValueKind == JsonValueKind.True;
         bool deElevate = root.TryGetProperty("deElevate", out var de) && de.ValueKind == JsonValueKind.True;
+        bool freshEnv = !(root.TryGetProperty("freshEnv", out var fe) && fe.ValueKind == JsonValueKind.False);
         Dictionary<string, string>? env = null;
         if (root.TryGetProperty("env", out var ev) && ev.ValueKind == JsonValueKind.Object)
         {
@@ -166,7 +167,8 @@ public sealed class PtyHostServer : IDisposable
         // fire-and-forget here would leave the client attached to a session that never lived.
         try
         {
-            session.StartAsync(app, args, verbatimCommandLine: verbatim, extraEnv: env, cwd: cwd, deElevate: deElevate)
+            session.StartAsync(app, args, verbatimCommandLine: verbatim, extraEnv: env, cwd: cwd, deElevate: deElevate,
+                    freshEnv: freshEnv)
                 .GetAwaiter().GetResult();
         }
         catch (Exception ex)

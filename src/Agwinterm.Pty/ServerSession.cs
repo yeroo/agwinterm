@@ -137,7 +137,7 @@ public sealed class ServerSession : ISession
 
     public async Task StartAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
         IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null, bool deElevate = false,
-        CancellationToken ct = default)
+        bool freshEnv = true, CancellationToken ct = default)
     {
         try
         {
@@ -145,7 +145,7 @@ public sealed class ServerSession : ISession
             {
                 var client = _backend.Client;
                 client.Create(_id, Cols, Rows, app, commandLine, cwd, extraEnv,
-                    verbatim: verbatimCommandLine, deElevate: deElevate);
+                    verbatim: verbatimCommandLine, deElevate: deElevate, freshEnv: freshEnv);
                 var att = client.Attach(_id);
                 _data = att.Data;
                 _childPid = att.ChildPid;

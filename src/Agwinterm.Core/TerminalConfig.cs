@@ -85,6 +85,12 @@ public sealed class TerminalConfig
     /// long-term basis for sessions surviving UI updates/crashes).</summary>
     public string SessionHost { get; set; } = "in-process";
 
+    /// <summary>Rebuild each new session's environment from the registry at spawn (WT's
+    /// reloadEnvironmentVariables analog): software installed while agwinterm runs — a JDK, a new
+    /// PATH entry — is visible in the next tab without restarting anything. Off = tabs inherit
+    /// the env snapshot the spawning process started with (the old behavior).</summary>
+    public bool FreshEnv { get; set; } = true;
+
     /// <summary>Characters that DELIMIT words for double-click selection (in addition to whitespace).
     /// Empty = whitespace only (double-click grabs a whole path/URL). WT's wordDelimiters analog.</summary>
     public string WordDelimiters { get; set; } = "";
@@ -247,6 +253,13 @@ public sealed class TerminalConfig
         # applies to new sessions immediately; restart agwinterm to migrate existing ones.
         session-host = in-process
 
+        # Build each new tab's environment FRESH from the registry (what a brand-new process tree
+        # would get): software installed while agwinterm is running - a JDK, a new PATH entry - is
+        # visible in the next tab, no restart needed. Off = tabs inherit the environment agwinterm
+        # itself started with. Note: with fresh-env on, variables set only in the shell that
+        # LAUNCHED agwinterm do not reach tabs (same trade-off as Windows Terminal's default).
+        fresh-env = true
+
         # Blocked sound: play a sound whenever a session enters the "blocked" agent status (needs
         # your attention). Empty / off / none = silent. Accepts a system-sound name (beep, asterisk,
         # exclamation, hand, question), a Windows sound-event alias, or a path to a .wav file.
@@ -367,6 +380,7 @@ public sealed class TerminalConfig
                 case "session-host":
                     if (val is "in-process" or "server") cfg.SessionHost = val;
                     break;
+                case "fresh-env": cfg.FreshEnv = ParseBool(val, cfg.FreshEnv); break;
                 case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;

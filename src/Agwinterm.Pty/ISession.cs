@@ -44,9 +44,13 @@ public interface ISession : IDisposable
     // ---- Lifecycle ----
     /// <summary>Spawn <paramref name="app"/> and pump until it exits; returns the exit code.</summary>
     Task<int> RunAsync(string app, string[] commandLine, bool verbatimCommandLine = false, CancellationToken ct = default);
-    /// <summary>Spawn an interactive shell and pump in the background until exit or dispose.</summary>
+    /// <summary>Spawn an interactive shell and pump in the background until exit or dispose.
+    /// <paramref name="freshEnv"/> (default): the child's base environment is rebuilt from the
+    /// registry at spawn (new installs visible without an app restart — see
+    /// <see cref="FreshEnvironment"/>); false = inherit the spawning process's env snapshot.</summary>
     Task StartAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
-        IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null, bool deElevate = false, CancellationToken ct = default);
+        IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null, bool deElevate = false,
+        bool freshEnv = true, CancellationToken ct = default);
     /// <summary>Adopt an externally-created pseudoconsole (default-terminal handoff). Inherently
     /// handle-based: a server backend must duplicate the handles into the host process (Phase 2).</summary>
     void Attach(SafeFileHandle conOut, SafeFileHandle conIn, SafeFileHandle signal, IntPtr clientProcess, int pid);

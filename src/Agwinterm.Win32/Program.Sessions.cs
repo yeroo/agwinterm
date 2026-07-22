@@ -127,17 +127,17 @@ internal partial class Program
         else if (!string.IsNullOrWhiteSpace(command) && interactive)
             // Run the command in a fresh shell that STAYS OPEN afterwards (custom-command "new" mode):
             // the user's profile loads (oh-my-posh etc.), the command runs, then it's an interactive shell.
-            _ = session.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoExit", "-Command", command! }, extraEnv: env, cwd: cwd);
+            _ = session.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoExit", "-Command", command! }, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
         else if (!string.IsNullOrWhiteSpace(command) && shellWrap)
             // Run the whole command line through cmd so shell syntax works AND the child's exit code
             // propagates. Verbatim so it becomes exactly `cmd.exe /c <command>` (no extra quoting,
             // which cmd's /c quote-stripping rules would otherwise mangle).
-            _ = session.StartAsync("cmd.exe", new[] { "/c", command! }, verbatimCommandLine: true, extraEnv: env, cwd: cwd);
+            _ = session.StartAsync("cmd.exe", new[] { "/c", command! }, verbatimCommandLine: true, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
         else if (!string.IsNullOrWhiteSpace(command))
         {
             var argv = ParseArgv(command);
             if (argv.Length > 0)
-                _ = session.StartAsync(argv[0], argv[1..], extraEnv: env, cwd: cwd);
+                _ = session.StartAsync(argv[0], argv[1..], extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
             else
                 LaunchShell(session, profileName, env, cwd, deElevate);
         }
@@ -232,9 +232,9 @@ internal partial class Program
         string exe = Path.GetFileName(cmd).ToLowerInvariant();
         bool isPwsh = exe is "powershell.exe" or "pwsh.exe" or "pwsh";
         if (isPwsh && (pargs is null || pargs.Length == 0))
-            _ = session.StartAsync(cmd, ShellArgs(), extraEnv: env, cwd: pcwd, deElevate: deElevate);        // wrap + omp (cwd-in-title)
+            _ = session.StartAsync(cmd, ShellArgs(), extraEnv: env, cwd: pcwd, deElevate: deElevate, freshEnv: _config.FreshEnv);        // wrap + omp (cwd-in-title)
         else
-            _ = session.StartAsync(cmd, pargs ?? Array.Empty<string>(), extraEnv: env, cwd: pcwd, deElevate: deElevate); // raw shell
+            _ = session.StartAsync(cmd, pargs ?? Array.Empty<string>(), extraEnv: env, cwd: pcwd, deElevate: deElevate, freshEnv: _config.FreshEnv); // raw shell
     }
 
     /// <summary>Per-pane implementation of the emulator's host-action seam. Emulator calls arrive on

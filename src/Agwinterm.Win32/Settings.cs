@@ -113,6 +113,8 @@ internal partial class Program
             new[] { "In-process (default)", "Pty-host server (experimental)" }, new[] { "in-process", "server" });
         Sec(0, "Shell");
         Tog(0, "shell-integration", "Shell integration (live cwd)");
+        // fresh-env: rebuild each new tab's env from the registry (new installs visible, no restart).
+        Tog(0, "fresh-env", "Fresh environment for new tabs");
         Tog(0, "omp-integration", "oh-my-posh integration");
         Sec(0, "Default Terminal");
         _setRows.Add(new SetRow
