@@ -823,7 +823,7 @@ internal partial class Program
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
         "paste-protection", "clipboard-write", "notification-flash", "claude-update-check", "update-check",
-        "session-host",
+        "session-host", "fresh-env",
     };
 
     /// <summary>Rewrite (or append) a single `key = value` line in agwinterm.conf, preserving the rest.</summary>
@@ -888,6 +888,7 @@ internal partial class Program
         "claude-update-check" => _config.ClaudeUpdateCheck ? "true" : "false",
         "update-check" => _config.UpdateCheck ? "true" : "false",
         "session-host" => _config.SessionHost,
+        "fresh-env" => _config.FreshEnv ? "true" : "false",
         "paste-protection" => _config.PasteProtection ? "true" : "false",
         "clipboard-write" => _config.ClipboardWrite ? "true" : "false",
         "attention-button" => _config.AttentionButton ? "true" : "false",

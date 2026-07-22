@@ -149,7 +149,8 @@ public sealed class TerminalSession : ISession
     /// When <paramref name="deElevate"/> is set, the shell runs at the interactive user's Medium integrity
     /// (only valid from an elevated agwinterm) so an elevated window can host a normal session.</summary>
     public async Task StartAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
-        IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null, bool deElevate = false, CancellationToken ct = default)
+        IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null, bool deElevate = false,
+        bool freshEnv = true, CancellationToken ct = default)
     {
         if (deElevate)
         {
@@ -191,13 +192,20 @@ public sealed class TerminalSession : ISession
             VerbatimCommandLine = verbatimCommandLine,
         };
 
-        if (extraEnv is not null)
+        if (extraEnv is not null || freshEnv)
         {
-            // Copy the parent environment (so PATH etc. survive) then layer our additions.
-            var env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
-                env[(string)e.Key] = e.Value as string ?? "";
-            foreach (var kv in extraEnv) env[kv.Key] = kv.Value;
+            // Base environment: rebuilt fresh from the registry (so software installed while this
+            // process runs — a JDK, a PATH entry — is visible in the child without a restart;
+            // matters double for the long-lived pty-host). Fallback, and the freshEnv=false path:
+            // copy this process's inherited env, the pre-fresh-env behavior. Then our additions.
+            var env = freshEnv ? FreshEnvironment.TryBuild() : null;
+            if (env is null)
+            {
+                env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
+                    env[(string)e.Key] = e.Value as string ?? "";
+            }
+            if (extraEnv is not null) foreach (var kv in extraEnv) env[kv.Key] = kv.Value;
             options.Environment = env;
         }
 
