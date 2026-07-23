@@ -312,10 +312,31 @@ internal partial class Program
     /// <summary>Draw one terminal surface (cells, images, cursor) at origin (ox,oy) with its font metrics.</summary>
     private Cell[] _cellSnap = Array.Empty<Cell>();   // reusable viewport snapshot; drawing reads it lock-free
 
+    /// <summary>The SGR attributes the renderer styles text with (colour attrs resolve in EffectiveFg/Bg).</summary>
+    private const CellAttributes StyleMask =
+        CellAttributes.Bold | CellAttributes.Italic | CellAttributes.Underline | CellAttributes.Strikethrough;
+    /// <summary>The subset drawn as decoration lines — the only styling visible on a blank cell.</summary>
+    private const CellAttributes LineMask = CellAttributes.Underline | CellAttributes.Strikethrough;
+
+    /// <summary>The format a run draws with: the pane's base format, or its bold/italic variant.</summary>
+    private static IDWriteTextFormat StyleFmt(IDWriteTextFormat baseFmt, CellAttributes style)
+        => (style & (CellAttributes.Bold | CellAttributes.Italic)) == 0
+            ? baseFmt
+            : StyledFormat(baseFmt.FontSize, (style & CellAttributes.Bold) != 0, (style & CellAttributes.Italic) != 0);
+
     private void RenderTerminal(ISession session, float ox, float oy, IDWriteTextFormat fmt, float cw, float ch, int scrollOffset, Pane? selPane = null)
     {
         var rt = _rt!;
         var brush = _brush!;
+        // Underline / strikethrough lines for a run (brush colour = the run's fg, set by the caller).
+        void DrawDecorations(float x, float w, float yy, CellAttributes a)
+        {
+            float th = MathF.Max(1f, MathF.Round(ch * 0.05f));
+            if ((a & CellAttributes.Underline) != 0)
+                rt.FillRectangle(new Rect(x, yy + ch - th - 0.5f, w, th), brush);
+            if ((a & CellAttributes.Strikethrough) != 0)
+                rt.FillRectangle(new Rect(x, yy + MathF.Round(ch * 0.52f), w, th), brush);
+        }
         // Snapshot the visible viewport under the session lock (sub-ms), then draw OUTSIDE it.
         // Holding the lock for the whole frame serializes rendering against the PTY pump's Feed,
         // capping sustained-output throughput (dotnet-stack showed the UI thread in Monitor.Enter
@@ -415,11 +436,15 @@ internal partial class Program
                                 new System.Numerics.Vector2(ox + (_linkC1 + 1) * cw, uy), brush, 1.4f);
                 }
                 c = 0;
-                while (c < cols)  // Pass 2: coalesced same-colour text runs
+                while (c < cols)  // Pass 2: coalesced same-colour, same-style text runs
                 {
                     Cell cell = CellAt(r, c);
-                    if (cell.Width == 0 || cell.Rune == ' ' || cell.Rune == '\0') { c++; continue; }
+                    bool startBlank = cell.Rune == ' ' || cell.Rune == '\0';
+                    // Blanks normally draw nothing — but an underlined/struck blank must still get
+                    // its decoration line, so those start a run like any glyph does.
+                    if (cell.Width == 0 || (startBlank && (cell.Attributes & LineMask) == 0)) { c++; continue; }
                     Color runFg = EffectiveFg(cell);
+                    CellAttributes runStyle = cell.Attributes & StyleMask;
                     // Builtin box-drawing / block elements: vector-draw for pixel-perfect borders
                     // (unhandled codepoints in the range fall back to the font glyph, drawn solo so
                     // the coalesced run never has to include them).
@@ -436,7 +461,8 @@ internal partial class Program
                         // column, and an astral codepoint is two UTF-16 units in one column.
                         brush.Color = C4(runFg);
                         float wx = ox + c * cw;
-                        rt.DrawText(RuneStr(cell.Rune), fmt, new Rect(wx, y, wx + cell.Width * cw, y + ch), brush);
+                        rt.DrawText(RuneStr(cell.Rune), StyleFmt(fmt, runStyle), new Rect(wx, y, wx + cell.Width * cw, y + ch), brush);
+                        DrawDecorations(wx, cell.Width * cw, y, runStyle);
                         c++;
                         continue;
                     }
@@ -449,7 +475,10 @@ internal partial class Program
                         if (cc.Width == 2 || cc.Width == 0 || cc.Rune > 0xFFFF) break;
                         if (_config.BuiltinGlyphs && cc.Rune is (>= 0x2500 and <= 0x259F) or 0x2571 or 0x2572) break; // vector-drawn separately
                         bool blank = cc.Rune == ' ' || cc.Rune == '\0';
-                        if (!blank && EffectiveFg(cc) != runFg) break;
+                        // Blanks only need matching decoration lines (bold/italic is invisible on a
+                        // space); glyphs must match colour AND full style to share the run's format.
+                        if (blank) { if ((cc.Attributes & LineMask) != (runStyle & LineMask)) break; }
+                        else if (EffectiveFg(cc) != runFg || (cc.Attributes & StyleMask) != runStyle) break;
                         _run.Append(blank ? ' ' : (char)cc.Rune);
                         c++;
                         if (!blank) lastNonBlank = _run.Length;
@@ -459,7 +488,14 @@ internal partial class Program
                         _run.Length = lastNonBlank;
                         brush.Color = C4(runFg);
                         float rx = ox + start * cw;
-                        DrawRun(rt, brush, _run.ToString(), fmt, rx, y, _run.Length * cw, ch);
+                        DrawRun(rt, brush, _run.ToString(), StyleFmt(fmt, runStyle), rx, y, _run.Length * cw, ch);
+                    }
+                    if ((runStyle & LineMask) != 0)
+                    {
+                        // Decoration lines span the whole run — including trailing blanks, which the
+                        // text draw trims but which joined precisely because their lines match.
+                        brush.Color = C4(runFg);
+                        DrawDecorations(ox + start * cw, (c - start) * cw, y, runStyle);
                     }
                 }
             }

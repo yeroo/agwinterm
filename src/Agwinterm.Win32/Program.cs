@@ -590,12 +590,29 @@ internal partial class Program : ISessionHost, IWindowHost
         catch { return NewFormat("Consolas", px); }
     }
 
-    private static IDWriteTextFormat NewFormat(string family, float px)
+    private static IDWriteTextFormat NewFormat(string family, float px,
+        FontWeight weight = FontWeight.Normal, FontStyle style = FontStyle.Normal)
     {
-        var f = _dwrite.CreateTextFormat(family, null, FontWeight.Normal, FontStyle.Normal, FontStretch.Normal, px);
+        var f = _dwrite.CreateTextFormat(family, null, weight, style, FontStretch.Normal, px);
         f.WordWrapping = WordWrapping.NoWrap;
         f.TextAlignment = TextAlignment.Leading;
         f.ParagraphAlignment = ParagraphAlignment.Near;
+        return f;
+    }
+
+    // Bold/italic variants of the terminal format, per (size, style) — SGR 1/3 rendering. DWrite
+    // picks the nearest available face (and simulates oblique when the family has no italic), so
+    // this works for families without true bold/italic too. Family changes clear it (RebuildFont).
+    private static readonly Dictionary<(float Px, bool Bold, bool Italic), IDWriteTextFormat> _styledFmt = new();
+
+    private static IDWriteTextFormat StyledFormat(float px, bool bold, bool italic)
+    {
+        if (_styledFmt.TryGetValue((px, bold, italic), out var f)) return f;
+        var weight = bold ? FontWeight.Bold : FontWeight.Normal;
+        var style = italic ? FontStyle.Italic : FontStyle.Normal;
+        try { f = NewFormat(_config.FontFamily, px, weight, style); }
+        catch { f = NewFormat("Consolas", px, weight, style); }
+        _styledFmt[(px, bold, italic)] = f;
         return f;
     }
 
@@ -991,6 +1008,8 @@ internal partial class Program : ISessionHost, IWindowHost
         try { old?.Dispose(); } catch { }
         foreach (var m in _metrics.Values) { try { m.Fmt.Dispose(); } catch { } }   // COM formats — dispose before dropping
         _metrics.Clear();
+        foreach (var f in _styledFmt.Values) { try { f.Dispose(); } catch { } }     // bold/italic variants bake in the family too
+        _styledFmt.Clear();
         MeasureCell();
         foreach (var s in AllSessions()) RegridSession(s);
         if (_cover is not null) RegridCover();
