@@ -90,7 +90,13 @@ public sealed class PtyHostServer : IDisposable
                 while ((line = await reader.ReadLineAsync(ct).ConfigureAwait(false)) != null)
                 {
                     if (line.Length == 0) continue;
-                    await writer.WriteLineAsync(Dispatch(line).AsMemory(), ct).ConfigureAwait(false);
+                    // The ack write deliberately takes NO cancellation token (#118, dump-proven):
+                    // cancelling StreamWriter.WriteLineAsync mid-flush completes the TASK but
+                    // ABANDONS the overlapped write — the using-dispose then closes the pipe with
+                    // that op in flight, and its completion later faults the IOCP poller (native
+                    // AV). Acks are one short line; letting them finish closes the race window.
+                    // The read keeps ct: its cancel is one awaited op, consumed before dispose.
+                    await writer.WriteLineAsync(Dispatch(line).AsMemory(), CancellationToken.None).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) { }

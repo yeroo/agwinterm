@@ -77,7 +77,10 @@ public sealed class ControlServer : IDisposable
                 while ((line = await reader.ReadLineAsync(ct).ConfigureAwait(false)) != null)
                 {
                     if (line.Length == 0) continue;
-                    await writer.WriteLineAsync(Dispatch(line).AsMemory(), ct).ConfigureAwait(false);
+                    // No ct on the reply write — same #118 hazard as PtyHostServer's ack: a
+                    // cancelled WriteLineAsync abandons its overlapped write and the dispose
+                    // races the in-flight completion (native AV in the IOCP poller).
+                    await writer.WriteLineAsync(Dispatch(line).AsMemory(), CancellationToken.None).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) { }
