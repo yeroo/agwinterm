@@ -23,21 +23,26 @@ public class PtyHostTests : IDisposable
         var buf = new byte[16 * 1024];
         var sw = System.Diagnostics.Stopwatch.StartNew();
         long nextTypeAt = 0;
+        using var cts = new CancellationTokenSource();
         Task<int>? pending = null;
-        while (sw.ElapsedMilliseconds < timeoutMs)
+        try
         {
-            if (sw.ElapsedMilliseconds >= nextTypeAt)
+            while (sw.ElapsedMilliseconds < timeoutMs)
             {
-                data.Write(bytes); data.Flush();
-                nextTypeAt = sw.ElapsedMilliseconds + 2500;
+                if (sw.ElapsedMilliseconds >= nextTypeAt)
+                {
+                    data.Write(bytes); data.Flush();
+                    nextTypeAt = sw.ElapsedMilliseconds + 2500;
+                }
+                pending ??= data.ReadAsync(buf, 0, buf.Length, cts.Token);
+                if (!pending.Wait(250)) continue;             // keep ONE read in flight across retries
+                int n = pending.Result; pending = null;
+                if (n <= 0) break;
+                all.Append(System.Text.Encoding.UTF8.GetString(buf, 0, n));
+                if (all.ToString().Contains(marker, StringComparison.Ordinal)) break;
             }
-            pending ??= data.ReadAsync(buf, 0, buf.Length);
-            if (!pending.Wait(250)) continue;             // keep ONE read in flight across retries
-            int n = pending.Result; pending = null;
-            if (n <= 0) break;
-            all.Append(System.Text.Encoding.UTF8.GetString(buf, 0, n));
-            if (all.ToString().Contains(marker, StringComparison.Ordinal)) break;
         }
+        finally { DrainPending(ref pending, cts); }           // never dispose the pipe with a read in flight (#118)
         return all.ToString();
     }
 
@@ -46,15 +51,32 @@ public class PtyHostTests : IDisposable
         var all = new System.Text.StringBuilder();
         var buf = new byte[16 * 1024];
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.ElapsedMilliseconds < timeoutMs)
+        using var cts = new CancellationTokenSource();
+        Task<int>? read = null;
+        try
         {
-            var read = data.ReadAsync(buf, 0, buf.Length);
-            if (!read.Wait(Math.Max(1, timeoutMs - (int)sw.ElapsedMilliseconds))) break;
-            if (read.Result <= 0) break;
-            all.Append(System.Text.Encoding.UTF8.GetString(buf, 0, read.Result));
-            if (done(all.ToString())) return all.ToString();
+            while (sw.ElapsedMilliseconds < timeoutMs)
+            {
+                read = data.ReadAsync(buf, 0, buf.Length, cts.Token);
+                if (!read.Wait(Math.Max(1, timeoutMs - (int)sw.ElapsedMilliseconds))) break;
+                int n = read.Result; read = null;
+                if (n <= 0) break;
+                all.Append(System.Text.Encoding.UTF8.GetString(buf, 0, n));
+                if (done(all.ToString())) return all.ToString();
+            }
         }
+        finally { DrainPending(ref read, cts); }              // never dispose the pipe with a read in flight (#118)
         return all.ToString();
+    }
+
+    /// <summary>Cancel an in-flight read and WAIT for it to finish, so the caller's `using` can
+    /// dispose the pipe without an overlapped op outstanding (the #118 crash class).</summary>
+    private static void DrainPending(ref Task<int>? pending, CancellationTokenSource cts)
+    {
+        if (pending is null) return;
+        cts.Cancel();
+        try { pending.Wait(5000); } catch (AggregateException) { }    // canceled/IO-error = drained
+        pending = null;
     }
 
     [Fact]
