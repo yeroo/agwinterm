@@ -14,6 +14,7 @@
 
 pub mod cell;
 pub mod screen;
+pub mod vtparser;
 pub mod wcwidth;
 
 use cell::{Cell, Color, ColorSpec, ColorSpecKind};
