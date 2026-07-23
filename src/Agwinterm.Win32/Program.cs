@@ -447,6 +447,7 @@ internal partial class Program : ISessionHost, IWindowHost
         _d2d = D2D1.D2D1CreateFactory<ID2D1Factory>(Vortice.Direct2D1.FactoryType.SingleThreaded);
         _dwrite = DWrite.DWriteCreateFactory<IDWriteFactory>();
         _format = CreateTextFormat(_config);
+        ResolveFamilyFont();
         _uiFont = NewChromeFormat("Segoe UI", 13f, center: false);
         _uiSmall = NewChromeFormat("Segoe UI", 11.5f, center: false);
         RebuildSidebarFonts();
@@ -598,6 +599,41 @@ internal partial class Program : ISessionHost, IWindowHost
         f.TextAlignment = TextAlignment.Leading;
         f.ParagraphAlignment = ParagraphAlignment.Near;
         return f;
+    }
+
+    // The configured family's font object, for per-codepoint coverage checks. A glyph that IS in
+    // the (monospace) family advances exactly one cell — safe to coalesce into text runs. A glyph
+    // that falls back to another font (emoji, ⏺/✻ symbols, …) has arbitrary advance and MUST be
+    // drawn solo, anchored to its own grid column, or runs drift and overpaint their neighbours
+    // (the "overlapping text / shifted colored text" bug, issue #120).
+    private static IDWriteFont? _familyFont;
+    private static readonly Dictionary<int, bool> _glyphInFont = new();
+
+    private static void ResolveFamilyFont()
+    {
+        _glyphInFont.Clear();
+        try { _familyFont?.Dispose(); } catch { }
+        _familyFont = null;
+        try
+        {
+            using var coll = _dwrite.GetSystemFontCollection(false);
+            if (coll.FindFamilyName(_config.FontFamily, out uint idx))
+            {
+                using var fam = coll.GetFontFamily(idx);
+                _familyFont = fam.GetFirstMatchingFont(FontWeight.Normal, FontStretch.Normal, FontStyle.Normal);
+            }
+        }
+        catch { }   // no family match → every non-ASCII glyph draws solo (safe, just slower)
+    }
+
+    /// <summary>Whether the configured family itself covers this codepoint (cached).</summary>
+    private static bool FontHasGlyph(int cp)
+    {
+        if (_glyphInFont.TryGetValue(cp, out bool has)) return has;
+        bool h = false;
+        try { h = _familyFont?.HasCharacter((uint)cp) ?? false; } catch { }
+        _glyphInFont[cp] = h;
+        return h;
     }
 
     // Bold/italic variants of the terminal format, per (size, style) — SGR 1/3 rendering. DWrite
@@ -1005,6 +1041,7 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         var old = _format;
         _format = CreateTextFormat(_config);
+        ResolveFamilyFont();
         try { old?.Dispose(); } catch { }
         foreach (var m in _metrics.Values) { try { m.Fmt.Dispose(); } catch { } }   // COM formats — dispose before dropping
         _metrics.Clear();

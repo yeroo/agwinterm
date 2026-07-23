@@ -318,6 +318,11 @@ internal partial class Program
     /// <summary>The subset drawn as decoration lines — the only styling visible on a blank cell.</summary>
     private const CellAttributes LineMask = CellAttributes.Underline | CellAttributes.Strikethrough;
 
+    /// <summary>Whether a BMP width-1 glyph is safe to coalesce into a text run: ASCII always is
+    /// (any monospace font is grid-exact there); anything else only if the configured family
+    /// itself covers it — a FALLBACK glyph's advance is arbitrary and would derail the run.</summary>
+    private static bool GridTrue(int rune) => rune < 0x7F || FontHasGlyph(rune);
+
     /// <summary>The format a run draws with: the pane's base format, or its bold/italic variant.</summary>
     private static IDWriteTextFormat StyleFmt(IDWriteTextFormat baseFmt, CellAttributes style)
         => (style & (CellAttributes.Bold | CellAttributes.Italic)) == 0
@@ -455,13 +460,26 @@ internal partial class Program
                         { brush.Color = C4(runFg); rt.DrawText(RuneStr(cell.Rune), fmt, new Rect(bx, y, bx + cw, y + ch), brush); }
                         c++; continue;
                     }
-                    if (cell.Width == 2 || cell.Rune > 0xFFFF)
+                    if (cell.Width == 2 || cell.Rune > 0xFFFF || !GridTrue(cell.Rune))
                     {
-                        // Wide and astral glyphs draw individually: runs assume string index ==
-                        // column, and an astral codepoint is two UTF-16 units in one column.
+                        // Solo draws, anchored to their own grid column: wide glyphs, astral
+                        // codepoints (two UTF-16 units in one column — runs assume string index ==
+                        // column), and any glyph NOT in the configured family. Fallback glyphs have
+                        // arbitrary advances/line metrics, so inside a coalesced run they make the
+                        // whole run drift off the grid and overpaint neighbouring runs (issue #120:
+                        // "overlapping text, shifted colored text"). Clip contains a fallback
+                        // glyph's overflow to its own cell(s) instead of bleeding into the next.
                         brush.Color = C4(runFg);
                         float wx = ox + c * cw;
-                        rt.DrawText(RuneStr(cell.Rune), StyleFmt(fmt, runStyle), new Rect(wx, y, wx + cell.Width * cw, y + ch), brush);
+                        // A width-1 fallback glyph often RENDERS wide (⏺, emoji-adjacent symbols).
+                        // If the next cell is blank, let the glyph finish there instead of clipping
+                        // it to half — alignment is preserved because the neighbour holds no ink.
+                        int clipCells = cell.Width;
+                        if (cell.Width == 1 && c + 1 < cols && CellAt(r, c + 1) is { Width: not 0 } nxt
+                            && (nxt.Rune == ' ' || nxt.Rune == '\0'))
+                            clipCells = 2;
+                        rt.DrawText(RuneStr(cell.Rune), StyleFmt(fmt, runStyle), new Rect(wx, y, clipCells * cw, ch),
+                            brush, DrawTextOptions.Clip);
                         DrawDecorations(wx, cell.Width * cw, y, runStyle);
                         c++;
                         continue;
@@ -475,6 +493,7 @@ internal partial class Program
                         if (cc.Width == 2 || cc.Width == 0 || cc.Rune > 0xFFFF) break;
                         if (_config.BuiltinGlyphs && cc.Rune is (>= 0x2500 and <= 0x259F) or 0x2571 or 0x2572) break; // vector-drawn separately
                         bool blank = cc.Rune == ' ' || cc.Rune == '\0';
+                        if (!blank && !GridTrue(cc.Rune)) break;   // fallback glyph → its own solo draw
                         // Blanks only need matching decoration lines (bold/italic is invisible on a
                         // space); glyphs must match colour AND full style to share the run's format.
                         if (blank) { if ((cc.Attributes & LineMask) != (runStyle & LineMask)) break; }
