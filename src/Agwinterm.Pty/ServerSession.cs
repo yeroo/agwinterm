@@ -75,6 +75,7 @@ public sealed class ServerSession : ISession
     private readonly ServerSessionBackend _backend;
     private readonly string _id;   // = the pane id; names the hosted session (the adoption key)
     private Stream? _data;
+    private readonly CancellationTokenSource _readCancel = new();   // unblocks ReadLoop's pending read (#118)
     private int? _childPid;
     private volatile bool _started;
     private volatile bool _disposed;
@@ -210,7 +211,10 @@ public sealed class ServerSession : ISession
     public void Attach(SafeFileHandle conOut, SafeFileHandle conIn, SafeFileHandle signal, IntPtr clientProcess, int pid)
         => throw new NotSupportedException("default-terminal handoff sessions run in-process");
 
-    /// <summary>Mirror of TerminalSession's pump, fed by the host's data pipe instead of ConPTY.</summary>
+    /// <summary>Mirror of TerminalSession's pump, fed by the host's data pipe instead of ConPTY.
+    /// OWNS the pipe (issue #118): Detach/Dispose only CANCEL the pending read — this loop is the
+    /// one place the pipe is disposed, strictly after that read has completed, so no overlapped
+    /// operation is ever in flight at close (that race is a native AV in the IOCP poller).</summary>
     private void ReadLoop()
     {
         var data = _data!;
@@ -219,14 +223,18 @@ public sealed class ServerSession : ISession
         {
             while (true)
             {
-                int n = data.Read(buffer, 0, buffer.Length);
+                // Sync-over-async on a dedicated thread (the pipe handle is async so cancellation
+                // can unblock us); same read cadence as before, now with a cancel seam.
+                int n = data.ReadAsync(buffer, 0, buffer.Length, _readCancel.Token).GetAwaiter().GetResult();
                 if (n <= 0) break;
                 lock (_sync) Emulator.Feed(buffer.AsSpan(0, n));
                 OutputReceived?.Invoke();
             }
         }
+        catch (OperationCanceledException) { }
         catch (IOException) { }
         catch (ObjectDisposedException) { }
+        try { data.Dispose(); } catch { }                            // safe now: our read is done
         OnStreamEnded();
     }
 
@@ -285,12 +293,13 @@ public sealed class ServerSession : ISession
         lock (_sync) return Emulator.DumpRow(row);
     }
 
-    /// <summary>Stop viewing WITHOUT killing: close the data pipe (the host sees a detach) and
-    /// leave the child running for a later <see cref="TryAdopt"/>. The app-quit path.</summary>
+    /// <summary>Stop viewing WITHOUT killing: cancel the read loop, which closes the data pipe (the
+    /// host sees a detach) and leaves the child running for a later <see cref="TryAdopt"/>. The
+    /// app-quit path. Never disposes the pipe directly — see ReadLoop's ownership rule (#118).</summary>
     public void Detach()
     {
         _disposed = true;                                            // EOF now means "we left", not "it died"
-        try { _data?.Dispose(); } catch { }
+        CancelRead();
     }
 
     public void Dispose()
@@ -298,6 +307,14 @@ public sealed class ServerSession : ISession
         _disposed = true;
         if (_started)
             try { _backend.Client.Kill(_id); } catch { }             // explicit close = kill (pane closed)
-        try { _data?.Dispose(); } catch { }
+        CancelRead();
+    }
+
+    private void CancelRead()
+    {
+        try { _readCancel.Cancel(); } catch (ObjectDisposedException) { }
+        // If the loop never started (start failed / never started), there is no pending read and
+        // no owner to close the pipe — do it here, where it is safe for the same reason.
+        if (!_started && _data is { } d) { try { d.Dispose(); } catch { } }
     }
 }

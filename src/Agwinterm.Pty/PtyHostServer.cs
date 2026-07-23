@@ -41,7 +41,17 @@ public sealed class PtyHostServer : IDisposable
         public required string Id;
         public required TerminalSession S;
         public readonly object DataLock = new();                 // guards Data + writes to it
-        public NamedPipeServerStream? Data;                      // the currently-attached client
+        public DataChannel? Data;                                // the currently-attached client
+    }
+
+    /// <summary>A data pipe plus its read-cancellation source. Ownership rule (issue #118): the
+    /// input pump is the ONLY code that disposes a connected pipe, and only after its pending
+    /// ReadAsync has completed — everyone else just cancels. Disposing a pipe with overlapped IO
+    /// in flight lets the completion fire against freed IOCP state (native AV, no managed trace).</summary>
+    private sealed class DataChannel
+    {
+        public required NamedPipeServerStream Pipe;
+        public readonly CancellationTokenSource Cancel = new();
     }
 
     public PtyHostServer(string appId)
@@ -158,7 +168,7 @@ public sealed class PtyHostServer : IDisposable
             {
                 var d = hosted.Data;
                 if (d is null) return;
-                try { d.Write(chunk); d.Flush(); }
+                try { d.Pipe.Write(chunk); d.Pipe.Flush(); }
                 catch { CloseDataLocked(hosted); }   // client vanished mid-write → plain detach
             }
         };
@@ -204,11 +214,23 @@ public sealed class PtyHostServer : IDisposable
                 using var connectTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 await data.WaitForConnectionAsync(connectTimeout.Token).ConfigureAwait(false);
             }
-            catch { data.Dispose(); return; }              // client never came — abandon this attach
-            lock (hosted.DataLock) { CloseDataLocked(hosted); hosted.Data = data; }
-            if (hosted.S.HasExited) { CloseData(hosted); return; }   // exited while attaching → immediate EOF
+            catch { data.Dispose(); return; }              // client never came (no reads yet) — safe to close here
+            var ch = new DataChannel { Pipe = data };
+            lock (hosted.DataLock) { CloseDataLocked(hosted); hosted.Data = ch; }
+            if (hosted.S.HasExited)
+            {
+                // Exited while attaching → the client's EOF signal. No read is pending yet, so
+                // closing directly here is safe — the pump never starts for this channel.
+                lock (hosted.DataLock)
+                {
+                    if (ReferenceEquals(hosted.Data, ch)) hosted.Data = null;
+                    try { ch.Pipe.Dispose(); } catch { }
+                    ch.Cancel.Dispose();
+                }
+                return;
+            }
             if (repaint) JiggleRepaint(hosted.S);
-            await PumpInputAsync(hosted, data).ConfigureAwait(false);
+            await PumpInputAsync(hosted, ch).ConfigureAwait(false);
         });
 
         return Ok(w =>
@@ -226,22 +248,32 @@ public sealed class PtyHostServer : IDisposable
     });
 
     /// <summary>Client→host side of a data pipe: bytes are the child's stdin. EOF/error = detach;
-    /// the session keeps running unattached.</summary>
-    private static async Task PumpInputAsync(Hosted hosted, NamedPipeServerStream data)
+    /// the session keeps running unattached. This pump OWNS the pipe: it is the only code that
+    /// disposes it, and only here — after its ReadAsync has completed (EOF, error, or the
+    /// cancellation that CloseData signals) — so no overlapped read is ever in flight at close
+    /// (issue #118).</summary>
+    private static async Task PumpInputAsync(Hosted hosted, DataChannel ch)
     {
         var buf = new byte[16 * 1024];
         try
         {
             while (true)
             {
-                int n = await data.ReadAsync(buf).ConfigureAwait(false);
+                int n = await ch.Pipe.ReadAsync(buf, ch.Cancel.Token).ConfigureAwait(false);
                 if (n <= 0) break;
                 try { hosted.S.Write(buf.AsSpan(0, n)); } catch { break; }   // child gone
             }
         }
+        catch (OperationCanceledException) { }
         catch (IOException) { }
         catch (ObjectDisposedException) { }
-        lock (hosted.DataLock) if (ReferenceEquals(hosted.Data, data)) CloseDataLocked(hosted);
+        // Under DataLock so a RawOutput forward can't be mid-write on the pipe we're closing.
+        lock (hosted.DataLock)
+        {
+            if (ReferenceEquals(hosted.Data, ch)) hosted.Data = null;
+            try { ch.Pipe.Dispose(); } catch { }
+            ch.Cancel.Dispose();
+        }
     }
 
     /// <summary>The classic ConPTY repaint trick: a real row-count change makes conhost re-emit the
@@ -316,11 +348,15 @@ public sealed class PtyHostServer : IDisposable
         return h is null ? Err($"no session '{id}'") : act(h);
     }
 
+    /// <summary>Signal the attached client (if any) to go away. Cancels the pump's pending read —
+    /// the pump then disposes the pipe (which is the client's EOF). Never disposes here: closing
+    /// a pipe with its overlapped read still in flight is the #118 crash.</summary>
     private void CloseData(Hosted h) { lock (h.DataLock) CloseDataLocked(h); }
     private static void CloseDataLocked(Hosted h)
     {
-        try { h.Data?.Dispose(); } catch { }
-        h.Data = null;
+        var ch = h.Data;
+        h.Data = null;                                   // writers stop immediately
+        if (ch is not null) try { ch.Cancel.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     public void Dispose()

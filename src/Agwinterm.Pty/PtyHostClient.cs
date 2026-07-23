@@ -52,7 +52,12 @@ public sealed class PtyHostClient : IDisposable
     /// must fail loudly at the seam, never surface as garbled sessions later.</summary>
     public static PtyHostClient Connect(string appId, int timeoutMs = 3000)
     {
-        var pipe = new NamedPipeClientStream(".", PtyHostServer.ControlPipeName(appId), PipeDirection.InOut, PipeOptions.Asynchronous);
+        // Deliberately a SYNCHRONOUS pipe handle (no PipeOptions.Asynchronous): every control
+        // request is sync request/response under a lock, and a sync operation on an async handle
+        // secretly runs overlapped IO — closing the pipe with such an op in flight is the crash
+        // class behind issue #118 (AV in the IOCP poller). A sync handle keeps this path on plain
+        // blocking syscalls, where a close during a read is a clean error, not a race.
+        var pipe = new NamedPipeClientStream(".", PtyHostServer.ControlPipeName(appId), PipeDirection.InOut);
         pipe.Connect(timeoutMs);
         var client = new PtyHostClient(pipe);
         try
@@ -106,6 +111,10 @@ public sealed class PtyHostClient : IDisposable
         string pipeName = root.GetProperty("pipe").GetString()!;
         var scrollback = new List<string>();
         foreach (var e in root.GetProperty("scrollback").EnumerateArray()) scrollback.Add(e.GetString() ?? "");
+        // Async handle: the reader (ServerSession.ReadLoop, or a test) must be able to bail out
+        // mid-read via cancellation — a SYNC handle can't be unblocked by closing our own end
+        // (SafeHandle ref-counting keeps the OS handle open under a blocked read). The #118 rule
+        // still applies: cancel the pending read FIRST, and only the reader disposes the pipe.
         var data = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         data.Connect(timeoutMs);
         return new PtyHostAttachment(
