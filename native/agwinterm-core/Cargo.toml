@@ -1,0 +1,16 @@
+[package]
+name = "agwinterm-core"
+version = "0.1.0"
+edition = "2024"
+description = "agwinterm terminal emulator core (VT parser + screen model) — Rust port of Agwinterm.Core, consumed from C# over a C ABI"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
