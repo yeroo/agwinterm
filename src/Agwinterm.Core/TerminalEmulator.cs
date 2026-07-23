@@ -612,10 +612,12 @@ public sealed class TerminalEmulator : IParserPerformer
                 case 3: _attrs |= CellAttributes.Italic; break;
                 case 4: _attrs |= CellAttributes.Underline; break;
                 case 7: _attrs |= CellAttributes.Inverse; break;
+                case 9: _attrs |= CellAttributes.Strikethrough; break;
                 case 22: _attrs &= ~(CellAttributes.Bold | CellAttributes.Dim); break;
                 case 23: _attrs &= ~CellAttributes.Italic; break;
                 case 24: _attrs &= ~CellAttributes.Underline; break;
                 case 27: _attrs &= ~CellAttributes.Inverse; break;
+                case 29: _attrs &= ~CellAttributes.Strikethrough; break;
                 case >= 30 and <= 37: _fg = Color.FromIndex(code - 30); _fgSpec = ColorSpec.Indexed(code - 30); break;
                 case 39: _fg = Color.DefaultForeground; _fgSpec = ColorSpec.Default; break;
                 case >= 40 and <= 47: _bg = Color.FromIndex(code - 40); _bgSpec = ColorSpec.Indexed(code - 40); break;

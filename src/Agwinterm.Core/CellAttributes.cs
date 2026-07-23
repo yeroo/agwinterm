@@ -9,4 +9,5 @@ public enum CellAttributes
     Underline = 4,
     Inverse = 8,
     Dim = 16,
+    Strikethrough = 32,
 }

@@ -54,6 +54,32 @@ public class SgrTests
     }
 
     [Fact]
+    public void Strikethrough_9_Sets_29_Clears()
+    {
+        var t = Feed("\x1b[9mA\x1b[29mB");
+        Assert.True(t.Screen[0, 0].Attributes.HasFlag(CellAttributes.Strikethrough));
+        Assert.False(t.Screen[0, 1].Attributes.HasFlag(CellAttributes.Strikethrough));
+    }
+
+    [Fact]
+    public void Reset_ClearsStrikethrough()
+    {
+        var t = Feed("\x1b[9mA\x1b[0mB");
+        Assert.False(t.Screen[0, 1].Attributes.HasFlag(CellAttributes.Strikethrough));
+    }
+
+    [Fact]
+    public void StyleCombo_BoldItalicUnderlineStrike_AllStick()
+    {
+        var t = Feed("\x1b[1;3;4;9mX");
+        var a = t.Screen[0, 0].Attributes;
+        Assert.True(a.HasFlag(CellAttributes.Bold));
+        Assert.True(a.HasFlag(CellAttributes.Italic));
+        Assert.True(a.HasFlag(CellAttributes.Underline));
+        Assert.True(a.HasFlag(CellAttributes.Strikethrough));
+    }
+
+    [Fact]
     public void NormalIntensity_22_ClearsBoldAndDim()
     {
         var t = Feed("\x1b[1mA\x1b[2mB\x1b[22mC");
