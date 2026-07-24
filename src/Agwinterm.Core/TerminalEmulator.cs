@@ -38,11 +38,20 @@ public sealed class TerminalEmulator : IParserPerformer
     /// <summary>True if the app requested SGR (?1006) mouse encoding.</summary>
     public bool MouseSgr => _mouseSgr;
 
+    /// <summary>Individual mouse-mode flags (?1000/?1002/?1003) — for state diffing/tests.</summary>
+    public bool MouseClick => _mouseClick;
+    public bool MouseDrag => _mouseDrag;
+    public bool MouseMotion => _mouseMotion;
+
     /// <summary>Bracketed paste mode (DECSET 2004): wrap pasted text in ESC[200~ … ESC[201~.</summary>
     public bool BracketedPaste { get; private set; }
 
     private int _scrollTop;
     private int _scrollBottom;
+
+    /// <summary>DECSTBM scroll region (0-based, inclusive) — exposed for state diffing/tests.</summary>
+    public int ScrollTop => _scrollTop;
+    public int ScrollBottom => _scrollBottom;
 
     // Scrollback: rows scrolled off the TOP of the MAIN screen (oldest first). Trimmed in batches
     // to amortise the cost, so the count can float up to ScrollbackMax + a small slack.
@@ -634,7 +643,15 @@ public sealed class TerminalEmulator : IParserPerformer
     {
         if (i + 1 >= p.Count) return i;
         int mode = p[i + 1];
-        if (mode == 5 && i + 2 < p.Count) { target = Color.FromIndex(p[i + 2]); spec = ColorSpec.Indexed(p[i + 2]); return i + 2; }
+        if (mode == 5 && i + 2 < p.Count)
+        {
+            // Guard the palette index: FromIndex throws outside 0..255, and parser params are
+            // arbitrary ints (e.g. "38;5;999" from a garbled stream) — a throw here escapes Feed
+            // and kills the output pump (frozen pane). Out of range = consume params, change nothing.
+            int idx = p[i + 2];
+            if (idx is >= 0 and <= 255) { target = Color.FromIndex(idx); spec = ColorSpec.Indexed(idx); }
+            return i + 2;
+        }
         if (mode == 2 && i + 4 < p.Count) { var c = new Color((byte)p[i + 2], (byte)p[i + 3], (byte)p[i + 4]); target = c; spec = ColorSpec.FromRgb(c); return i + 4; }
         return i + 1;
     }
