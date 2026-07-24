@@ -15,7 +15,7 @@ PB_BIND(agwinterm_ptyhost_Hello, agwinterm_ptyhost_Hello, AUTO)
 PB_BIND(agwinterm_ptyhost_Create, agwinterm_ptyhost_Create, 4)
 
 
-PB_BIND(agwinterm_ptyhost_Create_EnvEntry, agwinterm_ptyhost_Create_EnvEntry, AUTO)
+PB_BIND(agwinterm_ptyhost_Create_EnvEntry, agwinterm_ptyhost_Create_EnvEntry, 2)
 
 
 PB_BIND(agwinterm_ptyhost_Attach, agwinterm_ptyhost_Attach, AUTO)

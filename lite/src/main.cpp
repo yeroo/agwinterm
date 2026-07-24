@@ -21,6 +21,7 @@
 #include "proto/ptyhost.pb.h"
 #include "proto/pb_encode.h"
 #include "proto/pb_decode.h"
+#include "control.h"
 
 // ---- agwinterm-core C ABI (ABI v7) ----
 struct FfiCell {
@@ -54,6 +55,7 @@ static constexpr int kSidebarW = 180;
 // ---- sessions & layout ----
 struct Session {
     std::string id;
+    std::string status = "idle";   // control-API agent status (sidebar dot)
     void* emu = nullptr;
     HANDLE data = INVALID_HANDLE_VALUE;
     HANDLE reader = nullptr;
@@ -80,7 +82,10 @@ static void fatal(const wchar_t* msg) {
 }
 
 // ---- control pipe: protobuf frames (4-byte LE length prefix) ----
+static CRITICAL_SECTION g_reqLock;   // the control pipe is shared by the UI thread and the ctl server thread
 static bool request(const agwinterm_ptyhost_Request& req, agwinterm_ptyhost_Reply* reply) {
+    EnterCriticalSection(&g_reqLock);
+    struct Unlock { ~Unlock() { LeaveCriticalSection(&g_reqLock); } } unlock;
     uint8_t buf[4096];
     pb_ostream_t os = pb_ostream_from_buffer(buf + 4, sizeof buf - 4);
     if (!pb_encode(&os, agwinterm_ptyhost_Request_fields, &req)) return false;
@@ -250,6 +255,19 @@ static Session* newSession(int cols, int rows) {
     strcpy_s(req.cmd.create.app, "powershell.exe");
     req.cmd.create.args_count = 1;
     strcpy_s(req.cmd.create.args[0], "-NoLogo");
+    // AGWINTERM_* identity env, so the Claude skill / hooks / agwintermctl inside the
+    // session auto-target LITE's control pipe (all non-UI features are protocol).
+    auto setEnv = [&](int i, const char* k, const char* v) {
+        strcpy_s(req.cmd.create.env[i].key, k);
+        strcpy_s(req.cmd.create.env[i].value, v);
+    };
+    req.cmd.create.env_count = 6;
+    setEnv(0, "AGWINTERM", "1");
+    setEnv(1, "AGWINTERM_ENABLED", "1");
+    setEnv(2, "AGWINTERM_PIPE", "agwinterm-lite");
+    setEnv(3, "AGWINTERM_SESSION_ID", idbuf);
+    setEnv(4, "AGWINTERM_PANE_ID", idbuf);
+    setEnv(5, "TERM_PROGRAM", "agwinterm-lite");
     if (!request(req, &rep)) return nullptr;
 
     req = agwinterm_ptyhost_Request_init_default;
@@ -427,6 +445,17 @@ static void paintSidebar(HDC mem, RECT rc) {
         SetTextColor(mem, g_sessions[i]->exited ? RGB(120, 90, 90)
                           : focused ? RGB(230, 230, 235)
                           : inPane ? RGB(190, 190, 200) : RGB(150, 150, 160));
+        // Status dot (control-API agent status): idle gray, active blue, blocked red, completed green.
+        COLORREF dot = RGB(110, 110, 120);
+        const std::string& st = g_sessions[i]->status;
+        if (g_sessions[i]->exited) dot = RGB(140, 80, 80);
+        else if (st == "active") dot = RGB(80, 140, 230);
+        else if (st == "blocked") dot = RGB(220, 80, 80);
+        else if (st == "completed") dot = RGB(70, 190, 100);
+        RECT d{ 4, y + g_ch / 2 - 3, 10, y + g_ch / 2 + 3 };
+        HBRUSH db = CreateSolidBrush(dot);
+        FillRect(mem, &d, db);
+        DeleteObject(db);
         wchar_t name[64];
         wsprintfW(name, L"%s%S", g_sessions[i]->exited ? L"× " : L"", g_sessions[i]->id.c_str());
         RECT row{ 14, y, kSidebarW - 8, y + g_ch };
@@ -613,8 +642,150 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+
+// ---- control-API server (newline JSON, agwintermctl/skill-compatible subset) ----
+static Session* resolveTarget(const std::string& target) {
+    if (target.empty() || target == "active") return focusedSession();
+    for (Session* s : g_sessions)
+        if (s->id == target || (target.size() >= 4 && s->id.compare(0, target.size(), target) == 0))
+            return s;
+    return nullptr;
+}
+
+static std::string dumpBufferText(Session* s) {
+    FfiEmuInfo info{};
+    std::string out;
+    EnterCriticalSection(&g_lock);
+    emu_info(s->emu, &info);
+    std::vector<FfiCell> row(info.cols);
+    auto appendRow = [&](const FfiCell* cells) {
+        std::string line;
+        for (uint32_t c = 0; c < info.cols; c++) {
+            const FfiCell& cell = cells[c];
+            if (cell.width == 0) continue;
+            int cp = cell.rune ? cell.rune : ' ';
+            wchar_t wbuf[2];
+            int wn = 0;
+            if (cp > 0xFFFF) {
+                wbuf[wn++] = (wchar_t)(0xD800 + ((cp - 0x10000) >> 10));
+                wbuf[wn++] = (wchar_t)(0xDC00 + ((cp - 0x10000) & 0x3FF));
+            } else wbuf[wn++] = (wchar_t)cp;
+            char u8[8];
+            int n8 = WideCharToMultiByte(CP_UTF8, 0, wbuf, wn, u8, sizeof u8, nullptr, nullptr);
+            line.append(u8, n8);
+        }
+        while (!line.empty() && line.back() == ' ') line.pop_back();
+        out += line;
+        out += '\n';
+    };
+    for (uint32_t h = 0; h < info.historyCount; h++)
+        if (emu_copy_history_row(s->emu, h, row.data(), info.cols)) appendRow(row.data());
+    if (s->grid.size() >= (size_t)info.cols * info.rows)
+        for (uint32_t r = 0; r < info.rows; r++) appendRow(&s->grid[r * info.cols]);
+    LeaveCriticalSection(&g_lock);
+    while (out.size() >= 2 && out[out.size() - 1] == '\n' && out[out.size() - 2] == '\n') out.pop_back();
+    return out;
+}
+
+static std::string ctlDispatch(const std::string& line) {
+    JsonReq req;
+    size_t i = 0;
+    if (!jsonParseObject(line, i, "", req)) return ctlErr("invalid JSON");
+    const std::string& cmd = req.get("cmd");
+
+    if (cmd == "ping") return ctlOkStr("agwinterm-lite 0.1");
+    if (cmd == "tree") {
+        std::string sess;
+        for (int i2 = 0; i2 < (int)g_sessions.size(); i2++) {
+            if (i2) sess += ",";
+            Session* s = g_sessions[i2];
+            sess += "{\"id\":\"" + jsonEscape(s->id) + "\",\"name\":\"" + jsonEscape(s->id) +
+                    "\",\"active\":" + (g_pane[g_focus] == i2 ? "true" : "false") +
+                    ",\"status\":\"" + jsonEscape(s->status) + "\"}";
+        }
+        return ctlOk("{\"workspaces\":[{\"id\":\"lite\",\"name\":\"workspace 1\",\"active\":true,\"sessions\":[" + sess + "]}]}");
+    }
+    if (cmd == "session.new") {
+        int cols, rows;
+        paneGridSize(g_focus, &cols, &rows);
+        Session* s = newSession(cols, rows);
+        if (!s) return ctlErr("create failed");
+        g_pane[g_focus] = (int)g_sessions.size() - 1;
+        InvalidateRect(g_hwnd, nullptr, FALSE);
+        return ctlOkStr(s->id);
+    }
+    Session* target = resolveTarget(req.get("target"));
+    if (cmd == "session.select") {
+        if (!target) return ctlErr("session not found");
+        for (int i2 = 0; i2 < (int)g_sessions.size(); i2++)
+            if (g_sessions[i2] == target) g_pane[g_focus] = i2;
+        InvalidateRect(g_hwnd, nullptr, FALSE);
+        return ctlOkStr("selected");
+    }
+    if (cmd == "session.type") {
+        if (!target) return ctlErr("session not found");
+        std::string text = req.get("args.text");
+        // \n → \r (keystroke semantics, like the main app's session.type)
+        for (char& ch : text) if (ch == '\n') ch = '\r';
+        if (target->data != INVALID_HANDLE_VALUE)
+            ovIo(target->data, true, text.data(), nullptr, (DWORD)text.size());
+        return ctlOkStr("typed");
+    }
+    if (cmd == "session.text") {
+        if (!target) return ctlErr("session not found");
+        return ctlOkStr(dumpBufferText(target));
+    }
+    if (cmd == "session.status") {
+        if (!target) return ctlErr("session not found");
+        std::string st = req.get("args.status");
+        if (st.empty()) return ctlErr("session status needs a state");
+        target->status = st;
+        InvalidateRect(g_hwnd, nullptr, FALSE);
+        return ctlOkStr("status set");
+    }
+    if (cmd == "session.close") {
+        if (!target) return ctlErr("session not found");
+        for (int i2 = 0; i2 < (int)g_sessions.size(); i2++)
+            if (g_sessions[i2] == target) { g_pane[g_focus] = i2; closeFocused(); break; }
+        return ctlOkStr("closed");
+    }
+    return ctlErr("unknown command '" + cmd + "' (lite subset)");
+}
+
+static DWORD WINAPI ctlClientThread(void* param) {
+    HANDLE pipe = (HANDLE)param;
+    std::string line;
+    char ch;
+    DWORD n;
+    while (ReadFile(pipe, &ch, 1, &n, nullptr) && n == 1) {
+        if (ch == '\n') {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (!line.empty()) {
+                std::string reply = ctlDispatch(line) + "\n";
+                DWORD w;
+                if (!WriteFile(pipe, reply.data(), (DWORD)reply.size(), &w, nullptr)) break;
+            }
+            line.clear();
+        } else line += ch;
+    }
+    CloseHandle(pipe);
+    return 0;
+}
+
+static DWORD WINAPI ctlServerThread(void*) {
+    for (;;) {
+        HANDLE pipe = CreateNamedPipeW(L"\\\\.\\pipe\\agwinterm-lite", PIPE_ACCESS_DUPLEX,
+                                       PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                                       PIPE_UNLIMITED_INSTANCES, 64 * 1024, 64 * 1024, 0, nullptr);
+        if (pipe == INVALID_HANDLE_VALUE) return 1;
+        BOOL ok = ConnectNamedPipe(pipe, nullptr);
+        if (!ok && GetLastError() != ERROR_PIPE_CONNECTED) { CloseHandle(pipe); continue; }
+        CreateThread(nullptr, 0, ctlClientThread, pipe, 0, nullptr);
+    }
+}
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     InitializeCriticalSection(&g_lock);
+    InitializeCriticalSection(&g_reqLock);
     loadCore();
 
     // Bundled Meslo Nerd Font (process-private); Consolas fallback.
@@ -654,6 +825,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     int cols, rows;
     paneGridSize(0, &cols, &rows);
     if (!newSession(cols, rows)) fatal(L"could not create the first session");
+    CreateThread(nullptr, 0, ctlServerThread, nullptr, 0, nullptr);   // agwintermctl --pipe agwinterm-lite
     InvalidateRect(g_hwnd, nullptr, FALSE);
 
     MSG msg;
