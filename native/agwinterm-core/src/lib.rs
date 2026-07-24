@@ -26,7 +26,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 5;
+pub const ABI_VERSION: u32 = 6;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -403,6 +403,120 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
         }
         s.push('\n');
     }
+    let mut buf = s.into_bytes().into_boxed_slice();
+    unsafe { *out_len = buf.len() as u32 };
+    let ptr = buf.as_mut_ptr();
+    core::mem::forget(buf);
+    ptr
+}
+
+// ---- Integration surface (the RustEmulatorCore adapter, beyond the oracle) ----
+
+/// Fixed-size scalar snapshot for per-frame reads — one call instead of a dozen.
+#[repr(C)]
+pub struct FfiEmuInfo {
+    pub cols: u32,
+    pub rows: u32,
+    pub cursor_row: u32,
+    pub cursor_col: u32,      // may equal cols (post-print overflow)
+    pub cursor_visible: u32,
+    pub is_alt_screen: u32,
+    pub history_count: u32,
+    pub scroll_generation: i64,
+    pub mouse_click: u32,
+    pub mouse_drag: u32,
+    pub mouse_motion: u32,
+    pub mouse_sgr: u32,
+    pub bracketed_paste: u32,
+    pub keyboard_flags: i32,
+}
+
+/// # Safety
+/// `p` from `agwcore_emu_new`; `out` a valid FfiEmuInfo pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_info(p: *mut Terminal, out: *mut FfiEmuInfo) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    if out.is_null() {
+        return false;
+    }
+    let e = &t.emu;
+    let (mc, md, mm, ms) = e.mouse_flags();
+    unsafe {
+        *out = FfiEmuInfo {
+            cols: e.screen().cols() as u32,
+            rows: e.screen().rows() as u32,
+            cursor_row: e.cursor_row as u32,
+            cursor_col: e.cursor_col as u32,
+            cursor_visible: e.cursor_visible as u32,
+            is_alt_screen: e.is_alt_screen() as u32,
+            history_count: e.history_count() as u32,
+            scroll_generation: e.scroll_generation,
+            mouse_click: mc as u32,
+            mouse_drag: md as u32,
+            mouse_motion: mm as u32,
+            mouse_sgr: ms as u32,
+            bracketed_paste: e.bracketed_paste as u32,
+            keyboard_flags: e.keyboard_flags(),
+        };
+    }
+    true
+}
+
+/// Copy the whole visible grid, row-major, into `out` (must hold cols*rows cells).
+/// This is the renderer's per-frame snapshot path: one bulk copy under the session
+/// lock instead of cols×rows interop calls.
+/// # Safety
+/// `p` from `agwcore_emu_new`; `out` points to `cap` writable FfiCells.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_copy_grid(p: *mut Terminal, out: *mut FfiCell, cap: u32) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    let e = &t.emu;
+    let (cols, rows) = (e.screen().cols(), e.screen().rows());
+    if out.is_null() || (cap as usize) < cols * rows {
+        return false;
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out, cols * rows) };
+    for r in 0..rows {
+        for c in 0..cols {
+            out[r * cols + c] = e.screen().get(r, c).into();
+        }
+    }
+    true
+}
+
+/// Copy one scrollback row (padded to the current width). Row 0 = oldest.
+/// # Safety
+/// `p` from `agwcore_emu_new`; `out` points to `cap` writable FfiCells.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_copy_history_row(p: *mut Terminal, row: u32, out: *mut FfiCell, cap: u32) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    let e = &t.emu;
+    let cols = e.screen().cols();
+    if out.is_null() || (cap as usize) < cols || (row as usize) >= e.history_count() {
+        return false;
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out, cols) };
+    for c in 0..cols {
+        out[c] = e.get_history_cell(row as usize, c).into();
+    }
+    true
+}
+
+/// UTF-8 string properties: 0 = title, 1 = cwd, 2 = DumpModes. Free with agwcore_free_buf.
+/// # Safety
+/// `p` from `agwcore_emu_new`; `out_len` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_get_text(p: *mut Terminal, which: u32, out_len: *mut u32) -> *mut u8 {
+    let Some(t) = (unsafe { p.as_mut() }) else { return core::ptr::null_mut() };
+    if out_len.is_null() {
+        return core::ptr::null_mut();
+    }
+    let s = match which {
+        0 => t.emu.title.clone(),
+        1 => t.emu.cwd.clone(),
+        2 => t.emu.dump_modes(),
+        _ => return core::ptr::null_mut(),
+    };
     let mut buf = s.into_bytes().into_boxed_slice();
     unsafe { *out_len = buf.len() as u32 };
     let ptr = buf.as_mut_ptr();

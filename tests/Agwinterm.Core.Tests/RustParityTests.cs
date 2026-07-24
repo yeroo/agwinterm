@@ -33,7 +33,7 @@ public class RustParityTests
     public void AbiVersion_Matches()
     {
         if (Lib == 0) return;   // crate not built — differential run is opt-in
-        Assert.Equal(5u, Fn<AbiVersion>("agwcore_abi_version")());
+        Assert.Equal(RustEmulatorCore.RequiredAbi, Fn<AbiVersion>("agwcore_abi_version")());
     }
 
     [Fact]

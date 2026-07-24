@@ -5,5 +5,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>Agwinterm.Core</RootNamespace>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- RustEmulatorCore passes pinned cell buffers across the C ABI. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 </Project>
