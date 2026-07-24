@@ -1,6 +1,6 @@
 using System.IO.Pipes;
-using System.Text;
-using System.Text.Json;
+using Agwinterm.Pty.Proto;
+using Google.Protobuf;
 
 namespace Agwinterm.Pty;
 
@@ -18,23 +18,16 @@ public sealed record PtyHostSessionInfo(
     string Id, int Cols, int Rows, int? ChildPid, bool HasExited, int? ExitCode, string Title, bool Attached);
 
 /// <summary>
-/// Client for the pty-host control pipe (#105, Phase 2a). Thread-safe: control requests are
-/// serialized over one pipe connection. Used by tests today and by the server session backend
-/// (Phase 2b) tomorrow.
+/// Client for the pty-host control pipe, protocol v2 (protobuf frames; schema =
+/// proto/ptyhost.proto). Thread-safe: control requests are serialized over one pipe connection.
+/// Drives BOTH hosts (C# and Rust) identically — that identity is the compatibility oracle.
 /// </summary>
 public sealed class PtyHostClient : IDisposable
 {
     private readonly NamedPipeClientStream _pipe;
-    private readonly StreamReader _reader;
-    private readonly StreamWriter _writer;
     private readonly object _io = new();
 
-    private PtyHostClient(NamedPipeClientStream pipe)
-    {
-        _pipe = pipe;
-        _reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true);
-        _writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
-    }
+    private PtyHostClient(NamedPipeClientStream pipe) => _pipe = pipe;
 
     /// <summary>Whether a pty-host is answering for this app id (cheap probe, no handshake).</summary>
     public static bool IsRunning(string appId)
@@ -55,14 +48,15 @@ public sealed class PtyHostClient : IDisposable
         // Deliberately a SYNCHRONOUS pipe handle (no PipeOptions.Asynchronous): every control
         // request is sync request/response under a lock, and a sync operation on an async handle
         // secretly runs overlapped IO — closing the pipe with such an op in flight is the crash
-        // class behind issue #118 (AV in the IOCP poller). A sync handle keeps this path on plain
-        // blocking syscalls, where a close during a read is a clean error, not a race.
+        // class behind issue #118. A sync handle keeps this path on plain blocking syscalls.
         var pipe = new NamedPipeClientStream(".", PtyHostServer.ControlPipeName(appId), PipeDirection.InOut);
         pipe.Connect(timeoutMs);
         var client = new PtyHostClient(pipe);
         try
         {
-            using var doc = client.Request($"{{\"cmd\":\"hello\",\"protocol\":{PtyHostServer.ProtocolVersion}}}");
+            var reply = client.Request(new Request { Hello = new Hello { Protocol = PtyHostServer.ProtocolVersion } });
+            if (reply.Hello.Protocol != PtyHostServer.ProtocolVersion)
+                throw new InvalidOperationException("pty-host protocol mismatch");
             return client;
         }
         catch { client.Dispose(); throw; }
@@ -73,31 +67,20 @@ public sealed class PtyHostClient : IDisposable
         string? cwd = null, IReadOnlyDictionary<string, string>? env = null, bool verbatim = false, bool deElevate = false,
         bool freshEnv = true)
     {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms))
+        var create = new Create
         {
-            w.WriteStartObject();
-            w.WriteString("cmd", "create");
-            w.WriteString("id", id);
-            w.WriteNumber("cols", cols); w.WriteNumber("rows", rows);
-            w.WriteString("app", app);
-            if (verbatim) w.WriteBoolean("verbatim", true);
-            if (deElevate) w.WriteBoolean("deElevate", true);
-            if (!freshEnv) w.WriteBoolean("freshEnv", false);   // absent = true (the default)
-            w.WriteStartArray("args");
-            foreach (var a in args) w.WriteStringValue(a);
-            w.WriteEndArray();
-            if (cwd is not null) w.WriteString("cwd", cwd);
-            if (env is not null)
-            {
-                w.WriteStartObject("env");
-                foreach (var kv in env) w.WriteString(kv.Key, kv.Value);
-                w.WriteEndObject();
-            }
-            w.WriteEndObject();
-        }
-        using var doc = Request(Encoding.UTF8.GetString(ms.ToArray()));
-        return doc.RootElement.GetProperty("id").GetString()!;
+            Id = id,
+            Cols = (uint)cols,
+            Rows = (uint)rows,
+            App = app,
+            Cwd = cwd ?? "",
+            Verbatim = verbatim,
+            DeElevate = deElevate,
+            FreshEnvOff = !freshEnv,
+        };
+        create.Args.AddRange(args);
+        if (env is not null) foreach (var kv in env) create.Env[kv.Key] = kv.Value;
+        return Request(new Request { Create = create }).Create.Id;
     }
 
     /// <summary>Attach to a session: returns its state snapshot plus the connected data stream
@@ -106,80 +89,79 @@ public sealed class PtyHostClient : IDisposable
     /// reattaching an existing view, false right after <see cref="Create"/>.</summary>
     public PtyHostAttachment Attach(string id, bool repaint = false, int timeoutMs = 5000)
     {
-        using var doc = Request($"{{\"cmd\":\"attach\",\"id\":{JsonSerializer.Serialize(id)},\"repaint\":{(repaint ? "true" : "false")}}}");
-        var root = doc.RootElement;
-        string pipeName = root.GetProperty("pipe").GetString()!;
-        var scrollback = new List<string>();
-        foreach (var e in root.GetProperty("scrollback").EnumerateArray()) scrollback.Add(e.GetString() ?? "");
+        var reply = Request(new Request { Attach = new Attach { Id = id, Repaint = repaint } }).Attach;
         // Async handle: the reader (ServerSession.ReadLoop, or a test) must be able to bail out
         // mid-read via cancellation — a SYNC handle can't be unblocked by closing our own end
         // (SafeHandle ref-counting keeps the OS handle open under a blocked read). The #118 rule
         // still applies: cancel the pending read FIRST, and only the reader disposes the pipe.
-        var data = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        var data = new NamedPipeClientStream(".", reply.Pipe, PipeDirection.InOut, PipeOptions.Asynchronous);
         data.Connect(timeoutMs);
         return new PtyHostAttachment(
-            data,
-            root.GetProperty("cols").GetInt32(), root.GetProperty("rows").GetInt32(),
-            root.TryGetProperty("childPid", out var p) ? p.GetInt32() : null,
-            root.GetProperty("hasExited").GetBoolean(),
-            root.TryGetProperty("exitCode", out var ec) ? ec.GetInt32() : null,
-            root.GetProperty("modes").GetString() ?? "",
-            scrollback);
+            data, (int)reply.Cols, (int)reply.Rows,
+            reply.ChildPid != 0 ? (int)reply.ChildPid : null,
+            reply.HasExited,
+            reply.HasExited ? reply.ExitCode : null,
+            reply.Modes, reply.Scrollback);
     }
 
     public void Resize(string id, int cols, int rows)
-        => Request($"{{\"cmd\":\"resize\",\"id\":{JsonSerializer.Serialize(id)},\"cols\":{cols},\"rows\":{rows}}}").Dispose();
+        => Request(new Request { Resize = new Resize { Id = id, Cols = (uint)cols, Rows = (uint)rows } });
 
     public void Detach(string id)
-        => Request($"{{\"cmd\":\"detach\",\"id\":{JsonSerializer.Serialize(id)}}}").Dispose();
+        => Request(new Request { Detach = new SessionRef { Id = id } });
 
     public void Kill(string id)
-        => Request($"{{\"cmd\":\"kill\",\"id\":{JsonSerializer.Serialize(id)}}}").Dispose();
+        => Request(new Request { Kill = new SessionRef { Id = id } });
 
     public IReadOnlyList<PtyHostSessionInfo> List()
     {
-        using var doc = Request("{\"cmd\":\"list\"}");
-        var list = new List<PtyHostSessionInfo>();
-        foreach (var e in doc.RootElement.GetProperty("sessions").EnumerateArray())
-            list.Add(new PtyHostSessionInfo(
-                e.GetProperty("id").GetString()!,
-                e.GetProperty("cols").GetInt32(), e.GetProperty("rows").GetInt32(),
-                e.TryGetProperty("childPid", out var p) ? p.GetInt32() : null,
-                e.GetProperty("hasExited").GetBoolean(),
-                e.TryGetProperty("exitCode", out var ec) ? ec.GetInt32() : null,
-                e.GetProperty("title").GetString() ?? "",
-                e.GetProperty("attached").GetBoolean()));
-        return list;
+        var reply = Request(new Request { List = new List() }).List;
+        var result = new List<PtyHostSessionInfo>(reply.Sessions.Count);
+        foreach (var s in reply.Sessions)
+            result.Add(new PtyHostSessionInfo(
+                s.Id, (int)s.Cols, (int)s.Rows,
+                s.ChildPid != 0 ? (int)s.ChildPid : null,
+                s.HasExited,
+                s.HasExited ? s.ExitCode : null,
+                s.Title, s.Attached));
+        return result;
     }
 
     /// <summary>Ask the host process to tear down every session and exit.</summary>
     public void Shutdown()
     {
-        try { Request("{\"cmd\":\"shutdown\"}").Dispose(); } catch (IOException) { /* host died mid-reply — that IS the outcome */ }
+        try { Request(new Request { Shutdown = new Shutdown() }); }
+        catch (IOException) { /* host died mid-reply (incl. EOF) — that IS the outcome */ }
     }
 
-    /// <summary>One request/response over the control pipe. Throws on transport errors and on
-    /// <c>ok:false</c> replies (the error message travels in the exception).</summary>
-    private JsonDocument Request(string line)
+    /// <summary>One framed request/response over the control pipe. Throws on transport errors and
+    /// on <c>ok:false</c> replies (the error message travels in the exception).</summary>
+    private Reply Request(Request req)
     {
-        string? reply;
+        Reply reply;
         lock (_io)
         {
-            _writer.WriteLine(line);
-            reply = _reader.ReadLine();
+            byte[] payload = req.ToByteArray();
+            Span<byte> len = stackalloc byte[4];
+            BitConverter.TryWriteBytes(len, payload.Length);
+            _pipe.Write(len);
+            _pipe.Write(payload);
+            _pipe.Flush();
+
+            var lenBuf = new byte[4];
+            _pipe.ReadExactly(lenBuf);
+            int n = BitConverter.ToInt32(lenBuf);
+            if (n < 0 || n > 16 * 1024 * 1024) throw new IOException("pty-host sent a garbled frame");
+            var buf = new byte[n];
+            _pipe.ReadExactly(buf);
+            reply = Reply.Parser.ParseFrom(buf);
         }
-        if (reply is null) throw new IOException("pty-host closed the control pipe");
-        var doc = JsonDocument.Parse(reply);
-        if (doc.RootElement.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True) return doc;
-        string err = doc.RootElement.TryGetProperty("error", out var e) ? e.GetString() ?? "unknown error" : "unknown error";
-        doc.Dispose();
-        throw new InvalidOperationException("pty-host: " + err);
+        if (reply.Ok) return reply;
+        throw new InvalidOperationException("pty-host: " + (reply.Error.Length > 0 ? reply.Error : "unknown error"));
     }
 
     public void Dispose()
     {
-        try { _reader.Dispose(); } catch { }
-        try { _writer.Dispose(); } catch { }
-        try { _pipe.Dispose(); } catch { }
+        lock (_io) _pipe.Dispose();
     }
 }

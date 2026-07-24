@@ -1,0 +1,10 @@
+[package]
+name = "prost-gen"
+version = "0.1.0"
+edition = "2021"
+description = "One-shot generator: proto/ptyhost.proto -> native/agwinterm-ptyhost/src/proto.rs (run via tools/gen-proto.ps1; output is committed)"
+
+[dependencies]
+prost-build = "0.13"
+
+[workspace]

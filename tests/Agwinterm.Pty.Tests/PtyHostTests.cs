@@ -82,9 +82,15 @@ public class PtyHostTests : IDisposable
     [Fact]
     public void Hello_RejectsProtocolMismatch()
     {
-        Assert.Contains("\"ok\":true", _server.Dispatch($"{{\"cmd\":\"hello\",\"protocol\":{PtyHostServer.ProtocolVersion}}}"));
-        Assert.Contains("protocol mismatch", _server.Dispatch("{\"cmd\":\"hello\",\"protocol\":999}"));
-        Assert.Contains("protocol mismatch", _server.Dispatch("{\"cmd\":\"hello\"}"));
+        var ok = _server.Dispatch(new Agwinterm.Pty.Proto.Request
+        { Hello = new Agwinterm.Pty.Proto.Hello { Protocol = PtyHostServer.ProtocolVersion } });
+        Assert.True(ok.Ok);
+        var bad = _server.Dispatch(new Agwinterm.Pty.Proto.Request
+        { Hello = new Agwinterm.Pty.Proto.Hello { Protocol = 999 } });
+        Assert.Contains("protocol mismatch", bad.Error);
+        var empty = _server.Dispatch(new Agwinterm.Pty.Proto.Request
+        { Hello = new Agwinterm.Pty.Proto.Hello() });   // protocol 0 = absent in proto3
+        Assert.Contains("protocol mismatch", empty.Error);
     }
 
     [Fact]

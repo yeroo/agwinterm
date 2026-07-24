@@ -1,36 +1,36 @@
-//! agwinterm-ptyhost: the pty-host in Rust. Speaks EXACTLY the protocol of the C#
-//! PtyHostServer (hello/create/attach/detach/resize/kill/list/shutdown over a
-//! newline-JSON control pipe; per-attach duplex data pipes) — the same C#
-//! PtyHostClient drives both, which is also how the compatibility tests work.
+//! agwinterm-ptyhost: the pty-host in Rust, protocol v2 (protobuf wire — the
+//! schema in proto/ptyhost.proto is the single source of truth for all four
+//! speakers; JSON removed by decision on #134).
 //!
-//! Design: blocking threads everywhere (accept loop, per-client control loop,
-//! per-session output pump, per-attach input pump). No async, no IOCP.
+//! Control pipe: 4-byte LE length prefix + encoded Request/Reply, strict
+//! request/response. DATA pipes stay raw bytes. Blocking threads everywhere —
+//! no async, no IOCP.
 //!
-//! v1 limitations vs the C# host (loud errors, not silent gaps):
-//!  - deElevate is refused ("de-elevate unsupported by rust host").
+//! v1-behavior parity notes: deElevate refused loudly; hello is the hard gate.
 
 mod conpty;
 mod freshenv;
 mod pipes;
+mod proto;
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agwinterm_core::emulator::Terminal;
 use conpty::ConPty;
 use pipes::{OverlappedPipeServer, OvStream, PipeServer};
-use serde_json::{json, Value};
+use prost::Message;
+use proto::{reply, request, AttachReply, CreateReply, HelloReply, ListReply, Reply, Request, SessionInfo};
 
-const PROTOCOL_VERSION: i64 = 1;
+const PROTOCOL_VERSION: u32 = 2;
 
 struct Hosted {
     id: String,
     pty: Mutex<ConPty>,
     term: Mutex<Terminal>,
-    /// Write side handed to the output forwarder; replaced on supersede, dropped on detach.
     data: Mutex<Option<Arc<OvStream>>>,
     exited: AtomicBool,
     exit_code: AtomicI32,
@@ -78,24 +78,42 @@ fn main() {
     }
 }
 
+fn read_frame(r: &mut impl Read) -> Option<Vec<u8>> {
+    let mut len = [0u8; 4];
+    r.read_exact(&mut len).ok()?;
+    let n = u32::from_le_bytes(len) as usize;
+    if n > 16 * 1024 * 1024 {
+        return None; // frame cap: no runaway allocations from a garbled client
+    }
+    let mut buf = vec![0u8; n];
+    r.read_exact(&mut buf).ok()?;
+    Some(buf)
+}
+
+fn write_frame(w: &mut impl Write, bytes: &[u8]) -> bool {
+    w.write_all(&(bytes.len() as u32).to_le_bytes()).is_ok()
+        && w.write_all(bytes).is_ok()
+        && w.flush().is_ok()
+}
+
 fn handle_control_client(host: Arc<Host>, stream: File) {
     let mut writer = match stream.try_clone() {
         Ok(w) => w,
         Err(_) => return,
     };
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let Ok(line) = line else { return };
-        if line.is_empty() {
-            continue;
-        }
-        let reply = dispatch(&host, &line);
-        if writer.write_all(reply.as_bytes()).is_err() || writer.write_all(b"\n").is_err() {
+    let mut reader = stream;
+    while let Some(frame) = read_frame(&mut reader) {
+        let request = match Request::decode(frame.as_slice()) {
+            Ok(r) => r,
+            Err(_) => Request { cmd: None }, // undecodable → "unknown command" error reply
+        };
+        let shutdown = matches!(request.cmd, Some(request::Cmd::Shutdown(_)));
+        let reply = dispatch(&host, request);
+        if !write_frame(&mut writer, &reply.encode_to_vec()) {
             return;
         }
-        let _ = writer.flush();
-        if reply.contains("\"__shutdown\":true") {
-            // Ack flushed; tear down after a beat (same 100ms grace as the C# host).
+        if shutdown && reply.ok {
+            // Ack flushed; tear down after a beat (same grace as v1).
             std::thread::sleep(std::time::Duration::from_millis(100));
             let sessions: Vec<Arc<Hosted>> = host.sessions.lock().unwrap().values().cloned().collect();
             for s in sessions {
@@ -106,100 +124,79 @@ fn handle_control_client(host: Arc<Host>, stream: File) {
     }
 }
 
-fn ok(mut body: serde_json::Map<String, Value>) -> String {
-    body.insert("ok".into(), Value::Bool(true));
-    // Serialize with "ok" present; field order is irrelevant to the client (JSON object).
-    Value::Object(body).to_string()
+fn ok_reply(body: Option<reply::Body>) -> Reply {
+    Reply { ok: true, error: String::new(), body }
 }
 
-fn err(msg: &str) -> String {
-    json!({ "ok": false, "error": msg }).to_string()
+fn err_reply(msg: impl Into<String>) -> Reply {
+    Reply { ok: false, error: msg.into(), body: None }
 }
 
-fn dispatch(host: &Arc<Host>, line: &str) -> String {
-    let Ok(root) = serde_json::from_str::<Value>(line) else {
-        return err("invalid JSON");
-    };
-    let cmd = root.get("cmd").and_then(Value::as_str).unwrap_or("");
-    match cmd {
-        "hello" => {
-            let theirs = root.get("protocol").and_then(Value::as_i64).unwrap_or(-1);
-            if theirs == PROTOCOL_VERSION {
-                let mut m = serde_json::Map::new();
-                m.insert("protocol".into(), json!(PROTOCOL_VERSION));
-                m.insert("pid".into(), json!(std::process::id()));
-                ok(m)
+fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
+    match req.cmd {
+        Some(request::Cmd::Hello(h)) => {
+            if h.protocol == PROTOCOL_VERSION {
+                ok_reply(Some(reply::Body::Hello(HelloReply {
+                    protocol: PROTOCOL_VERSION,
+                    pid: std::process::id(),
+                })))
             } else {
-                err(&format!("protocol mismatch: host={PROTOCOL_VERSION} client={theirs}"))
+                err_reply(format!("protocol mismatch: host={PROTOCOL_VERSION} client={}", h.protocol))
             }
         }
-        "create" => handle_create(host, &root),
-        "attach" => handle_attach(host, &root),
-        "detach" => with_session(host, &root, |h| {
-            detach(&h); // cancel + drop = client EOF
-            ok(serde_json::Map::new())
+        Some(request::Cmd::Create(c)) => handle_create(host, c),
+        Some(request::Cmd::Attach(a)) => handle_attach(host, a),
+        Some(request::Cmd::Detach(d)) => with_session(host, &d.id, |h| {
+            detach(h);
+            ok_reply(None)
         }),
-        "resize" => with_session(host, &root, |h| {
-            let cols = root.get("cols").and_then(Value::as_i64).unwrap_or(0);
-            let rows = root.get("rows").and_then(Value::as_i64).unwrap_or(0);
-            if cols <= 0 || rows <= 0 {
-                return err("resize needs cols/rows");
+        Some(request::Cmd::Resize(r)) => with_session(host, &r.id, |h| {
+            if r.cols == 0 || r.rows == 0 {
+                return err_reply("resize needs cols/rows");
             }
-            h.term.lock().unwrap().emu.resize(cols as usize, rows as usize);
-            h.pty.lock().unwrap().resize(cols as i16, rows as i16);
-            ok(serde_json::Map::new())
+            h.term.lock().unwrap().emu.resize(r.cols as usize, r.rows as usize);
+            h.pty.lock().unwrap().resize(r.cols as i16, r.rows as i16);
+            ok_reply(None)
         }),
-        "kill" => {
-            let Some(h) = take_session(host, &root) else { return err_no_session(&root) };
-            detach(&h);
-            h.pty.lock().unwrap().kill();
-            ok(serde_json::Map::new())
+        Some(request::Cmd::Kill(k)) => {
+            match host.sessions.lock().unwrap().remove(&k.id) {
+                Some(h) => {
+                    detach(&h);
+                    h.pty.lock().unwrap().kill();
+                    ok_reply(None)
+                }
+                None => err_reply(format!("no session '{}'", k.id)),
+            }
         }
-        "list" => {
+        Some(request::Cmd::List(_)) => {
             let sessions = host.sessions.lock().unwrap();
-            let mut arr = Vec::new();
+            let mut list = ListReply { sessions: Vec::new() };
             for h in sessions.values() {
                 let (cols, rows) = h.pty.lock().unwrap().size();
-                let title = h.term.lock().unwrap().emu.title.clone();
-                arr.push(json!({
-                    "id": h.id,
-                    "cols": cols, "rows": rows,
-                    "childPid": h.pty.lock().unwrap().child_pid,
-                    "hasExited": h.exited.load(Ordering::SeqCst),
-                    "exitCode": h.exit_code.load(Ordering::SeqCst),
-                    "title": title,
-                    "attached": h.data.lock().unwrap().is_some(),
-                }));
+                list.sessions.push(SessionInfo {
+                    id: h.id.clone(),
+                    cols: cols as u32,
+                    rows: rows as u32,
+                    child_pid: h.pty.lock().unwrap().child_pid,
+                    has_exited: h.exited.load(Ordering::SeqCst),
+                    exit_code: h.exit_code.load(Ordering::SeqCst),
+                    title: h.term.lock().unwrap().emu.title.clone(),
+                    attached: h.data.lock().unwrap().is_some(),
+                });
             }
-            let mut m = serde_json::Map::new();
-            m.insert("sessions".into(), Value::Array(arr));
-            ok(m)
+            ok_reply(Some(reply::Body::List(list)))
         }
-        "shutdown" => {
-            let mut m = serde_json::Map::new();
-            m.insert("__shutdown".into(), Value::Bool(true)); // control loop exits after flushing
-            ok(m)
-        }
-        _ => err(&format!("unknown command '{cmd}'")),
+        Some(request::Cmd::Shutdown(_)) => ok_reply(None),
+        None => err_reply("unknown command"),
     }
 }
 
-fn err_no_session(root: &Value) -> String {
-    err(&format!("no session '{}'", root.get("id").and_then(Value::as_str).unwrap_or("")))
-}
-
-fn with_session(host: &Arc<Host>, root: &Value, act: impl FnOnce(&Arc<Hosted>) -> String) -> String {
-    let Some(id) = root.get("id").and_then(Value::as_str) else { return err("missing id") };
+fn with_session(host: &Arc<Host>, id: &str, act: impl FnOnce(&Arc<Hosted>) -> Reply) -> Reply {
     let h = host.sessions.lock().unwrap().get(id).cloned();
     match h {
         Some(h) => act(&h),
-        None => err(&format!("no session '{id}'")),
+        None => err_reply(format!("no session '{id}'")),
     }
-}
-
-fn take_session(host: &Arc<Host>, root: &Value) -> Option<Arc<Hosted>> {
-    let id = root.get("id").and_then(Value::as_str)?;
-    host.sessions.lock().unwrap().remove(id)
 }
 
 fn detach(h: &Arc<Hosted>) {
@@ -209,46 +206,29 @@ fn detach(h: &Arc<Hosted>) {
     }
 }
 
-fn handle_create(host: &Arc<Host>, root: &Value) -> String {
-    let id = root.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-    if id.is_empty() {
-        return err("create needs args.id");
+fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
+    if c.id.is_empty() {
+        return err_reply("create needs id");
     }
-    let cols = root.get("cols").and_then(Value::as_i64).unwrap_or(120).clamp(1, 10000);
-    let rows = root.get("rows").and_then(Value::as_i64).unwrap_or(30).clamp(1, 10000);
-    let app = root.get("app").and_then(Value::as_str).unwrap_or("");
-    if app.is_empty() {
-        return err("create needs args.app");
+    if c.app.is_empty() {
+        return err_reply("create needs app");
     }
-    let args: Vec<String> = root
-        .get("args")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
-        .unwrap_or_default();
-    let cwd = root.get("cwd").and_then(Value::as_str).map(String::from);
-    let verbatim = root.get("verbatim").and_then(Value::as_bool).unwrap_or(false);
-    let de_elevate = root.get("deElevate").and_then(Value::as_bool).unwrap_or(false);
-    let fresh_env = root.get("freshEnv").and_then(Value::as_bool).unwrap_or(true);
-    if de_elevate {
-        return err("spawn failed: de-elevate unsupported by rust host");
+    if c.de_elevate {
+        return err_reply("spawn failed: de-elevate unsupported by rust host");
     }
-    let extra: Vec<(String, String)> = root
-        .get("env")
-        .and_then(Value::as_object)
-        .map(|o| o.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
-        .unwrap_or_default();
-
+    let cols = c.cols.clamp(1, 10000) as i64;
+    let rows = c.rows.clamp(1, 10000) as i64;
     {
         let sessions = host.sessions.lock().unwrap();
-        if sessions.contains_key(&id) {
-            return err(&format!("session '{id}' already exists"));
+        if sessions.contains_key(&c.id) {
+            return err_reply(format!("session '{}' already exists", c.id));
         }
     }
 
-    // Base env: registry-fresh (or inherited) + our additions — same as TerminalSession.
-    let env: Option<Vec<(String, String)>> = if fresh_env || !extra.is_empty() {
+    let fresh_env = !c.fresh_env_off;
+    let env: Option<Vec<(String, String)>> = if fresh_env || !c.env.is_empty() {
         let mut base = if fresh_env { freshenv::fresh_environment() } else { std::env::vars().collect() };
-        for (k, v) in &extra {
+        for (k, v) in &c.env {
             if let Some(slot) = base.iter_mut().find(|(bk, _)| bk.eq_ignore_ascii_case(k)) {
                 slot.1 = v.clone();
             } else {
@@ -260,32 +240,32 @@ fn handle_create(host: &Arc<Host>, root: &Value) -> String {
         None
     };
 
-    let pty = match ConPty::spawn(app, &args, verbatim, cwd.as_deref(), env.as_deref(), cols as i16, rows as i16) {
+    let cwd = if c.cwd.is_empty() { None } else { Some(c.cwd.as_str()) };
+    let pty = match ConPty::spawn(&c.app, &c.args, c.verbatim, cwd, env.as_deref(), cols as i16, rows as i16) {
         Ok(p) => p,
-        Err(e) => return err(&format!("spawn failed: {e}")),
+        Err(e) => return err_reply(format!("spawn failed: {e}")),
     };
 
     let hosted = Arc::new(Hosted {
-        id: id.clone(),
+        id: c.id.clone(),
         term: Mutex::new(Terminal::new(cols as usize, rows as usize)),
         pty: Mutex::new(pty),
         data: Mutex::new(None),
         exited: AtomicBool::new(false),
         exit_code: AtomicI32::new(0),
     });
-    host.sessions.lock().unwrap().insert(id.clone(), hosted.clone());
+    host.sessions.lock().unwrap().insert(c.id.clone(), hosted.clone());
     let hosted2 = hosted.clone();
 
     // Output pump: ConPTY → emulator (+ forward raw to the attached client).
     std::thread::spawn(move || {
-        // A separate read handle: File::try_clone on the pipe read end.
         let mut out = { hosted.pty.lock().unwrap().output.try_clone() };
         let Ok(ref mut out) = out else { return };
         let mut buf = [0u8; 64 * 1024];
         loop {
             let n = out.read(&mut buf).unwrap_or(0);
             if n == 0 {
-                break; // ConPTY closed → child gone
+                break;
             }
             hosted.term.lock().unwrap().feed(&buf[..n]);
             let mut data = hosted.data.lock().unwrap();
@@ -297,35 +277,28 @@ fn handle_create(host: &Arc<Host>, root: &Value) -> String {
         }
     });
 
-    // Exit watcher on the raw child handle — ConPTY's output pipe does NOT EOF when the
-    // child exits (conhost keeps it open), so the pump can't be the exit signal. Waiting
-    // via the pty mutex would hold it for the child's whole lifetime; the raw handle is
-    // safe to wait on concurrently.
-    let hw = hosted2;
-    let child_h = hw.pty.lock().unwrap().child as usize;
+    // Exit watcher on the raw child handle — ConPTY's output pipe does NOT EOF on
+    // child exit; waiting via the pty mutex would hold it for the child's lifetime.
+    let child_h = hosted2.pty.lock().unwrap().child as usize;
     std::thread::spawn(move || {
         let code = conpty::wait_child(child_h);
-        hw.exit_code.store(code, Ordering::SeqCst);
-        hw.exited.store(true, Ordering::SeqCst);
-        detach(&hw); // data-pipe EOF = the client's exit signal
+        hosted2.exit_code.store(code, Ordering::SeqCst);
+        hosted2.exited.store(true, Ordering::SeqCst);
+        detach(&hosted2); // data-pipe EOF = the client's exit signal
     });
 
-    let mut m = serde_json::Map::new();
-    m.insert("id".into(), Value::String(id));
-    ok(m)
+    ok_reply(Some(reply::Body::Create(CreateReply { id: c.id })))
 }
 
-fn handle_attach(host: &Arc<Host>, root: &Value) -> String {
-    let Some(id) = root.get("id").and_then(Value::as_str) else { return err("missing id") };
-    let Some(hosted) = host.sessions.lock().unwrap().get(id).cloned() else {
-        return err(&format!("no session '{id}'"));
+fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
+    let Some(hosted) = host.sessions.lock().unwrap().get(&a.id).cloned() else {
+        return err_reply(format!("no session '{}'", a.id));
     };
-    let repaint = root.get("repaint").and_then(Value::as_bool).unwrap_or(false);
     let seq = host.attach_seq.fetch_add(1, Ordering::SeqCst);
     let data_name = format!("{}-ptyhost-d-{seq:08x}", host.app_id);
     let server = match OverlappedPipeServer::create(&data_name) {
         Ok(s) => s,
-        Err(e) => return err(&e),
+        Err(e) => return err_reply(e),
     };
 
     // Snapshot under the emulator lock, before any new output can race the seed.
@@ -340,14 +313,14 @@ fn handle_attach(host: &Arc<Host>, root: &Value) -> String {
     };
 
     let h2 = hosted.clone();
+    let repaint = a.repaint;
     std::thread::spawn(move || {
         let Ok(stream) = server.accept() else { return };
         let stream = Arc::new(stream);
         {
-            // Supersede: cancel + drop the previous attachment (its client EOFs).
             let mut data = h2.data.lock().unwrap();
             if let Some(old) = data.take() {
-                old.cancel_io();
+                old.cancel_io(); // supersede: old client EOFs
             }
             *data = Some(stream.clone());
         }
@@ -356,7 +329,6 @@ fn handle_attach(host: &Arc<Host>, root: &Value) -> String {
             return;
         }
         if repaint {
-            // The ConPTY repaint jiggle: a real row-count change makes conhost re-emit the viewport.
             let (c, r) = h2.pty.lock().unwrap().size();
             h2.term.lock().unwrap().emu.resize(c as usize, (r as usize).saturating_sub(1).max(2));
             h2.pty.lock().unwrap().resize(c, (r - 1).max(2));
@@ -364,7 +336,6 @@ fn handle_attach(host: &Arc<Host>, root: &Value) -> String {
             h2.term.lock().unwrap().emu.resize(c as usize, r as usize);
             h2.pty.lock().unwrap().resize(c, r);
         }
-        // Input pump: client bytes → child stdin. EOF/error/cancel = detach (session keeps running).
         let mut buf = [0u8; 16 * 1024];
         loop {
             let n = stream.read(&mut buf);
@@ -381,20 +352,18 @@ fn handle_attach(host: &Arc<Host>, root: &Value) -> String {
         }
     });
 
-    let child_pid = hosted.pty.lock().unwrap().child_pid;
-    let mut m = serde_json::Map::new();
-    m.insert("pipe".into(), Value::String(data_name));
-    m.insert("cols".into(), json!(cols));
-    m.insert("rows".into(), json!(rows));
-    m.insert("childPid".into(), json!(child_pid));
-    m.insert("hasExited".into(), json!(hosted.exited.load(Ordering::SeqCst)));
-    m.insert("exitCode".into(), json!(hosted.exit_code.load(Ordering::SeqCst)));
-    m.insert("modes".into(), Value::String(modes));
-    m.insert("scrollback".into(), Value::Array(scrollback.into_iter().map(Value::String).collect()));
-    ok(m)
+    ok_reply(Some(reply::Body::Attach(AttachReply {
+        pipe: data_name,
+        cols: cols as u32,
+        rows: rows as u32,
+        child_pid: hosted.pty.lock().unwrap().child_pid,
+        has_exited: hosted.exited.load(Ordering::SeqCst),
+        exit_code: hosted.exit_code.load(Ordering::SeqCst),
+        modes,
+        scrollback,
+    })))
 }
 
-/// Plain text of one scrollback row (DumpHistoryRow conventions: skip spacers, trim end).
 fn dump_history_row(t: &Terminal, index: usize) -> String {
     let cols = t.emu.screen().cols();
     let mut s = String::new();

@@ -56,46 +56,36 @@ static void fatal(const wchar_t* msg) {
     ExitProcess(1);
 }
 
-// ---- minimal JSON helpers (M0: we control both ends; full parser lands in M1) ----
-static std::string jstr(const std::string& json, const std::string& key) {
-    std::string pat = "\"" + key + "\":\"";
-    size_t p = json.find(pat);
-    if (p == std::string::npos) return "";
-    p += pat.size();
-    std::string out;
-    while (p < json.size() && json[p] != '"') {
-        if (json[p] == '\\' && p + 1 < json.size()) { out += json[p + 1]; p += 2; }
-        else out += json[p++];
-    }
-    return out;
-}
-static int jint(const std::string& json, const std::string& key) {
-    std::string pat = "\"" + key + "\":";
-    size_t p = json.find(pat);
-    if (p == std::string::npos) return 0;
-    return atoi(json.c_str() + p + pat.size());
-}
-static std::string jesc(const std::string& s) {
-    std::string out;
-    for (char c : s) {
-        if (c == '"' || c == '\\') { out += '\\'; out += c; }
-        else out += c;
-    }
-    return out;
-}
+// ---- control pipe, protocol v2: 4-byte LE length prefix + nanopb-encoded frames.
+// Schema-generated handlers (proto/ptyhost.proto + ptyhost.options) — no JSON,
+// no hand parsing; the same schema drives the C#/Rust speakers.
+#include "proto/ptyhost.pb.h"
+#include "proto/pb_encode.h"
+#include "proto/pb_decode.h"
 
-// ---- control pipe: sync request/response (one line out, one line in) ----
-static std::string request(const std::string& line) {
-    std::string msg = line + "\n";
+static constexpr uint32_t kProtocolVersion = 2;
+
+static bool request(const agwinterm_ptyhost_Request& req, agwinterm_ptyhost_Reply* reply) {
+    uint8_t buf[4096];
+    pb_ostream_t os = pb_ostream_from_buffer(buf + 4, sizeof buf - 4);
+    if (!pb_encode(&os, agwinterm_ptyhost_Request_fields, &req)) return false;
+    uint32_t len = (uint32_t)os.bytes_written;
+    memcpy(buf, &len, 4);                                 // LE on x64
     DWORD n = 0;
-    if (!WriteFile(g_control, msg.data(), (DWORD)msg.size(), &n, nullptr)) return "";
-    std::string reply;
-    char c;
-    while (ReadFile(g_control, &c, 1, &n, nullptr) && n == 1) {
-        if (c == '\n') break;
-        if (c != '\r') reply += c;
-    }
-    return reply;
+    if (!WriteFile(g_control, buf, len + 4, &n, nullptr)) return false;
+
+    uint32_t rlen = 0;
+    DWORD got = 0, need = 4;
+    uint8_t* p = (uint8_t*)&rlen;
+    while (need && ReadFile(g_control, p + (4 - need), need, &got, nullptr) && got) need -= got;
+    if (need || rlen > 1 << 20) return false;
+    std::vector<uint8_t> payload(rlen);
+    need = rlen;
+    while (need && ReadFile(g_control, payload.data() + (rlen - need), need, &got, nullptr) && got) need -= got;
+    if (need) return false;
+    pb_istream_t is = pb_istream_from_buffer(payload.data(), rlen);
+    *reply = agwinterm_ptyhost_Reply_init_default;
+    return pb_decode(&is, agwinterm_ptyhost_Reply_fields, reply) && reply->ok;
 }
 
 static HANDLE openPipe(const std::wstring& name, int timeoutMs, bool overlapped) {
@@ -168,22 +158,30 @@ static void connectHost(int cols, int rows) {
         g_control = openPipe(control, 5000, false);
         if (g_control == INVALID_HANDLE_VALUE) fatal(L"pty-host control pipe never appeared");
     }
-    std::string hello = request("{\"cmd\":\"hello\",\"protocol\":1}");
-    if (hello.find("\"ok\":true") == std::string::npos) fatal(L"pty-host hello failed");
+    agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
+    agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
+    req.which_cmd = agwinterm_ptyhost_Request_hello_tag;
+    req.cmd.hello.protocol = kProtocolVersion;
+    if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_hello_tag)
+        fatal(L"pty-host hello failed (protocol mismatch?)");
 
-    char create[512];
-    wsprintfA(create,
-        "{\"cmd\":\"create\",\"id\":\"%s\",\"cols\":%d,\"rows\":%d,"
-        "\"app\":\"powershell.exe\",\"args\":[\"-NoLogo\"]}",
-        g_sessionId.c_str(), cols, rows);
-    std::string created = request(create);
-    if (created.find("\"ok\":true") == std::string::npos) fatal(L"pty-host create failed");
+    req = agwinterm_ptyhost_Request_init_default;
+    req.which_cmd = agwinterm_ptyhost_Request_create_tag;
+    strcpy_s(req.cmd.create.id, g_sessionId.c_str());
+    req.cmd.create.cols = (uint32_t)cols;
+    req.cmd.create.rows = (uint32_t)rows;
+    strcpy_s(req.cmd.create.app, "powershell.exe");
+    req.cmd.create.args_count = 1;
+    strcpy_s(req.cmd.create.args[0], "-NoLogo");
+    if (!request(req, &rep)) fatal(L"pty-host create failed");
 
-    char attach[256];
-    wsprintfA(attach, "{\"cmd\":\"attach\",\"id\":\"%s\"}", g_sessionId.c_str());
-    std::string att = request(attach);
-    std::string dataName = jstr(att, "pipe");
-    if (dataName.empty()) fatal(L"pty-host attach failed");
+    req = agwinterm_ptyhost_Request_init_default;
+    req.which_cmd = agwinterm_ptyhost_Request_attach_tag;
+    strcpy_s(req.cmd.attach.id, g_sessionId.c_str());
+    if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_attach_tag)
+        fatal(L"pty-host attach failed");
+    std::string dataName = rep.body.attach.pipe;
+    if (dataName.empty()) fatal(L"pty-host attach: no data pipe");
     g_data = openPipe(std::wstring(dataName.begin(), dataName.end()), 5000, true);
     if (g_data == INVALID_HANDLE_VALUE) fatal(L"data pipe connect failed");
 }
@@ -311,9 +309,13 @@ static void resizeToClient(int width, int height) {
     EnterCriticalSection(&g_lock);
     emu_resize(g_emu, cols, rows);
     LeaveCriticalSection(&g_lock);
-    char msg[256];
-    wsprintfA(msg, "{\"cmd\":\"resize\",\"id\":\"%s\",\"cols\":%d,\"rows\":%d}", g_sessionId.c_str(), cols, rows);
-    request(msg);
+    agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
+    agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
+    req.which_cmd = agwinterm_ptyhost_Request_resize_tag;
+    strcpy_s(req.cmd.resize.id, g_sessionId.c_str());
+    req.cmd.resize.cols = (uint32_t)cols;
+    req.cmd.resize.rows = (uint32_t)rows;
+    request(req, &rep);
 }
 
 static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -343,10 +345,14 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY: {
             // M0 hygiene: explicit close kills the session (adoption arrives in M1).
-            char msg2[256];
-            wsprintfA(msg2, "{\"cmd\":\"kill\",\"id\":\"%s\"}", g_sessionId.c_str());
-            request(msg2);
-            request("{\"cmd\":\"shutdown\"}");
+            agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
+            agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
+            req.which_cmd = agwinterm_ptyhost_Request_kill_tag;
+            strcpy_s(req.cmd.kill.id, g_sessionId.c_str());
+            request(req, &rep);
+            req = agwinterm_ptyhost_Request_init_default;
+            req.which_cmd = agwinterm_ptyhost_Request_shutdown_tag;
+            request(req, &rep);
             PostQuitMessage(0);
             return 0;
         }

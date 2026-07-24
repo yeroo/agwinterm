@@ -6,6 +6,7 @@
     <RootNamespace>Agwinterm.Pty</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.29.3" />
     <PackageReference Include="Porta.Pty" Version="1.0.7" />
     <ProjectReference Include="../Agwinterm.Core/Agwinterm.Core.csproj" />
   </ItemGroup>
