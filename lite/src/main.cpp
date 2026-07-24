@@ -358,9 +358,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     InitializeCriticalSection(&g_lock);
     loadCore();
 
+    // Bundled Meslo Nerd Font (Boris's favourite): loaded process-private, so lite
+    // looks right — prompt glyphs included — on machines with nothing installed.
+    std::wstring ttf = exeDir() + L"\\MesloLGLDZNerdFont-Regular.ttf";
+    bool haveMeslo = AddFontResourceExW(ttf.c_str(), FR_PRIVATE, 0) > 0;
     g_font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                         FIXED_PITCH | FF_MODERN, L"Consolas");
+                         FIXED_PITCH | FF_MODERN,
+                         haveMeslo ? L"MesloLGLDZ Nerd Font" : L"Consolas");
     {
         HDC dc = GetDC(nullptr);
         HGDIOBJ old = SelectObject(dc, g_font);

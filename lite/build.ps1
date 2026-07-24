@@ -24,4 +24,5 @@ if ($LASTEXITCODE -ne 0) { throw 'cl.exe failed' }
 # 4) Stage the native pieces next to the exe.
 Copy-Item (Join-Path $root 'native\target\release\agwinterm_core.dll') $bin -Force
 Copy-Item (Join-Path $root 'native\target\release\agwinterm-ptyhost.exe') $bin -Force
+Copy-Item (Join-Path $PSScriptRoot 'assets\*') $bin -Force   # bundled font + license
 "built: $bin\agwinterm-lite.exe"
