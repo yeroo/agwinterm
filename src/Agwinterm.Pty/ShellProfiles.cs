@@ -94,6 +94,18 @@ public static class ShellProfiles
         // distros (e.g. "WSL: Press any key to install …") — distro names never contain spaces.
         c.Profiles.RemoveAll(p => p.Name.StartsWith("WSL: ", StringComparison.OrdinalIgnoreCase)
                                   && p.Name["WSL: ".Length..].Contains(' '));
+        // Repair STALE ABSOLUTE PATHS (real field failure: a Store PowerShell update rotates its
+        // versioned WindowsApps dir, and a profile that captured the resolved path dies with
+        // "spawn failed: file not found" on every pane). If the file is gone but the bare exe
+        // name resolves via PATH, fall back to the name — PATH re-resolves at every spawn, so
+        // version rotations can never strand it again. Only applies when the file is MISSING:
+        // deliberate absolute paths to existing exes are untouched.
+        foreach (var p in c.Profiles)
+        {
+            if (!Path.IsPathRooted(p.Command) || File.Exists(p.Command)) continue;
+            string bare = Path.GetFileName(p.Command);
+            if (bare.Length > 0 && Which(bare) is not null) p.Command = bare;
+        }
         if (c.Profiles.Count == 0) c.Profiles.Add(DefaultPowerShell());
         if (string.IsNullOrWhiteSpace(c.Default) ||
             !c.Profiles.Exists(p => p.Name.Equals(c.Default, StringComparison.OrdinalIgnoreCase)))
@@ -109,8 +121,12 @@ public static class ShellProfiles
     {
         var list = new List<ShellProfile> { DefaultPowerShell() }; // always present; the default
 
-        string? pwsh = Which("pwsh.exe")
-            ?? Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PowerShell", "7", "pwsh.exe"));
+        // Seed the COMMAND as the bare exe name when PATH can resolve it: PATH re-resolves at
+        // every spawn, so a Store PowerShell update rotating its versioned WindowsApps dir can't
+        // strand the profile (a captured resolved path dies on the next update — field failure).
+        // Only a non-PATH install (bare ProgramFiles copy) keeps an absolute path, which is stable.
+        string? pwsh = Which("pwsh.exe") is not null ? "pwsh.exe"
+            : Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PowerShell", "7", "pwsh.exe"));
         if (pwsh is not null) list.Add(new ShellProfile { Name = "PowerShell 7", Command = pwsh, Icon = Term });
 
         list.Add(new ShellProfile { Name = "Command Prompt", Command = "cmd.exe", Icon = Term });
@@ -133,8 +149,8 @@ public static class ShellProfiles
         }
         catch { /* WSL optional */ }
 
-        string? nu = Which("nu.exe");
-        if (nu is not null) list.Add(new ShellProfile { Name = "Nushell", Command = nu, Icon = Term });
+        if (Which("nu.exe") is not null)
+            list.Add(new ShellProfile { Name = "Nushell", Command = "nu.exe", Icon = Term });   // bare name: PATH re-resolves per spawn
 
         return list;
     }
