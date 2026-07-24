@@ -28,6 +28,12 @@ jobs:
       - name: Build
         run: dotnet build Agwinterm.slnx -c Release --no-restore
 
+      - name: Build Rust core (arms the parity oracle)
+        # RustParityTests skip silently when the crate dll is absent; building it here makes
+        # the C#↔Rust differential oracles (wcwidth, screen, parser, emulator, images) a
+        # hard merge gate.
+        run: cargo build --release --manifest-path native/agwinterm-core/Cargo.toml
+
       - name: Test (Core + Pty)
         # One retry, but ONLY for the known .NET 10 test-host native crash (issue #118:
         # AccessViolation in the IOCP poller under named-pipe churn — "Test Run Aborted" with

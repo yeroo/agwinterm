@@ -33,7 +33,7 @@ public class RustParityTests
     public void AbiVersion_Matches()
     {
         if (Lib == 0) return;   // crate not built — differential run is opt-in
-        Assert.Equal(4u, Fn<AbiVersion>("agwcore_abi_version")());
+        Assert.Equal(5u, Fn<AbiVersion>("agwcore_abi_version")());
     }
 
     [Fact]
@@ -315,6 +315,14 @@ public class RustParityTests
         sb.Append($"gen:{e.ScrollGeneration}\n");
         foreach (var m in e.Marks)
             sb.Append($"mark:{m.PromptLine},{m.CommandLine},{m.OutputLine},{m.EndLine},{(m.ExitCode?.ToString() ?? "none")}\n");
+        foreach (var kv in e.Images.OrderBy(k => k.Key))
+        {
+            ulong hash = 0xcbf29ce484222325;   // FNV-1a 64, matching the Rust dump
+            foreach (byte b in kv.Value.Data) { hash ^= b; hash *= 0x100000001b3; }
+            sb.Append($"img:{kv.Key},{(int)kv.Value.Format},{kv.Value.Width},{kv.Value.Height},{kv.Value.Data.Length},{hash:x16}\n");
+        }
+        foreach (var p in e.Placements)
+            sb.Append($"pl:{p.ImageId},{p.Row},{p.Col},{p.Cols},{p.Rows},{p.SrcX},{p.SrcY},{p.SrcW},{p.SrcH}\n");
         int cols = e.Screen.Cols, rows = e.Screen.Rows;
         for (int h = 0; h < e.HistoryCount; h++)
         {
@@ -439,6 +447,24 @@ public class RustParityTests
     }
 
     [Fact]
+    public void Emulator_ImageScenarios_FullStateAgrees()
+    {
+        if (Lib == 0) return;
+        var scenarios = new (string Label, string[] Feeds)[]
+        {
+            ("sixel-basic", new[] { "\x1bP0;0;8q#1~~~\x1b\\", "after", "\x1bPq#0;2;100;0;0!5~-~~\x07" }),
+            ("sixel-scrolloff", new[] { "\x1b[24;1H", "\x1bPq#2~~~~\x1b\\", "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n" }),
+            ("sixel-hostile", new[] { "\x1bP\"1;1;2000000000;2000000000q#1~\x1b\\", "\x1bPq!2000000000?\x1b\\", "\x1bPnotasixel\x1b\\" }),
+            ("kitty-basic", new[] { "\x1b_Ga=T,i=5,f=32,s=1,v=1,c=2,r=1;AAAA\x1b\\", "\x1b_Ga=p,i=5;\x1b\\", "\x1b_Ga=d,i=5;\x1b\\" }),
+            ("kitty-chunked", new[] { "\x1b_Ga=T,i=9,f=24,m=1;AAAA\x1b\\", "\x1b_Gm=1;BBBB\x1b\\", "\x1b_Gm=0;CCCC\x1b\\" }),
+            ("kitty-edge", new[] { "\x1b_Ga=T,i=7;!!!\x1b\\", "\x1b_Gx=1\x1b\\", "\x1b_notG\x1b\\", "\x1b_Ga=d;\x1b\\", "\x1b_Ga=q,i=3;AAAA\x1b\\" }),
+            ("images-altscreen", new[] { "\x1bPq#1~~~\x1b\\", "\x1b[?1049h", "\x1bPq#3~~\x1b\\", "\x1b[?1049l" }),
+        };
+        foreach (var (label, feeds) in scenarios)
+            AssertEmulatorParity(80, 24, feeds.Select(B), label);
+    }
+
+    [Fact]
     public void Emulator_RandomSoup_FullStateAgrees()
     {
         if (Lib == 0) return;
@@ -453,12 +479,7 @@ public class RustParityTests
                 if (stream % 2 == 1)
                     for (int i = 0; i < buf.Length; i += 2 + rng.Next(4))
                         buf[i] = (byte)"\x1b[]m0123456789;?hlHJKrSTLMPX@ABCD"[rng.Next(33)];
-                // Guards (identical transform both sides, so parity still holds):
-                for (int i = 0; i + 1 < buf.Length; i++)
-                {
-                    if (buf[i] == 0x1b && buf[i + 1] == (byte)'P') buf[i + 1] = (byte)'Q';  // no DCS/sixel (module 5)
-                    if (buf[i] == 0x1b && buf[i + 1] == (byte)'_') buf[i + 1] = (byte)'^';  // no APC/kitty (module 5)
-                }
+                // Module 5 done: DCS/APC flow through both sides now — no introducer guards.
                 int digits = 0;   // cap runs of digits: CSI 999999999 S would loop-scroll for minutes
                 for (int i = 0; i < buf.Length; i++)
                 {

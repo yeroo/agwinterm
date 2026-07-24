@@ -19,10 +19,90 @@
 
 use crate::cell::{attrs, Cell, Color, ColorSpec};
 use crate::screen::ScreenBuffer;
+use crate::sixel;
 use crate::vtparser::{Performer, VtParser};
 use crate::wcwidth;
+use std::collections::{BTreeMap, HashMap};
 
 const TRIM_SLACK: usize = 512;
+
+/// Mirror of C# KittyImage (format kept as the raw transmitted int — the C# enum
+/// cast stores arbitrary values unchanged).
+pub struct KittyImage {
+    pub id: i32,
+    pub format: i32,
+    pub width: i32,
+    pub height: i32,
+    pub data: Vec<u8>,
+}
+
+/// Mirror of C# ImagePlacement.
+#[derive(Clone, Copy)]
+pub struct ImagePlacement {
+    pub image_id: i32,
+    pub row: i64,
+    pub col: i64,
+    pub cols: i32,
+    pub rows: i32,
+    pub src_x: i32,
+    pub src_y: i32,
+    pub src_w: i32,
+    pub src_h: i32,
+}
+
+/// Convert.FromBase64String parity: whitespace ignored, length % 4 == 0, '=' only
+/// as final padding (max 2), invalid → None (the C# FormatException path).
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let mut chars: Vec<u8> = Vec::with_capacity(s.len());
+    for c in s.bytes() {
+        if !matches!(c, b' ' | b'\t' | b'\r' | b'\n') {
+            chars.push(c);
+        }
+    }
+    if chars.len() % 4 != 0 {
+        return None;
+    }
+    if chars.is_empty() {
+        return Some(Vec::new());
+    }
+    let val = |c: u8| -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    };
+    let groups = chars.len() / 4;
+    let mut out = Vec::with_capacity(groups * 3);
+    for (gi, group) in chars.chunks(4).enumerate() {
+        let last = gi == groups - 1;
+        let mut acc = 0u32;
+        let mut n = 4usize;
+        for (k, &c) in group.iter().enumerate() {
+            if c == b'=' {
+                if !last || k < 2 || group[k..].iter().any(|&x| x != b'=') {
+                    return None;
+                }
+                n = k;
+                break;
+            }
+            acc = (acc << 6) | val(c)?;
+        }
+        match n {
+            4 => out.extend_from_slice(&[(acc >> 16) as u8, (acc >> 8) as u8, acc as u8]),
+            3 => {
+                let acc = acc << 6;
+                out.extend_from_slice(&[(acc >> 16) as u8, (acc >> 8) as u8]);
+            }
+            2 => out.push(((acc << 12) >> 16) as u8),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
 
 #[derive(Clone, Copy, Default)]
 pub struct ShellMark {
@@ -70,6 +150,14 @@ pub struct Emulator {
 
     kbd_stack: Vec<i32>,
     pending_high_surrogate: u16,
+
+    images: BTreeMap<i32, KittyImage>,
+    placements: Vec<ImagePlacement>,
+    kitty_chunks: String,
+    kitty_keys: Option<HashMap<String, String>>,
+    sixel_seq: i32,
+    pub cell_pixel_width: i32,
+    pub cell_pixel_height: i32,
 }
 
 impl Emulator {
@@ -103,7 +191,21 @@ impl Emulator {
             cwd: String::new(),
             kbd_stack: Vec::new(),
             pending_high_surrogate: 0,
+            images: BTreeMap::new(),
+            placements: Vec::new(),
+            kitty_chunks: String::new(),
+            kitty_keys: None,
+            sixel_seq: -1,
+            cell_pixel_width: 8,
+            cell_pixel_height: 18,
         }
+    }
+
+    pub fn images(&self) -> &BTreeMap<i32, KittyImage> {
+        &self.images
+    }
+    pub fn placements(&self) -> &[ImagePlacement] {
+        &self.placements
     }
 
     pub fn screen(&self) -> &ScreenBuffer {
@@ -250,6 +352,23 @@ impl Emulator {
             && self.scroll_bottom == self.screen().rows() - 1
         {
             self.push_history();
+        }
+        // Sixel images (negative ids; not host-managed like Kitty) scroll up with the text.
+        if !self.placements.is_empty() {
+            let mut i = self.placements.len();
+            while i > 0 {
+                i -= 1;
+                if self.placements[i].image_id < 0 {
+                    let mut np = self.placements[i];
+                    np.row -= 1;
+                    if np.row + np.rows.max(1) as i64 <= 0 {
+                        self.images.remove(&np.image_id);
+                        self.placements.remove(i);
+                    } else {
+                        self.placements[i] = np;
+                    }
+                }
+            }
         }
         let (top, bottom) = (self.scroll_top, self.scroll_bottom);
         let b = self.blank();
@@ -432,12 +551,17 @@ impl Emulator {
         }
         self.on_alt = true;
         self.alt.clear();
+        self.placements.clear(); // images belong to a screen; start the alt screen clean
         self.cursor_row = 0;
         self.cursor_col = 0;
     }
 
     fn leave_alt_screen(&mut self) {
+        if !self.on_alt {
+            return;
+        }
         self.on_alt = false;
+        self.placements.clear(); // drop the alt screen's images
     }
 
     fn save_cursor(&mut self) {
@@ -804,13 +928,123 @@ impl Performer for Emulator {
         }
     }
 
-    fn apc_dispatch(&mut self, _data: &str) {
-        // Kitty graphics — module 5. No grid/cursor state is touched by the C# path either.
+    fn apc_dispatch(&mut self, data: &str) {
+        if !data.starts_with('G') {
+            return; // only Kitty graphics (_G...); others → Host.Unhandled (headless drop)
+        }
+        let body = &data[1..];
+        let (control, payload) = match body.find(';') {
+            Some(semi) => (&body[..semi], &body[semi + 1..]),
+            None => (body, ""),
+        };
+        let keys = parse_kitty_keys(control);
+        if self.kitty_chunks.is_empty() {
+            self.kitty_keys = Some(keys.clone()); // first chunk carries the metadata
+        }
+        self.kitty_chunks.push_str(payload);
+        let more = keys.get("m").map(|v| v == "1").unwrap_or(false);
+        if more {
+            return; // accumulate until the final chunk (m=0 / absent)
+        }
+        self.finalize_kitty_image();
     }
 
-    fn dcs_dispatch(&mut self, _payload: &[u8]) {
-        // Sixel — module 5. (Oracle inputs exclude valid sixel payloads: the C# path
-        // advances the cursor below a decoded image, which this stub does not.)
+    fn dcs_dispatch(&mut self, payload: &[u8]) {
+        let _ = self.place_sixel(payload); // non-sixel → Host.Unhandled (headless drop)
+    }
+}
+
+fn parse_kitty_keys(control: &str) -> HashMap<String, String> {
+    let mut d = HashMap::new();
+    for pair in control.split(',') {
+        if let Some(eq) = pair.find('=') {
+            if eq > 0 {
+                d.insert(pair[..eq].to_string(), pair[eq + 1..].to_string());
+            }
+        }
+    }
+    d
+}
+
+fn kitty_int(d: &HashMap<String, String>, key: &str, def: i32) -> i32 {
+    d.get(key).and_then(|v| v.parse::<i32>().ok()).unwrap_or(def)
+}
+
+impl Emulator {
+    fn finalize_kitty_image(&mut self) {
+        let keys = self.kitty_keys.take().unwrap_or_default();
+        let b64 = core::mem::take(&mut self.kitty_chunks);
+
+        let id = kitty_int(&keys, "i", 0);
+        let format = kitty_int(&keys, "f", 32);
+        let w = kitty_int(&keys, "s", 0);
+        let h = kitty_int(&keys, "v", 0);
+        let action = keys.get("a").map(String::as_str).unwrap_or("t");
+
+        if action == "d" {
+            if id != 0 {
+                self.placements.retain(|p| p.image_id != id);
+            } else {
+                self.placements.clear();
+            }
+            return;
+        }
+
+        if !b64.is_empty() {
+            let Some(bytes) = base64_decode(&b64) else { return }; // malformed → drop, like the C# catch
+            self.images.insert(id, KittyImage { id, format, width: w, height: h, data: bytes });
+        }
+
+        if action == "T" || action == "p" {
+            let cols = kitty_int(&keys, "c", 0);
+            let rows = kitty_int(&keys, "r", 0);
+            self.placements.retain(|p| p.image_id != id);
+            self.placements.push(ImagePlacement {
+                image_id: id,
+                row: self.cursor_row as i64,
+                col: self.cursor_col as i64,
+                cols,
+                rows,
+                src_x: 0,
+                src_y: 0,
+                src_w: 0,
+                src_h: 0,
+            });
+        }
+    }
+
+    fn place_sixel(&mut self, data: &[u8]) -> bool {
+        let Some(s) = sixel::decode(data) else { return false };
+        if s.width == 0 || s.height == 0 {
+            return false;
+        }
+        let id = self.sixel_seq;
+        self.sixel_seq -= 1;
+        self.images.insert(id, KittyImage {
+            id,
+            format: 32, // KittyFormat.Rgba
+            width: s.width as i32,
+            height: s.height as i32,
+            data: s.rgba,
+        });
+        let cols = (((s.width as i32) + self.cell_pixel_width - 1) / self.cell_pixel_width).max(1);
+        let rows = (((s.height as i32) + self.cell_pixel_height - 1) / self.cell_pixel_height).max(1);
+        self.placements.push(ImagePlacement {
+            image_id: id,
+            row: self.cursor_row as i64,
+            col: self.cursor_col as i64,
+            cols,
+            rows,
+            src_x: 0,
+            src_y: 0,
+            src_w: 0,
+            src_h: 0,
+        });
+        for _ in 0..rows {
+            self.index(); // advance the cursor below the image (sixel scrolling)
+        }
+        self.cursor_col = 0;
+        true
     }
 }
 

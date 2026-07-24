@@ -16,6 +16,7 @@
 pub mod cell;
 pub mod emulator;
 pub mod screen;
+pub mod sixel;
 pub mod vtparser;
 pub mod wcwidth;
 
@@ -25,7 +26,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -368,6 +369,21 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
             s, "mark:{},{},{},{},{}",
             m.prompt_line, m.command_line, m.output_line, m.end_line,
             m.exit_code.map_or("none".to_string(), |v| v.to_string())
+        );
+    }
+    for (id, img) in e.images() {
+        // FNV-1a 64 of the pixel payload — full bytes would dwarf the dump.
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for &b in &img.data {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let _ = writeln!(s, "img:{},{},{},{},{},{:016x}", id, img.format, img.width, img.height, img.data.len(), hash);
+    }
+    for p in e.placements() {
+        let _ = writeln!(
+            s, "pl:{},{},{},{},{},{},{},{},{}",
+            p.image_id, p.row, p.col, p.cols, p.rows, p.src_x, p.src_y, p.src_w, p.src_h
         );
     }
     let (cols, rows) = (e.screen().cols(), e.screen().rows());

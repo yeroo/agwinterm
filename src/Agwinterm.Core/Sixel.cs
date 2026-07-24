@@ -36,6 +36,14 @@ public static class Sixel
 
         void EnsureSize(int needW, int needH)
         {
+            // Clamp to a sane maximum: without this, a hostile raster attribute like
+            // "1;1;2000000000;5 sends the doubling loop through int overflow into an INFINITE
+            // LOOP (nw wraps negative then sticks at 0), hanging the output pump — and merely
+            // large values attempt multi-GB allocations. 16384px dwarfs any real terminal image;
+            // writes beyond the clamped canvas throw and land in the forgiving catch (partial
+            // decode), which is the pre-existing behavior for malformed payloads.
+            needW = System.Math.Min(needW, 16384);
+            needH = System.Math.Min(needH, 16384);
             if (needW <= canvasW && needH <= canvasH) return;
             int nw = canvasW, nh = canvasH;
             while (nw < needW) nw *= 2;
@@ -115,6 +123,11 @@ public static class Sixel
                     if ((bits & (1 << row)) != 0)
                     {
                         int px = x, py = y + row;
+                        // With the EnsureSize clamp, a hostile position can exceed the canvas while
+                        // the flat index still lands INSIDE the array (wrapping into another row) —
+                        // and the over-large width then breaks the crop OUTSIDE the catch. Throw at
+                        // the first out-of-canvas write instead: the catch returns the partial decode.
+                        if (px >= canvasW || py >= canvasH) throw new InvalidOperationException();
                         int o = (py * canvasW + px) * 4;
                         rgba[o] = r; rgba[o + 1] = g; rgba[o + 2] = bl; rgba[o + 3] = 255;
                         if (px + 1 > width) width = px + 1;
