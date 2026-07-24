@@ -32,7 +32,7 @@ internal partial class Program
     /// thread so the UI never blocks; only the cheap GPU upload runs here. An image simply
     /// appears on the next redraw once its pixels are ready. Called under the session lock.
     /// </summary>
-    private void DrawImages(TerminalEmulator em, float ox, float oy, float cw, float ch)
+    private void DrawImages(ITerminalCore em, float ox, float oy, float cw, float ch)
     {
         if (_rt is null) return;
 

@@ -16,7 +16,7 @@ namespace Agwinterm.Core;
 /// </summary>
 public sealed unsafe class RustEmulatorCore : IDisposable
 {
-    public const uint RequiredAbi = 6;
+    public const uint RequiredAbi = 7;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Info
@@ -25,6 +25,7 @@ public sealed unsafe class RustEmulatorCore : IDisposable
         public long ScrollGeneration;
         public uint MouseClick, MouseDrag, MouseMotion, MouseSgr, BracketedPaste;
         public int KeyboardFlags;
+        public uint ScrollTop, ScrollBottom, MarkCount;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -94,6 +95,8 @@ public sealed unsafe class RustEmulatorCore : IDisposable
             _copyHistory = Get<EmuCopyHistoryRowFn>("agwcore_emu_copy_history_row");
             _getText = Get<EmuGetTextFn>("agwcore_emu_get_text");
             _freeBuf = Get<FreeBufFn>("agwcore_free_buf");
+            _marks = Get<EmuMarksFn>("agwcore_emu_marks");
+            _seed = Get<EmuSeedFn>("agwcore_emu_seed_scrollback");
             _lib = lib;
             return true;
         }
@@ -149,6 +152,46 @@ public sealed unsafe class RustEmulatorCore : IDisposable
     public string Title => GetText(0);
     public string Cwd => GetText(1);
     public string DumpModes() => GetText(2);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NativeMark
+    {
+        public long PromptLine, CommandLine, OutputLine, EndLine;
+        public uint HasExit;
+        public int ExitCode;
+    }
+
+    private delegate uint EmuMarksFn(nint p, NativeMark* marks, uint cap);
+    private delegate bool EmuSeedFn(nint p, byte* text, uint len);
+    private static EmuMarksFn _marks = null!;
+    private static EmuSeedFn _seed = null!;
+
+    /// <summary>All FTCS marks, converted to the managed mark type.</summary>
+    public TerminalEmulator.ShellMark[] GetMarks()
+    {
+        uint count = GetInfo().MarkCount;
+        if (count == 0) return Array.Empty<TerminalEmulator.ShellMark>();
+        var native = new NativeMark[count];
+        uint n;
+        fixed (NativeMark* p = native) n = _marks(_handle, p, count);
+        var result = new TerminalEmulator.ShellMark[n];
+        for (int i = 0; i < n; i++)
+            result[i] = new TerminalEmulator.ShellMark
+            {
+                PromptLine = (int)native[i].PromptLine,
+                CommandLine = (int)native[i].CommandLine,
+                OutputLine = (int)native[i].OutputLine,
+                EndLine = (int)native[i].EndLine,
+                ExitCode = native[i].HasExit != 0 ? native[i].ExitCode : null,
+            };
+        return result;
+    }
+
+    public void SeedScrollback(string joinedLines)
+    {
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(joinedLines);
+        fixed (byte* p = bytes.Length == 0 ? new byte[1] : bytes) _seed(_handle, p, (uint)bytes.Length);
+    }
 
     private string GetText(uint which)
     {

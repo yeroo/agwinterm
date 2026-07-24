@@ -576,7 +576,7 @@ internal partial class Program
         return (line, col);
     }
 
-    private static Cell CellAbs(TerminalEmulator em, int hist, int rows, int cols, int line, int col)
+    private static Cell CellAbs(ITerminalCore em, int hist, int rows, int cols, int line, int col)
     {
         col = Math.Clamp(col, 0, cols - 1);
         if (line < hist) return em.GetHistoryCell(line, col);

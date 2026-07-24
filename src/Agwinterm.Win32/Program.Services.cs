@@ -823,7 +823,7 @@ internal partial class Program
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
         "paste-protection", "clipboard-write", "notification-flash", "claude-update-check", "update-check",
-        "session-host", "fresh-env",
+        "session-host", "fresh-env", "emulator-core",
     };
 
     /// <summary>Rewrite (or append) a single `key = value` line in agwinterm.conf, preserving the rest.</summary>
@@ -889,6 +889,7 @@ internal partial class Program
         "update-check" => _config.UpdateCheck ? "true" : "false",
         "session-host" => _config.SessionHost,
         "fresh-env" => _config.FreshEnv ? "true" : "false",
+        "emulator-core" => _config.EmulatorCore,
         "paste-protection" => _config.PasteProtection ? "true" : "false",
         "clipboard-write" => _config.ClipboardWrite ? "true" : "false",
         "attention-button" => _config.AttentionButton ? "true" : "false",
@@ -915,6 +916,14 @@ internal partial class Program
             ShowToast(_config.SessionHost == "server"
                 ? "server mode ON (experimental) — new sessions survive UI restarts; restart agwinterm to move existing ones"
                 : "in-process mode — new sessions run in the window process; restart agwinterm to convert existing ones", 6000);
+        }
+        if (key == "emulator-core")
+        {
+            // Live switch, same semantics as session-host: NEW sessions get the chosen core;
+            // existing panes keep the one they were born with and converge on restart.
+            ResolveEmulatorCore();
+            ShowToast(_emulatorCoreNote ?? "emulator-core = managed — new sessions use the C# emulator", 6000);
+            _emulatorCoreNote = null;   // startup path only announces once
         }
         if (key == "cursor-blink-ms" && _hwnd != IntPtr.Zero) SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
         RecomputeChrome();

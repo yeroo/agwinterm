@@ -85,6 +85,13 @@ public sealed class TerminalConfig
     /// long-term basis for sessions surviving UI updates/crashes).</summary>
     public string SessionHost { get; set; } = "in-process";
 
+    /// <summary>Which terminal core new sessions run on: "managed" (default — the C#
+    /// TerminalEmulator) or "rust" (EXPERIMENTAL — the oracle-validated agwinterm-core crate
+    /// behind the ITerminalCore seam; falls back to managed with a toast when the native dll
+    /// is missing). Known gaps in rust mode: kitty/sixel images and OSC host actions
+    /// (clipboard writes, notifications, kitty-keyboard query replies).</summary>
+    public string EmulatorCore { get; set; } = "managed";
+
     /// <summary>Rebuild each new session's environment from the registry at spawn (WT's
     /// reloadEnvironmentVariables analog): software installed while agwinterm runs — a JDK, a new
     /// PATH entry — is visible in the next tab without restarting anything. Off = tabs inherit
@@ -260,6 +267,13 @@ public sealed class TerminalConfig
         # LAUNCHED agwinterm do not reach tabs (same trade-off as Windows Terminal's default).
         fresh-env = true
 
+        # Terminal core for NEW sessions: "managed" (default) or "rust" (EXPERIMENTAL - the
+        # Rust agwinterm-core crate, differentially validated against the managed emulator).
+        # Applies to sessions created after the change; falls back to managed with a toast if
+        # the native dll is missing. Known gaps in rust mode: kitty/sixel images and OSC host
+        # actions (clipboard writes, desktop notifications, kitty-keyboard query replies).
+        emulator-core = managed
+
         # Blocked sound: play a sound whenever a session enters the "blocked" agent status (needs
         # your attention). Empty / off / none = silent. Accepts a system-sound name (beep, asterisk,
         # exclamation, hand, question), a Windows sound-event alias, or a path to a .wav file.
@@ -381,6 +395,9 @@ public sealed class TerminalConfig
                     if (val is "in-process" or "server") cfg.SessionHost = val;
                     break;
                 case "fresh-env": cfg.FreshEnv = ParseBool(val, cfg.FreshEnv); break;
+                case "emulator-core":
+                    if (val is "managed" or "rust") cfg.EmulatorCore = val;
+                    break;
                 case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;
