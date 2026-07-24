@@ -1,2 +1,5 @@
 /protoc
 /prost-gen/target
+
+__pycache__/
+*.pyc

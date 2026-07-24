@@ -1067,7 +1067,7 @@ internal partial class Program
 
     // ---- Persistence: workspace/session tree + selection + sidebar state ----
 
-    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public List<string>? Buffer { get; set; } }
+    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public List<string>? Buffer { get; set; } public string? BufferBlob { get; set; } }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
     private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; } public string? Profile { get; set; } public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
         // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
@@ -1312,9 +1312,21 @@ internal partial class Program
                         string cwd = live.Length > 0 ? live : (p.StartCwd ?? ""); // else the launch dir
                         string cmd = (p.S.ChildProcessId is int pid && cmdByPid.TryGetValue(pid, out var c)) ? c : "";
                         List<string>? buf = null;
+                        string? blob = null;
                         if (_config.RestoreBuffer)
-                            try { lock (p.S.SyncRoot) buf = p.S.Emulator.DumpBuffer().TakeLast(500).ToList(); } catch { }  // cap the saved lines
-                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, Buffer = buf });
+                            try
+                            {
+                                lock (p.S.SyncRoot)
+                                {
+                                    buf = p.S.Emulator.DumpBuffer().TakeLast(500).ToList();   // plain-text fallback
+                                    // Full-fidelity attributed blob (colours + styles survive restore). Only the
+                                    // managed core is a TerminalEmulator; a server/rust pane keeps the text path.
+                                    if (p.S.Emulator is TerminalEmulator te)
+                                        blob = Convert.ToBase64String(BufferPersist.Serialize(te));
+                                }
+                            }
+                            catch { }
+                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, Buffer = buf, BufferBlob = blob });
                     }
                     wss.Sessions.Add(ss);
                 }
@@ -1456,12 +1468,25 @@ internal partial class Program
                     if (_config.RestoreBuffer)
                         lock (_workspaces)
                             for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
-                                if (pl[i].Buffer is { Count: > 0 } b && !IsAdopted(ses.Panes[i]))
+                            {
+                                var pane = ses.Panes[i];
+                                if (IsAdopted(pane)) continue;
+                                // Prefer the full-fidelity attributed blob; fall back to plain text.
+                                if (pl[i].BufferBlob is { Length: > 0 } b64 && pane.S.Emulator is TerminalEmulator te
+                                    && BufferPersist.TryParse(Convert.FromBase64String(b64), out var pbuf))
+                                {
+                                    lock (pane.S.SyncRoot)
+                                    {
+                                        BufferPersist.Restore(te, pbuf);
+                                        te.SeedScrollback(new[] { "──── restored ────" });
+                                    }
+                                }
+                                else if (pl[i].Buffer is { Count: > 0 } b)
                                 {
                                     var seed = new List<string>(b) { "──── restored ────" };
-                                    var pane = ses.Panes[i];
                                     lock (pane.S.SyncRoot) pane.S.Emulator.SeedScrollback(seed);
                                 }
+                            }
                     ses.Flagged = s.Flagged;
                     ses.CustomName = string.IsNullOrWhiteSpace(s.CustomName) ? null : s.CustomName;
                     if (!string.IsNullOrEmpty(s.BgFile)) // restore the watermark if its copied file still exists
