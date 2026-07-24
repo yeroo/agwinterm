@@ -93,7 +93,12 @@ message AttachReply {
   bool has_exited = 5;
   int32 exit_code = 6;
   string modes = 7;               // synthesized VT reproducing mode state (DumpModes)
-  repeated string scrollback = 8; // plain-text history rows, oldest first
+  repeated string scrollback = 8; // plain-text history rows, oldest first (back-compat / lite)
+  // Full-fidelity attributed scrollback: a serialized agwinterm.persist.PBuffer of the HISTORY
+  // rows (colours + styles). When present the client seeds from this instead of the plain text,
+  // so a reattached view is not dim-until-repaint. Empty when the host can't produce it (a Rust
+  // host without persist support yet); the client falls back to `scrollback`.
+  bytes scrollback_blob = 9;
 }
 
 message SessionInfo {

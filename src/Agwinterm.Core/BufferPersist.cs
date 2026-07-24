@@ -39,9 +39,11 @@ public static class BufferPersist
 
     private static bool RowNeeded(IReadOnlyList<PCell> _) => true;
 
-    /// <summary>Capture the last <paramref name="maxRows"/> buffer rows (scrollback + visible) as an
-    /// attributed blob. Trailing empty cells per row are dropped; the whole thing round-trips exactly.</summary>
-    public static byte[] Serialize(TerminalEmulator emu, int maxRows = 500)
+    /// <summary>Capture buffer rows as an attributed blob. <paramref name="includeVisible"/> controls
+    /// whether the live grid is appended after the scrollback (true for full save/restore; false for
+    /// pty-host reattach, where the live screen arrives separately via a ConPTY repaint and only the
+    /// history should be seeded). Trailing empty cells per row are dropped; it round-trips exactly.</summary>
+    public static byte[] Serialize(TerminalEmulator emu, int maxRows = 500, bool includeVisible = true)
     {
         var buf = new PBuffer { Version = Version, Cols = (uint)emu.Screen.Cols };
         int cols = emu.Screen.Cols;
@@ -61,11 +63,12 @@ public static class BufferPersist
             int hi = h;
             AddRow(c => emu.GetHistoryCell(hi, c));
         }
-        for (int r = 0; r < emu.Screen.Rows; r++)
-        {
-            int rr = r;
-            AddRow(c => emu.Screen[rr, c]);
-        }
+        if (includeVisible)
+            for (int r = 0; r < emu.Screen.Rows; r++)
+            {
+                int rr = r;
+                AddRow(c => emu.Screen[rr, c]);
+            }
         // Drop trailing all-empty rows, then cap to maxRows (keep the newest).
         while (rows.Count > 0 && rows[^1].Cells.Count == 0) rows.RemoveAt(rows.Count - 1);
         if (rows.Count > maxRows) rows.RemoveRange(0, rows.Count - maxRows);

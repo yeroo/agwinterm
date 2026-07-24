@@ -8,7 +8,7 @@ namespace Agwinterm.Pty;
 /// a fresh view needs to reconstruct the session (see PtyHostServer for the reattach model).</summary>
 public sealed record PtyHostAttachment(
     Stream Data, int Cols, int Rows, int? ChildPid, bool HasExited, int? ExitCode,
-    string Modes, IReadOnlyList<string> Scrollback) : IDisposable
+    string Modes, IReadOnlyList<string> Scrollback, byte[]? ScrollbackBlob = null) : IDisposable
 {
     public void Dispose() => Data.Dispose();
 }
@@ -101,7 +101,8 @@ public sealed class PtyHostClient : IDisposable
             reply.ChildPid != 0 ? (int)reply.ChildPid : null,
             reply.HasExited,
             reply.HasExited ? reply.ExitCode : null,
-            reply.Modes, reply.Scrollback);
+            reply.Modes, reply.Scrollback,
+            reply.ScrollbackBlob.IsEmpty ? null : reply.ScrollbackBlob.ToByteArray());
     }
 
     public void Resize(string id, int cols, int rows)

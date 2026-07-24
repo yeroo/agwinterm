@@ -49,15 +49,16 @@ namespace Agwinterm.Pty.Proto {
             "eWhvc3QuQXR0YWNoUmVwbHlIABIsCgRsaXN0GAYgASgLMhwuYWd3aW50ZXJt",
             "LnB0eWhvc3QuTGlzdFJlcGx5SABCBgoEYm9keSIrCgpIZWxsb1JlcGx5EhAK",
             "CHByb3RvY29sGAEgASgNEgsKA3BpZBgCIAEoDSIZCgtDcmVhdGVSZXBseRIK",
-            "CgJpZBgBIAEoCSKUAQoLQXR0YWNoUmVwbHkSDAoEcGlwZRgBIAEoCRIMCgRj",
+            "CgJpZBgBIAEoCSKtAQoLQXR0YWNoUmVwbHkSDAoEcGlwZRgBIAEoCRIMCgRj",
             "b2xzGAIgASgNEgwKBHJvd3MYAyABKA0SEQoJY2hpbGRfcGlkGAQgASgNEhIK",
             "Cmhhc19leGl0ZWQYBSABKAgSEQoJZXhpdF9jb2RlGAYgASgFEg0KBW1vZGVz",
-            "GAcgASgJEhIKCnNjcm9sbGJhY2sYCCADKAkikAEKC1Nlc3Npb25JbmZvEgoK",
-            "AmlkGAEgASgJEgwKBGNvbHMYAiABKA0SDAoEcm93cxgDIAEoDRIRCgljaGls",
-            "ZF9waWQYBCABKA0SEgoKaGFzX2V4aXRlZBgFIAEoCBIRCglleGl0X2NvZGUY",
-            "BiABKAUSDQoFdGl0bGUYByABKAkSEAoIYXR0YWNoZWQYCCABKAgiPQoJTGlz",
-            "dFJlcGx5EjAKCHNlc3Npb25zGAEgAygLMh4uYWd3aW50ZXJtLnB0eWhvc3Qu",
-            "U2Vzc2lvbkluZm9CFqoCE0Fnd2ludGVybS5QdHkuUHJvdG9iBnByb3RvMw=="));
+            "GAcgASgJEhIKCnNjcm9sbGJhY2sYCCADKAkSFwoPc2Nyb2xsYmFja19ibG9i",
+            "GAkgASgMIpABCgtTZXNzaW9uSW5mbxIKCgJpZBgBIAEoCRIMCgRjb2xzGAIg",
+            "ASgNEgwKBHJvd3MYAyABKA0SEQoJY2hpbGRfcGlkGAQgASgNEhIKCmhhc19l",
+            "eGl0ZWQYBSABKAgSEQoJZXhpdF9jb2RlGAYgASgFEg0KBXRpdGxlGAcgASgJ",
+            "EhAKCGF0dGFjaGVkGAggASgIIj0KCUxpc3RSZXBseRIwCghzZXNzaW9ucxgB",
+            "IAMoCzIeLmFnd2ludGVybS5wdHlob3N0LlNlc3Npb25JbmZvQhaqAhNBZ3dp",
+            "bnRlcm0uUHR5LlByb3RvYgZwcm90bzM="));
       descriptor = pbr::FileDescriptor.FromGeneratedCode(descriptorData,
           new pbr::FileDescriptor[] { },
           new pbr::GeneratedClrTypeInfo(null, null, new pbr::GeneratedClrTypeInfo[] {
@@ -72,7 +73,7 @@ namespace Agwinterm.Pty.Proto {
             new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Reply), global::Agwinterm.Pty.Proto.Reply.Parser, new[]{ "Ok", "Error", "Hello", "Create", "Attach", "List" }, new[]{ "Body" }, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.HelloReply), global::Agwinterm.Pty.Proto.HelloReply.Parser, new[]{ "Protocol", "Pid" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.CreateReply), global::Agwinterm.Pty.Proto.CreateReply.Parser, new[]{ "Id" }, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.AttachReply), global::Agwinterm.Pty.Proto.AttachReply.Parser, new[]{ "Pipe", "Cols", "Rows", "ChildPid", "HasExited", "ExitCode", "Modes", "Scrollback" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.AttachReply), global::Agwinterm.Pty.Proto.AttachReply.Parser, new[]{ "Pipe", "Cols", "Rows", "ChildPid", "HasExited", "ExitCode", "Modes", "Scrollback", "ScrollbackBlob" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.SessionInfo), global::Agwinterm.Pty.Proto.SessionInfo.Parser, new[]{ "Id", "Cols", "Rows", "ChildPid", "HasExited", "ExitCode", "Title", "Attached" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.ListReply), global::Agwinterm.Pty.Proto.ListReply.Parser, new[]{ "Sessions" }, null, null, null, null)
           }));
@@ -3389,6 +3390,7 @@ namespace Agwinterm.Pty.Proto {
       exitCode_ = other.exitCode_;
       modes_ = other.modes_;
       scrollback_ = other.scrollback_.Clone();
+      scrollbackBlob_ = other.scrollbackBlob_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -3497,12 +3499,30 @@ namespace Agwinterm.Pty.Proto {
         = pb::FieldCodec.ForString(66);
     private readonly pbc::RepeatedField<string> scrollback_ = new pbc::RepeatedField<string>();
     /// <summary>
-    /// plain-text history rows, oldest first
+    /// plain-text history rows, oldest first (back-compat / lite)
     /// </summary>
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public pbc::RepeatedField<string> Scrollback {
       get { return scrollback_; }
+    }
+
+    /// <summary>Field number for the "scrollback_blob" field.</summary>
+    public const int ScrollbackBlobFieldNumber = 9;
+    private pb::ByteString scrollbackBlob_ = pb::ByteString.Empty;
+    /// <summary>
+    /// Full-fidelity attributed scrollback: a serialized agwinterm.persist.PBuffer of the HISTORY
+    /// rows (colours + styles). When present the client seeds from this instead of the plain text,
+    /// so a reattached view is not dim-until-repaint. Empty when the host can't produce it (a Rust
+    /// host without persist support yet); the client falls back to `scrollback`.
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public pb::ByteString ScrollbackBlob {
+      get { return scrollbackBlob_; }
+      set {
+        scrollbackBlob_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -3528,6 +3548,7 @@ namespace Agwinterm.Pty.Proto {
       if (ExitCode != other.ExitCode) return false;
       if (Modes != other.Modes) return false;
       if(!scrollback_.Equals(other.scrollback_)) return false;
+      if (ScrollbackBlob != other.ScrollbackBlob) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -3543,6 +3564,7 @@ namespace Agwinterm.Pty.Proto {
       if (ExitCode != 0) hash ^= ExitCode.GetHashCode();
       if (Modes.Length != 0) hash ^= Modes.GetHashCode();
       hash ^= scrollback_.GetHashCode();
+      if (ScrollbackBlob.Length != 0) hash ^= ScrollbackBlob.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -3590,6 +3612,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteString(Modes);
       }
       scrollback_.WriteTo(output, _repeated_scrollback_codec);
+      if (ScrollbackBlob.Length != 0) {
+        output.WriteRawTag(74);
+        output.WriteBytes(ScrollbackBlob);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -3629,6 +3655,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteString(Modes);
       }
       scrollback_.WriteTo(ref output, _repeated_scrollback_codec);
+      if (ScrollbackBlob.Length != 0) {
+        output.WriteRawTag(74);
+        output.WriteBytes(ScrollbackBlob);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -3661,6 +3691,9 @@ namespace Agwinterm.Pty.Proto {
         size += 1 + pb::CodedOutputStream.ComputeStringSize(Modes);
       }
       size += scrollback_.CalculateSize(_repeated_scrollback_codec);
+      if (ScrollbackBlob.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeBytesSize(ScrollbackBlob);
+      }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
       }
@@ -3695,6 +3728,9 @@ namespace Agwinterm.Pty.Proto {
         Modes = other.Modes;
       }
       scrollback_.Add(other.scrollback_);
+      if (other.ScrollbackBlob.Length != 0) {
+        ScrollbackBlob = other.ScrollbackBlob;
+      }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
 
@@ -3746,6 +3782,10 @@ namespace Agwinterm.Pty.Proto {
             scrollback_.AddEntriesFrom(input, _repeated_scrollback_codec);
             break;
           }
+          case 74: {
+            ScrollbackBlob = input.ReadBytes();
+            break;
+          }
         }
       }
     #endif
@@ -3795,6 +3835,10 @@ namespace Agwinterm.Pty.Proto {
           }
           case 66: {
             scrollback_.AddEntriesFrom(ref input, _repeated_scrollback_codec);
+            break;
+          }
+          case 74: {
+            ScrollbackBlob = input.ReadBytes();
             break;
           }
         }

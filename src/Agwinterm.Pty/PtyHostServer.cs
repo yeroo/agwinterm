@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using Agwinterm.Core;
 using Agwinterm.Pty.Proto;
 using Google.Protobuf;
 
@@ -205,6 +206,11 @@ public sealed class PtyHostServer : IDisposable
         {
             for (int i = 0; i < s.Emulator.HistoryCount; i++) reply.Scrollback.Add(s.Emulator.DumpHistoryRow(i));
             reply.Modes = s.Emulator.DumpModes();
+            // Full-fidelity attributed HISTORY (the live screen arrives via the repaint jiggle, so
+            // includeVisible=false). The client seeds from this instead of the plain text above.
+            if (s.Emulator is TerminalEmulator te)
+                reply.ScrollbackBlob = Google.Protobuf.ByteString.CopyFrom(
+                    BufferPersist.Serialize(te, includeVisible: false));
         }
         reply.Cols = (uint)s.Cols;
         reply.Rows = (uint)s.Rows;

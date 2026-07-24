@@ -140,9 +140,15 @@ pub struct AttachReply {
     /// synthesized VT reproducing mode state (DumpModes)
     #[prost(string, tag = "7")]
     pub modes: ::prost::alloc::string::String,
-    /// plain-text history rows, oldest first
+    /// plain-text history rows, oldest first (back-compat / lite)
     #[prost(string, repeated, tag = "8")]
     pub scrollback: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Full-fidelity attributed scrollback: a serialized agwinterm.persist.PBuffer of the HISTORY
+    /// rows (colours + styles). When present the client seeds from this instead of the plain text,
+    /// so a reattached view is not dim-until-repaint. Empty when the host can't produce it (a Rust
+    /// host without persist support yet); the client falls back to `scrollback`.
+    #[prost(bytes = "vec", tag = "9")]
+    pub scrollback_blob: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SessionInfo {
