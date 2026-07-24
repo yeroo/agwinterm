@@ -5,7 +5,7 @@
 //! differential oracle before the next begins):
 //!   1. wcwidth              — DONE
 //!   2. cell + screen buffer — DONE
-//!   3. VT parser (CSI/OSC/DCS state machine)
+//!   3. VT parser            — DONE (event-stream oracle)
 //!   4. emulator (cursor, modes, SGR, scroll regions, alt screen, marks)
 //!   5. sixel/kitty image decode
 //!
@@ -23,7 +23,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -203,4 +203,89 @@ pub unsafe extern "C" fn agwcore_screen_resize(p: *mut ScreenBuffer, cols: u32, 
     }
     s.resize(cols as usize, rows as usize);
     true
+}
+
+// ---- VT parser event-stream oracle (module 3) ----
+// Feed bytes through the Rust parser with a RECORDING performer; return the
+// event log as one UTF-8 string. The C# oracle test records the SAME canonical
+// encoding from its own performer and compares strings. Canonical event forms:
+//   P:XXXX          Print, 4-hex UTF-16 code unit
+//   E:XX            Execute, 2-hex control byte
+//   ESC:XX          EscDispatch, 2-hex final
+//   CSI:XX:YY:a,b   CsiDispatch, 2-hex final, 2-hex prefix (00 = none), params
+//   OSC:n:text      OscDispatch
+//   APC:text        ApcDispatch (byte-as-char payload)
+//   DCS:hexbytes    DcsDispatch, payload as lowercase hex
+// joined with '\n'.
+
+struct RecordingPerformer(String);
+
+impl RecordingPerformer {
+    fn push(&mut self, s: &str) {
+        if !self.0.is_empty() {
+            self.0.push('\n');
+        }
+        self.0.push_str(s);
+    }
+}
+
+impl vtparser::Performer for RecordingPerformer {
+    fn print(&mut self, ch: u16) {
+        self.push(&format!("P:{ch:04X}"));
+    }
+    fn execute(&mut self, byte: u8) {
+        self.push(&format!("E:{byte:02X}"));
+    }
+    fn esc_dispatch(&mut self, ch: u8) {
+        self.push(&format!("ESC:{ch:02X}"));
+    }
+    fn csi_dispatch(&mut self, ch: u8, params: &[i32], prefix: u8) {
+        let ps: Vec<String> = params.iter().map(|p| p.to_string()).collect();
+        self.push(&format!("CSI:{ch:02X}:{prefix:02X}:{}", ps.join(",")));
+    }
+    fn osc_dispatch(&mut self, command: i32, text: &str) {
+        self.push(&format!("OSC:{command}:{text}"));
+    }
+    fn apc_dispatch(&mut self, text: &str) {
+        self.push(&format!("APC:{text}"));
+    }
+    fn dcs_dispatch(&mut self, payload: &[u8]) {
+        let mut s = String::with_capacity(4 + payload.len() * 2);
+        s.push_str("DCS:");
+        for b in payload {
+            s.push_str(&format!("{b:02x}"));
+        }
+        self.push(&s);
+    }
+}
+
+/// Parse `len` bytes and return the recorded event log as a heap buffer
+/// (UTF-8, no terminator). Caller MUST free it with `agwcore_free_buf`.
+/// Returns null (len 0) on null input.
+/// # Safety
+/// `bytes` must point to `len` readable bytes; `out_len` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_vtparse_events(bytes: *const u8, len: u32, out_len: *mut u32) -> *mut u8 {
+    if bytes.is_null() || out_len.is_null() {
+        return core::ptr::null_mut();
+    }
+    let input = unsafe { core::slice::from_raw_parts(bytes, len as usize) };
+    let mut parser = vtparser::VtParser::new();
+    let mut rec = RecordingPerformer(String::new());
+    parser.feed(input, &mut rec);
+    let mut buf = rec.0.into_bytes().into_boxed_slice();
+    unsafe { *out_len = buf.len() as u32 };
+    let ptr = buf.as_mut_ptr();
+    core::mem::forget(buf);
+    ptr
+}
+
+/// Free a buffer returned by `agwcore_vtparse_events`.
+/// # Safety
+/// `ptr`/`len` must be exactly what `agwcore_vtparse_events` returned, freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_free_buf(ptr: *mut u8, len: u32) {
+    if !ptr.is_null() {
+        drop(unsafe { Box::from_raw(core::slice::from_raw_parts_mut(ptr, len as usize)) });
+    }
 }
