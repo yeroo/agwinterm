@@ -1,0 +1,28 @@
+[package]
+name = "agwinterm-ptyhost"
+version = "0.1.0"
+edition = "2024"
+description = "agwinterm pty-host in Rust: owns ConPTY sessions behind the newline-JSON pipe protocol (drop-in for the C# host; the same PtyHostClient drives both)"
+license = "MIT"
+
+[[bin]]
+name = "agwinterm-ptyhost"
+path = "src/main.rs"
+
+[dependencies]
+agwinterm-core = { path = "../agwinterm-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.windows-sys]
+version = "0.59"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Environment",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+]

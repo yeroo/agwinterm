@@ -9,8 +9,4 @@ license = "MIT"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-
-[profile.release]
-lto = true
-codegen-units = 1
-panic = "abort"
+# (release profile lives in the workspace root Cargo.toml)
