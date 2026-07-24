@@ -224,6 +224,29 @@ internal partial class Program
         var prof = ResolveProfile(profileName);
         string cmd = prof?.Command is { Length: > 0 } c ? c : "powershell.exe";
         string[]? pargs = prof?.Args;
+        // Last line of defense against stale absolute paths (a Store PowerShell update rotating
+        // its versioned dir — real field failure): a missing exe degrades to the bare name (PATH
+        // re-resolves it) and ultimately to Windows PowerShell, with a visible notice — never a
+        // dead pane. ShellProfiles.Normalize heals the profile itself; this catches live races.
+        if (Path.IsPathRooted(cmd) && !File.Exists(cmd))
+        {
+            string bare = Path.GetFileName(cmd);
+            cmd = bare.Length > 0 ? bare : "powershell.exe";
+            if (cmd is not "powershell.exe" && FreshEnvironment.TryBuild() is { } fe
+                && (!fe.TryGetValue("Path", out var fp) || !fp.Split(';').Any(d => File.Exists(Path.Combine(d.Trim(), cmd)))))
+            {
+                cmd = "powershell.exe";   // not even a fresh PATH knows it — the shell is gone entirely
+                pargs = null;
+            }
+            // Scrollback (survives ConPTY's initial screen erase — an Inject would be wiped) +
+            // toast for immediate visibility.
+            session.MutateLocked(e => e.SeedScrollback(new[]
+            {
+                $"[agwinterm] profile exe not found: {prof?.Command}",
+                $"  fell back to {cmd} (fix the profile in profiles.json)",
+            }));
+            ShowToast($"profile '{prof?.Name}': exe missing — fell back to {cmd}", 6000);
+        }
         string? pcwd = string.IsNullOrEmpty(cwd) ? prof?.Cwd : cwd;
         // Per-profile env vars (WT parity). AGWINTERM_* set by CreatePane win, so profile env can't
         // clobber our identity vars; a custom-command's $AGW_* extraEnv still overrides last.
