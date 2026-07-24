@@ -76,6 +76,33 @@ static int g_focus = 0;             // focused pane (0/1)
 static int g_seq = 1;
 static const wchar_t* kAppId = L"agwinterm-lite";
 
+// ---- selection (buffer-absolute rows; the same viewport composition as paint) ----
+struct Sel {
+    int pane = -1;                  // which pane the selection lives in (-1 = none)
+    bool active = false;            // a drag is in progress
+    int aRow = 0, aCol = 0;         // anchor (buffer-absolute row, column)
+    int bRow = 0, bCol = 0;         // current end
+    bool has() const { return pane >= 0 && (aRow != bRow || aCol != bCol); }
+    void norm(int& r0, int& c0, int& r1, int& c1) const {
+        if (aRow < bRow || (aRow == bRow && aCol <= bCol)) { r0 = aRow; c0 = aCol; r1 = bRow; c1 = bCol; }
+        else { r0 = bRow; c0 = bCol; r1 = aRow; c1 = aCol; }
+    }
+};
+static Sel g_sel;
+
+// ---- command palette ----
+static bool g_palette = false;
+struct PaletteItem { const wchar_t* label; int id; };
+static const PaletteItem kPalette[] = {
+    { L"New session          Ctrl+T", 1 },
+    { L"Close session        Ctrl+W", 2 },
+    { L"Split / unsplit      Ctrl+Shift+D", 3 },
+    { L"Next session         Ctrl+Tab", 4 },
+    { L"Copy selection       Ctrl+C", 5 },
+    { L"Paste                Ctrl+V", 6 },
+};
+static int g_paletteSel = 0;
+
 static void fatal(const wchar_t* msg) {
     MessageBoxW(nullptr, msg, L"agwinterm-lite", MB_ICONERROR);
     ExitProcess(1);
@@ -407,8 +434,27 @@ static void paintPane(HDC mem, int pane, RECT pr) {
         }
     }
 
-    // Cursor (only at live view, only in the focused pane).
-    if (off == 0 && info.cursorVisible && pane == g_focus && info.cursorCol < info.cols) {
+    // Selection highlight (invert the selected span, buffer-absolute rows mapped into the view).
+    if (g_sel.has() && g_sel.pane == pane) {
+        int r0, c0, r1, c1;
+        g_sel.norm(r0, c0, r1, c1);
+        int base = (int)info.historyCount - off;   // buffer-absolute row of the top visible line
+        for (uint32_t r = 0; r < info.rows; r++) {
+            int abs = base + (int)r;
+            if (abs < r0 || abs > r1) continue;
+            int from = (abs == r0) ? c0 : 0;
+            int to = (abs == r1) ? c1 : (int)info.cols;   // exclusive end column
+            from = max(0, min(from, (int)info.cols));
+            to = max(0, min(to, (int)info.cols));
+            if (to <= from) continue;
+            RECT sr{ pr.left + from * g_cw, pr.top + (int)r * g_ch,
+                     min((LONG)(pr.left + to * g_cw), pr.right), pr.top + (int)(r + 1) * g_ch };
+            InvertRect(mem, &sr);
+        }
+    }
+
+    // Cursor (only at live view, only in the focused pane, not while selecting).
+    if (off == 0 && info.cursorVisible && pane == g_focus && info.cursorCol < info.cols && !g_sel.has()) {
         RECT cur{ pr.left + (LONG)info.cursorCol * g_cw, pr.top + (LONG)info.cursorRow * g_ch,
                   pr.left + (LONG)(info.cursorCol + 1) * g_cw, pr.top + (LONG)(info.cursorRow + 1) * g_ch };
         if (cur.right <= pr.right) InvertRect(mem, &cur);
@@ -431,7 +477,7 @@ static void paintSidebar(HDC mem, RECT rc) {
     SetBkMode(mem, TRANSPARENT);
     SetTextColor(mem, RGB(140, 140, 150));
     RECT title{ 10, 8, kSidebarW - 8, 8 + g_ch };
-    DrawTextW(mem, L"sessions  (Ctrl+T new)", -1, &title, DT_LEFT | DT_SINGLELINE);
+    DrawTextW(mem, L"sessions  ·  Ctrl+Shift+P", -1, &title, DT_LEFT | DT_SINGLELINE);
     for (int i = 0; i < (int)g_sessions.size(); i++) {
         int y = 12 + (i + 1) * (g_ch + 8);
         bool inPane = g_pane[0] == i || g_pane[1] == i;
@@ -487,10 +533,123 @@ static void paint(HDC dc, RECT rc) {
         DeleteObject(b);
     }
 
+    if (g_palette) {
+        int n = (int)(sizeof kPalette / sizeof kPalette[0]);
+        int pw = 460, ph = (n + 1) * (g_ch + 8) + 12;
+        int px = kSidebarW + ((rc.right - kSidebarW) - pw) / 2, py = 60;
+        RECT box{ px, py, px + pw, py + ph };
+        HBRUSH bb = CreateSolidBrush(RGB(28, 30, 38));
+        FillRect(mem, &box, bb);
+        DeleteObject(bb);
+        FrameRect(mem, &box, (HBRUSH)GetStockObject(GRAY_BRUSH));
+        SelectObject(mem, g_fonts[0]);
+        SetBkMode(mem, TRANSPARENT);
+        SetTextColor(mem, RGB(150, 150, 160));
+        RECT hdr{ px + 14, py + 8, px + pw - 8, py + 8 + g_ch };
+        DrawTextW(mem, L"command palette  (↑↓ Enter · Esc)", -1, &hdr, DT_LEFT | DT_SINGLELINE);
+        for (int i = 0; i < n; i++) {
+            int iy = py + 8 + (i + 1) * (g_ch + 8);
+            if (i == g_paletteSel) {
+                RECT sel{ px + 4, iy - 3, px + pw - 4, iy + g_ch + 3 };
+                HBRUSH sb = CreateSolidBrush(RGB(50, 90, 150));
+                FillRect(mem, &sel, sb);
+                DeleteObject(sb);
+            }
+            SetTextColor(mem, i == g_paletteSel ? RGB(240, 240, 245) : RGB(200, 200, 210));
+            RECT ir{ px + 16, iy, px + pw - 8, iy + g_ch };
+            DrawTextW(mem, kPalette[i].label, -1, &ir, DT_LEFT | DT_SINGLELINE);
+        }
+    }
+
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
     SelectObject(mem, oldBmp);
     DeleteObject(bmp);
     DeleteDC(mem);
+}
+
+// ---- selection: pixel → (pane, buffer-absolute row, col) ----
+static bool hitTest(int x, int y, int* pane, int* absRow, int* col) {
+    RECT rc;
+    GetClientRect(g_hwnd, &rc);
+    for (int p = 0; p < 2; p++) {
+        if (g_pane[p] < 0) continue;
+        RECT pr;
+        paneRect(p, rc, &pr);
+        if (x < pr.left || x >= pr.right || y < pr.top || y >= pr.bottom) continue;
+        Session* s = g_sessions[g_pane[p]];
+        FfiEmuInfo info{};
+        EnterCriticalSection(&g_lock);
+        emu_info(s->emu, &info);
+        LeaveCriticalSection(&g_lock);
+        int r = (y - pr.top) / g_ch;
+        int c = (x - pr.left) / g_cw;
+        *pane = p;
+        *absRow = (int)info.historyCount - min(s->scrollOff, (int)info.historyCount) + r;
+        *col = max(0, min(c, (int)info.cols));
+        return true;
+    }
+    return false;
+}
+
+// Extract the selected text (buffer-absolute rows), trailing spaces trimmed per line.
+static std::string selectionText() {
+    if (!g_sel.has()) return "";
+    Session* s = g_sessions[g_pane[g_sel.pane]];
+    int r0, c0, r1, c1;
+    g_sel.norm(r0, c0, r1, c1);
+    std::string out;
+    FfiEmuInfo info{};
+    EnterCriticalSection(&g_lock);
+    emu_info(s->emu, &info);
+    std::vector<FfiCell> row(info.cols);
+    for (int abs = r0; abs <= r1; abs++) {
+        bool got = false;
+        if (abs < (int)info.historyCount) got = emu_copy_history_row(s->emu, (uint32_t)abs, row.data(), info.cols);
+        else {
+            int live = abs - (int)info.historyCount;
+            if (live < (int)info.rows && s->grid.size() >= (size_t)info.cols * info.rows) {
+                memcpy(row.data(), &s->grid[live * info.cols], info.cols * sizeof(FfiCell));
+                got = true;
+            }
+        }
+        if (!got) { out += '\n'; continue; }
+        int from = (abs == r0) ? c0 : 0;
+        int to = (abs == r1) ? c1 : (int)info.cols;
+        std::string line;
+        for (int c = from; c < to && c < (int)info.cols; c++) {
+            const FfiCell& cell = row[c];
+            if (cell.width == 0) continue;
+            int cp = cell.rune ? cell.rune : ' ';
+            wchar_t wb[2];
+            int wn = 0;
+            if (cp > 0xFFFF) { wb[wn++] = (wchar_t)(0xD800 + ((cp - 0x10000) >> 10)); wb[wn++] = (wchar_t)(0xDC00 + ((cp - 0x10000) & 0x3FF)); }
+            else wb[wn++] = (wchar_t)cp;
+            char u8[8];
+            int n8 = WideCharToMultiByte(CP_UTF8, 0, wb, wn, u8, sizeof u8, nullptr, nullptr);
+            line.append(u8, n8);
+        }
+        while (!line.empty() && line.back() == ' ') line.pop_back();
+        out += line;
+        if (abs < r1) out += "\r\n";
+    }
+    LeaveCriticalSection(&g_lock);
+    return out;
+}
+
+static void copySelection() {
+    std::string utf8 = selectionText();
+    if (utf8.empty() || !OpenClipboard(g_hwnd)) return;
+    EmptyClipboard();
+    int wn = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), nullptr, 0);
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (wn + 1) * sizeof(wchar_t));
+    if (h) {
+        wchar_t* p = (wchar_t*)GlobalLock(h);
+        MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), p, wn);
+        p[wn] = 0;
+        GlobalUnlock(h);
+        SetClipboardData(CF_UNICODETEXT, h);
+    }
+    CloseClipboard();
 }
 
 // ---- input ----
@@ -498,6 +657,32 @@ static void sendBytes(const char* bytes, int len) {
     Session* s = focusedSession();
     if (s && s->data != INVALID_HANDLE_VALUE) ovIo(s->data, true, bytes, nullptr, (DWORD)len);
 }
+
+static void pasteClipboard() {
+    Session* s = focusedSession();
+    if (!s || s->data == INVALID_HANDLE_VALUE || !OpenClipboard(g_hwnd)) return;
+    HANDLE h = GetClipboardData(CF_UNICODETEXT);
+    if (h) {
+        wchar_t* w = (wchar_t*)GlobalLock(h);
+        if (w) {
+            int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+            std::string u8(n > 0 ? n - 1 : 0, 0);
+            if (!u8.empty()) WideCharToMultiByte(CP_UTF8, 0, w, -1, &u8[0], n, nullptr, nullptr);
+            // Bracketed paste when the app enabled it (safer multiline paste), else raw.
+            FfiEmuInfo info{};
+            EnterCriticalSection(&g_lock);
+            emu_info(s->emu, &info);
+            LeaveCriticalSection(&g_lock);
+            if (info.bracketedPaste) { ovIo(s->data, true, "\x1b[200~", nullptr, 6); }
+            ovIo(s->data, true, u8.data(), nullptr, (DWORD)u8.size());
+            if (info.bracketedPaste) { ovIo(s->data, true, "\x1b[201~", nullptr, 6); }
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+}
+
+static void runPaletteItem(int id);   // fwd
 
 static void sendUtf8(wchar_t wc) {
     char utf8[8];
@@ -520,8 +705,41 @@ static void scrollFocused(int deltaRows) {
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
+static void togglePalette() {
+    g_palette = !g_palette;
+    g_paletteSel = 0;
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+
+static void runPaletteItem(int id) {
+    g_palette = false;
+    switch (id) {
+        case 1: { int c, r; paneGridSize(g_focus, &c, &r); Session* s = newSession(c, r); if (s) g_pane[g_focus] = (int)g_sessions.size() - 1; break; }
+        case 2: closeFocused(); break;
+        case 3: {
+            if (g_pane[1] < 0) g_pane[1] = (int)g_sessions.size() > 1 ? (g_pane[0] + 1) % (int)g_sessions.size() : g_pane[0];
+            else { g_pane[1] = -1; g_focus = 0; }
+            syncPaneSizes();
+            break;
+        }
+        case 4: if (!g_sessions.empty()) { g_pane[g_focus] = (g_pane[g_focus] + 1) % (int)g_sessions.size(); syncPaneSizes(); } break;
+        case 5: copySelection(); break;
+        case 6: pasteClipboard(); break;
+    }
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+
 static bool handleKeyDown(WPARAM vk) {
+    if (g_palette) {   // palette captures navigation while open
+        int n = (int)(sizeof kPalette / sizeof kPalette[0]);
+        if (vk == VK_ESCAPE) { g_palette = false; InvalidateRect(g_hwnd, nullptr, FALSE); return true; }
+        if (vk == VK_UP) { g_paletteSel = (g_paletteSel + n - 1) % n; InvalidateRect(g_hwnd, nullptr, FALSE); return true; }
+        if (vk == VK_DOWN) { g_paletteSel = (g_paletteSel + 1) % n; InvalidateRect(g_hwnd, nullptr, FALSE); return true; }
+        if (vk == VK_RETURN) { runPaletteItem(kPalette[g_paletteSel].id); return true; }
+        return true;
+    }
     if (ctrlDown() && shiftDown()) {
+        if (vk == 'P') { togglePalette(); return true; }
         switch (vk) {
             case 'D': {   // split toggle
                 if (g_pane[1] < 0) {
@@ -540,6 +758,8 @@ static bool handleKeyDown(WPARAM vk) {
     }
     if (ctrlDown()) {
         switch (vk) {
+            case 'C': if (g_sel.has()) { copySelection(); return true; } break;   // no selection → falls through to ^C interrupt
+            case 'V': pasteClipboard(); return true;
             case 'T': {
                 int cols, rows;
                 paneGridSize(g_focus, &cols, &rows);
@@ -593,7 +813,11 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 1;
         case WM_CHAR: {
             wchar_t wc = (wchar_t)wp;
-            if (ctrlDown() && (wc == 20 || wc == 23 || wc == 4)) return 0;   // eaten by shortcuts (T/W/D)
+            if (g_palette) return 0;
+            // Swallow control chars owned by shortcuts: T(20) W(23) D(4) V(22) P(16); C(3) only
+            // when it copied a selection (otherwise ^C must reach the shell as interrupt).
+            if (ctrlDown() && (wc == 20 || wc == 23 || wc == 4 || wc == 22 || wc == 16)) return 0;
+            if (ctrlDown() && wc == 3 && g_sel.has()) return 0;
             if (Session* s = focusedSession()) s->scrollOff = 0;
             if (wc == L'\r') { sendBytes("\r", 1); return 0; }
             sendUtf8(wc);
@@ -607,25 +831,46 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_LBUTTONDOWN: {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            if (g_palette) { g_palette = false; InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); return 0; }
             if (x < kSidebarW) {   // sidebar row hit-test
-                int i = (y - 12 - 8) / (g_ch + 8) - 0;   // rows start at 12 + (i+1)*(g_ch+8)
-                i = (y - 12) / (g_ch + 8) - 1;
+                int i = (y - 12) / (g_ch + 8) - 1;   // rows at 12 + (i+1)*(g_ch+8)
                 if (i >= 0 && i < (int)g_sessions.size()) {
                     g_pane[g_focus] = i;
                     syncPaneSizes();
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
-            } else if (g_pane[1] >= 0) {   // click focuses a pane
-                RECT rc;
-                GetClientRect(hwnd, &rc);
-                RECT p0;
-                paneRect(0, rc, &p0);
-                g_focus = (x <= p0.right) ? 0 : 1;
-                InvalidateRect(hwnd, nullptr, FALSE);
+            } else {
+                int pane, absRow, col;
+                if (hitTest(x, y, &pane, &absRow, &col)) {
+                    g_focus = pane;
+                    g_sel = { pane, true, absRow, col, absRow, col };   // begin drag
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
             }
             SetFocus(hwnd);
             return 0;
         }
+        case WM_MOUSEMOVE:
+            if (g_sel.active && (wp & MK_LBUTTON)) {
+                int pane, absRow, col;
+                if (hitTest(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &pane, &absRow, &col) && pane == g_sel.pane) {
+                    g_sel.bRow = absRow;
+                    g_sel.bCol = col;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            return 0;
+        case WM_LBUTTONUP:
+            if (g_sel.active) {
+                g_sel.active = false;
+                ReleaseCapture();
+                if (g_sel.has()) copySelection();   // auto-copy on release (terminal convention)
+            }
+            return 0;
+        case WM_RBUTTONDOWN:
+            pasteClipboard();   // right-click paste
+            return 0;
         case WM_SIZE:
             if (wp != SIZE_MINIMIZED && !g_sessions.empty()) syncPaneSizes();
             return 0;
