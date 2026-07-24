@@ -29,4 +29,14 @@ jobs:
         run: dotnet build Agwinterm.slnx -c Release --no-restore
 
       - name: Test (Core + Pty)
-        run: dotnet test Agwinterm.slnx -c Release --no-build
+        # One retry, but ONLY for the known .NET 10 test-host native crash (issue #118:
+        # AccessViolation in the IOCP poller under named-pipe churn — "Test Run Aborted" with
+        # zero failed tests). Real test failures never retry — they fail the job immediately.
+        shell: pwsh
+        run: |
+          $out = dotnet test Agwinterm.slnx -c Release --no-build 2>&1 | Tee-Object -Variable lines | Out-String
+          if ($LASTEXITCODE -eq 0) { exit 0 }
+          if ($out -notmatch 'Test Run Aborted|host process crashed') { exit 1 }
+          Write-Host '::warning::test host crashed natively (issue #118) - retrying once'
+          dotnet test Agwinterm.slnx -c Release --no-build
+          exit $LASTEXITCODE
