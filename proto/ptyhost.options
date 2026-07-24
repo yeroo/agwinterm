@@ -1,0 +1,15 @@
+# nanopb field options for the C++ lite client (fields lite actually touches get
+# fixed-size storage; everything else stays callback-based and is skipped).
+agwinterm.ptyhost.Create.id            max_size:128
+agwinterm.ptyhost.Create.app           max_size:260
+agwinterm.ptyhost.Create.cwd           max_size:260
+agwinterm.ptyhost.Create.args          max_count:16
+agwinterm.ptyhost.Create.args          max_size:260
+agwinterm.ptyhost.Attach.id            max_size:128
+agwinterm.ptyhost.SessionRef.id        max_size:128
+agwinterm.ptyhost.Resize.id            max_size:128
+agwinterm.ptyhost.Reply.error          max_size:256
+agwinterm.ptyhost.HelloReply.protocol  int_size:IS_32
+agwinterm.ptyhost.CreateReply.id       max_size:128
+agwinterm.ptyhost.AttachReply.pipe     max_size:128
+agwinterm.ptyhost.AttachReply.modes    max_size:1024

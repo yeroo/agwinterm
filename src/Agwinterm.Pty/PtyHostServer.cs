@@ -1,6 +1,6 @@
 using System.IO.Pipes;
-using System.Text;
-using System.Text.Json;
+using Agwinterm.Pty.Proto;
+using Google.Protobuf;
 
 namespace Agwinterm.Pty;
 
@@ -9,25 +9,22 @@ namespace Agwinterm.Pty;
 /// crashes (#105, Phase 2a). Runs inside <c>Agwinterm.Win32.exe --pty-host</c> (or in-process for
 /// tests — the pipes are real either way).
 ///
-/// Wire model:
-///  - ONE control pipe (<c>&lt;appId&gt;-ptyhost</c>): newline-JSON request/response, same style as
-///    the control API. Verbs: hello (version handshake), create, attach, detach, resize, kill,
-///    list, shutdown.
-///  - Per ATTACH, one full-duplex DATA pipe (name returned by attach): client→host bytes are child
-///    stdin (keystrokes verbatim), host→client bytes are raw ConPTY output. One attached client per
-///    session; a new attach supersedes the previous data pipe. The data pipe closing from the host
-///    side means the child exited (ask <c>list</c> for the code); closing from the client side is a
-///    detach — the session keeps running.
+/// Wire model, protocol v2 (protobuf; schema = proto/ptyhost.proto, shared by the C# host, the
+/// Rust host, the C# client, and the C++ lite client — JSON removed by decision on #134):
+///  - ONE control pipe (<c>&lt;appId&gt;-ptyhost</c>): 4-byte little-endian length prefix + encoded
+///    Request/Reply, strict request/response. Verbs: hello (hard version handshake), create,
+///    attach, detach, resize, kill, list, shutdown.
+///  - Per ATTACH, one full-duplex DATA pipe (name in the attach reply): raw bytes both ways —
+///    client→host is child stdin, host→client is raw ConPTY output. One attached client per
+///    session; a new attach supersedes. Host-side close = child exited (code via list); client-side
+///    close = detach, the session keeps running.
 ///
-/// Reattach v1 (deliberately simple, mirrors the existing restart-restore semantics): the attach
-/// response carries the host emulator's scrollback as PLAIN TEXT (client seeds it dimmed, like
-/// buffer restore) plus the mode state as synthesized VT (<see cref="Agwinterm.Core.TerminalEmulator.DumpModes"/>);
-/// then a ConPTY resize-jiggle makes the child's TUI repaint the live screen in full color. Full
-/// attributed-grid serialization can replace the text seed later without a protocol change.
+/// Reattach v1 semantics unchanged: plain-text scrollback + DumpModes in the attach reply, then a
+/// ConPTY resize-jiggle repaints the live viewport.
 /// </summary>
 public sealed class PtyHostServer : IDisposable
 {
-    public const int ProtocolVersion = 1;
+    public const int ProtocolVersion = 2;
     public static string ControlPipeName(string appId) => appId + "-ptyhost";
 
     private readonly string _appId;
@@ -82,82 +79,80 @@ public sealed class PtyHostServer : IDisposable
     {
         using (pipe)
         {
-            using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true);
-            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
+            var lenBuf = new byte[4];
             try
             {
-                string? line;
-                while ((line = await reader.ReadLineAsync(ct).ConfigureAwait(false)) != null)
+                while (true)
                 {
-                    if (line.Length == 0) continue;
-                    // The ack write deliberately takes NO cancellation token (#118, dump-proven):
-                    // cancelling StreamWriter.WriteLineAsync mid-flush completes the TASK but
-                    // ABANDONS the overlapped write — the using-dispose then closes the pipe with
-                    // that op in flight, and its completion later faults the IOCP poller (native
-                    // AV). Acks are one short line; letting them finish closes the race window.
-                    // The read keeps ct: its cancel is one awaited op, consumed before dispose.
-                    await writer.WriteLineAsync(Dispatch(line).AsMemory(), CancellationToken.None).ConfigureAwait(false);
+                    // Framed read: 4-byte LE length + payload. The read keeps ct (a cancelled
+                    // read is one awaited op, consumed before dispose).
+                    await pipe.ReadExactlyAsync(lenBuf, ct).ConfigureAwait(false);
+                    int len = BitConverter.ToInt32(lenBuf);
+                    if (len < 0 || len > 16 * 1024 * 1024) break;   // garbled frame → drop the client
+                    var payload = new byte[len];
+                    await pipe.ReadExactlyAsync(payload, ct).ConfigureAwait(false);
+
+                    Request req;
+                    try { req = Request.Parser.ParseFrom(payload); }
+                    catch (InvalidProtocolBufferException) { req = new Request(); }
+                    var reply = Dispatch(req);
+
+                    // The reply write deliberately takes NO cancellation token (#118, dump-proven):
+                    // an abandoned in-flight write + dispose faults the IOCP poller. Replies are
+                    // small; letting them finish closes the race window.
+                    byte[] frame = new byte[4 + reply.CalculateSize()];
+                    BitConverter.TryWriteBytes(frame, reply.CalculateSize());
+                    reply.WriteTo(frame.AsSpan(4));
+                    await pipe.WriteAsync(frame, CancellationToken.None).ConfigureAwait(false);
+                    await pipe.FlushAsync(CancellationToken.None).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) { }
+            catch (EndOfStreamException) { }
             catch (IOException) { }
         }
     }
 
-    /// <summary>Handle one request line; returns the JSON response line. Public for testing.</summary>
-    public string Dispatch(string requestJson)
+    private static Reply Ok() => new() { Ok = true };
+    private static Reply Err(string message) => new() { Ok = false, Error = message };
+
+    /// <summary>Handle one request; returns the reply. Public for testing.</summary>
+    public Reply Dispatch(Request req)
     {
         try
         {
-            using var doc = JsonDocument.Parse(requestJson);
-            var root = doc.RootElement;
-            string cmd = root.TryGetProperty("cmd", out var c) ? c.GetString() ?? "" : "";
-            return cmd switch
+            return req.CmdCase switch
             {
-                "hello" => HandleHello(root),
-                "create" => HandleCreate(root),
-                "attach" => HandleAttach(root),
-                "detach" => WithSession(root, h => { CloseData(h); return Ok(); }),
-                "resize" => HandleResize(root),
-                "kill" => HandleKill(root),
-                "list" => HandleList(),
-                "shutdown" => HandleShutdown(),
-                _ => Err($"unknown command '{cmd}'"),
+                Request.CmdOneofCase.Hello => HandleHello(req.Hello),
+                Request.CmdOneofCase.Create => HandleCreate(req.Create),
+                Request.CmdOneofCase.Attach => HandleAttach(req.Attach),
+                Request.CmdOneofCase.Detach => WithSession(req.Detach.Id, h => { CloseData(h); return Ok(); }),
+                Request.CmdOneofCase.Resize => HandleResize(req.Resize),
+                Request.CmdOneofCase.Kill => HandleKill(req.Kill.Id),
+                Request.CmdOneofCase.List => HandleList(),
+                Request.CmdOneofCase.Shutdown => HandleShutdown(),
+                _ => Err("unknown command"),
             };
         }
-        catch (JsonException) { return Err("invalid JSON"); }
         catch (Exception ex) { return Err(ex.Message); }
     }
 
-    private string HandleHello(JsonElement root)
+    private Reply HandleHello(Hello h)
     {
-        // The handshake is the protocol's forward-compat seam: a client offering a DIFFERENT major
-        // version is refused loudly (never half-understood), and the reply names ours so the client
-        // can decide (e.g. a newer UI telling the user to let the old host drain).
-        int theirs = root.TryGetProperty("protocol", out var p) && p.TryGetInt32(out int v) ? v : -1;
-        return theirs == ProtocolVersion
-            ? Ok(w => { w.WriteNumber("protocol", ProtocolVersion); w.WriteNumber("pid", Environment.ProcessId); })
-            : Err($"protocol mismatch: host={ProtocolVersion} client={theirs}");
+        // The handshake is the protocol's forward-compat seam: a client offering a DIFFERENT
+        // version is refused loudly (never half-understood), and the reply names ours.
+        return h.Protocol == ProtocolVersion
+            ? new Reply { Ok = true, Hello = new HelloReply { Protocol = ProtocolVersion, Pid = (uint)Environment.ProcessId } }
+            : Err($"protocol mismatch: host={ProtocolVersion} client={h.Protocol}");
     }
 
-    private string HandleCreate(JsonElement root)
+    private Reply HandleCreate(Create c)
     {
-        string id = GetString(root, "id") ?? Guid.NewGuid().ToString();
-        int cols = GetInt(root, "cols", 120), rows = GetInt(root, "rows", 30);
-        string app = GetString(root, "app") ?? "";
-        if (app.Length == 0) return Err("create needs args.app");
-        string[] args = root.TryGetProperty("args", out var av) && av.ValueKind == JsonValueKind.Array
-            ? av.EnumerateArray().Select(e => e.GetString() ?? "").ToArray() : Array.Empty<string>();
-        string? cwd = GetString(root, "cwd");
-        bool verbatim = root.TryGetProperty("verbatim", out var vb) && vb.ValueKind == JsonValueKind.True;
-        bool deElevate = root.TryGetProperty("deElevate", out var de) && de.ValueKind == JsonValueKind.True;
-        bool freshEnv = !(root.TryGetProperty("freshEnv", out var fe) && fe.ValueKind == JsonValueKind.False);
-        Dictionary<string, string>? env = null;
-        if (root.TryGetProperty("env", out var ev) && ev.ValueKind == JsonValueKind.Object)
-        {
-            env = new Dictionary<string, string>();
-            foreach (var kv in ev.EnumerateObject()) env[kv.Name] = kv.Value.GetString() ?? "";
-        }
+        string id = c.Id.Length > 0 ? c.Id : Guid.NewGuid().ToString();
+        int cols = c.Cols > 0 ? (int)c.Cols : 120;
+        int rows = c.Rows > 0 ? (int)c.Rows : 30;
+        if (c.App.Length == 0) return Err("create needs app");
+        Dictionary<string, string>? env = c.Env.Count > 0 ? new(c.Env) : null;
 
         var session = new TerminalSession(cols, rows);
         var hosted = new Hosted { Id = id, S = session };
@@ -179,12 +174,12 @@ public sealed class PtyHostServer : IDisposable
             }
         };
         session.Exited += _ => CloseData(hosted);
-        // Await the spawn so a failure (bad exe, bad cwd) travels back as the create's error —
-        // fire-and-forget here would leave the client attached to a session that never lived.
+        // Await the spawn so a failure (bad exe, bad cwd) travels back as the create's error.
         try
         {
-            session.StartAsync(app, args, verbatimCommandLine: verbatim, extraEnv: env, cwd: cwd, deElevate: deElevate,
-                    freshEnv: freshEnv)
+            session.StartAsync(c.App, c.Args.ToArray(), verbatimCommandLine: c.Verbatim,
+                    extraEnv: env, cwd: c.Cwd.Length > 0 ? c.Cwd : null, deElevate: c.DeElevate,
+                    freshEnv: !c.FreshEnvOff)
                 .GetAwaiter().GetResult();
         }
         catch (Exception ex)
@@ -193,25 +188,29 @@ public sealed class PtyHostServer : IDisposable
             try { session.Dispose(); } catch { }
             return Err("spawn failed: " + ex.Message);
         }
-        return Ok(w => w.WriteString("id", id));
+        return new Reply { Ok = true, Create = new CreateReply { Id = id } };
     }
 
-    private string HandleAttach(JsonElement root) => WithSession(root, hosted =>
+    private Reply HandleAttach(Attach a) => WithSession(a.Id, hosted =>
     {
-        bool repaint = root.TryGetProperty("repaint", out var rp) && rp.ValueKind == JsonValueKind.True;
+        bool repaint = a.Repaint;
         string dataName = ControlPipeName(_appId) + "-d-" + Guid.NewGuid().ToString("N")[..8];
         var data = new NamedPipeServerStream(dataName, PipeDirection.InOut, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
         // Snapshot content + modes UNDER the session lock, before any new output can race the seed.
-        List<string> scrollback = new();
-        string modes;
+        var reply = new AttachReply { Pipe = dataName };
         var s = hosted.S;
         lock (s.SyncRoot)
         {
-            for (int i = 0; i < s.Emulator.HistoryCount; i++) scrollback.Add(s.Emulator.DumpHistoryRow(i));
-            modes = s.Emulator.DumpModes();
+            for (int i = 0; i < s.Emulator.HistoryCount; i++) reply.Scrollback.Add(s.Emulator.DumpHistoryRow(i));
+            reply.Modes = s.Emulator.DumpModes();
         }
+        reply.Cols = (uint)s.Cols;
+        reply.Rows = (uint)s.Rows;
+        reply.ChildPid = (uint)(s.ChildProcessId ?? 0);
+        reply.HasExited = s.HasExited;
+        reply.ExitCode = s.ExitCode ?? 0;
 
         _ = Task.Run(async () =>
         {
@@ -239,18 +238,7 @@ public sealed class PtyHostServer : IDisposable
             await PumpInputAsync(hosted, ch).ConfigureAwait(false);
         });
 
-        return Ok(w =>
-        {
-            w.WriteString("pipe", dataName);
-            w.WriteNumber("cols", s.Cols); w.WriteNumber("rows", s.Rows);
-            if (s.ChildProcessId is int pid) w.WriteNumber("childPid", pid);
-            w.WriteBoolean("hasExited", s.HasExited);
-            if (s.ExitCode is int ec) w.WriteNumber("exitCode", ec);
-            w.WriteString("modes", modes);
-            w.WriteStartArray("scrollback");
-            foreach (var line in scrollback) w.WriteStringValue(line);
-            w.WriteEndArray();
-        });
+        return new Reply { Ok = true, Attach = reply };
     });
 
     /// <summary>Client→host side of a data pipe: bytes are the child's stdin. EOF/error = detach;
@@ -297,15 +285,14 @@ public sealed class PtyHostServer : IDisposable
         catch { }
     }
 
-    private string HandleResize(JsonElement root) => WithSession(root, h =>
+    private Reply HandleResize(Resize r) => WithSession(r.Id, h =>
     {
-        int cols = GetInt(root, "cols", 0), rows = GetInt(root, "rows", 0);
-        if (cols <= 0 || rows <= 0) return Err("resize needs cols/rows");
-        h.S.Resize(cols, rows);
+        if (r.Cols == 0 || r.Rows == 0) return Err("resize needs cols/rows");
+        h.S.Resize((int)r.Cols, (int)r.Rows);
         return Ok();
     });
 
-    private string HandleKill(JsonElement root) => WithSession(root, h =>
+    private Reply HandleKill(string id) => WithSession(id, h =>
     {
         lock (_lock) _sessions.Remove(h.Id);
         CloseData(h);
@@ -313,31 +300,30 @@ public sealed class PtyHostServer : IDisposable
         return Ok();
     });
 
-    private string HandleList()
+    private Reply HandleList()
     {
         List<Hosted> all;
         lock (_lock) all = _sessions.Values.ToList();
-        return Ok(w =>
+        var list = new ListReply();
+        foreach (var h in all)
         {
-            w.WriteStartArray("sessions");
-            foreach (var h in all)
+            var info = new SessionInfo
             {
-                w.WriteStartObject();
-                w.WriteString("id", h.Id);
-                w.WriteNumber("cols", h.S.Cols); w.WriteNumber("rows", h.S.Rows);
-                if (h.S.ChildProcessId is int pid) w.WriteNumber("childPid", pid);
-                w.WriteBoolean("hasExited", h.S.HasExited);
-                if (h.S.ExitCode is int ec) w.WriteNumber("exitCode", ec);
-                lock (h.S.SyncRoot) w.WriteString("title", h.S.Emulator.Title);
-                bool attached; lock (h.DataLock) attached = h.Data is not null;
-                w.WriteBoolean("attached", attached);
-                w.WriteEndObject();
-            }
-            w.WriteEndArray();
-        });
+                Id = h.Id,
+                Cols = (uint)h.S.Cols,
+                Rows = (uint)h.S.Rows,
+                ChildPid = (uint)(h.S.ChildProcessId ?? 0),
+                HasExited = h.S.HasExited,
+                ExitCode = h.S.ExitCode ?? 0,
+            };
+            lock (h.S.SyncRoot) info.Title = h.S.Emulator.Title;
+            lock (h.DataLock) info.Attached = h.Data is not null;
+            list.Sessions.Add(info);
+        }
+        return new Reply { Ok = true, List = list };
     }
 
-    private string HandleShutdown()
+    private Reply HandleShutdown()
     {
         // Tear down AFTER the reply has a moment to flush — disposing inline races the response
         // off the pipe (the client would see EOF instead of the ack).
@@ -345,10 +331,9 @@ public sealed class PtyHostServer : IDisposable
         return Ok();
     }
 
-    private string WithSession(JsonElement root, Func<Hosted, string> act)
+    private Reply WithSession(string id, Func<Hosted, Reply> act)
     {
-        string? id = GetString(root, "id");
-        if (id is null) return Err("missing id");
+        if (id.Length == 0) return Err("missing id");
         Hosted? h;
         lock (_lock) _sessions.TryGetValue(id, out h);
         return h is null ? Err($"no session '{id}'") : act(h);
@@ -372,37 +357,5 @@ public sealed class PtyHostServer : IDisposable
         lock (_lock) { all = _sessions.Values.ToList(); _sessions.Clear(); }
         foreach (var h in all) { CloseData(h); try { h.S.Dispose(); } catch { } }
         _done.TrySetResult();
-    }
-
-    // ---- JSON helpers (same shapes as the control API) ----
-    private static string? GetString(JsonElement e, string name)
-        => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-    private static int GetInt(JsonElement e, string name, int fallback)
-        => e.TryGetProperty(name, out var v) && v.TryGetInt32(out int i) ? i : fallback;
-
-    private static string Ok(Action<Utf8JsonWriter>? body = null)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms))
-        {
-            w.WriteStartObject();
-            w.WriteBoolean("ok", true);
-            body?.Invoke(w);
-            w.WriteEndObject();
-        }
-        return Encoding.UTF8.GetString(ms.ToArray());
-    }
-
-    private static string Err(string message)
-    {
-        using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms))
-        {
-            w.WriteStartObject();
-            w.WriteBoolean("ok", false);
-            w.WriteString("error", message);
-            w.WriteEndObject();
-        }
-        return Encoding.UTF8.GetString(ms.ToArray());
     }
 }

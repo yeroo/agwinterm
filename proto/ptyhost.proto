@@ -1,0 +1,112 @@
+// The agwinterm pty-host protocol, v2 (protobuf wire; v1 was newline-JSON —
+// removed by decision on #134: schema-driven codegen beats hand-parsed JSON,
+// especially for the C++ lite client).
+//
+// Transport framing (all speakers): each message on the CONTROL pipe is a
+// 4-byte little-endian length prefix followed by exactly that many bytes of
+// the encoded Request (client→host) or Reply (host→client). Strict
+// request/response alternation per connection. DATA pipes stay raw bytes —
+// keystrokes and VT output are never serialized.
+//
+// The hello handshake remains the hard compatibility gate: hosts refuse a
+// protocol number they don't speak, loudly.
+
+syntax = "proto3";
+
+package agwinterm.ptyhost;
+
+option csharp_namespace = "Agwinterm.Pty.Proto";
+
+message Request {
+  oneof cmd {
+    Hello hello = 1;
+    Create create = 2;
+    Attach attach = 3;
+    SessionRef detach = 4;
+    Resize resize = 5;
+    SessionRef kill = 6;
+    List list = 7;
+    Shutdown shutdown = 8;
+  }
+}
+
+message Hello {
+  uint32 protocol = 1;   // must equal the host's version (2 = protobuf wire)
+}
+
+message Create {
+  string id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  string app = 4;
+  repeated string args = 5;
+  string cwd = 6;                 // empty = inherit
+  bool verbatim = 7;
+  bool de_elevate = 8;
+  bool fresh_env_off = 9;         // proto3 default false = freshEnv ON (matches v1 semantics)
+  map<string, string> env = 10;
+}
+
+message Attach {
+  string id = 1;
+  bool repaint = 2;
+}
+
+message SessionRef {
+  string id = 1;
+}
+
+message Resize {
+  string id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+}
+
+message List {}
+message Shutdown {}
+
+message Reply {
+  bool ok = 1;
+  string error = 2;               // set when ok = false
+  oneof body {
+    HelloReply hello = 3;
+    CreateReply create = 4;
+    AttachReply attach = 5;
+    ListReply list = 6;
+  }
+}
+
+message HelloReply {
+  uint32 protocol = 1;
+  uint32 pid = 2;
+}
+
+message CreateReply {
+  string id = 1;
+}
+
+message AttachReply {
+  string pipe = 1;                // data-pipe name to connect
+  uint32 cols = 2;
+  uint32 rows = 3;
+  uint32 child_pid = 4;           // 0 = unknown
+  bool has_exited = 5;
+  int32 exit_code = 6;
+  string modes = 7;               // synthesized VT reproducing mode state (DumpModes)
+  repeated string scrollback = 8; // plain-text history rows, oldest first
+}
+
+message SessionInfo {
+  string id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  uint32 child_pid = 4;
+  bool has_exited = 5;
+  int32 exit_code = 6;
+  string title = 7;
+  bool attached = 8;
+}
+
+message ListReply {
+  repeated SessionInfo sessions = 1;
+}
