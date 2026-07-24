@@ -18,7 +18,7 @@ public interface ISession : IDisposable
 {
     /// <summary>The screen model this session renders from. In-process: the live emulator; a
     /// server backend supplies a client-side replica with the same contract.</summary>
-    TerminalEmulator Emulator { get; }
+    ITerminalCore Emulator { get; }
     int Cols { get; }
     int Rows { get; }
 
@@ -63,7 +63,7 @@ public interface ISession : IDisposable
     /// <summary>Feed bytes into the EMULATOR only (display injection; never reaches the shell).</summary>
     void Inject(ReadOnlySpan<byte> bytes);
     /// <summary>Run a mutation against the emulator under <see cref="SyncRoot"/>.</summary>
-    void MutateLocked(Action<TerminalEmulator> mutate);
+    void MutateLocked(Action<ITerminalCore> mutate);
     /// <summary>Send bytes to the shell's stdin (real keystrokes).</summary>
     void Write(ReadOnlySpan<byte> bytes);
     void Resize(int cols, int rows);

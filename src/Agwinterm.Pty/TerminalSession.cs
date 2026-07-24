@@ -14,7 +14,7 @@ public sealed class TerminalSession : ISession
     private readonly object _sync = new();
     private IPtyConnection? _connection;
 
-    public TerminalEmulator Emulator { get; }
+    public ITerminalCore Emulator { get; }
     public int Cols { get; private set; }
     public int Rows { get; private set; }
 
@@ -69,11 +69,17 @@ public sealed class TerminalSession : ISession
     /// <summary>Lock held while the emulator is mutated; renderers should lock this while reading the grid.</summary>
     public object SyncRoot => _sync;
 
+    /// <summary>When set (UI process, `emulator-core = rust`), new sessions build their
+    /// terminal core through this instead of the managed <see cref="TerminalEmulator"/>.</summary>
+    public static Func<int, int, ITerminalCore>? CoreFactory;
+
     public TerminalSession(int cols, int rows)
     {
         Cols = cols;
         Rows = rows;
-        Emulator = new TerminalEmulator(cols, rows);
+        // The emulator-core seam (`emulator-core = rust`): the UI process installs a factory;
+        // headless contexts (tests, the pty-host process) stay on the managed core.
+        Emulator = CoreFactory?.Invoke(cols, rows) ?? new TerminalEmulator(cols, rows);
     }
 
     /// <summary>Spawn <paramref name="app"/> and pump its output until it exits. Returns the exit code.</summary>
@@ -297,7 +303,7 @@ public sealed class TerminalSession : ISession
     /// Mutate the emulator directly under the render lock, then signal a repaint. Used to place
     /// images without pushing a large base64 payload through the parser under the lock.
     /// </summary>
-    public void MutateLocked(Action<TerminalEmulator> mutate)
+    public void MutateLocked(Action<ITerminalCore> mutate)
     {
         lock (_sync) mutate(Emulator);
         OutputReceived?.Invoke();

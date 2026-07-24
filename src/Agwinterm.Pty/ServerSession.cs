@@ -80,7 +80,7 @@ public sealed class ServerSession : ISession
     private volatile bool _started;
     private volatile bool _disposed;
 
-    public TerminalEmulator Emulator { get; }
+    public ITerminalCore Emulator { get; }
     public int Cols { get; private set; }
     public int Rows { get; private set; }
     public int? ChildProcessId => _childPid;
@@ -265,7 +265,7 @@ public sealed class ServerSession : ISession
         OutputReceived?.Invoke();
     }
 
-    public void MutateLocked(Action<TerminalEmulator> mutate)
+    public void MutateLocked(Action<ITerminalCore> mutate)
     {
         lock (_sync) mutate(Emulator);
         OutputReceived?.Invoke();

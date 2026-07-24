@@ -424,6 +424,7 @@ internal partial class Program : ISessionHost, IWindowHost
         // Process-global setup (config/themes/keymap + window class + shared D2D/DWrite objects).
         _config = LoadOrCreateConfig();
         _sessionBackend = SessionBackends.Resolve(_config.SessionHost, _argPipe ?? _appId, AppExePath);
+        ResolveEmulatorCore();
         _allThemes = LoadThemes();
         _theme = FindTheme(_config.Theme);
         LoadKeymap();
@@ -478,6 +479,9 @@ internal partial class Program : ISessionHost, IWindowHost
             front ??= w;
         }
         Frontmost = front!;
+        // Experimental knobs announce themselves once at startup — never a silent mystery.
+        if (_emulatorCoreNote is { } note)
+            front!.Post(() => front.ShowToast(note, 6000));
         // Server mode is experimental (#105) — say so once at startup, so a flipped knob is never
         // a silent mystery ("why is there a second agwinterm process?").
         if (_sessionBackend is ServerSessionBackend)
@@ -608,6 +612,35 @@ internal partial class Program : ISessionHost, IWindowHost
     // (the "overlapping text / shifted colored text" bug, issue #120).
     private static IDWriteFont? _familyFont;
     private static readonly Dictionary<int, bool> _glyphInFont = new();
+
+    // Deferred startup toast when `emulator-core = rust` couldn't load (shown once a window exists).
+    private static string? _emulatorCoreNote;
+
+    /// <summary>Wire `emulator-core = rust`: probe the native dll (next to the exe, then the
+    /// dev-tree cargo output), verify the ABI handshake, and install the session core factory.
+    /// Any failure falls back to the managed emulator — visibly, never silently.</summary>
+    private static void ResolveEmulatorCore()
+    {
+        if (_config.EmulatorCore != "rust") { Agwinterm.Pty.TerminalSession.CoreFactory = null; return; }
+        string? err = null;
+        foreach (var dll in new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "agwinterm_core.dll"),
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "..",
+                "native", "agwinterm-core", "target", "release", "agwinterm_core.dll"),
+        })
+        {
+            if (RustEmulatorCore.TryLoad(Path.GetFullPath(dll), out err))
+            {
+                Agwinterm.Pty.TerminalSession.CoreFactory = (c, r) => new RustTerminalCore(c, r);
+                _emulatorCoreNote = "emulator-core = rust (EXPERIMENTAL) — new sessions run the native core";
+                return;
+            }
+            if (err is not null && !err.StartsWith("native core not found")) break;   // found but bad → stop probing
+        }
+        Agwinterm.Pty.TerminalSession.CoreFactory = null;
+        _emulatorCoreNote = "emulator-core = rust unavailable (" + (err ?? "unknown") + ") — using managed";
+    }
 
     private static void ResolveFamilyFont()
     {

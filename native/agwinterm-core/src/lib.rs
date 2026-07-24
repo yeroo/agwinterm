@@ -26,7 +26,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 6;
+pub const ABI_VERSION: u32 = 7;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -429,6 +429,9 @@ pub struct FfiEmuInfo {
     pub mouse_sgr: u32,
     pub bracketed_paste: u32,
     pub keyboard_flags: i32,
+    pub scroll_top: u32,
+    pub scroll_bottom: u32,
+    pub mark_count: u32,
 }
 
 /// # Safety
@@ -457,8 +460,63 @@ pub unsafe extern "C" fn agwcore_emu_info(p: *mut Terminal, out: *mut FfiEmuInfo
             mouse_sgr: ms as u32,
             bracketed_paste: e.bracketed_paste as u32,
             keyboard_flags: e.keyboard_flags(),
+            scroll_top: e.scroll_top() as u32,
+            scroll_bottom: e.scroll_bottom() as u32,
+            mark_count: e.marks().len() as u32,
         };
     }
+    true
+}
+
+/// One FTCS shell mark over the ABI (buffer-absolute lines; -1 = unset).
+#[repr(C)]
+pub struct FfiMark {
+    pub prompt_line: i64,
+    pub command_line: i64,
+    pub output_line: i64,
+    pub end_line: i64,
+    pub has_exit: u32,
+    pub exit_code: i32,
+}
+
+/// Copy all FTCS marks (oldest first) into `out`; returns how many were written.
+/// # Safety
+/// `p` from `agwcore_emu_new`; `out` points to `cap` writable FfiMarks.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_marks(p: *mut Terminal, out: *mut FfiMark, cap: u32) -> u32 {
+    let Some(t) = (unsafe { p.as_mut() }) else { return 0 };
+    if out.is_null() {
+        return 0;
+    }
+    let marks = t.emu.marks();
+    let n = marks.len().min(cap as usize);
+    let out = unsafe { core::slice::from_raw_parts_mut(out, n) };
+    for (i, m) in marks.iter().take(n).enumerate() {
+        out[i] = FfiMark {
+            prompt_line: m.prompt_line,
+            command_line: m.command_line,
+            output_line: m.output_line,
+            end_line: m.end_line,
+            has_exit: m.exit_code.is_some() as u32,
+            exit_code: m.exit_code.unwrap_or(0),
+        };
+    }
+    n as u32
+}
+
+/// Seed the scrollback with plain-text lines ('\n'-separated UTF-8) — the restore path.
+/// # Safety
+/// `p` from `agwcore_emu_new`; `text` points to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_seed_scrollback(p: *mut Terminal, text: *const u8, len: u32) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    if text.is_null() {
+        return len == 0;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(text, len as usize) };
+    let s = String::from_utf8_lossy(bytes);
+    let lines: Vec<&str> = s.split('\n').collect();
+    t.emu.seed_scrollback(&lines);
     true
 }
 

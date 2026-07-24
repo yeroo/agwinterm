@@ -2,7 +2,7 @@ using System.Text;
 
 namespace Agwinterm.Core;
 
-public sealed class TerminalEmulator : IParserPerformer
+public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
 {
     private readonly VtParser _parser;
     private readonly ScreenBuffer _main;
