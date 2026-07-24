@@ -14,6 +14,11 @@ typedef struct _agwinterm_ptyhost_Hello {
     uint32_t protocol; /* must equal the host's version (2 = protobuf wire) */
 } agwinterm_ptyhost_Hello;
 
+typedef struct _agwinterm_ptyhost_Create_EnvEntry {
+    char key[64];
+    char value[192];
+} agwinterm_ptyhost_Create_EnvEntry;
+
 typedef struct _agwinterm_ptyhost_Create {
     char id[128];
     uint32_t cols;
@@ -25,13 +30,9 @@ typedef struct _agwinterm_ptyhost_Create {
     bool verbatim;
     bool de_elevate;
     bool fresh_env_off; /* proto3 default false = freshEnv ON (matches v1 semantics) */
-    pb_callback_t env;
+    pb_size_t env_count;
+    agwinterm_ptyhost_Create_EnvEntry env[8];
 } agwinterm_ptyhost_Create;
-
-typedef struct _agwinterm_ptyhost_Create_EnvEntry {
-    pb_callback_t key;
-    pb_callback_t value;
-} agwinterm_ptyhost_Create_EnvEntry;
 
 typedef struct _agwinterm_ptyhost_Attach {
     char id[128];
@@ -125,8 +126,8 @@ extern "C" {
 /* Initializer values for message structs */
 #define agwinterm_ptyhost_Request_init_default   {0, {agwinterm_ptyhost_Hello_init_default}}
 #define agwinterm_ptyhost_Hello_init_default     {0}
-#define agwinterm_ptyhost_Create_init_default    {"", 0, 0, "", 0, {"", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""}, "", 0, 0, 0, {{NULL}, NULL}}
-#define agwinterm_ptyhost_Create_EnvEntry_init_default {{{NULL}, NULL}, {{NULL}, NULL}}
+#define agwinterm_ptyhost_Create_init_default    {"", 0, 0, "", 0, {"", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""}, "", 0, 0, 0, 0, {agwinterm_ptyhost_Create_EnvEntry_init_default, agwinterm_ptyhost_Create_EnvEntry_init_default, agwinterm_ptyhost_Create_EnvEntry_init_default, agwinterm_ptyhost_Create_EnvEntry_init_default, agwinterm_ptyhost_Create_EnvEntry_init_default, agwinterm_ptyhost_Create_EnvEntry_init_default, agwinterm_ptyhost_Create_EnvEntry_init_default, agwinterm_ptyhost_Create_EnvEntry_init_default}}
+#define agwinterm_ptyhost_Create_EnvEntry_init_default {"", ""}
 #define agwinterm_ptyhost_Attach_init_default    {"", 0}
 #define agwinterm_ptyhost_SessionRef_init_default {""}
 #define agwinterm_ptyhost_Resize_init_default    {"", 0, 0}
@@ -140,8 +141,8 @@ extern "C" {
 #define agwinterm_ptyhost_ListReply_init_default {{{NULL}, NULL}}
 #define agwinterm_ptyhost_Request_init_zero      {0, {agwinterm_ptyhost_Hello_init_zero}}
 #define agwinterm_ptyhost_Hello_init_zero        {0}
-#define agwinterm_ptyhost_Create_init_zero       {"", 0, 0, "", 0, {"", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""}, "", 0, 0, 0, {{NULL}, NULL}}
-#define agwinterm_ptyhost_Create_EnvEntry_init_zero {{{NULL}, NULL}, {{NULL}, NULL}}
+#define agwinterm_ptyhost_Create_init_zero       {"", 0, 0, "", 0, {"", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""}, "", 0, 0, 0, 0, {agwinterm_ptyhost_Create_EnvEntry_init_zero, agwinterm_ptyhost_Create_EnvEntry_init_zero, agwinterm_ptyhost_Create_EnvEntry_init_zero, agwinterm_ptyhost_Create_EnvEntry_init_zero, agwinterm_ptyhost_Create_EnvEntry_init_zero, agwinterm_ptyhost_Create_EnvEntry_init_zero, agwinterm_ptyhost_Create_EnvEntry_init_zero, agwinterm_ptyhost_Create_EnvEntry_init_zero}}
+#define agwinterm_ptyhost_Create_EnvEntry_init_zero {"", ""}
 #define agwinterm_ptyhost_Attach_init_zero       {"", 0}
 #define agwinterm_ptyhost_SessionRef_init_zero   {""}
 #define agwinterm_ptyhost_Resize_init_zero       {"", 0, 0}
@@ -156,6 +157,8 @@ extern "C" {
 
 /* Field tags (for use in manual encoding/decoding) */
 #define agwinterm_ptyhost_Hello_protocol_tag     1
+#define agwinterm_ptyhost_Create_EnvEntry_key_tag 1
+#define agwinterm_ptyhost_Create_EnvEntry_value_tag 2
 #define agwinterm_ptyhost_Create_id_tag          1
 #define agwinterm_ptyhost_Create_cols_tag        2
 #define agwinterm_ptyhost_Create_rows_tag        3
@@ -166,8 +169,6 @@ extern "C" {
 #define agwinterm_ptyhost_Create_de_elevate_tag  8
 #define agwinterm_ptyhost_Create_fresh_env_off_tag 9
 #define agwinterm_ptyhost_Create_env_tag         10
-#define agwinterm_ptyhost_Create_EnvEntry_key_tag 1
-#define agwinterm_ptyhost_Create_EnvEntry_value_tag 2
 #define agwinterm_ptyhost_Attach_id_tag          1
 #define agwinterm_ptyhost_Attach_repaint_tag     2
 #define agwinterm_ptyhost_SessionRef_id_tag      1
@@ -245,15 +246,15 @@ X(a, STATIC,   SINGULAR, STRING,   cwd,               6) \
 X(a, STATIC,   SINGULAR, BOOL,     verbatim,          7) \
 X(a, STATIC,   SINGULAR, BOOL,     de_elevate,        8) \
 X(a, STATIC,   SINGULAR, BOOL,     fresh_env_off,     9) \
-X(a, CALLBACK, REPEATED, MESSAGE,  env,              10)
-#define agwinterm_ptyhost_Create_CALLBACK pb_default_field_callback
+X(a, STATIC,   REPEATED, MESSAGE,  env,              10)
+#define agwinterm_ptyhost_Create_CALLBACK NULL
 #define agwinterm_ptyhost_Create_DEFAULT NULL
 #define agwinterm_ptyhost_Create_env_MSGTYPE agwinterm_ptyhost_Create_EnvEntry
 
 #define agwinterm_ptyhost_Create_EnvEntry_FIELDLIST(X, a) \
-X(a, CALLBACK, SINGULAR, STRING,   key,               1) \
-X(a, CALLBACK, SINGULAR, STRING,   value,             2)
-#define agwinterm_ptyhost_Create_EnvEntry_CALLBACK pb_default_field_callback
+X(a, STATIC,   SINGULAR, STRING,   key,               1) \
+X(a, STATIC,   SINGULAR, STRING,   value,             2)
+#define agwinterm_ptyhost_Create_EnvEntry_CALLBACK NULL
 #define agwinterm_ptyhost_Create_EnvEntry_DEFAULT NULL
 
 #define agwinterm_ptyhost_Attach_FIELDLIST(X, a) \
@@ -373,19 +374,19 @@ extern const pb_msgdesc_t agwinterm_ptyhost_ListReply_msg;
 #define agwinterm_ptyhost_ListReply_fields &agwinterm_ptyhost_ListReply_msg
 
 /* Maximum encoded size of messages (where known) */
-/* agwinterm_ptyhost_Request_size depends on runtime parameters */
-/* agwinterm_ptyhost_Create_size depends on runtime parameters */
-/* agwinterm_ptyhost_Create_EnvEntry_size depends on runtime parameters */
 /* agwinterm_ptyhost_Reply_size depends on runtime parameters */
 /* agwinterm_ptyhost_AttachReply_size depends on runtime parameters */
 /* agwinterm_ptyhost_SessionInfo_size depends on runtime parameters */
 /* agwinterm_ptyhost_ListReply_size depends on runtime parameters */
-#define AGWINTERM_PTYHOST_PTYHOST_PB_H_MAX_SIZE  agwinterm_ptyhost_Resize_size
+#define AGWINTERM_PTYHOST_PTYHOST_PB_H_MAX_SIZE  agwinterm_ptyhost_Request_size
 #define agwinterm_ptyhost_Attach_size            132
 #define agwinterm_ptyhost_CreateReply_size       130
+#define agwinterm_ptyhost_Create_EnvEntry_size   259
+#define agwinterm_ptyhost_Create_size            6960
 #define agwinterm_ptyhost_HelloReply_size        12
 #define agwinterm_ptyhost_Hello_size             6
 #define agwinterm_ptyhost_List_size              0
+#define agwinterm_ptyhost_Request_size           6963
 #define agwinterm_ptyhost_Resize_size            142
 #define agwinterm_ptyhost_SessionRef_size        130
 #define agwinterm_ptyhost_Shutdown_size          0

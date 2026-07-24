@@ -34,6 +34,12 @@ jobs:
         # hard merge gate.
         run: cargo build --release --manifest-path native/Cargo.toml
 
+      - name: Build agwinterm-lite (C++/GDI client)
+        # Compiles the lite client against the Rust core dll + committed nanopb sources, so a
+        # protocol/schema drift or C++ break fails the merge. cl.exe is on windows-latest.
+        shell: pwsh
+        run: ./lite/build.ps1
+
       - name: Test (Core + Pty)
         # One retry, but ONLY for the known .NET 10 test-host native crash (issue #118:
         # AccessViolation in the IOCP poller under named-pipe churn — "Test Run Aborted" with
