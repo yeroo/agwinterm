@@ -32,7 +32,7 @@ jobs:
         # RustParityTests skip silently when the crate dll is absent; building it here makes
         # the C#↔Rust differential oracles (wcwidth, screen, parser, emulator, images) a
         # hard merge gate.
-        run: cargo build --release --manifest-path native/agwinterm-core/Cargo.toml
+        run: cargo build --release --manifest-path native/Cargo.toml
 
       - name: Test (Core + Pty)
         # One retry, but ONLY for the known .NET 10 test-host native crash (issue #118:
