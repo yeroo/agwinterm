@@ -14,19 +14,26 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
 {
     private readonly string _appId;
     private readonly string? _exePath;
+    private readonly string _spawnArgs;
+    private readonly string _name;
     private readonly object _lock = new();
     private PtyHostClient? _client;
 
     /// <param name="appId">Instance id — names the host's control pipe.</param>
-    /// <param name="exePath">The agwinterm exe to spawn with <c>--pty-host</c> when no host is
-    /// running; null = require an already-running host (tests).</param>
-    public ServerSessionBackend(string appId, string? exePath)
+    /// <param name="exePath">The host exe to spawn when none is running; null = require an
+    /// already-running host (tests).</param>
+    /// <param name="spawnArgs">Argument string for the host exe. The C# host is the app itself
+    /// (<c>--pty-host --pipe ...</c>); the Rust host is a standalone binary (<c>--pipe ...</c>).</param>
+    /// <param name="name">Diagnostics name ("server" or "server-rust").</param>
+    public ServerSessionBackend(string appId, string? exePath, string? spawnArgs = null, string name = "server")
     {
         _appId = appId;
         _exePath = exePath;
+        _spawnArgs = spawnArgs ?? $"--pty-host --pipe \"{appId}\"";
+        _name = name;
     }
 
-    public string Name => "server";
+    public string Name => _name;
 
     public ISession Create(string id, int cols, int rows)
     {
@@ -45,7 +52,7 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
             {
                 if (_exePath is null || !File.Exists(_exePath))
                     throw new InvalidOperationException("no pty-host is running and no exe to spawn one");
-                var psi = new ProcessStartInfo(_exePath, $"--pty-host --pipe \"{_appId}\"")
+                var psi = new ProcessStartInfo(_exePath, _spawnArgs)
                 { UseShellExecute = false, CreateNoWindow = true };
                 Process.Start(psi);
                 for (int i = 0; i < 50 && !PtyHostClient.IsRunning(_appId); i++) Thread.Sleep(100);

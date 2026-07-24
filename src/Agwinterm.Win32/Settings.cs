@@ -110,7 +110,8 @@ internal partial class Program
         Tog(0, "confirm-close-session", "Confirm before closing");
         // pty-host opt-in (#105): server mode keeps shells alive across UI restarts/updates/crashes.
         Drop(0, "session-host", "Session host (shells survive restarts)",
-            new[] { "In-process (default)", "Pty-host server (experimental)" }, new[] { "in-process", "server" });
+            new[] { "In-process (default)", "Pty-host server (experimental)", "Pty-host server: Rust (experimental)" },
+            new[] { "in-process", "server", "server-rust" });
         // Rust core opt-in: new sessions parse/render state in native/agwinterm-core.
         Drop(0, "emulator-core", "Terminal core (new sessions)",
             new[] { "Managed (default)", "Rust (experimental)" }, new[] { "managed", "rust" });

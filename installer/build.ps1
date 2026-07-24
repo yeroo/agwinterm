@@ -39,13 +39,15 @@ if ($LASTEXITCODE -ne 0) { throw "ctl publish failed" }
 # Rust emulator core: build it and drop the dll next to the exe, so an INSTALLED copy can run
 # `emulator-core = rust` (ResolveEmulatorCore probes exeDir\agwinterm_core.dll; without this it
 # silently falls back to managed for real users). The oracle-gated crate is deterministic.
-Write-Host "== build agwinterm-core (Rust) ==" -ForegroundColor Cyan
+Write-Host "== build agwinterm-core + pty-host (Rust) ==" -ForegroundColor Cyan
 & cargo build --release --manifest-path (Join-Path $root "native\Cargo.toml")
-if ($LASTEXITCODE -ne 0) { throw "cargo build (core) failed" }
+if ($LASTEXITCODE -ne 0) { throw "cargo build (native) failed" }
+# core dll -> `emulator-core = rust`; pty-host exe -> `session-host = server-rust`
 Copy-Item (Join-Path $root "native\target\release\agwinterm_core.dll") $stage -Force
+Copy-Item (Join-Path $root "native\target\release\agwinterm-ptyhost.exe") $stage -Force
 
 # sanity: required payload present
-foreach ($f in @("Agwinterm.Win32.exe","agwintermctl.exe","agwinterm_core.dll","assets\agwinterm.ico")) {
+foreach ($f in @("Agwinterm.Win32.exe","agwintermctl.exe","agwinterm_core.dll","agwinterm-ptyhost.exe","assets\agwinterm.ico")) {
   if (-not (Test-Path (Join-Path $stage $f))) { throw "stage missing $f" }
 }
 if (-not (Get-ChildItem (Join-Path $stage "themes") -Filter *.conf -ErrorAction SilentlyContinue)) { throw "stage missing themes\*.conf" }

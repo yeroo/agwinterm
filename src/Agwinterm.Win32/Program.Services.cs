@@ -913,9 +913,12 @@ internal partial class Program
             // Live switch (#105 2d): NEW sessions use the chosen backend immediately; existing panes
             // keep the one they were born with (both kinds coexist fine) and converge on restart.
             _sessionBackend = SessionBackends.Resolve(_config.SessionHost, _argPipe ?? _appId, AppExePath);
-            ShowToast(_config.SessionHost == "server"
-                ? "server mode ON (experimental) — new sessions survive UI restarts; restart agwinterm to move existing ones"
-                : "in-process mode — new sessions run in the window process; restart agwinterm to convert existing ones", 6000);
+            ShowToast(_config.SessionHost switch
+            {
+                "server" => "server mode ON (experimental) — new sessions survive UI restarts; restart agwinterm to move existing ones",
+                "server-rust" => "Rust server mode ON (experimental) — new sessions live in the Rust pty-host; restart agwinterm to move existing ones",
+                _ => "in-process mode — new sessions run in the window process; restart agwinterm to convert existing ones",
+            }, 6000);
         }
         if (key == "emulator-core")
         {
