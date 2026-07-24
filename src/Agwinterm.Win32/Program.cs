@@ -382,6 +382,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private static string? _argDir;
     private static bool _argMaximized, _argFullscreen;
     private static bool _argPtyHost;   // run as the headless pty-host (#105) instead of a window
+    private static string? _argDefaultSessionHost;   // first-run seed for session-host (installer hook)
 
     private static void ParseLaunchArgs(string[] args)
     {
@@ -396,6 +397,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 case "--no-restore": _argNoRestore = true; break;
                 case "--pipe" when i + 1 < args.Length: _argPipe = args[++i]; break;
                 case "--pty-host": _argPtyHost = true; break;
+                case "--default-session-host" when i + 1 < args.Length: _argDefaultSessionHost = args[++i]; break;
                 case "--app-id" when i + 1 < args.Length: ++i; break; // consumed by ResolveAppId (namespaces data dir + pipe)
                 // unknown args are ignored (forward compatibility)
             }

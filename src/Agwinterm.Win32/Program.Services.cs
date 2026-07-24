@@ -1572,10 +1572,23 @@ internal partial class Program
             if (!File.Exists(path))
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                File.WriteAllText(path, TerminalConfig.DefaultText);
+                File.WriteAllText(path, SeedConfigText());
             }
             return TerminalConfig.Load(path);
         }
         catch { return new TerminalConfig(); }
+    }
+
+    // The first-run config template. Honors --default-session-host (the installer passes
+    // "server-rust" so a fresh install defaults new sessions to the Rust pty-host) without
+    // touching the compiled global default — existing configs are never rewritten, and the
+    // Settings UI stays authoritative from then on. Unknown values leave the template as-is.
+    private static string SeedConfigText()
+    {
+        string text = TerminalConfig.DefaultText;
+        if (_argDefaultSessionHost is "in-process" or "server" or "server-rust")
+            text = System.Text.RegularExpressions.Regex.Replace(
+                text, @"(?m)^(\s*session-host\s*=).*$", "$1 " + _argDefaultSessionHost);
+        return text;
     }
 }
