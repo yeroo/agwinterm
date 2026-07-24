@@ -16,7 +16,7 @@ namespace Agwinterm.Core;
 /// </summary>
 public sealed unsafe class RustEmulatorCore : IDisposable
 {
-    public const uint RequiredAbi = 7;
+    public const uint RequiredAbi = 8;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Info
@@ -97,6 +97,15 @@ public sealed unsafe class RustEmulatorCore : IDisposable
             _freeBuf = Get<FreeBufFn>("agwcore_free_buf");
             _marks = Get<EmuMarksFn>("agwcore_emu_marks");
             _seed = Get<EmuSeedFn>("agwcore_emu_seed_scrollback");
+            _placementCount = Get<EmuPlacementCountFn>("agwcore_emu_placement_count");
+            _copyPlacements = Get<EmuCopyPlacementsFn>("agwcore_emu_copy_placements");
+            _imageMetas = Get<EmuImageMetasFn>("agwcore_emu_image_metas");
+            _copyImageData = Get<EmuCopyImageDataFn>("agwcore_emu_copy_image_data");
+            _hasImage = Get<EmuHasImageFn>("agwcore_emu_has_image");
+            _clearPlacements = Get<EmuClearPlacementsFn>("agwcore_emu_clear_placements");
+            _setImageData = Get<EmuSetImageDataFn>("agwcore_emu_set_image_data");
+            _placeImage = Get<EmuPlaceImageFn>("agwcore_emu_place_image");
+            _placeSixel = Get<EmuPlaceSixelFn>("agwcore_emu_place_sixel");
             _lib = lib;
             return true;
         }
@@ -191,6 +200,82 @@ public sealed unsafe class RustEmulatorCore : IDisposable
     {
         byte[] bytes = System.Text.Encoding.UTF8.GetBytes(joinedLines);
         fixed (byte* p = bytes.Length == 0 ? new byte[1] : bytes) _seed(_handle, p, (uint)bytes.Length);
+    }
+
+    // ---- images (ABI v8) ----
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NativePlacement
+    {
+        public int ImageId;
+        public long Row, Col;
+        public int Cols, Rows, SrcX, SrcY, SrcW, SrcH;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NativeImageMeta
+    {
+        public int Id, Format, Width, Height;
+        public uint DataLen;
+    }
+
+    private delegate uint EmuPlacementCountFn(nint p);
+    private delegate uint EmuCopyPlacementsFn(nint p, NativePlacement* o, uint cap);
+    private delegate uint EmuImageMetasFn(nint p, NativeImageMeta* o, uint cap);
+    private delegate uint EmuCopyImageDataFn(nint p, int id, byte* o, uint cap);
+    private delegate bool EmuHasImageFn(nint p, int id);
+    private delegate void EmuClearPlacementsFn(nint p);
+    private delegate bool EmuSetImageDataFn(nint p, int id, int format, int width, int height, byte* data, uint len);
+    private delegate bool EmuPlaceImageFn(nint p, int id, long row, long col, int cols, int rows, int sx, int sy, int sw, int sh);
+    private delegate bool EmuPlaceSixelFn(nint p, byte* data, uint len);
+    private static EmuPlacementCountFn _placementCount = null!;
+    private static EmuCopyPlacementsFn _copyPlacements = null!;
+    private static EmuImageMetasFn _imageMetas = null!;
+    private static EmuCopyImageDataFn _copyImageData = null!;
+    private static EmuHasImageFn _hasImage = null!;
+    private static EmuClearPlacementsFn _clearPlacements = null!;
+    private static EmuSetImageDataFn _setImageData = null!;
+    private static EmuPlaceImageFn _placeImage = null!;
+    private static EmuPlaceSixelFn _placeSixel = null!;
+
+    public NativePlacement[] GetPlacements()
+    {
+        uint count = _placementCount(_handle);
+        if (count == 0) return Array.Empty<NativePlacement>();
+        var arr = new NativePlacement[count];
+        uint n; fixed (NativePlacement* p = arr) n = _copyPlacements(_handle, p, count);
+        return n == count ? arr : arr[..(int)n];
+    }
+
+    public NativeImageMeta[] GetImageMetas()
+    {
+        // Images are few; grow the buffer until the returned count fits inside it.
+        for (int cap = 16; ; cap *= 2)
+        {
+            var arr = new NativeImageMeta[cap];
+            uint n; fixed (NativeImageMeta* p = arr) n = _imageMetas(_handle, p, (uint)cap);
+            if (n < cap) return n == 0 ? Array.Empty<NativeImageMeta>() : arr[..(int)n];
+        }
+    }
+
+    public byte[] GetImageData(int id, int dataLen)
+    {
+        if (dataLen <= 0) return Array.Empty<byte>();
+        var buf = new byte[dataLen];
+        uint n; fixed (byte* p = buf) n = _copyImageData(_handle, id, p, (uint)dataLen);
+        return n == dataLen ? buf : buf[..(int)n];
+    }
+
+    public bool HasImage(int id) => _hasImage(_handle, id);
+    public void ClearPlacements() => _clearPlacements(_handle);
+    public void SetImageData(int id, int format, int width, int height, byte[] data)
+    {
+        fixed (byte* p = data.Length == 0 ? new byte[1] : data) _setImageData(_handle, id, format, width, height, p, (uint)data.Length);
+    }
+    public void PlaceImage(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh)
+        => _placeImage(_handle, id, row, col, cols, rows, sx, sy, sw, sh);
+    public bool PlaceSixel(byte[] data)
+    {
+        fixed (byte* p = data.Length == 0 ? new byte[1] : data) return _placeSixel(_handle, p, (uint)data.Length);
     }
 
     private string GetText(uint which)

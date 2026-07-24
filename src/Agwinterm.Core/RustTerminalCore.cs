@@ -9,9 +9,10 @@ namespace Agwinterm.Core;
 /// reads (renderer snapshots, selection, dumps) stay lock-cheap managed accesses with
 /// unchanged semantics. All calls run under the session lock per the ISession contract.
 ///
-/// Phase-2 gaps (documented in the config text): host actions are not invoked
-/// (no OSC 52 clipboard / notifications / kitty-query responses), and images
-/// (kitty/sixel) are not surfaced — panes that need those want the managed core.
+/// Images (kitty/sixel) ARE surfaced as of ABI v8: the Rust core decodes them and this
+/// adapter exposes <see cref="Images"/> / <see cref="Placements"/> (see SyncImages).
+/// Remaining phase-2 gap: host actions are not invoked (no OSC 52 clipboard /
+/// notifications / kitty-query responses) — panes that need those want the managed core.
 /// </summary>
 public sealed class RustTerminalCore : ITerminalCore, IDisposable
 {
@@ -61,6 +62,7 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
         _title = _rust.Title;
         _cwd = _rust.Cwd;
         _marks = _rust.GetMarks();
+        SyncImages();   // stream-delivered kitty/sixel become visible on the next frame
     }
 
     // ---- content ----
@@ -114,17 +116,57 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     // ---- host actions: stored but never invoked by the Rust core (phase 2) ----
     public IHostActions? Host { get; set; }
 
-    // ---- images: not surfaced in the experimental phase ----
-    private static readonly Dictionary<int, KittyImage> NoImages = new();
-    private static readonly List<ImagePlacement> NoPlacements = new();
-    public IReadOnlyDictionary<int, KittyImage> Images => NoImages;
-    public IReadOnlyList<ImagePlacement> Placements => NoPlacements;
-    public void ClearPlacements() { }
-    public bool HasImage(int id) => false;
-    public void SetImageData(int id, KittyFormat format, int width, int height, byte[] data) { }
+    // ---- images (ABI v8): surfaced from the Rust core; KittyImage pixels cached per id so the
+    // renderer uploads a texture only once, refreshed on Sync when the id set changes. ----
+    private readonly Dictionary<int, KittyImage> _imageCache = new();
+    private List<ImagePlacement> _placements = new();
+
+    private void SyncImages()
+    {
+        var metas = _rust.GetImageMetas();
+        // Add newly-transmitted images (fetch pixels once); drop images the core no longer holds.
+        var live = new HashSet<int>(metas.Length);
+        foreach (var m in metas)
+        {
+            live.Add(m.Id);
+            if (!_imageCache.ContainsKey(m.Id))
+                _imageCache[m.Id] = new KittyImage(m.Id, (KittyFormat)m.Format, m.Width, m.Height,
+                    _rust.GetImageData(m.Id, (int)m.DataLen));
+        }
+        if (_imageCache.Count > live.Count)
+            foreach (var id in _imageCache.Keys.Where(k => !live.Contains(k)).ToList())
+                _imageCache.Remove(id);
+
+        var pls = _rust.GetPlacements();
+        var list = new List<ImagePlacement>(pls.Length);
+        foreach (var p in pls)
+            list.Add(new ImagePlacement(p.ImageId, (int)p.Row, (int)p.Col, p.Cols, p.Rows, p.SrcX, p.SrcY, p.SrcW, p.SrcH));
+        _placements = list;
+    }
+
+    public IReadOnlyDictionary<int, KittyImage> Images => _imageCache;
+    public IReadOnlyList<ImagePlacement> Placements => _placements;
+    public void ClearPlacements() { _rust.ClearPlacements(); _placements = new(); }
+    public bool HasImage(int id) => _rust.HasImage(id);
+    public void SetImageData(int id, KittyFormat format, int width, int height, byte[] data)
+    {
+        _rust.SetImageData(id, (int)format, width, height, data);
+        SyncImages();
+    }
     public void PlaceImage(int id, int row, int col, int cols, int rows,
-        int srcX = 0, int srcY = 0, int srcW = 0, int srcH = 0) { }
-    public bool PlaceSixel(byte[] data) => false;
+        int srcX = 0, int srcY = 0, int srcW = 0, int srcH = 0)
+    {
+        _rust.PlaceImage(id, row, col, cols, rows, srcX, srcY, srcW, srcH);
+        SyncImages();
+    }
+    public bool PlaceSixel(byte[] data)
+    {
+        bool ok = _rust.PlaceSixel(data);
+        if (ok) { Sync(); }   // sixel advances the cursor + scrolls, so refresh everything
+        return ok;
+    }
+    // Cell pixel size for sixel layout — mirror to the Rust core is not needed (defaults match);
+    // exposed for interface parity.
     public int CellPixelWidth { get; set; } = 8;
     public int CellPixelHeight { get; set; } = 18;
 

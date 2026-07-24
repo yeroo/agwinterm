@@ -23,7 +23,7 @@
 #include "proto/pb_decode.h"
 #include "control.h"
 
-// ---- agwinterm-core C ABI (ABI v7) ----
+// ---- agwinterm-core C ABI (ABI v8) ----
 struct FfiCell {
     int32_t rune;
     uint32_t fg, bg, attrs, width;
@@ -52,7 +52,7 @@ static bool (*emu_copy_grid)(void*, FfiCell*, uint32_t);
 static bool (*emu_copy_history_row)(void*, uint32_t, FfiCell*, uint32_t);
 static uint32_t (*emu_marks)(void*, FfiMark*, uint32_t);
 
-static constexpr uint32_t kRequiredAbi = 7;
+static constexpr uint32_t kRequiredAbi = 8;
 static constexpr uint32_t kAttrBold = 1, kAttrItalic = 2, kAttrUnderline = 4,
                           kAttrInverse = 8, kAttrDim = 16, kAttrStrike = 32;
 static constexpr uint32_t kProtocolVersion = 2;
@@ -187,7 +187,7 @@ static void loadCore() {
     emu_marks = (decltype(emu_marks))GetProcAddress(m, "agwcore_emu_marks");
     if (!core_abi || !emu_new || !emu_feed || !emu_info || !emu_copy_grid || !emu_resize || !emu_free || !emu_copy_history_row || !emu_marks)
         fatal(L"agwinterm_core.dll: exports missing");
-    if (core_abi() != kRequiredAbi) fatal(L"agwinterm_core.dll: ABI mismatch (need v7)");
+    if (core_abi() != kRequiredAbi) fatal(L"agwinterm_core.dll: ABI mismatch (need v8)");
 }
 
 static void connectControl() {

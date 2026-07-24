@@ -26,7 +26,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 7;
+pub const ABI_VERSION: u32 = 8;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -518,6 +518,137 @@ pub unsafe extern "C" fn agwcore_emu_seed_scrollback(p: *mut Terminal, text: *co
     let lines: Vec<&str> = s.split('\n').collect();
     t.emu.seed_scrollback(&lines);
     true
+}
+
+// ---- images (ABI v8): kitty/sixel surface for emulator-core = rust ----
+
+/// One image placement over the ABI (mirrors ImagePlacement).
+#[repr(C)]
+pub struct FfiPlacement {
+    pub image_id: i32,
+    pub row: i64,
+    pub col: i64,
+    pub cols: i32,
+    pub rows: i32,
+    pub src_x: i32,
+    pub src_y: i32,
+    pub src_w: i32,
+    pub src_h: i32,
+}
+
+/// Image metadata (not the pixels — those come via agwcore_emu_copy_image_data).
+#[repr(C)]
+pub struct FfiImageMeta {
+    pub id: i32,
+    pub format: i32,
+    pub width: i32,
+    pub height: i32,
+    pub data_len: u32,
+}
+
+/// Number of live placements (for the caller to size its buffer).
+/// # Safety
+/// `p` from `agwcore_emu_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_placement_count(p: *mut Terminal) -> u32 {
+    (unsafe { p.as_mut() }).map_or(0, |t| t.emu.placements().len() as u32)
+}
+
+/// Copy all placements (z-order of arrival) into `out`; returns how many were written.
+/// # Safety
+/// `p` from `agwcore_emu_new`; `out` points to `cap` writable FfiPlacements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_copy_placements(p: *mut Terminal, out: *mut FfiPlacement, cap: u32) -> u32 {
+    let Some(t) = (unsafe { p.as_mut() }) else { return 0 };
+    if out.is_null() {
+        return 0;
+    }
+    let pl = t.emu.placements();
+    let n = pl.len().min(cap as usize);
+    let out = unsafe { core::slice::from_raw_parts_mut(out, n) };
+    for (i, p) in pl.iter().take(n).enumerate() {
+        out[i] = FfiPlacement {
+            image_id: p.image_id, row: p.row, col: p.col, cols: p.cols, rows: p.rows,
+            src_x: p.src_x, src_y: p.src_y, src_w: p.src_w, src_h: p.src_h,
+        };
+    }
+    n as u32
+}
+
+/// Copy image-id + metadata for every transmitted image (ascending id). Pixel data is fetched
+/// separately (agwcore_emu_copy_image_data), so the C# side uploads a texture only once per id.
+/// Returns the number written.
+/// # Safety
+/// `p` from `agwcore_emu_new`; `out` points to `cap` writable FfiImageMeta.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_image_metas(p: *mut Terminal, out: *mut FfiImageMeta, cap: u32) -> u32 {
+    let Some(t) = (unsafe { p.as_mut() }) else { return 0 };
+    if out.is_null() {
+        return 0;
+    }
+    let imgs = t.emu.images();
+    let n = imgs.len().min(cap as usize);
+    let out = unsafe { core::slice::from_raw_parts_mut(out, n) };
+    for (i, (id, img)) in imgs.iter().take(n).enumerate() {
+        out[i] = FfiImageMeta { id: *id, format: img.format, width: img.width, height: img.height, data_len: img.data.len() as u32 };
+    }
+    n as u32
+}
+
+/// Copy one image's raw bytes into `out` (size it from FfiImageMeta.data_len). Returns bytes written.
+/// # Safety
+/// `p` from `agwcore_emu_new`; `out` points to `cap` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_copy_image_data(p: *mut Terminal, id: i32, out: *mut u8, cap: u32) -> u32 {
+    let Some(t) = (unsafe { p.as_mut() }) else { return 0 };
+    let Some(img) = t.emu.images().get(&id) else { return 0 };
+    if out.is_null() || (cap as usize) < img.data.len() {
+        return 0;
+    }
+    unsafe { core::ptr::copy_nonoverlapping(img.data.as_ptr(), out, img.data.len()) };
+    img.data.len() as u32
+}
+
+/// # Safety: `p` from `agwcore_emu_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_has_image(p: *mut Terminal, id: i32) -> bool {
+    (unsafe { p.as_mut() }).is_some_and(|t| t.emu.has_image(id))
+}
+
+/// # Safety: `p` from `agwcore_emu_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_clear_placements(p: *mut Terminal) {
+    if let Some(t) = (unsafe { p.as_mut() }) {
+        t.emu.clear_placements();
+    }
+}
+
+/// # Safety: `p` from `agwcore_emu_new`; `data` points to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_set_image_data(p: *mut Terminal, id: i32, format: i32, width: i32, height: i32, data: *const u8, len: u32) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    let bytes = if data.is_null() { Vec::new() } else { unsafe { core::slice::from_raw_parts(data, len as usize) }.to_vec() };
+    t.emu.set_image_data(id, format, width, height, bytes);
+    true
+}
+
+/// # Safety: `p` from `agwcore_emu_new`.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn agwcore_emu_place_image(p: *mut Terminal, id: i32, row: i64, col: i64, cols: i32, rows: i32, src_x: i32, src_y: i32, src_w: i32, src_h: i32) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    t.emu.place_image(id, row, col, cols, rows, src_x, src_y, src_w, src_h);
+    true
+}
+
+/// # Safety: `p` from `agwcore_emu_new`; `data` points to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_place_sixel(p: *mut Terminal, data: *const u8, len: u32) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    if data.is_null() {
+        return false;
+    }
+    t.emu.place_sixel_public(unsafe { core::slice::from_raw_parts(data, len as usize) })
 }
 
 /// Copy the whole visible grid, row-major, into `out` (must hold cols*rows cells).
