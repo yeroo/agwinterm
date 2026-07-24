@@ -6,6 +6,7 @@
 //!   1. wcwidth              — DONE
 //!   2. cell + screen buffer — DONE
 //!   3. VT parser            — DONE (event-stream oracle)
+//!   4. emulator             — DONE (full-state oracle; images excluded → module 5)
 //!   4. emulator (cursor, modes, SGR, scroll regions, alt screen, marks)
 //!   5. sixel/kitty image decode
 //!
@@ -13,6 +14,7 @@
 //! stage by stage; nothing is exported until its differential tests pass.
 
 pub mod cell;
+pub mod emulator;
 pub mod screen;
 pub mod vtparser;
 pub mod wcwidth;
@@ -23,7 +25,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -274,6 +276,118 @@ pub unsafe extern "C" fn agwcore_vtparse_events(bytes: *const u8, len: u32, out_
     let mut rec = RecordingPerformer(String::new());
     parser.feed(input, &mut rec);
     let mut buf = rec.0.into_bytes().into_boxed_slice();
+    unsafe { *out_len = buf.len() as u32 };
+    let ptr = buf.as_mut_ptr();
+    core::mem::forget(buf);
+    ptr
+}
+
+// ---- Emulator (module 4): opaque Terminal handle + canonical full-state dump ----
+
+use emulator::Terminal;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn agwcore_emu_new(cols: u32, rows: u32) -> *mut Terminal {
+    if cols == 0 || rows == 0 || cols > 10_000 || rows > 10_000 {
+        return core::ptr::null_mut();
+    }
+    Box::into_raw(Box::new(Terminal::new(cols as usize, rows as usize)))
+}
+
+/// # Safety
+/// `p` from `agwcore_emu_new`, freed exactly once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_free(p: *mut Terminal) {
+    if !p.is_null() {
+        drop(unsafe { Box::from_raw(p) });
+    }
+}
+
+/// # Safety
+/// `p` from `agwcore_emu_new`; `bytes` points to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_feed(p: *mut Terminal, bytes: *const u8, len: u32) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    if bytes.is_null() {
+        return false;
+    }
+    t.feed(unsafe { core::slice::from_raw_parts(bytes, len as usize) });
+    true
+}
+
+/// # Safety
+/// `p` from `agwcore_emu_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_resize(p: *mut Terminal, cols: u32, rows: u32) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    if cols == 0 || rows == 0 || cols > 10_000 || rows > 10_000 {
+        return false;
+    }
+    t.emu.resize(cols as usize, rows as usize);
+    true
+}
+
+fn dump_cell(s: &mut String, c: Cell) {
+    use core::fmt::Write;
+    let pc = |c: Color| ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
+    let _ = write!(
+        s,
+        "{:X}.{:06X}.{:06X}.{:X}.{}.{}{:02X}.{:06X}.{}{:02X}.{:06X}",
+        c.rune, pc(c.foreground), pc(c.background), c.attributes, c.width,
+        c.fg_spec.kind as u8, c.fg_spec.index, pc(c.fg_spec.rgb),
+        c.bg_spec.kind as u8, c.bg_spec.index, pc(c.bg_spec.rgb)
+    );
+}
+
+/// Canonical full-state dump (the C# oracle builds the identical text from the
+/// public TerminalEmulator surface): cursor, region, modes, kbd, title/cwd,
+/// generation, marks, every history row, every grid row. Free with agwcore_free_buf.
+/// # Safety
+/// `p` from `agwcore_emu_new`; `out_len` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut u32) -> *mut u8 {
+    use core::fmt::Write;
+    let Some(t) = (unsafe { p.as_mut() }) else { return core::ptr::null_mut() };
+    if out_len.is_null() {
+        return core::ptr::null_mut();
+    }
+    let e = &t.emu;
+    let mut s = String::new();
+    let (mc, md, mm, ms) = e.mouse_flags();
+    let _ = writeln!(s, "cursor:{},{},{}", e.cursor_row, e.cursor_col, e.cursor_visible as u8);
+    let _ = writeln!(s, "region:{},{}", e.scroll_top(), e.scroll_bottom());
+    let _ = writeln!(s, "alt:{}", e.is_alt_screen() as u8);
+    let _ = writeln!(s, "mouse:{}{}{}{}", mc as u8, md as u8, mm as u8, ms as u8);
+    let _ = writeln!(s, "paste:{}", e.bracketed_paste as u8);
+    let _ = writeln!(s, "kbd:{}", e.keyboard_flags());
+    let _ = writeln!(s, "title:{}", e.title);
+    let _ = writeln!(s, "cwd:{}", e.cwd);
+    let _ = writeln!(s, "gen:{}", e.scroll_generation);
+    for m in e.marks() {
+        let _ = writeln!(
+            s, "mark:{},{},{},{},{}",
+            m.prompt_line, m.command_line, m.output_line, m.end_line,
+            m.exit_code.map_or("none".to_string(), |v| v.to_string())
+        );
+    }
+    let (cols, rows) = (e.screen().cols(), e.screen().rows());
+    for h in 0..e.history_count() {
+        let _ = write!(s, "h{h}:");
+        for c in 0..cols {
+            if c > 0 { s.push(' '); }
+            dump_cell(&mut s, e.get_history_cell(h, c));
+        }
+        s.push('\n');
+    }
+    for r in 0..rows {
+        let _ = write!(s, "g{r}:");
+        for c in 0..cols {
+            if c > 0 { s.push(' '); }
+            dump_cell(&mut s, e.screen().get(r, c));
+        }
+        s.push('\n');
+    }
+    let mut buf = s.into_bytes().into_boxed_slice();
     unsafe { *out_len = buf.len() as u32 };
     let ptr = buf.as_mut_ptr();
     core::mem::forget(buf);

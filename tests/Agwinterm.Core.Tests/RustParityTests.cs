@@ -33,7 +33,7 @@ public class RustParityTests
     public void AbiVersion_Matches()
     {
         if (Lib == 0) return;   // crate not built — differential run is opt-in
-        Assert.Equal(3u, Fn<AbiVersion>("agwcore_abi_version")());
+        Assert.Equal(4u, Fn<AbiVersion>("agwcore_abi_version")());
     }
 
     [Fact]
@@ -288,6 +288,186 @@ public class RustParityTests
                 for (int i = 0; i < buf.Length; i += 3 + rng.Next(5))
                     buf[i] = (byte)"\x1b[]_P;m0123456789?<=>:\x07\\"[rng.Next(24)];
             AssertParserParity(buf, $"soup#{stream}");
+        }
+    }
+
+    // ---- Module 4: emulator full-state oracle ----
+
+    private delegate nint EmuNew(uint cols, uint rows);
+    private delegate void EmuFree(nint p);
+    private unsafe delegate bool EmuFeed(nint p, byte* bytes, uint len);
+    private delegate bool EmuResize(nint p, uint cols, uint rows);
+    private unsafe delegate byte* EmuStateDump(nint p, uint* outLen);
+
+    /// <summary>The canonical state dump, built from the C# emulator's public surface — must match
+    /// agwcore_emu_state_dump byte-for-byte.</summary>
+    private static string CsStateDump(TerminalEmulator e)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"cursor:{e.CursorRow},{e.CursorCol},{(e.CursorVisible ? 1 : 0)}\n");
+        sb.Append($"region:{e.ScrollTop},{e.ScrollBottom}\n");
+        sb.Append($"alt:{(e.IsAltScreen ? 1 : 0)}\n");
+        sb.Append($"mouse:{(e.MouseClick ? 1 : 0)}{(e.MouseDrag ? 1 : 0)}{(e.MouseMotion ? 1 : 0)}{(e.MouseSgr ? 1 : 0)}\n");
+        sb.Append($"paste:{(e.BracketedPaste ? 1 : 0)}\n");
+        sb.Append($"kbd:{e.KeyboardFlags}\n");
+        sb.Append($"title:{e.Title}\n");
+        sb.Append($"cwd:{e.Cwd}\n");
+        sb.Append($"gen:{e.ScrollGeneration}\n");
+        foreach (var m in e.Marks)
+            sb.Append($"mark:{m.PromptLine},{m.CommandLine},{m.OutputLine},{m.EndLine},{(m.ExitCode?.ToString() ?? "none")}\n");
+        int cols = e.Screen.Cols, rows = e.Screen.Rows;
+        for (int h = 0; h < e.HistoryCount; h++)
+        {
+            sb.Append($"h{h}:");
+            for (int c = 0; c < cols; c++) { if (c > 0) sb.Append(' '); DumpCell(sb, e.GetHistoryCell(h, c)); }
+            sb.Append('\n');
+        }
+        for (int r = 0; r < rows; r++)
+        {
+            sb.Append($"g{r}:");
+            for (int c = 0; c < cols; c++) { if (c > 0) sb.Append(' '); DumpCell(sb, e.Screen[r, c]); }
+            sb.Append('\n');
+        }
+        return sb.ToString();
+    }
+
+    private static void DumpCell(System.Text.StringBuilder sb, Cell c)
+    {
+        static uint Pk(Color x) => ((uint)x.R << 16) | ((uint)x.G << 8) | x.B;
+        sb.Append($"{c.Rune:X}.{Pk(c.Foreground):X6}.{Pk(c.Background):X6}.{(uint)c.Attributes:X}.{c.Width}");
+        sb.Append($".{(byte)c.FgSpec.Kind}{c.FgSpec.Index:X2}.{Pk(c.FgSpec.Rgb):X6}");
+        sb.Append($".{(byte)c.BgSpec.Kind}{c.BgSpec.Index:X2}.{Pk(c.BgSpec.Rgb):X6}");
+    }
+
+    private unsafe void AssertEmulatorParity(int cols, int rows, IEnumerable<byte[]> feeds, string label,
+        (int Cols, int Rows)? resizeMidway = null)
+    {
+        var emuNew = Fn<EmuNew>("agwcore_emu_new");
+        var emuFree = Fn<EmuFree>("agwcore_emu_free");
+        var emuFeed = Fn<EmuFeed>("agwcore_emu_feed");
+        var emuResize = Fn<EmuResize>("agwcore_emu_resize");
+        var emuDump = Fn<EmuStateDump>("agwcore_emu_state_dump");
+        var freeBuf = Fn<FreeBuf>("agwcore_free_buf");
+
+        var cs = new TerminalEmulator(cols, rows);
+        nint rs = emuNew((uint)cols, (uint)rows);
+        Assert.NotEqual(0, rs);
+        try
+        {
+            int step = 0; var list = feeds.ToList();
+            foreach (var chunk in list)
+            {
+                cs.Feed(chunk);
+                fixed (byte* bp = chunk.Length == 0 ? new byte[1] : chunk)
+                    Assert.True(emuFeed(rs, bp, (uint)chunk.Length));
+                if (resizeMidway is { } rm && step == list.Count / 2)
+                {
+                    cs.Resize(rm.Cols, rm.Rows);
+                    Assert.True(emuResize(rs, (uint)rm.Cols, (uint)rm.Rows));
+                }
+                // Compare the FULL state after every chunk — first divergence names the chunk.
+                string want = CsStateDump(cs);
+                uint outLen;
+                byte* buf = emuDump(rs, &outLen);
+                string got = buf == null ? "" : System.Text.Encoding.UTF8.GetString(buf, (int)outLen);
+                if (buf != null) freeBuf(buf, outLen);
+                if (want != got)
+                {
+                    var a = want.Split('\n'); var b = got.Split('\n');
+                    int i = 0; while (i < a.Length && i < b.Length && a[i] == b[i]) i++;
+                    string al = i < a.Length ? a[i] : "<end>", bl = i < b.Length ? b[i] : "<end>";
+                    Assert.Fail($"emulator divergence [{label}] chunk {step}, line {i}:\n  C#:   {Trunc(al)}\n  rust: {Trunc(bl)}");
+                }
+                step++;
+            }
+        }
+        finally { emuFree(rs); }
+
+        static string Trunc(string s) => s.Length > 220 ? s[..220] + "…" : s;
+    }
+
+    private static byte[] B(string s) =>
+        s.Any(c => c > 0xFF) ? System.Text.Encoding.UTF8.GetBytes(s) : s.Select(c => (byte)c).ToArray();
+
+    [Fact]
+    public void Emulator_CuratedScenarios_FullStateAgrees()
+    {
+        if (Lib == 0) return;
+        var scenarios = new (string Label, string[] Feeds)[]
+        {
+            ("wrap+scroll", new[] { "aaaaabbbbbcccccddddd", "eee\r\nfff\r\n", "ggg\r\nhhh\r\niii\r\n" }),
+            ("wide-edge", new[] { "abc中", "中中中", "x中\r\n", "🚀🚀" }),
+            ("controls", new[] { "ab\bX\tY\rZ", "\t\t\t\t\t\t\t\t\t\t\t\t" }),
+            ("sgr", new[] { "\x1b[1;3;4;9;31;44mX", "\x1b[38;5;104;48;2;10;20;30mY", "\x1b[38;5;999mZ",
+                            "\x1b[22;23;24;27;29;39;49mW", "\x1b[mV", "\x1b[38;2;300;256;257mQ" }),
+            ("cursor", new[] { "\x1b[5;10H*", "\x1b[2A\x1b[3B\x1b[4C\x1b[5D*", "\x1b[99;99H*", "\x1b[0;0H*",
+                               "\x1b[G\x1b[15d*", "\x1b[3G*" }),
+            ("erase-bce", new[] { "\x1b[41m", "fill\x1b[2J", "\x1b[3;3Habcdef\x1b[3;5H\x1b[K", "\x1b[1K",
+                                  "\x1b[3X", "\x1b[J", "\x1b[1J", "\x1b[3J", "\x1b[9K" }),
+            ("region", new[] { "\x1b[3;8r", "\x1b[5;1Hone\ntwo\n", "\x1b[8;1Hbottom\n\n\n", "\x1b[1;1H\x1bM\x1bM",
+                               "\x1b[2S\x1b[3T", "\x1b[0;0r", "\x1b[100;1r" }),
+            ("il-dl-ich-dch", new[] { "\x1b[4;10r\x1b[5;1HAAAA\r\nBBBB\r\nCCCC", "\x1b[5;1H\x1b[2L", "\x1b[2M",
+                                      "\x1b[99L", "\x1b[6;2H\x1b[3@", "\x1b[2P", "\x1b[99@", "\x1b[99P" }),
+            ("alt-screen", new[] { "main1\r\nmain2", "\x1b[?1049h", "ALT", "\x1b[?1049l", "\x1b[?47h", "x",
+                                   "\x1b[?47l", "\x1b[?1047h", "\x1b[?1047l" }),
+            ("save-restore", new[] { "\x1b[5;5H\x1b7", "\x1b[1;1Hmoved", "\x1b8*", "\x1bE!" }),
+            ("modes", new[] { "\x1b[?25l", "\x1b[?1000;1002;1006h", "\x1b[?1003h", "\x1b[?2004h",
+                              "\x1b[?1002l", "\x1b[?12;7727h", "\x1b[?25h" }),
+            ("osc", new[] { "\x1b]0;my title 🚀\x07", "\x1b]2;other\x1b\\", "\x1b]7;file://h/c/x\x07",
+                            "\x1b]0;ctrlchars!\x07", "\x1b]777;notify;t;b\x07", "\x1b]52;c;aGk=\x07" }),
+            ("ftcs", new[] { "\x1b]133;A\x07prompt$ ", "\x1b]133;B\x07cmd\r\n", "\x1b]133;C\x07out\r\n",
+                             "\x1b]133;D;0\x07", "\x1b]133;A\x07", "\x1b]133;A\x07", "\x1b]133;D;bad\x07" }),
+            ("kitty-kbd", new[] { "\x1b[>1u", "\x1b[=5;2u", "\x1b[=1;3u", "\x1b[<1u", "\x1b[<99u", "\x1b[=7u", "\x1b[>31u\x1b[<u" }),
+            ("scroll-history", new[] { "1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n11\r\n12\r\n",
+                                       "\x1b[2;5r\r\n\r\n\r\n\r\n\r\n", "\x1b[r\r\n\r\n" }),
+            ("unknown-seqs", new[] { "\x1b[13;37z", "\x1b[>1;2c", "\x1bZ", "\x1b[?1234h", "\x1b[?9999l", "\x07" }),
+        };
+        foreach (var (label, feeds) in scenarios)
+        {
+            AssertEmulatorParity(80, 24, feeds.Select(B), label);
+            AssertEmulatorParity(20, 6, feeds.Select(B), label + "@20x6");
+        }
+    }
+
+    [Fact]
+    public void Emulator_ResizeMidStream_FullStateAgrees()
+    {
+        if (Lib == 0) return;
+        var feeds = new[] { "one\r\ntwo\r\nthree\r\n\x1b[2;4r\x1b[31mfour", "\x1b[5;5Hafter", "more\r\ntext\r\n" };
+        AssertEmulatorParity(40, 12, feeds.Select(B), "resize-shrink", resizeMidway: (25, 8));
+        AssertEmulatorParity(20, 6, feeds.Select(B), "resize-grow", resizeMidway: (60, 20));
+    }
+
+    [Fact]
+    public void Emulator_RandomSoup_FullStateAgrees()
+    {
+        if (Lib == 0) return;
+        var rng = new Random(20260725);
+        for (int stream = 0; stream < 60; stream++)
+        {
+            var chunks = new List<byte[]>();
+            for (int k = 0; k < 4; k++)
+            {
+                var buf = new byte[512];
+                rng.NextBytes(buf);
+                if (stream % 2 == 1)
+                    for (int i = 0; i < buf.Length; i += 2 + rng.Next(4))
+                        buf[i] = (byte)"\x1b[]m0123456789;?hlHJKrSTLMPX@ABCD"[rng.Next(33)];
+                // Guards (identical transform both sides, so parity still holds):
+                for (int i = 0; i + 1 < buf.Length; i++)
+                {
+                    if (buf[i] == 0x1b && buf[i + 1] == (byte)'P') buf[i + 1] = (byte)'Q';  // no DCS/sixel (module 5)
+                    if (buf[i] == 0x1b && buf[i + 1] == (byte)'_') buf[i + 1] = (byte)'^';  // no APC/kitty (module 5)
+                }
+                int digits = 0;   // cap runs of digits: CSI 999999999 S would loop-scroll for minutes
+                for (int i = 0; i < buf.Length; i++)
+                {
+                    if (buf[i] >= (byte)'0' && buf[i] <= (byte)'9') { if (++digits > 4) buf[i] = (byte)';'; }
+                    else digits = 0;
+                }
+                chunks.Add(buf);
+            }
+            AssertEmulatorParity(stream % 3 == 0 ? 132 : 80, stream % 3 == 0 ? 50 : 24, chunks, $"soup#{stream}");
         }
     }
 
