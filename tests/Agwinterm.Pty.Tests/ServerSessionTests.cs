@@ -1,3 +1,4 @@
+using Agwinterm.Core;
 using Agwinterm.Pty;
 
 namespace Agwinterm.Pty.Tests;
@@ -147,6 +148,40 @@ public class ServerSessionTests : IDisposable
         // And it's live: same shell keeps taking input.
         gen2.Write("echo post+adopt\r"u8);
         Assert.True(WaitFor(() => GridText(gen2).Contains("post+adopt")));
+    }
+
+    [Fact]
+    public async Task Reattach_PreservesScrollbackColors()
+    {
+        string paneId = Guid.NewGuid().ToString();
+        var gen1 = _backend.Create(paneId, 60, 10);
+        await gen1.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoProfile" });
+        // Emit a coloured line via ANSI, then scroll it into history.
+        TypeLine(gen1, "$e=[char]27; Write-Host \"$e[31mCOLORLINE$e[0m\"", "COLORLINE");
+        for (int i = 0; i < 14; i++) gen1.Write("echo .\r"u8);   // push COLORLINE into scrollback
+        Thread.Sleep(500);
+        gen1.Detach();
+
+        using var gen2 = (ServerSession)_backend.Create(paneId, 60, 10);
+        Assert.True(gen2.TryAdopt());
+        // Find COLORLINE in the replica's history and assert its 'C' cell has a NON-DEFAULT
+        // foreground — the attributed blob carried the colour; the old plain-text path would leave
+        // every cell at the default foreground (this is the whole point of attributed reattach).
+        bool colouredHistory = WaitFor(() =>
+        {
+            lock (gen2.SyncRoot)
+                for (int h = 0; h < gen2.Emulator.HistoryCount; h++)
+                {
+                    if (!gen2.Emulator.DumpHistoryRow(h).Contains("COLORLINE")) continue;
+                    for (int c = 0; c < gen2.Emulator.Screen.Cols; c++)
+                    {
+                        var cell = gen2.Emulator.GetHistoryCell(h, c);
+                        if (cell.Rune == 'C' && cell.FgSpec.Kind != ColorSpecKind.Default) return true;
+                    }
+                }
+            return false;
+        });
+        Assert.True(colouredHistory, "reattach did not preserve the scrollback colour (fell back to plain text?)");
     }
 
     [Fact]

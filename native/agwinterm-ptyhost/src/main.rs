@@ -361,6 +361,9 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
         exit_code: hosted.exit_code.load(Ordering::SeqCst),
         modes,
         scrollback,
+        // Attributed history blob: not produced yet (would need persist encoding in this crate);
+        // the client falls back to the plain-text `scrollback` above. Follow-up.
+        scrollback_blob: Vec::new(),
     })))
 }
 

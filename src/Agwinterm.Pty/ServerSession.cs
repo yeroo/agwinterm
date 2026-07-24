@@ -200,7 +200,13 @@ public sealed class ServerSession : ISession
         }
         lock (_sync)
         {
-            Emulator.SeedScrollback(att.Scrollback);
+            // Prefer the full-fidelity attributed history (colours survive the reattach) over the
+            // plain-text seed; the replica emulator is a concrete TerminalEmulator.
+            if (att.ScrollbackBlob is { Length: > 0 } blob && Emulator is TerminalEmulator te
+                && BufferPersist.TryParse(blob, out var pbuf))
+                BufferPersist.Restore(te, pbuf);
+            else
+                Emulator.SeedScrollback(att.Scrollback);
             Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(att.Modes));
         }
         _data = att.Data;
