@@ -18,7 +18,7 @@ public class RustEmulatorCoreTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Agwinterm.slnx"))) dir = dir.Parent;
         if (dir is null) return false;
-        string dll = Path.Combine(dir.FullName, "native", "agwinterm-core", "target", "release", "agwinterm_core.dll");
+        string dll = Path.Combine(dir.FullName, "native", "target", "release", "agwinterm_core.dll");
         return RustEmulatorCore.TryLoad(dll, out _);
     }
 
@@ -111,5 +111,46 @@ public class RustEmulatorCoreTests
     {
         Assert.False(RustEmulatorCore.TryLoad(@"C:\nope\missing.dll", out var err) && !RustEmulatorCore.Loaded);
         if (!RustEmulatorCore.Loaded) Assert.NotNull(err);
+    }
+
+    [Fact]
+    public void Adapter_SurfacesSixelImages_LikeManagedCore()
+    {
+        if (!Available) return;
+        // A tiny sixel: "Pq" introducer, colour 1 select, three full sixels, ST.
+        byte[] sixel = System.Text.Encoding.ASCII.GetBytes("\x1bPq#1~~~\x1b\\");
+        var cs = new TerminalEmulator(20, 6);
+        using var rust = new RustTerminalCore(20, 6);
+        cs.Feed(sixel);
+        rust.Feed(sixel);
+
+        // Both must decode ONE image + ONE placement, with matching pixel dimensions and data.
+        Assert.Single(cs.Placements);
+        Assert.Single(rust.Placements);
+        Assert.Equal(cs.Placements[0].Cols, rust.Placements[0].Cols);
+        Assert.Equal(cs.Placements[0].Rows, rust.Placements[0].Rows);
+
+        var csImg = cs.Images.Values.Single();
+        var rustImg = rust.Images.Values.Single();
+        Assert.Equal(csImg.Width, rustImg.Width);
+        Assert.Equal(csImg.Height, rustImg.Height);
+        Assert.Equal(csImg.Data.Length, rustImg.Data.Length);
+        Assert.Equal(csImg.Data, rustImg.Data);   // identical RGBA — the whole point
+    }
+
+    [Fact]
+    public void Adapter_DirectImageApi_RoundTrips()
+    {
+        if (!Available) return;
+        using var rust = new RustTerminalCore(10, 4);
+        Assert.False(rust.HasImage(7));
+        rust.SetImageData(7, KittyFormat.Rgba, 2, 2, new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+        Assert.True(rust.HasImage(7));
+        rust.PlaceImage(7, 1, 2, 3, 3);
+        var p = Assert.Single(rust.Placements);
+        Assert.Equal((7, 1, 2, 3, 3), (p.ImageId, p.Row, p.Col, p.Cols, p.Rows));
+        Assert.Equal(16, rust.Images[7].Data.Length);
+        rust.ClearPlacements();
+        Assert.Empty(rust.Placements);
     }
 }

@@ -208,6 +208,28 @@ impl Emulator {
         &self.placements
     }
 
+    // ---- direct image API (mirrors TerminalEmulator: host-delivered images without the
+    // APC/base64 text path — used by the control pipe). ----
+    pub fn clear_placements(&mut self) {
+        self.placements.clear();
+    }
+    pub fn has_image(&self, id: i32) -> bool {
+        self.images.contains_key(&id)
+    }
+    pub fn set_image_data(&mut self, id: i32, format: i32, width: i32, height: i32, data: Vec<u8>) {
+        self.images.insert(id, KittyImage { id, format, width, height, data });
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn place_image(&mut self, id: i32, row: i64, col: i64, cols: i32, rows: i32,
+                       src_x: i32, src_y: i32, src_w: i32, src_h: i32) {
+        self.placements.retain(|p| p.image_id != id);
+        self.placements.push(ImagePlacement { image_id: id, row, col, cols, rows, src_x, src_y, src_w, src_h });
+    }
+    /// Decode a sixel payload and place it at the cursor (advancing below). Public wrapper.
+    pub fn place_sixel_public(&mut self, data: &[u8]) -> bool {
+        self.place_sixel(data)
+    }
+
     pub fn screen(&self) -> &ScreenBuffer {
         if self.on_alt { &self.alt } else { &self.main }
     }

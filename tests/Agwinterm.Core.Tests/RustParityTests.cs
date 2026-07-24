@@ -19,7 +19,7 @@ public class RustParityTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Agwinterm.slnx"))) dir = dir.Parent;
         if (dir is null) return 0;
-        string dll = Path.Combine(dir.FullName, "native", "agwinterm-core", "target", "release", "agwinterm_core.dll");
+        string dll = Path.Combine(dir.FullName, "native", "target", "release", "agwinterm_core.dll");
         return File.Exists(dll) && NativeLibrary.TryLoad(dll, out nint h) ? h : 0;
     }
 
