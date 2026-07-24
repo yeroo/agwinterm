@@ -119,6 +119,38 @@ public class RustPtyHostTests : IDisposable
     }
 
     [Fact]
+    public void Reattach_RustHostBlob_RestoresColorsInCSharp()
+    {
+        if (ExePath is null) return;
+        using var client = Start();
+        string id = client.Create(Guid.NewGuid().ToString(), 60, 10, "powershell.exe", new[] { "-NoLogo", "-NoProfile" });
+        using (var first = client.Attach(id))
+        {
+            TypeUntilEcho(first.Data, "$e=[char]27; Write-Host \"$e[31mCOLORLINE$e[0m\"", "COLORLINE");
+            for (int i = 0; i < 14; i++) { first.Data.Write("echo .\r"u8.ToArray()); first.Data.Flush(); }
+        }
+        Thread.Sleep(600);   // let COLORLINE scroll into the HOST emulator's history
+
+        using var second = client.Attach(id, repaint: true);
+        // The Rust host must produce an attributed blob that the C# BufferPersist restores with
+        // colour — cross-language proof the Rust serializer is byte-compatible with the C# one.
+        Assert.NotNull(second.ScrollbackBlob);
+        Assert.True(Agwinterm.Core.BufferPersist.TryParse(second.ScrollbackBlob!, out var pbuf));
+        var emu = new TerminalEmulator(60, 10);
+        Agwinterm.Core.BufferPersist.Restore(emu, pbuf);
+        bool coloured = false;
+        for (int h = 0; h < emu.HistoryCount && !coloured; h++)
+        {
+            if (!emu.DumpHistoryRow(h).Contains("COLORLINE")) continue;
+            for (int c = 0; c < emu.Screen.Cols; c++)
+                if (emu.GetHistoryCell(h, c).Rune == 'C' && emu.GetHistoryCell(h, c).FgSpec.Kind != ColorSpecKind.Default)
+                    coloured = true;
+        }
+        Assert.True(coloured, "Rust-host reattach blob did not restore the scrollback colour in C#");
+        client.Kill(id);
+    }
+
+    [Fact]
     public void ChildExit_TravelsViaList()
     {
         if (ExePath is null) return;

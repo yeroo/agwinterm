@@ -10,6 +10,7 @@
 
 mod conpty;
 mod freshenv;
+mod persist;
 mod pipes;
 mod proto;
 
@@ -302,14 +303,14 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
     };
 
     // Snapshot under the emulator lock, before any new output can race the seed.
-    let (scrollback, modes, cols, rows) = {
+    let (scrollback, scrollback_blob, modes, cols, rows) = {
         let t = hosted.term.lock().unwrap();
         let mut lines = Vec::with_capacity(t.emu.history_count());
         for h in 0..t.emu.history_count() {
             lines.push(dump_history_row(&t, h));
         }
         let (c, r) = (t.emu.screen().cols(), t.emu.screen().rows());
-        (lines, t.emu.dump_modes(), c, r)
+        (lines, serialize_history(&t.emu), t.emu.dump_modes(), c, r)
     };
 
     let h2 = hosted.clone();
@@ -361,10 +362,50 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
         exit_code: hosted.exit_code.load(Ordering::SeqCst),
         modes,
         scrollback,
-        // Attributed history blob: not produced yet (would need persist encoding in this crate);
-        // the client falls back to the plain-text `scrollback` above. Follow-up.
-        scrollback_blob: Vec::new(),
+        scrollback_blob,   // attributed history (full colour on reattach), byte-identical to the C# host
     })))
+}
+
+/// Serialize the emulator's HISTORY as a persist.PBuffer blob, BYTE-IDENTICAL to the C#
+/// BufferPersist.Serialize(includeVisible: false) so the C# client restores it unchanged:
+/// per-row trailing-EMPTY trim, drop trailing all-empty rows, cap at 500 (newest kept).
+fn serialize_history(emu: &agwinterm_core::emulator::Emulator) -> Vec<u8> {
+    use agwinterm_core::cell::{Cell, Color};
+    use prost::Message;
+    let pack = |c: Color| ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
+    let cols = emu.screen().cols();
+    let mut buf = persist::PBuffer { version: 1, cols: cols as u32, rows: Vec::new() };
+    for h in 0..emu.history_count() {
+        let mut len = cols;
+        while len > 0 && emu.get_history_cell(h, len - 1) == Cell::EMPTY {
+            len -= 1;
+        }
+        let mut row = persist::PRow { cells: Vec::with_capacity(len) };
+        for col in 0..len {
+            let c = emu.get_history_cell(h, col);
+            row.cells.push(persist::PCell {
+                rune: c.rune,
+                fg: pack(c.foreground),
+                bg: pack(c.background),
+                attrs: c.attributes,
+                width: c.width as u32,
+                fg_kind: c.fg_spec.kind as u32,
+                fg_index: c.fg_spec.index as u32,
+                fg_rgb: pack(c.fg_spec.rgb),
+                bg_kind: c.bg_spec.kind as u32,
+                bg_index: c.bg_spec.index as u32,
+                bg_rgb: pack(c.bg_spec.rgb),
+            });
+        }
+        buf.rows.push(row);
+    }
+    while buf.rows.last().is_some_and(|r| r.cells.is_empty()) {
+        buf.rows.pop();
+    }
+    if buf.rows.len() > 500 {
+        buf.rows.drain(0..buf.rows.len() - 500);
+    }
+    buf.encode_to_vec()
 }
 
 fn dump_history_row(t: &Terminal, index: usize) -> String {
