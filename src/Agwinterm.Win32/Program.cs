@@ -484,16 +484,18 @@ internal partial class Program : ISessionHost, IWindowHost
             front!.Post(() => front.ShowToast(note, 6000));
         // Server mode is experimental (#105) — say so once at startup, so a flipped knob is never
         // a silent mystery ("why is there a second agwinterm process?").
-        if (_sessionBackend is ServerSessionBackend)
+        if (_sessionBackend is ServerSessionBackend sb)
         {
-            front!.Post(() => front.ShowToast("session-host = server (experimental) — sessions live in the pty-host process", 6000));
+            string host = sb.Name == "server-rust" ? "the Rust pty-host binary" : "the pty-host process";
+            front!.Post(() => front.ShowToast($"session-host = {sb.Name} (experimental) — sessions live in {host}", 6000));
             // Reap hosted sessions no pane claims — leftovers of closed panes whose kill raced a
             // crash, or exited corpses. WELL after boot: restore/adoption must claim everything
             // (incl. slow multi-window restores) before anything is judged an orphan.
+            string reapPipe = (_argPipe ?? _appId) + (sb.Name == "server-rust" ? "-rust" : "");
             _ = Task.Run(async () =>
             {
                 await Task.Delay(TimeSpan.FromSeconds(30));
-                ReapOrphanedHostedSessions(_argPipe ?? _appId);
+                ReapOrphanedHostedSessions(reapPipe);
             });
         }
 

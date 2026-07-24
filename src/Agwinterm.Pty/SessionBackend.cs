@@ -26,12 +26,37 @@ public sealed class InProcessSessionBackend : ISessionBackend
 
 public static class SessionBackends
 {
-    /// <summary>Resolve the configured <c>session-host</c> value to a backend. "server" (#105,
-    /// experimental) hosts sessions in the pty-host process — spawned on demand from
-    /// <paramref name="exePath"/> (the same exe, <c>--pty-host</c> role) under
-    /// <paramref name="appId"/>'s pipe namespace. Anything else = in-process.</summary>
+    /// <summary>Resolve the configured <c>session-host</c> value to a backend:
+    ///  - "server": the C# pty-host (the same exe, <c>--pty-host</c> role).
+    ///  - "server-rust": the standalone Rust pty-host binary (agwinterm-ptyhost.exe next to the
+    ///    exe) — same protocol (protobuf v2, oracle-proven), but blocking-threaded so the .NET 10
+    ///    IOCP crash class (#118) is structurally absent. Uses a distinct pipe namespace
+    ///    (<c>&lt;appId&gt;-rust</c>) so it never collides with a C# host on the same instance.
+    ///  - anything else: in-process.
+    /// A missing Rust binary falls through to a null exe, so Create throws and the UI falls back to
+    /// in-process (same graceful path as an unreachable C# host).</summary>
     public static ISessionBackend Resolve(string? configured, string appId, string? exePath)
-        => string.Equals(configured, "server", StringComparison.OrdinalIgnoreCase)
-            ? new ServerSessionBackend(appId, exePath)
-            : InProcessSessionBackend.Instance;
+    {
+        if (string.Equals(configured, "server", StringComparison.OrdinalIgnoreCase))
+            return new ServerSessionBackend(appId, exePath);
+        if (string.Equals(configured, "server-rust", StringComparison.OrdinalIgnoreCase))
+        {
+            string rustAppId = appId + "-rust";
+            string? rustHost = FindRustHost(exePath);
+            return new ServerSessionBackend(rustAppId, rustHost, $"--pipe \"{rustAppId}\"", name: "server-rust");
+        }
+        return InProcessSessionBackend.Instance;
+    }
+
+    /// <summary>Locate agwinterm-ptyhost.exe next to the app exe (the installer ships it there).</summary>
+    private static string? FindRustHost(string? exePath)
+    {
+        try
+        {
+            string dir = exePath is not null ? Path.GetDirectoryName(exePath)! : AppContext.BaseDirectory;
+            string p = Path.Combine(dir, "agwinterm-ptyhost.exe");
+            return File.Exists(p) ? p : null;
+        }
+        catch { return null; }
+    }
 }

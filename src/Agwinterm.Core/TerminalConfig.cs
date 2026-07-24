@@ -81,8 +81,10 @@ public sealed class TerminalConfig
     public bool UpdateCheck { get; set; } = true;
 
     /// <summary>Where terminal sessions live: "in-process" (default — the UI process owns the
-    /// ConPTYs) or "server" (EXPERIMENTAL, #105 — a separate pty-host process owns them; the
-    /// long-term basis for sessions surviving UI updates/crashes).</summary>
+    /// ConPTYs), "server" (EXPERIMENTAL, #105 — a separate C# pty-host process owns them), or
+    /// "server-rust" (EXPERIMENTAL — the standalone Rust pty-host binary; same protocol, but
+    /// blocking-threaded so the .NET 10 IOCP crash class is absent). Both server modes let sessions
+    /// survive UI updates/crashes; server-rust falls back to in-process if the binary is missing.</summary>
     public string SessionHost { get; set; } = "in-process";
 
     /// <summary>Which terminal core new sessions run on: "managed" (default — the C#
@@ -254,10 +256,13 @@ public sealed class TerminalConfig
         update-check = true
 
         # Where terminal sessions live. "in-process" (default): the window process owns them.
-        # "server" (EXPERIMENTAL - see github issue #105): a separate pty-host process owns them,
-        # so shells KEEP RUNNING when the UI quits, updates, or crashes - the next start reconnects
-        # every pane to its live session (closing a pane still closes its shell). Changing this
-        # applies to new sessions immediately; restart agwinterm to migrate existing ones.
+        # "server" (EXPERIMENTAL, github #105): a separate C# pty-host process owns them, so shells
+        # KEEP RUNNING when the UI quits, updates, or crashes - the next start reconnects every pane
+        # to its live session (closing a pane still closes its shell). "server-rust" (EXPERIMENTAL):
+        # same, but the host is the standalone Rust binary (agwinterm-ptyhost.exe) - identical
+        # protocol, blocking-threaded so a .NET runtime IOCP crash class can't occur; falls back to
+        # in-process if the binary isn't present. Changing this applies to NEW sessions immediately;
+        # restart agwinterm to migrate existing ones.
         session-host = in-process
 
         # Build each new tab's environment FRESH from the registry (what a brand-new process tree
@@ -392,7 +397,7 @@ public sealed class TerminalConfig
                 case "claude-update-check": cfg.ClaudeUpdateCheck = ParseBool(val, cfg.ClaudeUpdateCheck); break;
                 case "update-check": cfg.UpdateCheck = ParseBool(val, cfg.UpdateCheck); break;
                 case "session-host":
-                    if (val is "in-process" or "server") cfg.SessionHost = val;
+                    if (val is "in-process" or "server" or "server-rust") cfg.SessionHost = val;
                     break;
                 case "fresh-env": cfg.FreshEnv = ParseBool(val, cfg.FreshEnv); break;
                 case "emulator-core":

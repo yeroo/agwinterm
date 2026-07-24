@@ -28,6 +28,16 @@ public class SessionBackendTests
     }
 
     [Fact]
+    public void Resolve_ServerRust_PicksServerRustBackend()
+    {
+        var b = SessionBackends.Resolve("server-rust", "x", null);
+        Assert.IsType<ServerSessionBackend>(b);
+        Assert.Equal("server-rust", b.Name);   // distinct name drives the toast + reap pipe
+        // Case-insensitive, like the other values.
+        Assert.Equal("server-rust", SessionBackends.Resolve("SERVER-RUST", "x", null).Name);
+    }
+
+    [Fact]
     public void ServerBackend_WithNoHostAndNoExe_FailsAtCreate()
     {
         // Failure surfaces at Create — the one place the UI can catch it and fall back in-process.
