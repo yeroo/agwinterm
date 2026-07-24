@@ -37,6 +37,11 @@ struct FfiEmuInfo {
     int32_t keyboardFlags;
     uint32_t scrollTop, scrollBottom, markCount;
 };
+struct FfiMark {   // FTCS / OSC 133 boundary; lines are buffer-absolute, -1 = unset
+    int64_t promptLine, commandLine, outputLine, endLine;
+    uint32_t hasExit;
+    int32_t exitCode;
+};
 static uint32_t (*core_abi)();
 static void* (*emu_new)(uint32_t, uint32_t);
 static void (*emu_free)(void*);
@@ -45,6 +50,7 @@ static bool (*emu_resize)(void*, uint32_t, uint32_t);
 static bool (*emu_info)(void*, FfiEmuInfo*);
 static bool (*emu_copy_grid)(void*, FfiCell*, uint32_t);
 static bool (*emu_copy_history_row)(void*, uint32_t, FfiCell*, uint32_t);
+static uint32_t (*emu_marks)(void*, FfiMark*, uint32_t);
 
 static constexpr uint32_t kRequiredAbi = 7;
 static constexpr uint32_t kAttrBold = 1, kAttrItalic = 2, kAttrUnderline = 4,
@@ -178,7 +184,8 @@ static void loadCore() {
     emu_info = (decltype(emu_info))GetProcAddress(m, "agwcore_emu_info");
     emu_copy_grid = (decltype(emu_copy_grid))GetProcAddress(m, "agwcore_emu_copy_grid");
     emu_copy_history_row = (decltype(emu_copy_history_row))GetProcAddress(m, "agwcore_emu_copy_history_row");
-    if (!core_abi || !emu_new || !emu_feed || !emu_info || !emu_copy_grid || !emu_resize || !emu_free || !emu_copy_history_row)
+    emu_marks = (decltype(emu_marks))GetProcAddress(m, "agwcore_emu_marks");
+    if (!core_abi || !emu_new || !emu_feed || !emu_info || !emu_copy_grid || !emu_resize || !emu_free || !emu_copy_history_row || !emu_marks)
         fatal(L"agwinterm_core.dll: exports missing");
     if (core_abi() != kRequiredAbi) fatal(L"agwinterm_core.dll: ABI mismatch (need v7)");
 }
@@ -254,6 +261,30 @@ static void syncPaneSizes() {
     }
 }
 
+// ---- FTCS prompt wrap: chain the user's prompt so it emits OSC 133 D;<exit> + A each turn,
+// giving lite the prompt pips out of the box while preserving oh-my-posh/starship. Passed as
+// -EncodedCommand (base64 of UTF-16LE) so there is zero quoting to mangle. ----
+static std::string base64(const std::wstring& s) {
+    static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const uint8_t* p = (const uint8_t*)s.data();
+    size_t n = s.size() * sizeof(wchar_t);
+    std::string out;
+    for (size_t i = 0; i < n; i += 3) {
+        uint32_t v = p[i] << 16 | (i + 1 < n ? p[i + 1] << 8 : 0) | (i + 2 < n ? p[i + 2] : 0);
+        out += T[(v >> 18) & 63];
+        out += T[(v >> 12) & 63];
+        out += (i + 1 < n) ? T[(v >> 6) & 63] : '=';
+        out += (i + 2 < n) ? T[v & 63] : '=';
+    }
+    return out;
+}
+
+static const wchar_t* kPromptWrap =
+    L"if(-not $global:__agwLiteWrap){$global:__agwLiteWrap=$true;$global:__agwLiteP=$function:prompt;"
+    L"function global:prompt{$ec=if($?){0}else{1};$e=[char]27;$b=[char]7;"
+    L"[Console]::Write(\"$e]133;D;$ec$b$e]133;A$b\");"
+    L"if($global:__agwLiteP){& $global:__agwLiteP}else{\"PS $($executionContext.SessionState.Path.CurrentLocation)> \"}}}";
+
 // ---- session lifecycle ----
 static DWORD WINAPI readerThread(void* param) {
     Session* s = (Session*)param;
@@ -280,8 +311,14 @@ static Session* newSession(int cols, int rows) {
     req.cmd.create.cols = (uint32_t)cols;
     req.cmd.create.rows = (uint32_t)rows;
     strcpy_s(req.cmd.create.app, "powershell.exe");
-    req.cmd.create.args_count = 1;
+    // -NoExit keeps the shell interactive after the wrap runs; -EncodedCommand runs AFTER the
+    // profile so it chains (not replaces) the user's prompt.
+    std::string enc = base64(kPromptWrap);
+    req.cmd.create.args_count = 4;
     strcpy_s(req.cmd.create.args[0], "-NoLogo");
+    strcpy_s(req.cmd.create.args[1], "-NoExit");
+    strcpy_s(req.cmd.create.args[2], "-EncodedCommand");
+    strcpy_s(req.cmd.create.args[3], enc.c_str());
     // AGWINTERM_* identity env, so the Claude skill / hooks / agwintermctl inside the
     // session auto-target LITE's control pipe (all non-UI features are protocol).
     auto setEnv = [&](int i, const char* k, const char* v) {
@@ -459,6 +496,28 @@ static void paintPane(HDC mem, int pane, RECT pr) {
                   pr.left + (LONG)(info.cursorCol + 1) * g_cw, pr.top + (LONG)(info.cursorRow + 1) * g_ch };
         if (cur.right <= pr.right) InvertRect(mem, &cur);
     }
+    // FTCS prompt pips (OSC 133): a small right-edge marker at each prompt line — green ok,
+    // red failed, accent for a still-running command. The agent-status cue for Claude sessions.
+    if (info.markCount > 0) {
+        std::vector<FfiMark> marks(info.markCount);
+        EnterCriticalSection(&g_lock);
+        uint32_t nm = emu_marks(s->emu, marks.data(), info.markCount);
+        LeaveCriticalSection(&g_lock);
+        int base = (int)info.historyCount - off;   // buffer-absolute row of the top visible line
+        for (uint32_t mi = 0; mi < nm; mi++) {
+            int vr = (int)marks[mi].promptLine - base;
+            if (vr < 0 || vr >= (int)info.rows) continue;
+            COLORREF col = RGB(120, 130, 200);   // running (no end yet)
+            if (marks[mi].endLine >= 0)
+                col = (marks[mi].hasExit && marks[mi].exitCode == 0) ? RGB(60, 180, 90)
+                    : marks[mi].hasExit ? RGB(210, 70, 70) : RGB(120, 130, 200);
+            RECT pip{ pr.right - 3, pr.top + vr * g_ch + 2, pr.right, pr.top + vr * g_ch + g_ch - 2 };
+            HBRUSH b = CreateSolidBrush(col);
+            FillRect(mem, &pip, b);
+            DeleteObject(b);
+        }
+    }
+
     // Scrollback indicator: thin right-edge stripe while scrolled.
     if (off > 0) {
         RECT bar{ pr.right - 3, pr.top, pr.right, pr.bottom };

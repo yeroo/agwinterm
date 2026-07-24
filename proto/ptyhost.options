@@ -4,7 +4,7 @@ agwinterm.ptyhost.Create.id            max_size:128
 agwinterm.ptyhost.Create.app           max_size:260
 agwinterm.ptyhost.Create.cwd           max_size:260
 agwinterm.ptyhost.Create.args          max_count:16
-agwinterm.ptyhost.Create.args          max_size:260
+agwinterm.ptyhost.Create.args          max_size:2048
 agwinterm.ptyhost.Attach.id            max_size:128
 agwinterm.ptyhost.SessionRef.id        max_size:128
 agwinterm.ptyhost.Resize.id            max_size:128
