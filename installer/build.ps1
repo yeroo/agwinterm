@@ -7,13 +7,16 @@ $root   = Split-Path -Parent $here
 $dotnet = if (Test-Path "C:\Program Files\dotnet\dotnet.exe") { "C:\Program Files\dotnet\dotnet.exe" } else { "dotnet" }
 $stage  = Join-Path $here "stage"
 
-# resolve ISCC (Inno Setup compiler)
+# resolve ISCC (Inno Setup compiler): PATH, the machine-wide installs (choco/CI land here), and
+# the per-user winget location (%LOCALAPPDATA%\Programs) so a `winget install JRSoftware.InnoSetup`
+# is found too.
 $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {
-  $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+  $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") |
     Where-Object { Test-Path $_ } | Select-Object -First 1
 }
-if (-not $iscc) { throw "ISCC (Inno Setup compiler) not found. Install Inno Setup 6." }
+if (-not $iscc) { throw "ISCC (Inno Setup compiler) not found. Install Inno Setup 6 (winget install JRSoftware.InnoSetup)." }
 
 Write-Host "== clean stage ==" -ForegroundColor Cyan
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
@@ -46,8 +49,18 @@ if ($LASTEXITCODE -ne 0) { throw "cargo build (native) failed" }
 Copy-Item (Join-Path $root "native\target\release\agwinterm_core.dll") $stage -Force
 Copy-Item (Join-Path $root "native\target\release\agwinterm-ptyhost.exe") $stage -Force
 
+# The lite terminal (agwinterm-lite.exe): a tiny GDI client that rides the SAME Rust pty-host +
+# core dll (both already staged above), so we install both terminals from one setup. It's staged
+# FLAT next to the main app so lite finds agwinterm_core.dll / agwinterm-ptyhost.exe in its own
+# exe dir; only its bundled font + license are unique to it.
+Write-Host "== build agwinterm-lite (C++/GDI) ==" -ForegroundColor Cyan
+& (Join-Path $root "lite\build.ps1")
+if ($LASTEXITCODE -ne 0) { throw "lite build failed" }
+Copy-Item (Join-Path $root "lite\bin\agwinterm-lite.exe") $stage -Force
+Copy-Item (Join-Path $root "lite\assets\*") $stage -Force   # MesloLGLDZ Nerd Font + FONT-LICENSE
+
 # sanity: required payload present
-foreach ($f in @("Agwinterm.Win32.exe","agwintermctl.exe","agwinterm_core.dll","agwinterm-ptyhost.exe","assets\agwinterm.ico")) {
+foreach ($f in @("Agwinterm.Win32.exe","agwintermctl.exe","agwinterm_core.dll","agwinterm-ptyhost.exe","agwinterm-lite.exe","MesloLGLDZNerdFont-Regular.ttf","assets\agwinterm.ico")) {
   if (-not (Test-Path (Join-Path $stage $f))) { throw "stage missing $f" }
 }
 if (-not (Get-ChildItem (Join-Path $stage "themes") -Filter *.conf -ErrorAction SilentlyContinue)) { throw "stage missing themes\*.conf" }

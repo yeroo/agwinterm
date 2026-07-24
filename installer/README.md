@@ -3,6 +3,12 @@
 Builds a **per-user** Windows installer (`agwinterm-setup-<ver>.exe`) from a self-contained
 publish of the app — end users need **no** .NET runtime installed.
 
+It installs **both terminals**: the full `agwinterm` (.NET) app and the lightweight
+`agwinterm-lite` (C++/GDI) client for old / low-RAM machines. Both ride the **Rust pty-host**
+(`agwinterm-ptyhost.exe`) — lite always does, and the main app's shortcuts pass
+`--default-session-host server-rust` so a fresh install defaults new sessions to it (a first-run
+seed only; it never overrides an existing config, and the Settings UI stays authoritative after).
+
 ## Build
 
 ```powershell
@@ -11,14 +17,18 @@ installer\build.ps1
 
 Prereqs:
 - .NET SDK with the `net10.0-windows` target (the repo pins .NET 10).
-- [Inno Setup 6](https://jrsoftware.org/isinfo.php) — `ISCC.exe` on PATH or in the default install location.
+- Rust + MSVC C++ build tools (for the Rust core/host and the lite client).
+- [Inno Setup 6](https://jrsoftware.org/isinfo.php) — `ISCC.exe` on PATH, the default install location,
+  or the per-user winget location (`winget install JRSoftware.InnoSetup`).
 
 The script:
 1. publishes `Agwinterm.Win32` (the app) and `Agwinterm.Ctl` (`agwintermctl`) as **self-contained win-x64**
    (a folder, not single-file — robust for the Vortice native libs and the on-disk `themes\`/`assets\`)
    into `installer\stage`,
-2. compiles `installer\agwinterm.iss`,
-3. writes `installer\Output\agwinterm-setup-<ver>.exe`.
+2. builds the Rust core + pty-host and the `agwinterm-lite` client, and stages them (lite flat next to
+   the main app so it shares the same `agwinterm_core.dll` / `agwinterm-ptyhost.exe`),
+3. compiles `installer\agwinterm.iss`,
+4. writes `installer\Output\agwinterm-setup-<ver>.exe`.
 
 ## What the installer does
 
@@ -26,9 +36,9 @@ Deliberately **minimal / non-invasive** (agterm-style): it only copies files and
 It does **not** touch your `PATH`, profile, or config.
 
 - **Per-user, no admin** (`PrivilegesRequired=lowest`); installs to `%LOCALAPPDATA%\Programs\agwinterm`.
-- **Start-menu** shortcut always; **desktop** shortcut via a checkbox (task).
+- **Start-menu** shortcuts for both `agwinterm` and `agwinterm lite`; **desktop** shortcuts for both via a checkbox (task).
 - **Launch on finish**: a "Launch agwinterm" checkbox (interactive installs).
-- **Uninstall** removes the app files.
+- **Uninstall** removes the app files (your `%LOCALAPPDATA%\agwinterm` config/sessions are left intact).
 
 ### Integrations are opt-in (from inside the app)
 
