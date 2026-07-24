@@ -25,7 +25,7 @@ typedef struct _agwinterm_ptyhost_Create {
     uint32_t rows;
     char app[260];
     pb_size_t args_count;
-    char args[16][260];
+    char args[16][2048];
     char cwd[260]; /* empty = inherit */
     bool verbatim;
     bool de_elevate;
@@ -382,11 +382,11 @@ extern const pb_msgdesc_t agwinterm_ptyhost_ListReply_msg;
 #define agwinterm_ptyhost_Attach_size            132
 #define agwinterm_ptyhost_CreateReply_size       130
 #define agwinterm_ptyhost_Create_EnvEntry_size   259
-#define agwinterm_ptyhost_Create_size            6960
+#define agwinterm_ptyhost_Create_size            35568
 #define agwinterm_ptyhost_HelloReply_size        12
 #define agwinterm_ptyhost_Hello_size             6
 #define agwinterm_ptyhost_List_size              0
-#define agwinterm_ptyhost_Request_size           6963
+#define agwinterm_ptyhost_Request_size           35572
 #define agwinterm_ptyhost_Resize_size            142
 #define agwinterm_ptyhost_SessionRef_size        130
 #define agwinterm_ptyhost_Shutdown_size          0
