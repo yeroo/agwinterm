@@ -81,8 +81,17 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     private void PushHistory()
     {
         int cols = Screen.Cols;
-        var row = new Cell[cols];
-        Screen.CopyRowTo(0, row);
+        var full = new Cell[cols];
+        Screen.CopyRowTo(0, full);
+        // Store only up to the last non-empty cell — a scrollback row is usually a few glyphs
+        // then blank to the right margin, and full-width rows dominate the emulator's heap on
+        // wide terminals (matters most on the 6-8GB machines lite targets, #134). Reads pad
+        // past the stored length with Cell.Empty (see GetHistoryCell), so this is LOSSLESS:
+        // only cells that exactly equal Cell.Empty are dropped — a BCE-coloured trailing blank
+        // (non-default bg) is NOT Cell.Empty and is preserved.
+        int len = cols;
+        while (len > 0 && full[len - 1] == Cell.Empty) len--;
+        var row = len == cols ? full : full[..len];
         _history.Add(row);
         ScrollGeneration++;
         if (_history.Count > ScrollbackMax + TrimSlack)
@@ -865,12 +874,13 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         int cols = Screen.Cols;
         foreach (var line in lines)
         {
-            var row = new Cell[cols];
-            for (int c = 0; c < cols; c++)
-            {
-                char ch = c < line.Length ? line[c] : ' ';
-                row[c] = new Cell(ch, Color.DefaultForeground, Color.DefaultBackground, CellAttributes.Dim);
-            }
+            // Store only the line's own cells (truncated to width); no trailing pad — reads past
+            // the end return Cell.Empty (GetHistoryCell), so a restored buffer's blank right
+            // margin costs nothing instead of a full-width row of dim spaces.
+            int len = Math.Min(cols, line.Length);
+            var row = new Cell[len];
+            for (int c = 0; c < len; c++)
+                row[c] = new Cell(line[c], Color.DefaultForeground, Color.DefaultBackground, CellAttributes.Dim);
             _history.Add(row);
         }
         if (_history.Count > ScrollbackMax + TrimSlack)
