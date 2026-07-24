@@ -220,6 +220,10 @@ impl Emulator {
     pub fn history_count(&self) -> usize {
         self.history.len()
     }
+    /// Stored cell count of a scrollback row (post-trim) — for the memory-savings test.
+    pub fn history_row_stored_len(&self, row: usize) -> usize {
+        self.history.get(row).map_or(0, |r| r.len())
+    }
     pub fn marks(&self) -> &[ShellMark] {
         &self.marks
     }
@@ -314,6 +318,14 @@ impl Emulator {
         let cols = self.screen().cols();
         let mut row = vec![Cell::EMPTY; cols];
         self.screen().copy_row_to(0, &mut row);
+        // Trim trailing Cell::EMPTY before storing: reads pad past the end (get_history_cell), so
+        // this is lossless — a BCE-coloured blank (non-default bg) isn't EMPTY and survives. Full-
+        // width scrollback rows dominate the heap on wide terminals (the 6-8GB lite target, #134).
+        let mut len = row.len();
+        while len > 0 && row[len - 1] == Cell::EMPTY {
+            len -= 1;
+        }
+        row.truncate(len);
         self.history.push(row);
         self.scroll_generation += 1;
         if self.history.len() > self.scrollback_max + TRIM_SLACK {
@@ -765,10 +777,12 @@ impl Emulator {
         let cols = self.screen().cols();
         for line in lines {
             // Per-UTF-16-unit like the C# char indexing (BMP-only content expected here).
+            // Store only the line's own cells (truncated to width); no trailing pad — reads past
+            // the end return Cell::EMPTY, so the blank right margin of a restored buffer is free.
             let units: Vec<u16> = line.encode_utf16().collect();
-            let mut row = Vec::with_capacity(cols);
-            for c in 0..cols {
-                let ch = *units.get(c).unwrap_or(&(' ' as u16));
+            let len = units.len().min(cols);
+            let mut row = Vec::with_capacity(len);
+            for &ch in &units[..len] {
                 row.push(Cell {
                     rune: ch as i32,
                     foreground: Color::DEFAULT_FOREGROUND,
@@ -1098,6 +1112,27 @@ mod tests {
         t.feed(b"\x1b[1;2r"); // region rows 0-1; homes cursor
         t.feed(b"\x1b[2;1Ha\nb\nc"); // scroll inside region only
         assert_eq!(t.emu.history_count(), 2); // partial region: no history
+    }
+
+    #[test]
+    fn scrollback_rows_are_trimmed() {
+        let mut t = Terminal::new(80, 3);
+        t.feed(b"hi\r\n\r\n\r\n\r\n");   // "hi" then blank rows scroll into history
+        assert!(t.emu.history_count() >= 1);
+        // The "hi" row stores 2 cells, not 80; a blank row stores 0.
+        assert_eq!(t.emu.history_row_stored_len(0), 2);
+        // Reads still pad to full width — behaviour is unchanged.
+        assert_eq!(t.emu.get_history_cell(0, 2), Cell::EMPTY);
+        assert_eq!(t.emu.get_history_cell(0, 79), Cell::EMPTY);
+    }
+
+    #[test]
+    fn bce_blank_survives_trim() {
+        let mut t = Terminal::new(10, 2);
+        // Paint a red background across the row (BCE), then scroll it off.
+        t.feed(b"\x1b[41m\x1b[2K\r\n\r\n\r\n");
+        // The coloured trailing blanks are NOT Cell::EMPTY, so they are preserved (not trimmed).
+        assert_eq!(t.emu.history_row_stored_len(0), 10);
     }
 
     #[test]
