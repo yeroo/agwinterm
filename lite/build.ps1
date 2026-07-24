@@ -18,7 +18,7 @@ $bin = Join-Path $PSScriptRoot 'bin'
 New-Item -ItemType Directory -Force $bin | Out-Null
 $src = Join-Path $PSScriptRoot 'src\main.cpp'
 $pb = Join-Path $PSScriptRoot 'src\proto'
-$cmd = "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && cl /nologo /O2 /W3 /EHsc /DUNICODE /D_UNICODE /DPB_FIELD_32BIT /I `"$pb`" `"$src`" `"$pb\ptyhost.pb.c`" `"$pb\pb_encode.c`" `"$pb\pb_decode.c`" `"$pb\pb_common.c`" /Fe:`"$bin\agwinterm-lite.exe`" /Fo:`"$bin\\`" user32.lib gdi32.lib"
+$cmd = "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && cl /nologo /O2 /W3 /EHsc /utf-8 /DUNICODE /D_UNICODE /DPB_FIELD_32BIT /I `"$pb`" `"$src`" `"$pb\ptyhost.pb.c`" `"$pb\pb_encode.c`" `"$pb\pb_decode.c`" `"$pb\pb_common.c`" /Fe:`"$bin\agwinterm-lite.exe`" /Fo:`"$bin\\`" user32.lib gdi32.lib"
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { throw 'cl.exe failed' }
 
