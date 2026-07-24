@@ -8,4 +8,8 @@
     <!-- RustEmulatorCore passes pinned cell buffers across the C ABI. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Full-fidelity buffer persistence (Persist/Persist.cs is generated from proto/persist.proto). -->
+    <PackageReference Include="Google.Protobuf" Version="3.29.3" />
+  </ItemGroup>
 </Project>

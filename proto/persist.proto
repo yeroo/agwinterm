@@ -1,0 +1,40 @@
+// Full-fidelity terminal buffer persistence (M2 phase 3, Boris's "store it in
+// protobuf" idea — for DISK/restore, never the in-memory render path).
+//
+// Today reopen-session / restore-buffer save scrollback as PLAIN TEXT and reseed
+// it flat-dimmed, losing all colour and attributes. This schema captures each
+// cell in full, so a restored buffer looks exactly as it did. Shared by the C#
+// app and (later) the Rust host reattach path.
+
+syntax = "proto3";
+
+package agwinterm.persist;
+
+option csharp_namespace = "Agwinterm.Core.Persist";
+
+// One cell. Colours are 0x00RRGGBB; specs mirror ColorSpec (kind 0 default /
+// 1 indexed / 2 rgb). Fields are packed to keep the blob small: most cells are
+// a rune with default everything, so proto3's "omit defaults" does the work.
+message PCell {
+  int32 rune = 1;
+  uint32 fg = 2;
+  uint32 bg = 3;
+  uint32 attrs = 4;
+  uint32 width = 5;          // 1 normal, 2 wide lead, 0 trailing spacer
+  uint32 fg_kind = 6;
+  uint32 fg_index = 7;
+  uint32 fg_rgb = 8;
+  uint32 bg_kind = 9;
+  uint32 bg_index = 10;
+  uint32 bg_rgb = 11;
+}
+
+message PRow {
+  repeated PCell cells = 1;  // trimmed to the row's content (reads pad with empty)
+}
+
+message PBuffer {
+  uint32 version = 1;        // 1 = this layout
+  uint32 cols = 2;           // width the rows were captured at
+  repeated PRow rows = 3;    // scrollback + captured live rows, oldest first
+}

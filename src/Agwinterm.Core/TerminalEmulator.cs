@@ -867,6 +867,21 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         return sb.ToString();
     }
 
+    /// <summary>Seed the scrollback with already-attributed rows (full colour/attributes) — the
+    /// full-fidelity restore path (see <see cref="BufferPersist"/>). Rows are stored as given
+    /// (trimmed to content by the caller); reads pad past the end with <see cref="Cell.Empty"/>.</summary>
+    public void SeedScrollbackAttributed(IReadOnlyList<Cell[]> rows)
+    {
+        foreach (var row in rows)
+        {
+            int cols = Screen.Cols;
+            // Truncate a too-wide row to the current terminal width (narrower pads on read).
+            _history.Add(row.Length <= cols ? row : row[..cols]);
+        }
+        if (_history.Count > ScrollbackMax + TrimSlack)
+            _history.RemoveRange(0, _history.Count - ScrollbackMax);
+    }
+
     /// <summary>Seed the scrollback with plain-text lines (dimmed) — restores a prior session's buffer
     /// above the fresh shell without touching the live screen.</summary>
     public void SeedScrollback(IReadOnlyList<string> lines)
