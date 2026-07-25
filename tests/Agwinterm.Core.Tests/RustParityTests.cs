@@ -310,6 +310,7 @@ public class RustParityTests
         sb.Append($"mouse:{(e.MouseClick ? 1 : 0)}{(e.MouseDrag ? 1 : 0)}{(e.MouseMotion ? 1 : 0)}{(e.MouseSgr ? 1 : 0)}\n");
         sb.Append($"paste:{(e.BracketedPaste ? 1 : 0)}\n");
         sb.Append($"focus:{(e.FocusReporting ? 1 : 0)}\n");
+        sb.Append($"sync:{(e.SynchronizedOutput ? 1 : 0)}\n");
         sb.Append($"kbd:{e.KeyboardFlags}\n");
         sb.Append($"title:{e.Title}\n");
         sb.Append($"cwd:{e.Cwd}\n");
