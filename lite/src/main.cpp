@@ -88,11 +88,15 @@ static bool g_treeSyncing;      // suppress TVN_SELCHANGED while we rebuild the 
 static HTREEITEM g_ctxItem;     // right-clicked tree node (for the context menu)
 static LPARAM g_ctxParam;       // its lParam: >=0 session index, <0 = -(workspace+1)
 static HFONT g_fonts[4];        // [bold][italic]
+static std::wstring g_ttFace;   // the bundled TrueType face (Meslo Nerd, or Consolas fallback)
+static int g_fontMode = 0;      // 0 = TrueType Nerd Font, 1 = Terminal (raster), 2 = Fixedsys (raster)
+static HMENU g_fontMenu;        // View->Font submenu (for the active-font radio mark)
 
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
        IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
-       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107 };
+       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107,
+       IDM_FONT_TT = 110, IDM_FONT_TERMINAL = 111, IDM_FONT_FIXEDSYS = 112 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
@@ -489,6 +493,41 @@ static void cycleSession(int dir) {
     syncPaneSizes();
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
     InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+
+// (Re)create the four terminal fonts (regular/bold/italic/bold-italic) from a face + size, recompute
+// the character cell (g_cw/g_ch) from the regular font's metrics, and relayout every session. Raster
+// faces (Terminal, Fixedsys) force OUT_RASTER_PRECIS + no antialias so the old bitmap glyphs stay crisp,
+// and OEM_CHARSET so GDI actually selects the CP437 bitmap (box-drawing that Far Manager draws with).
+static void setFont(const wchar_t* face, int height, int width, bool raster) {
+    HFONT nf[4];
+    for (int i = 0; i < 4; i++)
+        nf[i] = CreateFontW(height, width, 0, 0, (i & 1) ? FW_BOLD : FW_NORMAL, (i & 2) ? TRUE : FALSE,
+                            FALSE, FALSE, raster ? OEM_CHARSET : DEFAULT_CHARSET,
+                            raster ? OUT_RASTER_PRECIS : OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                            raster ? NONANTIALIASED_QUALITY : CLEARTYPE_QUALITY,
+                            FIXED_PITCH | FF_MODERN, face);
+    HDC dc = GetDC(nullptr);
+    HGDIOBJ old = SelectObject(dc, nf[0]);
+    TEXTMETRICW tm; GetTextMetricsW(dc, &tm);
+    g_cw = tm.tmAveCharWidth; g_ch = tm.tmHeight;
+    SelectObject(dc, old);
+    ReleaseDC(nullptr, dc);
+    for (int i = 0; i < 4; i++) { if (g_fonts[i]) DeleteObject(g_fonts[i]); g_fonts[i] = nf[i]; }
+    if (g_hwnd) {                       // live switch: resize every session to the new cell + repaint
+        if (!g_sessions.empty()) syncPaneSizes();
+        InvalidateRect(g_hwnd, nullptr, TRUE);
+    }
+}
+
+// Apply one of the three font modes; remembered in g_fontMode so View->Font shows the active one.
+static void applyFontMode(int mode) {
+    g_fontMode = mode;
+    switch (mode) {
+        case 1: setFont(L"Terminal", 16, 0, true); break;   // classic OEM raster console font
+        case 2: setFont(L"Fixedsys", 15, 0, true); break;   // the other stock Windows raster fixed font
+        default: setFont(g_ttFace.c_str(), -16, 0, false); break;   // bundled Meslo Nerd Font (TrueType)
+    }
 }
 
 // ---- GDI paint ----
@@ -1124,6 +1163,14 @@ static HMENU buildMenuBar() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_NEXT, L"&Next Session\tCtrl+Tab");
     AppendMenuW(view, MF_STRING, IDM_PREV, L"&Previous Session");
+    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+    HMENU font = CreatePopupMenu();   // switch between the Nerd Font and the old Windows raster fonts
+    AppendMenuW(font, MF_STRING, IDM_FONT_TT,       L"&Nerd Font (default)");
+    AppendMenuW(font, MF_STRING, IDM_FONT_TERMINAL, L"&Terminal (raster)");
+    AppendMenuW(font, MF_STRING, IDM_FONT_FIXEDSYS, L"&Fixedsys (raster)");
+    CheckMenuRadioItem(font, IDM_FONT_TT, IDM_FONT_FIXEDSYS, IDM_FONT_TT + g_fontMode, MF_BYCOMMAND);
+    g_fontMenu = font;
+    AppendMenuW(view, MF_POPUP, (UINT_PTR)font, L"&Font");
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agwinterm lite");
     HMENU bar = CreateMenu();
@@ -1464,6 +1511,13 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     refreshTree();
                     break;
                 }
+                case IDM_FONT_TT:
+                case IDM_FONT_TERMINAL:
+                case IDM_FONT_FIXEDSYS:
+                    applyFontMode(id - IDM_FONT_TT);   // 0 Nerd / 1 Terminal / 2 Fixedsys
+                    CheckMenuRadioItem(g_fontMenu, IDM_FONT_TT, IDM_FONT_FIXEDSYS, id, MF_BYCOMMAND);
+                    SetFocus(hwnd);
+                    break;
                 case IDM_RESTART: restartApp(); break;
                 case IDM_SHOW: showMainWindow(); break;
                 case IDM_EXIT: DestroyWindow(hwnd); break;
@@ -1638,24 +1692,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     InitializeCriticalSection(&g_reqLock);
     loadCore();
 
-    // Bundled Meslo Nerd Font (process-private); Consolas fallback.
+    // Bundled Meslo Nerd Font (process-private); Consolas fallback. Old raster fonts (Terminal /
+    // Fixedsys) are switchable at runtime from View->Font; this seeds the default TrueType mode.
     std::wstring ttf = exeDir() + L"\\MesloLGLDZNerdFont-Regular.ttf";
     bool haveMeslo = AddFontResourceExW(ttf.c_str(), FR_PRIVATE, 0) > 0;
-    const wchar_t* face = haveMeslo ? L"MesloLGLDZ Nerd Font" : L"Consolas";
-    for (int i = 0; i < 4; i++)
-        g_fonts[i] = CreateFontW(-16, 0, 0, 0, (i & 1) ? FW_BOLD : FW_NORMAL, (i & 2) ? TRUE : FALSE,
-                                 FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, face);
-    {
-        HDC dc = GetDC(nullptr);
-        HGDIOBJ old = SelectObject(dc, g_fonts[0]);
-        TEXTMETRICW tm;
-        GetTextMetricsW(dc, &tm);
-        g_cw = tm.tmAveCharWidth;
-        g_ch = tm.tmHeight;
-        SelectObject(dc, old);
-        ReleaseDC(nullptr, dc);
-    }
+    g_ttFace = haveMeslo ? L"MesloLGLDZ Nerd Font" : L"Consolas";
+    applyFontMode(0);   // creates g_fonts + sets g_cw/g_ch (g_hwnd still null, so no relayout yet)
 
     connectControl();
 
