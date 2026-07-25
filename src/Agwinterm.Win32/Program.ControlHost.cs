@@ -181,7 +181,8 @@ internal partial class Program
                         FocusedPane: Math.Clamp(s.Active, 0, Math.Max(0, s.Panes.Count - 1)), PaneCount: s.Panes.Count,
                         StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
                         SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
-                        PaneIds: s.Panes.Select(p => p.Id).ToList())).ToList()
+                        PaneIds: s.Panes.Select(p => p.Id).ToList(),
+                        RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList())).ToList()
                 )).ToList();
         }
 
@@ -196,7 +197,7 @@ internal partial class Program
         }
 
         public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-            string? workspaceName = null, bool createWorkspace = false, string? profile = null)
+            string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false)
         {
             string id = Guid.NewGuid().ToString();
             Post(() =>
@@ -213,7 +214,8 @@ internal partial class Program
                     ws = byName ?? (createWorkspace ? CreateWorkspace(Guid.NewGuid().ToString(), workspaceName) : ActiveWorkspace());
                 }
                 else ws = ActiveWorkspace();
-                CreateSession(id, name, cwd, ws, makeActive: true, command: command, profileName: profile);
+                // --no-select creates the session in the background, leaving the current focus/selection (agterm #250).
+                CreateSession(id, name, cwd, ws, makeActive: !noSelect, command: command, profileName: profile);
             });
             return id;
         }
@@ -302,6 +304,23 @@ internal partial class Program
             var ws = FindWs(target);
             if (ws is null || string.IsNullOrWhiteSpace(name)) return false;
             Post(() => { ws.Name = name; RequestRedraw(); SaveState(); });
+            return true;
+        }
+
+        // Clone a session by target (agterm #234) — new session, same cwd + profile. Returns its new id.
+        public string DuplicateSession(string? target)
+        {
+            string id = Guid.NewGuid().ToString();
+            Post(() => DuplicateSession(FindSesForTarget(target), id));
+            return id;
+        }
+
+        // Collapse/expand a single workspace by id (agterm #272). target null/empty = the active workspace.
+        public bool WorkspaceCollapse(string? target, bool expand)
+        {
+            var ws = string.IsNullOrEmpty(target) ? ActiveWorkspace() : FindWs(target);
+            if (ws is null) return false;
+            Post(() => { lock (_workspaces) ws.Expanded = expand; RequestRedraw(); SaveState(); });
             return true;
         }
 
@@ -554,6 +573,61 @@ internal partial class Program
             string? val = string.IsNullOrWhiteSpace(agent) || agent.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : agent.ToLowerInvariant();
             Post(() => { hit.Value.pane.AgentResume = val; SaveState(); });
             return true;
+        }
+
+        // Pin (or clear) a restore command on a specific pane, keyed by pane id (agterm #271). Persisted so
+        // restart always re-runs it. Empty/"none" clears the pin. Returns false if the pane isn't found.
+        public bool SessionRestore(string? target, string command)
+        {
+            if (string.IsNullOrEmpty(target)) return false;
+            var hit = FindPaneById(target!);
+            if (hit is null) return false;
+            string? val = string.IsNullOrWhiteSpace(command) || command.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : command;
+            Post(() => { hit.Value.pane.RestoreCommand = val; SaveState(); });
+            return true;
+        }
+
+        // ---- Control-API event bus (agterm #273): a bounded, cursor-polled log of status / notification /
+        // session-lifecycle / tree-change events. Poll with `events --since <cursor>`; the reply carries the
+        // new max cursor. Instance-scoped (this window). Emitted from any thread; polled from the pipe. ----
+        private readonly object _evtLock = new();
+        private readonly Queue<(long Seq, string Type, string? Session, string? Info)> _evtLog = new();
+        private long _evtSeq;
+
+        internal void EmitEvent(string type, string? session = null, string? info = null)
+        {
+            lock (_evtLock)
+            {
+                _evtLog.Enqueue((++_evtSeq, type, session, info));
+                while (_evtLog.Count > 1000) _evtLog.Dequeue();   // bounded history
+            }
+        }
+
+        public string Events(long since, int limit)
+        {
+            (long Seq, string Type, string? Session, string? Info)[] items;
+            long cursor;
+            lock (_evtLock)
+            {
+                cursor = _evtSeq;
+                var q = _evtLog.Where(e => e.Seq > since);
+                if (limit > 0) q = q.Take(limit);
+                items = q.ToArray();
+            }
+            var sb = new System.Text.StringBuilder();
+            sb.Append("{\"cursor\":").Append(cursor).Append(",\"events\":[");
+            for (int i = 0; i < items.Length; i++)
+            {
+                if (i > 0) sb.Append(',');
+                var e = items[i];
+                sb.Append("{\"seq\":").Append(e.Seq)
+                  .Append(",\"type\":").Append(System.Text.Json.JsonSerializer.Serialize(e.Type));
+                if (e.Session is not null) sb.Append(",\"session\":").Append(System.Text.Json.JsonSerializer.Serialize(e.Session));
+                if (e.Info is not null) sb.Append(",\"info\":").Append(System.Text.Json.JsonSerializer.Serialize(e.Info));
+                sb.Append('}');
+            }
+            sb.Append("]}");
+            return sb.ToString();
         }
 
         public string AdoptClaude() => InvokeOnUi(() => AdoptClaudeSessions());

@@ -75,6 +75,8 @@ internal partial class Program
         _toastText = label.Length == 0 ? "(notification)" : label;
         _toastTarget = ses;                       // clicking the banner jumps to the raising session
         SetTimer(_hwnd, (IntPtr)2, 4000, IntPtr.Zero);
+        PlayNotificationSound();                  // opt-in sound on banner delivery (agterm #232)
+        EmitEvent("notification", p.Id, _toastText);   // control-API event log (#273)
         if (_config.DesktopNotifications) TrayNotify(title, body);
         // Background notification → taskbar flash (agterm's opt-in Dock bounce, #215).
         if (!_windowActive && _config.NotificationFlash != "none")
@@ -837,7 +839,7 @@ internal partial class Program
         "theme-follow-system", "theme-dark", "theme-light",
         "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "ligatures", "window-opacity", "sidebar-tint", "sidebar-font-size", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "copy-on-ctrl-c", "word-delimiters", "desktop-notifications", "shell-integration",
-        "restore-commands", "restore-buffer", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
+        "restore-commands", "restore-buffer", "blocked-sound", "notification-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
         "paste-protection", "clipboard-write", "notification-flash", "claude-update-check", "update-check",
@@ -893,6 +895,7 @@ internal partial class Program
         "restore-commands" => _config.RestoreCommands ? "true" : "false",
         "restore-buffer" => _config.RestoreBuffer ? "true" : "false",
         "blocked-sound" => _config.BlockedSound,
+        "notification-sound" => _config.NotificationSound,
         "omp-theme" => _config.OmpTheme,
         "omp-integration" => _config.OmpIntegration ? "true" : "false",
         "prompt-engine" => _config.PromptEngine,
@@ -1088,7 +1091,7 @@ internal partial class Program
 
     // ---- Persistence: workspace/session tree + selection + sidebar state ----
 
-    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public List<string>? Buffer { get; set; } public string? BufferBlob { get; set; } }
+    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public string? RestoreCommand { get; set; } public List<string>? Buffer { get; set; } public string? BufferBlob { get; set; } }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
     private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; } public string? Profile { get; set; } public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
         // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
@@ -1347,7 +1350,7 @@ internal partial class Program
                                 }
                             }
                             catch { }
-                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, Buffer = buf, BufferBlob = blob });
+                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, RestoreCommand = p.RestoreCommand, Buffer = buf, BufferBlob = blob });
                     }
                     wss.Sessions.Add(ss);
                 }
@@ -1480,6 +1483,7 @@ internal partial class Program
                         {
                             ses.Panes[i].Ratio = pl[i].Ratio > 0 ? pl[i].Ratio : 1f;
                             ses.Panes[i].AgentResume = string.IsNullOrWhiteSpace(pl[i].AgentResume) ? null : pl[i].AgentResume;
+                            ses.Panes[i].RestoreCommand = string.IsNullOrWhiteSpace(pl[i].RestoreCommand) ? null : pl[i].RestoreCommand;
                         }
                         ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
                     }
@@ -1537,6 +1541,21 @@ internal partial class Program
                         });
                     }
 
+                    // Pinned restore command (agterm #271): always re-run on restart, independent of the
+                    // restore-commands toggle — an explicit per-pane opt-in that overrides auto-capture.
+                    for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
+                    {
+                        string pin = pl[i].RestoreCommand ?? "";
+                        if (pin.Length == 0 || !string.IsNullOrWhiteSpace(pl[i].AgentResume)) continue;
+                        if (IsAdopted(ses.Panes[i])) continue;   // still running — don't double-launch
+                        var rpane = ses.Panes[i];
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(2500);
+                            try { rpane.S.Write(System.Text.Encoding.UTF8.GetBytes(pin + "\r")); } catch { }
+                        });
+                    }
+
                     // Opt-in: re-run each pane's captured foreground command once the shell is ready.
                     if (_config.RestoreCommands)
                     {
@@ -1544,6 +1563,7 @@ internal partial class Program
                         for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
                         {
                             if (!string.IsNullOrWhiteSpace(pl[i].AgentResume)) continue; // agent panes handled above
+                            if (!string.IsNullOrWhiteSpace(pl[i].RestoreCommand)) continue; // pinned command handled above
                             if (IsAdopted(ses.Panes[i])) continue;   // the captured command is still running
                             string cmd = pl[i].Command ?? "";
                             if (cmd.Length == 0) continue;

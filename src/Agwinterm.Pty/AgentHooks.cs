@@ -31,7 +31,12 @@ public static class AgentHooks
         try {
           $o = $Json | ConvertFrom-Json
           switch ($o.type) {
-            'agent-turn-complete' { $state = 'completed' }
+            'agent-turn-complete' {
+              # A turn that ends on a question is waiting for the user, not done — surface it as
+              # blocked so the prompt stays visible (agterm #276).
+              $msg = "$($o.'last-agent-message')".TrimEnd()
+              if ($msg.EndsWith('?')) { $state = 'blocked' } else { $state = 'completed' }
+            }
             default { $state = 'completed' }
           }
         } catch { }

@@ -44,6 +44,7 @@ internal partial class Program
         }
         RequestRedraw();
         SaveState();
+        EmitEvent("tree");   // control-API event log (#273)
         return ws;
     }
 
@@ -101,6 +102,7 @@ internal partial class Program
             var now = session.Status;
             if (now == AgentStatus.Blocked && lastStatus != AgentStatus.Blocked) PlayBlockedSound();
             lastStatus = now;
+            EmitEvent("status", pane.Id, now.ToString().ToLowerInvariant());   // control-API event log (#273)
             RequestRedraw();
         };
         // An explicit --sound on session.status: play its spec (null => default alert).
@@ -413,6 +415,7 @@ internal partial class Program
         if (makeActive || _active is null) SetActive(ses);
         else RequestRedraw();
         SaveState();
+        EmitEvent("session", id, "created"); EmitEvent("tree");   // control-API event log (#273)
         return ses;
     }
 
@@ -1332,6 +1335,16 @@ internal partial class Program
         SaveState();
     }
 
+    /// <summary>Clone a session (agterm #234): a new session in the same workspace, launched in the
+    /// source's current directory with the same shell profile. Returns the new session (null if none).</summary>
+    private Ses? DuplicateSession(Ses? source, string? id = null)
+    {
+        source ??= _active;
+        if (source is null) return null;
+        return CreateSession(id ?? Guid.NewGuid().ToString(), null, CwdOf(source), source.Ws,
+            makeActive: true, profileName: source.ProfileName);
+    }
+
     private void CloseSessionInternal(Ses ses)
     {
         CaptureClosedSession(ses);   // remember it so Reopen Closed Session can bring it back
@@ -1341,11 +1354,15 @@ internal partial class Program
         if (ses.Overlay is not null) CloseOverlayOf(ses); // dismiss + dispose this session's overlay
         bool wasActive = ReferenceEquals(_active, ses);
         _mru.Remove(ses.Id);
+        EmitEvent("session", ses.Id, "closed"); EmitEvent("tree");   // control-API event log (#273)
         EvictWatermark(ses.BgPath); SweepBackground(ses.Id); // drop the session's watermark file + texture
         lock (_workspaces) ses.Ws.Sessions.Remove(ses);
         if (wasActive)
         {
-            Ses? next = AllSessions().FirstOrDefault();
+            // Return to the PREVIOUSLY-active session (agterm #231), not the first in the list —
+            // _mru's front is now the last-active one (the closed id was just removed above).
+            Ses? next = _mru.Select(FindSes).FirstOrDefault(s => s is not null)
+                        ?? AllSessions().FirstOrDefault();
             if (next is not null) SetActive(next);
             else CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), makeActive: true);
         }

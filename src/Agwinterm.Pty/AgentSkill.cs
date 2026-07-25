@@ -54,7 +54,11 @@ public static class AgentSkill
 
         ## Manage sessions & workspaces
         - `agwintermctl tree --json`                              — list workspaces+sessions (id, name, active, status)
-        - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"] [--profile NAME]`
+        - `agwintermctl events [--since CURSOR] [--limit N]`      — poll the event log (status/notification/session/tree changes); returns {cursor, events:[{seq,type,session,info}]}. Pass the returned cursor as --since next poll.
+        - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"] [--profile NAME] [--no-select]`
+          `--no-select` creates the session in the background without stealing focus or changing the current selection.
+        - `agwintermctl session duplicate [ID]` — clone a session (same cwd + shell profile) as a new session (default: active).
+        - `agwintermctl session restore "<command>" [--target PANE]` — pin a command to re-run on every restart for that pane (`none` clears). Surfaced per-pane in `tree --json` as `restoreCommands`.
           — create a session (prints its id). `--command` runs that program as the session process (argv-style, no shell) instead of the shell.
           `--profile NAME` picks a shell profile (default = Windows PowerShell).
         - `agwintermctl profiles list` — shell profiles (cmd, Windows PowerShell, PowerShell 7, Git Bash, WSL:*, custom); `* ` marks the default.
@@ -69,6 +73,7 @@ public static class AgentSkill
         - `agwintermctl session move --to up|down|top|bottom`     — reorder within its workspace
         - `agwintermctl session move <workspace-id>`             — relocate to another workspace
         - `agwintermctl workspace new [name]` / `workspace rename <name> [--target WS]` / `workspace select [--target WS]` / `workspace move --to <dir> [--target WS]` / `workspace delete [--target WS]`
+        - `agwintermctl workspace collapse [WS] [--target WS]` / `workspace expand [WS]` — collapse/expand a single workspace's session list (default: active)
 
         ## Read a session's output
         - `agwintermctl session text [--target <id>]`            — dump the session's visible buffer as plain text (great for reading command output)

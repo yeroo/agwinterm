@@ -614,8 +614,10 @@ internal partial class Program
         bool floatingPanel = _cover is not null && ((_coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 }) || _coverKind == 2);
         if (_cover is not null && !floatingPanel)
         {
-            var (ox, oy, cw0, _) = ContentArea();
+            var (ox, oy, cw0, ch0) = ContentArea();
             var (fmt, cw, ch) = Metrics(_cover.FontSize);
+            // The scratch terminal keeps its owning session's watermark, so the pane isn't unidentified (#275).
+            if (_coverKind == 1 && OwningSes(_cover) is { } scratchOwner) DrawWatermark(scratchOwner, ox, oy, cw0, ch0);
             RenderTerminal(_cover.S, ox, oy, fmt, cw, ch, _cover.ScrollOffset, _cover);
             DrawCoverBadge(rt, brush, ox + cw0, oy);
             DrawOverlayFooter(rt, brush);

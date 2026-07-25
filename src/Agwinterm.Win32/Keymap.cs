@@ -53,7 +53,7 @@ internal static class Keymap
 
     public static readonly HashSet<string> ValidActions = new(StringComparer.OrdinalIgnoreCase)
     {
-        "new_session", "new_workspace", "close_session", "close_pane", "split_pane",
+        "new_session", "duplicate_session", "new_workspace", "close_session", "close_pane", "split_pane",
         "focus_left_pane", "focus_right_pane", "next_session", "previous_session",
         "toggle_sidebar", "rename_session", "delete_workspace", "session_palette", "action_palette",
         "attention_list", "custom_palette", "next_attention", "previous_attention", "reload_keymap",

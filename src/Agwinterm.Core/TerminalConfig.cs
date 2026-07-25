@@ -116,6 +116,10 @@ public sealed class TerminalConfig
     /// (e.g. "SystemNotification"), or a full path to a .wav file.</summary>
     public string BlockedSound { get; set; } = "";
 
+    /// <summary>Sound played when a desktop notification banner is delivered (OSC 9/777 / notify). Off by
+    /// default (empty / "off" / "none" = silent). Same spec forms as <see cref="BlockedSound"/>. (agterm #232)</summary>
+    public string NotificationSound { get; set; } = "";
+
     /// <summary>How much to dim non-active panes in a split (0 = no dimming, 100 = fully dark). Default 35.</summary>
     public int InactivePaneDim { get; set; } = 35;
 
@@ -288,6 +292,10 @@ public sealed class TerminalConfig
         # exclamation, hand, question), a Windows sound-event alias, or a path to a .wav file.
         blocked-sound =
 
+        # Notification sound: play a sound when a desktop notification banner is delivered. Off by
+        # default. Same values as blocked-sound (empty / off / none = silent).
+        notification-sound =
+
         # Shell integration: inject a pwsh prompt hook (OSC 7) to track the live working
         # directory so it persists/restores accurately. Off by default because the hook can
         # override a customized prompt (e.g. oh-my-posh). Set true to opt in to live-cwd tracking.
@@ -416,6 +424,7 @@ public sealed class TerminalConfig
                 case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;
+                case "notification-sound": cfg.NotificationSound = val; break;
                 case "inactive-pane-dim": if (int.TryParse(val, out var ipd)) cfg.InactivePaneDim = System.Math.Clamp(ipd, 0, 100); break;
                 case "unfocused-dim": if (int.TryParse(val, out var ufd)) cfg.UnfocusedDim = System.Math.Clamp(ufd, 0, 90); break;
                 case "builtin-glyphs": cfg.BuiltinGlyphs = ParseBool(val, cfg.BuiltinGlyphs); break;
