@@ -70,6 +70,7 @@ struct Session {
     std::string status = "idle";   // control-API agent status (sidebar dot)
     std::wstring name;             // custom name (rename); empty = "session N"
     int ws = 0;                    // workspace this session belongs to (index into g_workspaces)
+    bool hidden = false;          // split-pane shell: a real shell, but NOT a sidebar/tree session
     void* emu = nullptr;
     HANDLE data = INVALID_HANDLE_VALUE;
     HANDLE reader = nullptr;
@@ -80,6 +81,8 @@ struct Session {
 };
 
 static HWND g_hwnd;
+static HWND g_toolbar;          // native toolbar (New Session / New Workspace / Split)
+static int g_toolbarH = 0;      // its height; the tree + terminal start below it
 static HWND g_tree;             // native SysTreeView32 sidebar (sessions)
 static bool g_treeSyncing;      // suppress TVN_SELCHANGED while we rebuild the tree
 static HTREEITEM g_ctxItem;     // right-clicked tree node (for the context menu)
@@ -91,7 +94,7 @@ enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, ID
        IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
        IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
-enum { ID_TREE = 200, ID_TRAY = 201 };
+enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
 #define WM_APP_TRAY        (WM_APP + 4)   // system-tray icon notifications
 static HICON g_appIcon;
@@ -242,11 +245,12 @@ static void connectControl() {
 // ---- pane geometry ----
 static void paneRect(int pane, RECT client, RECT* out) {
     int contentX = kSidebarW;
+    int top = g_toolbarH;   // terminal content starts below the toolbar
     int contentW = client.right - kSidebarW;
-    if (g_pane[1] < 0) { *out = { contentX, 0, client.right, client.bottom }; return; }
+    if (g_pane[1] < 0) { *out = { contentX, top, client.right, client.bottom }; return; }
     int half = contentW / 2;
-    if (pane == 0) *out = { contentX, 0, contentX + half - 1, client.bottom };
-    else *out = { contentX + half + 1, 0, client.right, client.bottom };
+    if (pane == 0) *out = { contentX, top, contentX + half - 1, client.bottom };
+    else *out = { contentX + half + 1, top, client.right, client.bottom };
 }
 
 static void paneGridSize(int pane, int* cols, int* rows) {
@@ -443,17 +447,44 @@ static void closeSessionAt(int idx) {
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // drop the session from the tree
 }
 
-static void closeFocused() { closeSessionAt(g_pane[g_focus]); }
+static void toggleSplit();   // fwd
+static void closeFocused() {
+    if (g_focus == 1 && g_pane[1] >= 0) { toggleSplit(); return; }   // closing the split pane = unsplit
+    closeSessionAt(g_pane[0]);
+}
 
-// Toggle the 2-pane split. Splitting spawns an INDEPENDENT new shell for the second pane (like the
-// full app) — not a mirror of the first, so the two panes have separate output.
+// Toggle the 2-pane split. Splitting spawns an INDEPENDENT new shell for the second pane (separate
+// output) — but marked hidden, so it is NOT a sidebar/tree session (agterm: a split isn't a new
+// session). Unsplitting removes that shell.
 static void toggleSplit() {
     if (g_pane[1] < 0) {
         int c, r; paneGridSize(g_focus, &c, &r);   // approximate; syncPaneSizes resizes both after
         Session* s = newSession(c, r);
-        if (s) { g_pane[1] = (int)g_sessions.size() - 1; g_focus = 1; }
+        if (s) { s->hidden = true; g_pane[1] = (int)g_sessions.size() - 1; g_focus = 1; }
     } else {
+        int sp = g_pane[1];
         g_pane[1] = -1; g_focus = 0;
+        if (sp >= 0 && sp < (int)g_sessions.size()) {   // remove the hidden split shell
+            killSession(g_sessions[sp]);
+            EnterCriticalSection(&g_lock);
+            g_sessions.erase(g_sessions.begin() + sp);
+            if (g_pane[0] > sp) g_pane[0]--;            // fix the surviving pane's index
+            LeaveCriticalSection(&g_lock);
+        }
+    }
+    syncPaneSizes();
+    PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+
+// Cycle the MAIN pane through visible sessions (skips hidden split shells). dir = +1 next, -1 prev.
+static void cycleSession(int dir) {
+    int n = (int)g_sessions.size();
+    if (n == 0) return;
+    int i = g_pane[0];
+    for (int k = 0; k < n; k++) {
+        i = (i + dir + n) % n;
+        if (i >= 0 && i < n && !g_sessions[i]->hidden) { g_pane[0] = i; g_focus = 0; break; }
     }
     syncPaneSizes();
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
@@ -857,10 +888,10 @@ static void runPaletteItem(int id) {
         case 1: { int c, r; paneGridSize(g_focus, &c, &r); Session* s = newSession(c, r); if (s) g_pane[g_focus] = (int)g_sessions.size() - 1; break; }
         case 2: closeFocused(); break;
         case 3: toggleSplit(); break;   // independent new shell for the second pane
-        case 4: if (!g_sessions.empty()) { g_pane[g_focus] = (g_pane[g_focus] + 1) % (int)g_sessions.size(); syncPaneSizes(); PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0); } break;
+        case 4: cycleSession(1); break;    // next session
         case 5: copySelection(); break;
         case 6: pasteClipboard(); break;
-        case 7: if (!g_sessions.empty()) { int n = (int)g_sessions.size(); g_pane[g_focus] = (g_pane[g_focus] + n - 1) % n; syncPaneSizes(); PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0); } break;   // previous session
+        case 7: cycleSession(-1); break;   // previous session
     }
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
@@ -894,15 +925,7 @@ static bool handleKeyDown(WPARAM vk) {
                 return true;
             }
             case 'W': closeFocused(); return true;
-            case VK_TAB: {
-                if (!g_sessions.empty()) {
-                    g_pane[g_focus] = (g_pane[g_focus] + 1) % (int)g_sessions.size();
-                    syncPaneSizes();
-                    PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // follow the switch in the tree
-                    InvalidateRect(g_hwnd, nullptr, FALSE);
-                }
-                return true;
-            }
+            case VK_TAB: cycleSession(1); return true;   // next visible session (skips split shells)
         }
     }
     if (shiftDown() && vk == VK_PRIOR) { scrollFocused(+10); return true; }
@@ -971,7 +994,7 @@ static void refreshTree() {
     // <0 = -(workspace index + 1).
     for (int w = 0; w < (int)g_workspaces.size(); w++) {
         int count = 0;
-        for (auto* s : g_sessions) if (s->ws == w) count++;
+        for (auto* s : g_sessions) if (s->ws == w && !s->hidden) count++;   // hidden split shells don't count
         wchar_t wlabel[96];
         wsprintfW(wlabel, L"%s  (%d)", g_workspaces[w].c_str(), count);
         TVINSERTSTRUCTW wt{};
@@ -981,13 +1004,15 @@ static void refreshTree() {
         wt.item.pszText = wlabel;
         wt.item.lParam = -(w + 1);
         HTREEITEM wh = TreeView_InsertItem(g_tree, &wt);
+        int vis = 0;   // visible session number within the workspace
         for (int i = 0; i < (int)g_sessions.size(); i++) {
-            if (g_sessions[i]->ws != w) continue;
+            if (g_sessions[i]->ws != w || g_sessions[i]->hidden) continue;   // skip split shells
             Session* s = g_sessions[i];
+            ++vis;
             const char* st = s->exited ? "exited" : s->status.c_str();
             wchar_t label[128];
             if (!s->name.empty()) wsprintfW(label, L"%s  ·  %S", s->name.c_str(), st);
-            else wsprintfW(label, L"session %d  ·  %S", i + 1, st);
+            else wsprintfW(label, L"session %d  ·  %S", vis, st);
             TVINSERTSTRUCTW tis{};
             tis.hParent = wh;
             tis.hInsertAfter = TVI_LAST;
@@ -1355,7 +1380,11 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_SIZE:
             if (wp != SIZE_MINIMIZED) {
-                if (g_tree) MoveWindow(g_tree, 0, 0, kSidebarW, HIWORD(lp), TRUE);   // dock the tree on the left
+                if (g_toolbar) {   // toolbar spans the top; capture its height for the layout below it
+                    SendMessageW(g_toolbar, TB_AUTOSIZE, 0, 0);
+                    RECT tr; GetWindowRect(g_toolbar, &tr); g_toolbarH = tr.bottom - tr.top;
+                }
+                if (g_tree) MoveWindow(g_tree, 0, g_toolbarH, kSidebarW, HIWORD(lp) - g_toolbarH, TRUE);   // dock left, below the toolbar
                 if (!g_sessions.empty()) syncPaneSizes();
             }
             return 0;
@@ -1371,10 +1400,10 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (nm->idFrom == ID_TREE && nm->code == TVN_SELCHANGEDW && !g_treeSyncing) {
                 auto* nt = (NMTREEVIEWW*)lp;
                 LPARAM p = nt->itemNew.lParam;
-                if (p >= 0) {                                   // session node -> select it
+                if (p >= 0) {                                   // session node -> show it in the MAIN pane
                     int i = (int)p;
                     if (i < (int)g_sessions.size()) {
-                        g_pane[g_focus] = i;
+                        g_pane[0] = i; g_focus = 0;             // tree drives the main pane, not the split shell
                         g_activeWs = g_sessions[i]->ws;         // new sessions follow the selected one's workspace
                         syncPaneSizes();
                         InvalidateRect(hwnd, nullptr, FALSE);
@@ -1630,7 +1659,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
 
     connectControl();
 
-    INITCOMMONCONTROLSEX icc{ sizeof icc, ICC_TREEVIEW_CLASSES };
+    INITCOMMONCONTROLSEX icc{ sizeof icc, ICC_TREEVIEW_CLASSES | ICC_BAR_CLASSES };
     InitCommonControlsEx(&icc);
 
     g_appIcon = makeRetroIcon();
@@ -1655,6 +1684,23 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
                              TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_EDITLABELS,
                              0, 0, kSidebarW, cr.bottom, g_hwnd, (HMENU)ID_TREE, inst, nullptr);
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+
+    // Native toolbar (text buttons) across the top: New Session / New Workspace / Split.
+    g_toolbar = CreateWindowExW(0, TOOLBARCLASSNAMEW, nullptr,
+                                WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_LIST | CCS_TOP,
+                                0, 0, 0, 0, g_hwnd, (HMENU)ID_TOOLBAR, inst, nullptr);
+    SendMessageW(g_toolbar, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
+    SendMessageW(g_toolbar, TB_SETEXTENDEDSTYLE, 0, TBSTYLE_EX_MIXEDBUTTONS);
+    int sNew = (int)SendMessageW(g_toolbar, TB_ADDSTRINGW, 0, (LPARAM)L"New Session\0");
+    int sWs  = (int)SendMessageW(g_toolbar, TB_ADDSTRINGW, 0, (LPARAM)L"New Workspace\0");
+    int sSp  = (int)SendMessageW(g_toolbar, TB_ADDSTRINGW, 0, (LPARAM)L"Split\0");
+    TBBUTTON tb[3] = {};
+    tb[0].iBitmap = I_IMAGENONE; tb[0].idCommand = IDM_NEW;   tb[0].fsState = TBSTATE_ENABLED; tb[0].fsStyle = BTNS_AUTOSIZE | BTNS_SHOWTEXT; tb[0].iString = sNew;
+    tb[1].iBitmap = I_IMAGENONE; tb[1].idCommand = IDM_NEWWS; tb[1].fsState = TBSTATE_ENABLED; tb[1].fsStyle = BTNS_AUTOSIZE | BTNS_SHOWTEXT; tb[1].iString = sWs;
+    tb[2].iBitmap = I_IMAGENONE; tb[2].idCommand = IDM_SPLIT; tb[2].fsState = TBSTATE_ENABLED; tb[2].fsStyle = BTNS_AUTOSIZE | BTNS_SHOWTEXT; tb[2].iString = sSp;
+    SendMessageW(g_toolbar, TB_ADDBUTTONS, 3, (LPARAM)tb);
+    SendMessageW(g_toolbar, TB_AUTOSIZE, 0, 0);
+    RECT tbr; GetWindowRect(g_toolbar, &tbr); g_toolbarH = tbr.bottom - tbr.top;
 
     // System-tray icon (right-click for a menu incl. Restart / Exit; double-click restores).
     g_nid.cbSize = sizeof g_nid;
