@@ -138,6 +138,49 @@ public class RustEmulatorCoreTests
         Assert.Equal(csImg.Data, rustImg.Data);   // identical RGBA — the whole point
     }
 
+    private sealed class RecordingHost : IHostActions
+    {
+        public readonly List<string> Log = new();
+        public void Notify(string title, string body) => Log.Add($"Notify|{title}|{body}");
+        public void Progress(int state, int value) => Log.Add($"Progress|{state}|{value}");
+        public void ClipboardWrite(string text) => Log.Add($"Clipboard|{text}");
+        public void Respond(string reply) => Log.Add($"Respond|{reply}");
+        public void Unhandled(string kind, string detail) => Log.Add($"Unhandled|{kind}|{detail}");
+    }
+
+    [Fact]
+    public void Adapter_HostActions_MatchManagedCore()
+    {
+        if (!Available) return;
+        // Exercise every IHostActions member through the VT stream: OSC 9 notify, OSC 9;4 progress,
+        // OSC 777 notify, OSC 52 clipboard (base64 "aGk=" -> "hi"), the kitty keyboard-flags query
+        // (Respond), and one each of the Unhandled taps (CSI, C0 BEL, ESC).
+        string script =
+            "\x1b]9;build done\x07" +
+            "\x1b]9;4;1;42\x07" +
+            "\x1b]777;notify;Title;Body;x\x07" +
+            "\x1b]52;c;aGk=\x07" +
+            "\x1b[?u" +
+            "\x1b[99z" +
+            "\x07" +
+            "\x1bH";
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes(script);
+
+        var mgHost = new RecordingHost();
+        var rsHost = new RecordingHost();
+        var cs = new TerminalEmulator(40, 10) { Host = mgHost };
+        using var rust = new RustTerminalCore(40, 10) { Host = rsHost };
+        cs.Feed(bytes);
+        rust.Feed(bytes);
+
+        // Same actions, same order, same payloads — through the adapter's drain path, not the oracle.
+        Assert.Equal(mgHost.Log, rsHost.Log);
+        // And it genuinely fired (guard against "both empty" passing vacuously).
+        Assert.Contains("Clipboard|hi", rsHost.Log);
+        Assert.Contains("Respond|\x1b[?0u", rsHost.Log);
+        Assert.Contains("Progress|1|42", rsHost.Log);
+    }
+
     [Fact]
     public void Adapter_DirectImageApi_RoundTrips()
     {
