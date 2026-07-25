@@ -752,6 +752,44 @@ static void sendUtf8(wchar_t wc) {
 
 static bool ctrlDown() { return (GetKeyState(VK_CONTROL) & 0x8000) != 0; }
 static bool shiftDown() { return (GetKeyState(VK_SHIFT) & 0x8000) != 0; }
+static bool altDown() { return (GetKeyState(VK_MENU) & 0x8000) != 0; }
+
+// Forward a mouse event to the app when the pane under (x,y) has mouse reporting on (so full-screen
+// apps like Far Manager get clicks/drags/wheel). Returns true if it was forwarded OR deliberately
+// swallowed (a reporting pane), so the caller skips selection/paste; false = do the normal UI action.
+// cb: 0 left, 1 middle, 2 right, 64 wheel-up, 65 wheel-down.
+static bool mouseReport(int x, int y, int cb, bool press, bool motion) {
+    RECT rc; GetClientRect(g_hwnd, &rc);
+    for (int p = 0; p < 2; p++) {
+        if (g_pane[p] < 0) continue;
+        RECT pr; paneRect(p, rc, &pr);
+        if (x < pr.left || x >= pr.right || y < pr.top || y >= pr.bottom) continue;
+        Session* s = g_sessions[g_pane[p]];
+        FfiEmuInfo info{};
+        EnterCriticalSection(&g_lock);
+        emu_info(s->emu, &info);
+        LeaveCriticalSection(&g_lock);
+        if (!info.mouseClick && !info.mouseDrag && !info.mouseMotion) return false;  // no reporting -> selection path
+        if (motion && !info.mouseDrag && !info.mouseMotion) return true;             // click-only app: swallow motion
+        if (s->data == INVALID_HANDLE_VALUE) return true;
+        int col = (x - pr.left) / g_cw + 1;
+        int row = (y - pr.top) / g_ch + 1;
+        int mods = (shiftDown() ? 4 : 0) + (altDown() ? 8 : 0) + (ctrlDown() ? 16 : 0);
+        char buf[48];
+        int len;
+        if (info.mouseSgr) {
+            int b = cb + (motion ? 32 : 0) + mods;
+            len = wsprintfA(buf, "\x1b[<%d;%d;%d%c", b, col, row, press ? 'M' : 'm');   // SGR 1006
+        } else {
+            int b = (press ? cb : 3) + (motion ? 32 : 0) + mods;                       // legacy X10/normal
+            int cc = col > 223 ? 0 : col, rr = row > 223 ? 0 : row;
+            len = wsprintfA(buf, "\x1b[M%c%c%c", 32 + b, 32 + cc, 32 + rr);
+        }
+        ovIo(s->data, true, buf, nullptr, (DWORD)len);
+        return true;
+    }
+    return false;
+}
 
 static void scrollFocused(int deltaRows) {
     Session* s = focusedSession();
@@ -840,21 +878,53 @@ static bool handleKeyDown(WPARAM vk) {
     }
     if (shiftDown() && vk == VK_PRIOR) { scrollFocused(+10); return true; }
     if (shiftDown() && vk == VK_NEXT) { scrollFocused(-10); return true; }
-    const char* seq = nullptr;
+
+    // Terminal special keys, encoded with xterm modifiers (mod = 1 + shift + 2*alt + 4*ctrl) so
+    // full-screen apps like Far Manager get F1-F12 and Ctrl/Shift/Alt combinations. Three forms:
+    //   csiFinal  -> ESC [ [1;mod] <A/B/C/D/H/F>   (arrows, Home, End)
+    //   ss3       -> ESC O <P/Q/R/S>  or  ESC [ 1;mod <P/Q/R/S>   (F1-F4)
+    //   tilde     -> ESC [ <n> [;mod] ~   (Insert, Delete, PgUp/Dn, F5-F12)
+    int mod = 1 + (shiftDown() ? 1 : 0) + (altDown() ? 2 : 0) + (ctrlDown() ? 4 : 0);
+    const char* csiFinal = nullptr; char ss3 = 0; int tilde = 0;
     switch (vk) {
-        case VK_UP: seq = "\x1b[A"; break;
-        case VK_DOWN: seq = "\x1b[B"; break;
-        case VK_RIGHT: seq = "\x1b[C"; break;
-        case VK_LEFT: seq = "\x1b[D"; break;
-        case VK_HOME: seq = "\x1b[H"; break;
-        case VK_END: seq = "\x1b[F"; break;
-        case VK_DELETE: seq = "\x1b[3~"; break;
-        case VK_PRIOR: seq = "\x1b[5~"; break;
-        case VK_NEXT: seq = "\x1b[6~"; break;
+        case VK_UP: csiFinal = "A"; break;
+        case VK_DOWN: csiFinal = "B"; break;
+        case VK_RIGHT: csiFinal = "C"; break;
+        case VK_LEFT: csiFinal = "D"; break;
+        case VK_HOME: csiFinal = "H"; break;
+        case VK_END: csiFinal = "F"; break;
+        case VK_INSERT: tilde = 2; break;
+        case VK_DELETE: tilde = 3; break;
+        case VK_PRIOR: tilde = 5; break;
+        case VK_NEXT: tilde = 6; break;
+        case VK_F1: ss3 = 'P'; break;
+        case VK_F2: ss3 = 'Q'; break;
+        case VK_F3: ss3 = 'R'; break;
+        case VK_F4: ss3 = 'S'; break;
+        case VK_F5: tilde = 15; break;
+        case VK_F6: tilde = 17; break;
+        case VK_F7: tilde = 18; break;
+        case VK_F8: tilde = 19; break;
+        case VK_F9: tilde = 20; break;
+        case VK_F10: tilde = 21; break;
+        case VK_F11: tilde = 23; break;
+        case VK_F12: tilde = 24; break;
+        case VK_TAB: if (shiftDown()) { sendBytes("\x1b[Z", 3); if (Session* s = focusedSession()) s->scrollOff = 0; return true; } return false; // Shift+Tab = back-tab; plain Tab -> WM_CHAR
         default: return false;
     }
+    char buf[32];
+    if (csiFinal) {
+        if (mod > 1) wsprintfA(buf, "\x1b[1;%d%s", mod, csiFinal);
+        else wsprintfA(buf, "\x1b[%s", csiFinal);
+    } else if (ss3) {
+        if (mod > 1) wsprintfA(buf, "\x1b[1;%d%c", mod, ss3);
+        else wsprintfA(buf, "\x1bO%c", ss3);
+    } else {
+        if (mod > 1) wsprintfA(buf, "\x1b[%d;%d~", tilde, mod);
+        else wsprintfA(buf, "\x1b[%d~", tilde);
+    }
     if (Session* s = focusedSession()) s->scrollOff = 0;   // typing snaps back to live
-    sendBytes(seq, (int)strlen(seq));
+    sendBytes(buf, (int)strlen(buf));
     return true;
 }
 
@@ -886,9 +956,14 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_KEYDOWN:
             if (handleKeyDown(wp)) return 0;
             break;
-        case WM_MOUSEWHEEL:
-            scrollFocused(GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 3 : -3);
+        case WM_MOUSEWHEEL: {
+            POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+            ScreenToClient(hwnd, &pt);   // wheel coords are screen-relative
+            bool up = GET_WHEEL_DELTA_WPARAM(wp) > 0;
+            if (mouseReport(pt.x, pt.y, up ? 64 : 65, true, false)) return 0;   // to the app if it reports mouse
+            scrollFocused(up ? 3 : -3);
             return 0;
+        }
         case WM_LBUTTONDOWN: {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
             if (g_palette) { g_palette = false; InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); return 0; }
@@ -903,7 +978,9 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 int pane, absRow, col;
                 if (hitTest(x, y, &pane, &absRow, &col)) {
                     g_focus = pane;
-                    g_sel = { pane, true, absRow, col, absRow, col };   // begin drag
+                    // App wants mouse events? Forward the click and skip selection.
+                    if (mouseReport(x, y, 0, true, false)) { SetFocus(hwnd); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+                    g_sel = { pane, true, absRow, col, absRow, col };   // begin drag-select
                     SetCapture(hwnd);
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
@@ -911,26 +988,44 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetFocus(hwnd);
             return 0;
         }
-        case WM_MOUSEMOVE:
+        case WM_MOUSEMOVE: {
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            if (wp & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) {   // report drags to a mouse-aware app
+                int held = (wp & MK_LBUTTON) ? 0 : (wp & MK_RBUTTON) ? 2 : 1;
+                if (mouseReport(x, y, held, true, true)) return 0;
+            }
             if (g_sel.active && (wp & MK_LBUTTON)) {
                 int pane, absRow, col;
-                if (hitTest(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), &pane, &absRow, &col) && pane == g_sel.pane) {
+                if (hitTest(x, y, &pane, &absRow, &col) && pane == g_sel.pane) {
                     g_sel.bRow = absRow;
                     g_sel.bCol = col;
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
             }
             return 0;
-        case WM_LBUTTONUP:
+        }
+        case WM_LBUTTONUP: {
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            if (mouseReport(x, y, 0, false, false)) return 0;   // release to a mouse-aware app
             if (g_sel.active) {
                 g_sel.active = false;
                 ReleaseCapture();
                 if (g_sel.has()) copySelection();   // auto-copy on release (terminal convention)
             }
             return 0;
-        case WM_RBUTTONDOWN:
-            pasteClipboard();   // right-click paste
+        }
+        case WM_RBUTTONDOWN: {
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            if (x < kSidebarW) return 0;                        // sidebar: no paste (was inserting into the prompt)
+            if (mouseReport(x, y, 2, true, false)) return 0;    // right-click to a mouse-aware app
+            pasteClipboard();                                   // else right-click pastes into the terminal
             return 0;
+        }
+        case WM_RBUTTONUP: {
+            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            mouseReport(x, y, 2, false, false);                 // release to a mouse-aware app (harmless otherwise)
+            return 0;
+        }
         case WM_SIZE:
             if (wp != SIZE_MINIMIZED && !g_sessions.empty()) syncPaneSizes();
             return 0;
