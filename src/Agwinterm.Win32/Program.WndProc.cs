@@ -249,6 +249,10 @@ internal partial class Program
                 break;
 
             case WM_KEYUP:
+            case WM_SYSKEYUP:
+                // win32-input-mode: emit the paired key-UP (Alt releases arrive as WM_SYSKEYUP).
+                Win32KeyUp((int)wParam);
+                if (msg == WM_SYSKEYUP) break;
                 // Committing the MRU walk happens when Ctrl is finally released (any key-up where Ctrl
                 // is no longer held is exactly the Ctrl-up event; a Tab-up with Ctrl still down is ignored).
                 if (_mruWalking && !KeyDown(VK_CONTROL)) { MruCommit(); return IntPtr.Zero; }

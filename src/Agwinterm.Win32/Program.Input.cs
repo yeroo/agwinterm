@@ -1048,7 +1048,7 @@ internal partial class Program
         // ConPTY can reconstruct it. Key-DOWN only for now (the common case apps read); WM_CHAR for
         // this pane is swallowed since the character rides in the sequence's Uc field.
         if (ActiveSurface()?.S.Emulator.Win32InputMode == true)
-        { Send(Win32KeySeq(vk, ctrl, shift, alt)); return true; }
+        { Send(Win32KeySeq(vk, true, ctrl, shift, alt)); _win32KeysDown.Add(vk); return true; }
 
         // Kitty keyboard protocol: when an app has enabled it, encode keys in CSI-u form.
         if ((ActiveSurface()?.S.Emulator.KeyboardFlags ?? 0) != 0 && KittyKeyEncode(vk, ctrl, alt, shift) is { } ku)
@@ -1092,7 +1092,7 @@ internal partial class Program
     /// <c>CSI Vk;Sc;Uc;Kd;Cs;Rc _</c> — Vk virtual-key, Sc scan code, Uc translated char (0 for
     /// non-text keys; it also carries Ctrl/Shift semantics, e.g. Ctrl+A -> 0x01), Kd=1 (down),
     /// Cs control-key-state bitmask, Rc=1. ConPTY decodes it back into a KEY_EVENT_RECORD.</summary>
-    private static string Win32KeySeq(int vk, bool ctrl, bool shift, bool alt)
+    private static string Win32KeySeq(int vk, bool down, bool ctrl, bool shift, bool alt)
     {
         uint sc = MapVirtualKeyW((uint)vk, 0);           // MAPVK_VK_TO_VSC
         var ks = new byte[256];
@@ -1102,7 +1102,20 @@ internal partial class Program
         int n = ToUnicodeEx((uint)vk, sc, ks, buf, buf.Length, 0x4, GetKeyboardLayout(0));
         int uc = n >= 1 ? buf[0] : 0;
         int cs = (shift ? 0x10 : 0) | (ctrl ? 0x8 : 0) | (alt ? 0x2 : 0); // SHIFT|LEFT_CTRL|LEFT_ALT
-        return $"\x1b[{vk};{sc};{uc};1;{cs};1_";
+        return $"\x1b[{vk};{sc};{uc};{(down ? 1 : 0)};{cs};1_";
+    }
+
+    // vks whose win32-input-mode key-DOWN was sent to the terminal — so we emit the matching key-UP
+    // only for those (keys consumed by agwinterm shortcuts never sent a down, so they send no up).
+    private readonly HashSet<int> _win32KeysDown = new();
+
+    /// <summary>Emit the win32-input-mode key-UP for a key whose key-down we sent. Called from
+    /// WM_KEYUP / WM_SYSKEYUP. Always forgets the key; only writes when the mode is still active.</summary>
+    private void Win32KeyUp(int vk)
+    {
+        if (!_win32KeysDown.Remove(vk)) return;
+        if (ActiveSurface()?.S.Emulator.Win32InputMode == true)
+            Send(Win32KeySeq(vk, false, KeyDown(VK_CONTROL), KeyDown(VK_SHIFT), KeyDown(VK_MENU)));
     }
 
     // Kitty keyboard: OnKeyDown encoded this key, so its following WM_CHAR must be dropped (else
