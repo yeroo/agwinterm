@@ -90,7 +90,15 @@ static HTREEITEM g_ctxItem;     // right-clicked tree node (for the context menu
 static LPARAM g_ctxParam;       // its lParam: >=0 session index, <0 = -(workspace+1)
 static HFONT g_fonts[4];        // [bold][italic]
 static std::wstring g_ttFace;   // the bundled TrueType face (Meslo Nerd, or Consolas fallback)
-static int g_fontMode = 0;      // 0 = TrueType Nerd Font, 1 = Terminal (raster), 2 = Fixedsys (raster)
+// A font catalog entry: a face + the sizes it offers (cmd.exe-style face list + size dropdown).
+// kind: 0 = scalable TrueType (antialiased), 1 = raster .fon (OEM charset, crisp), 2 = bitmap-embedded
+// TrueType (crisp, exact strike). Size {h,w}: raster/bitmap use positive px (w 0 = auto); scalable uses
+// negative h (point-ish) with w 0.
+struct FontSize { const wchar_t* label; int h, w; };
+struct FontEntry { const wchar_t* label; const wchar_t* face; int kind; bool avail; std::vector<FontSize> sizes; };
+static std::vector<FontEntry> g_catalog;
+static int g_faceIdx = 0, g_sizeIdx = 0;   // current selection into g_catalog
+static bool g_haveCozette = false, g_haveTamzen = false;   // bundled bitmap fonts actually loaded
 static HMENU g_fontMenu;        // View->Font submenu (for the active-font radio mark)
 static HFONT g_uiFont;          // shell UI font (Segoe UI) for the toolbar buttons
 static bool g_customColors = false;   // Properties->Colors: override the terminal's default fg/bg
@@ -500,18 +508,25 @@ static void cycleSession(int dir) {
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
-// (Re)create the four terminal fonts (regular/bold/italic/bold-italic) from a face + size, recompute
-// the character cell (g_cw/g_ch) from the regular font's metrics, and relayout every session. Raster
-// faces (Terminal, Fixedsys) force OUT_RASTER_PRECIS + no antialias so the old bitmap glyphs stay crisp,
-// and OEM_CHARSET so GDI actually selects the CP437 bitmap (box-drawing that Far Manager draws with).
-static void setFont(const wchar_t* face, int height, int width, bool raster) {
+// Build one GDI font for a catalog spec + weight/slant. The kind selects charset/precision/quality so
+// raster (.fon) and bitmap-embedded (TTF) faces render crisp while scalable faces stay antialiased.
+static HFONT createFontSpec(const FontEntry& e, const FontSize& s, bool bold, bool italic) {
+    int charset = (e.kind == 1) ? OEM_CHARSET : DEFAULT_CHARSET;
+    int precis  = (e.kind == 1) ? OUT_RASTER_PRECIS : (e.kind == 2 ? OUT_DEFAULT_PRECIS : OUT_TT_PRECIS);
+    int quality = (e.kind == 0) ? CLEARTYPE_QUALITY : NONANTIALIASED_QUALITY;
+    return CreateFontW(s.h, s.w, 0, 0, bold ? FW_BOLD : FW_NORMAL, italic, FALSE, FALSE,
+                       charset, precis, CLIP_DEFAULT_PRECIS, quality, FIXED_PITCH | FF_MODERN, e.face);
+}
+// (Re)create the four terminal fonts from the current catalog selection, recompute the character cell
+// (g_cw/g_ch) from the regular font's metrics, and relayout every session.
+static void applyFont() {
+    if (g_catalog.empty()) return;
+    if (g_faceIdx < 0 || g_faceIdx >= (int)g_catalog.size()) g_faceIdx = 0;
+    FontEntry& e = g_catalog[g_faceIdx];
+    if (g_sizeIdx < 0 || g_sizeIdx >= (int)e.sizes.size()) g_sizeIdx = 0;
+    FontSize& s = e.sizes[g_sizeIdx];
     HFONT nf[4];
-    for (int i = 0; i < 4; i++)
-        nf[i] = CreateFontW(height, width, 0, 0, (i & 1) ? FW_BOLD : FW_NORMAL, (i & 2) ? TRUE : FALSE,
-                            FALSE, FALSE, raster ? OEM_CHARSET : DEFAULT_CHARSET,
-                            raster ? OUT_RASTER_PRECIS : OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
-                            raster ? NONANTIALIASED_QUALITY : CLEARTYPE_QUALITY,
-                            FIXED_PITCH | FF_MODERN, face);
+    for (int i = 0; i < 4; i++) nf[i] = createFontSpec(e, s, i & 1, (i & 2) != 0);
     HDC dc = GetDC(nullptr);
     HGDIOBJ old = SelectObject(dc, nf[0]);
     TEXTMETRICW tm; GetTextMetricsW(dc, &tm);
@@ -524,19 +539,57 @@ static void setFont(const wchar_t* face, int height, int width, bool raster) {
         InvalidateRect(g_hwnd, nullptr, TRUE);
     }
 }
-
-// Persisted font choice (HKCU\Software\agwinterm-lite\FontMode). First run has no value, so the
-// default is 1 = Terminal 8x12 (Boris's pick); the value is rewritten whenever the font is switched.
-static int loadFontMode() {
-    DWORD v = 1, sz = sizeof(v);
-    RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontMode",
-                 RRF_RT_REG_DWORD, nullptr, &v, &sz);   // leaves v=1 if the value is missing
-    return v <= 2 ? (int)v : 1;
+// Populate the font catalog: bundled Meslo + the classic cmd.exe faces (Terminal at its DOS sizes,
+// Fixedsys, Consolas, Lucida Console) + the bundled bitmap fonts that actually loaded.
+static void buildFontCatalog() {
+    g_catalog.clear();
+    g_catalog.push_back({ L"Nerd Font", g_ttFace.c_str(), 0, true,
+        { {L"14",-14,0},{L"16",-16,0},{L"18",-18,0},{L"20",-20,0},{L"24",-24,0} } });
+    g_catalog.push_back({ L"Terminal", L"Terminal", 1, true,
+        { {L"4×6",6,4},{L"5×8",8,5},{L"6×8",8,6},{L"7×12",12,7},{L"8×8",8,8},
+          {L"8×12",12,8},{L"8×16",16,8},{L"10×18",18,10},{L"12×16",16,12},{L"16×12",12,16} } });
+    g_catalog.push_back({ L"Fixedsys", L"Fixedsys", 1, true, { {L"8×15",15,0} } });
+    g_catalog.push_back({ L"Consolas", L"Consolas", 0, true,
+        { {L"14",-14,0},{L"16",-16,0},{L"18",-18,0},{L"20",-20,0},{L"24",-24,0} } });
+    g_catalog.push_back({ L"Lucida Console", L"Lucida Console", 0, true,
+        { {L"14",-14,0},{L"16",-16,0},{L"18",-18,0},{L"20",-20,0},{L"24",-24,0} } });
+    if (g_haveCozette)
+        g_catalog.push_back({ L"Cozette", L"CozetteVector", 0, true,
+            { {L"13",-13,0},{L"16",-16,0},{L"20",-20,0},{L"26",-26,0} } });
+    if (g_haveTamzen)
+        g_catalog.push_back({ L"Tamzen", L"TamzenForPowerline", 2, true,
+            { {L"7×14",14,0},{L"8×16",16,0},{L"10×20",20,0} } });
 }
-static void saveFontMode(int mode) {
-    DWORD v = (DWORD)mode;
-    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontMode",
-                    REG_DWORD, &v, sizeof(v));
+static int catFace(const wchar_t* label) {
+    for (int i = 0; i < (int)g_catalog.size(); i++) if (wcscmp(g_catalog[i].label, label) == 0) return i;
+    return -1;
+}
+static void setDefaultFont() {   // Terminal 8x12 (Boris's pick) or the first catalog entry
+    int t = catFace(L"Terminal");
+    g_faceIdx = t >= 0 ? t : 0; g_sizeIdx = t >= 0 ? 5 : 0;   // 5 = "8x12" in the Terminal size list
+}
+// Persist the selection by face + size (survives catalog reordering across versions).
+static void saveFontSel() {
+    if (g_faceIdx < 0 || g_faceIdx >= (int)g_catalog.size()) return;
+    const FontEntry& e = g_catalog[g_faceIdx]; const FontSize& s = e.sizes[g_sizeIdx];
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontFace", REG_SZ, e.face, (DWORD)((wcslen(e.face) + 1) * sizeof(wchar_t)));
+    DWORD h = (DWORD)(int)s.h, w = (DWORD)(int)s.w;
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontH", REG_DWORD, &h, sizeof(h));
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontW", REG_DWORD, &w, sizeof(w));
+}
+static void loadFontSel() {
+    wchar_t face[64] = L""; DWORD sz = sizeof(face);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontFace", RRF_RT_REG_SZ, nullptr, face, &sz) != ERROR_SUCCESS) { setDefaultFont(); return; }
+    DWORD h = 0, w = 0, s = sizeof(DWORD);
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontH", RRF_RT_REG_DWORD, nullptr, &h, &s); s = sizeof(DWORD);
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontW", RRF_RT_REG_DWORD, nullptr, &w, &s);
+    for (int fi = 0; fi < (int)g_catalog.size(); fi++) {
+        if (wcscmp(g_catalog[fi].face, face) != 0) continue;
+        for (int si = 0; si < (int)g_catalog[fi].sizes.size(); si++)
+            if ((DWORD)(int)g_catalog[fi].sizes[si].h == h && (DWORD)(int)g_catalog[fi].sizes[si].w == w) { g_faceIdx = fi; g_sizeIdx = si; return; }
+        g_faceIdx = fi; g_sizeIdx = 0; return;   // face matched, size didn't — keep the face
+    }
+    setDefaultFont();
 }
 static void loadColors() {   // Properties->Colors overrides (default fg/bg + on/off), persisted like the font
     DWORD v, sz;
@@ -551,14 +604,27 @@ static void saveColors() {
     v = g_defBg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", REG_DWORD, &v, sizeof(v));
 }
 
-// Apply one of the three font modes; remembered in g_fontMode so View->Font shows the active one.
+// Tick whichever View->Font preset (if any) matches the current selection.
+static void updateFontMenuRadio() {
+    if (!g_fontMenu || g_faceIdx < 0 || g_faceIdx >= (int)g_catalog.size()) return;
+    const wchar_t* f = g_catalog[g_faceIdx].label;
+    int id = -1;
+    if (wcscmp(f, L"Nerd Font") == 0) id = IDM_FONT_TT;
+    else if (wcscmp(f, L"Terminal") == 0 && g_sizeIdx == 5) id = IDM_FONT_TERMINAL;   // 8x12
+    else if (wcscmp(f, L"Fixedsys") == 0) id = IDM_FONT_FIXEDSYS;
+    if (id >= 0) CheckMenuRadioItem(g_fontMenu, IDM_FONT_TT, IDM_FONT_FIXEDSYS, id, MF_BYCOMMAND);
+    else for (int i = IDM_FONT_TT; i <= IDM_FONT_FIXEDSYS; i++) CheckMenuItem(g_fontMenu, i, MF_BYCOMMAND | MF_UNCHECKED);
+}
+// Select a face+size, apply, persist, and sync the menu (used by View->Font quick presets + Properties).
+static void pickFont(int faceIdx, int sizeIdx) {
+    g_faceIdx = faceIdx; g_sizeIdx = sizeIdx;
+    applyFont(); saveFontSel(); updateFontMenuRadio();
+}
+// View->Font quick presets: Nerd 16 / Terminal 8x12 / Fixedsys.
 static void applyFontMode(int mode) {
-    g_fontMode = mode;
-    switch (mode) {
-        case 1: setFont(L"Terminal", 12, 8, true); break;   // classic OEM raster console font, pinned 8x12
-        case 2: setFont(L"Fixedsys", 15, 0, true); break;   // the other stock Windows raster fixed font
-        default: setFont(g_ttFace.c_str(), -16, 0, false); break;   // bundled Meslo Nerd Font (TrueType)
-    }
+    if (mode == 1) { int i = catFace(L"Terminal"); if (i >= 0) pickFont(i, 5); }
+    else if (mode == 2) { int i = catFace(L"Fixedsys"); if (i >= 0) pickFont(i, 0); }
+    else { int i = catFace(L"Nerd Font"); if (i >= 0) pickFont(i, 1); }
 }
 
 // ---- Procedural box-drawing ----
@@ -1300,8 +1366,8 @@ static HMENU buildMenuBar() {
     AppendMenuW(font, MF_STRING, IDM_FONT_TT,       L"&Nerd Font (default)");
     AppendMenuW(font, MF_STRING, IDM_FONT_TERMINAL, L"&Terminal 8x12 (raster)");
     AppendMenuW(font, MF_STRING, IDM_FONT_FIXEDSYS, L"&Fixedsys (raster)");
-    CheckMenuRadioItem(font, IDM_FONT_TT, IDM_FONT_FIXEDSYS, IDM_FONT_TT + g_fontMode, MF_BYCOMMAND);
     g_fontMenu = font;
+    updateFontMenuRadio();   // tick the preset matching the current selection (if any)
     AppendMenuW(view, MF_POPUP, (UINT_PTR)font, L"&Font");
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agwinterm lite");
@@ -1398,22 +1464,33 @@ static const COLORREF kConsolePalette[16] = {
     RGB(128,128,128),RGB(0,0,255),  RGB(0,255,0),   RGB(0,255,255),
     RGB(255,0,0),   RGB(255,0,255), RGB(255,255,0), RGB(255,255,255),
 };
-enum { PID_FONTLIST = 3001, PID_USECOLORS = 3030, PID_TEXT = 3010, PID_BG = 3011, PID_APPLY = 3020 };
-static const int SW_X0 = 16, SW_Y = 156, SW = 20, SW_GAP = 22;   // swatch grid geometry (WM_PAINT + hit-test)
+enum { PID_FONTLIST = 3001, PID_SIZECOMBO = 3002, PID_USECOLORS = 3030, PID_TEXT = 3010, PID_BG = 3011, PID_APPLY = 3020 };
+static const int SW_X0 = 16, SW_Y = 186, SW = 20, SW_GAP = 22;   // swatch grid geometry (WM_PAINT + hit-test)
 // Working copies edited by the dialog; committed to the globals on OK/Apply.
-static int g_pMode; static uint32_t g_pFg, g_pBg; static int g_pTarget; static bool g_pUse;
-static HFONT g_pPrev; static HWND g_pHwnd;
+static int g_pFace, g_pSize; static uint32_t g_pFg, g_pBg; static int g_pTarget; static bool g_pUse;
+static HFONT g_pPrev; static HWND g_pHwnd, g_pSizeCombo;
 
-static HFONT makePreviewFont(int mode) {
-    switch (mode) {
-        case 1: return CreateFontW(12, 8, 0, 0, FW_NORMAL, 0, 0, 0, OEM_CHARSET, OUT_RASTER_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Terminal");
-        case 2: return CreateFontW(15, 0, 0, 0, FW_NORMAL, 0, 0, 0, OEM_CHARSET, OUT_RASTER_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Fixedsys");
-        default: return CreateFontW(-16, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, g_ttFace.c_str());
-    }
+static HFONT makePreviewFontSel() {
+    if (g_pFace < 0 || g_pFace >= (int)g_catalog.size()) return nullptr;
+    FontEntry& e = g_catalog[g_pFace];
+    int si = (g_pSize >= 0 && g_pSize < (int)e.sizes.size()) ? g_pSize : 0;
+    return createFontSpec(e, e.sizes[si], false, false);
+}
+static void refreshPreview(HWND h) {
+    if (g_pPrev) DeleteObject(g_pPrev);
+    g_pPrev = makePreviewFontSel();
+    InvalidateRect(h, nullptr, FALSE);
+}
+static void fillSizeCombo(int sel) {   // sizes for the current face; disabled if the face has only one
+    SendMessageW(g_pSizeCombo, CB_RESETCONTENT, 0, 0);
+    if (g_pFace < 0 || g_pFace >= (int)g_catalog.size()) return;
+    FontEntry& e = g_catalog[g_pFace];
+    for (auto& s : e.sizes) SendMessageW(g_pSizeCombo, CB_ADDSTRING, 0, (LPARAM)s.label);
+    SendMessageW(g_pSizeCombo, CB_SETCURSEL, (sel >= 0 && sel < (int)e.sizes.size()) ? sel : 0, 0);
+    EnableWindow(g_pSizeCombo, e.sizes.size() > 1);
 }
 static void propCommit() {
-    g_fontMode = g_pMode; applyFontMode(g_pMode); saveFontMode(g_pMode);
-    if (g_fontMenu) CheckMenuRadioItem(g_fontMenu, IDM_FONT_TT, IDM_FONT_FIXEDSYS, IDM_FONT_TT + g_pMode, MF_BYCOMMAND);
+    pickFont(g_pFace, g_pSize);   // applies the font, persists face+size, syncs the View->Font radio
     g_customColors = g_pUse; g_defFg = g_pFg; g_defBg = g_pBg; saveColors();
     InvalidateRect(g_hwnd, nullptr, TRUE);
 }
@@ -1423,11 +1500,13 @@ static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             switch (LOWORD(w)) {
                 case PID_FONTLIST:
                     if (HIWORD(w) == LBN_SELCHANGE) {
-                        g_pMode = (int)SendMessageW((HWND)l, LB_GETCURSEL, 0, 0);
-                        if (g_pPrev) DeleteObject(g_pPrev);
-                        g_pPrev = makePreviewFont(g_pMode);
-                        InvalidateRect(h, nullptr, FALSE);
+                        g_pFace = (int)SendMessageW((HWND)l, LB_GETCURSEL, 0, 0);
+                        g_pSize = 0; fillSizeCombo(0);   // new face -> repopulate sizes, default first
+                        refreshPreview(h);
                     }
+                    break;
+                case PID_SIZECOMBO:
+                    if (HIWORD(w) == CBN_SELCHANGE) { g_pSize = (int)SendMessageW((HWND)l, CB_GETCURSEL, 0, 0); refreshPreview(h); }
                     break;
                 case PID_USECOLORS: g_pUse = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; InvalidateRect(h, nullptr, FALSE); break;
                 case PID_TEXT: g_pTarget = 0; InvalidateRect(h, nullptr, FALSE); break;
@@ -1499,10 +1578,10 @@ static void showPropertiesDialog() {
         RegisterClassW(&wc); reg = true;
     }
     // Seed working state from the live settings.
-    g_pMode = g_fontMode; g_pFg = g_defFg; g_pBg = g_defBg; g_pUse = g_customColors; g_pTarget = 0;
+    g_pFace = g_faceIdx; g_pSize = g_sizeIdx; g_pFg = g_defFg; g_pBg = g_defBg; g_pUse = g_customColors; g_pTarget = 0;
     if (g_pPrev) DeleteObject(g_pPrev);
-    g_pPrev = makePreviewFont(g_pMode);
-    const int W = 396, H = 430;
+    g_pPrev = makePreviewFontSel();
+    const int W = 396, H = 452;
     RECT pw; GetWindowRect(g_hwnd, &pw);
     g_pHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteProps", L"agwinterm lite — Properties",
                               WS_POPUP | WS_CAPTION | WS_SYSMENU, pw.left + 60, pw.top + 40, W, H, g_hwnd, nullptr, inst, nullptr);
@@ -1512,19 +1591,20 @@ static void showPropertiesDialog() {
         SendMessageW(c, WM_SETFONT, (WPARAM)gui, TRUE); return c;
     };
     mk(L"STATIC", L"Font:", 0, 16, 12, 120, 16, 0);
-    HWND fl = mk(L"LISTBOX", L"", WS_BORDER | LBS_NOTIFY, 16, 30, 200, 66, PID_FONTLIST);
-    SendMessageW(fl, LB_ADDSTRING, 0, (LPARAM)L"Nerd Font (default)");
-    SendMessageW(fl, LB_ADDSTRING, 0, (LPARAM)L"Terminal 8x12 (raster)");
-    SendMessageW(fl, LB_ADDSTRING, 0, (LPARAM)L"Fixedsys (raster)");
-    SendMessageW(fl, LB_SETCURSEL, g_pMode, 0);
-    mk(L"BUTTON", L"Override default colors", BS_AUTOCHECKBOX, 16, 108, 220, 18, PID_USECOLORS);
+    HWND fl = mk(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 16, 30, 200, 96, PID_FONTLIST);
+    for (const auto& e : g_catalog) SendMessageW(fl, LB_ADDSTRING, 0, (LPARAM)e.label);
+    SendMessageW(fl, LB_SETCURSEL, g_pFace, 0);
+    mk(L"STATIC", L"Size:", 0, 228, 12, 120, 16, 0);
+    g_pSizeCombo = mk(L"COMBOBOX", L"", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST, 228, 30, 140, 240, PID_SIZECOMBO);
+    fillSizeCombo(g_pSize);
+    mk(L"BUTTON", L"Override default colors", BS_AUTOCHECKBOX, 16, 134, 220, 18, PID_USECOLORS);
     CheckDlgButton(g_pHwnd, PID_USECOLORS, g_pUse ? BST_CHECKED : BST_UNCHECKED);
-    mk(L"BUTTON", L"Screen &Text", WS_GROUP | BS_AUTORADIOBUTTON, 28, 130, 110, 18, PID_TEXT);
-    mk(L"BUTTON", L"Screen &Background", BS_AUTORADIOBUTTON, 150, 130, 150, 18, PID_BG);
+    mk(L"BUTTON", L"Screen &Text", WS_GROUP | BS_AUTORADIOBUTTON, 28, 158, 110, 18, PID_TEXT);
+    mk(L"BUTTON", L"Screen &Background", BS_AUTORADIOBUTTON, 150, 158, 150, 18, PID_BG);
     CheckDlgButton(g_pHwnd, PID_TEXT, BST_CHECKED);
-    mk(L"BUTTON", L"OK", BS_DEFPUSHBUTTON, 120, 356, 78, 26, IDOK);
-    mk(L"BUTTON", L"Cancel", 0, 204, 356, 78, 26, IDCANCEL);
-    mk(L"BUTTON", L"Apply", 0, 288, 356, 78, 26, PID_APPLY);
+    mk(L"BUTTON", L"OK", BS_DEFPUSHBUTTON, 120, 380, 78, 26, IDOK);
+    mk(L"BUTTON", L"Cancel", 0, 204, 380, 78, 26, IDCANCEL);
+    mk(L"BUTTON", L"Apply", 0, 288, 380, 78, 26, PID_APPLY);
     EnableWindow(g_hwnd, FALSE);
     ShowWindow(g_pHwnd, SW_SHOW);
     MSG msg;
@@ -1793,9 +1873,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDM_FONT_TT:
                 case IDM_FONT_TERMINAL:
                 case IDM_FONT_FIXEDSYS:
-                    applyFontMode(id - IDM_FONT_TT);   // 0 Nerd / 1 Terminal / 2 Fixedsys
-                    saveFontMode(g_fontMode);          // remember across restarts
-                    CheckMenuRadioItem(g_fontMenu, IDM_FONT_TT, IDM_FONT_FIXEDSYS, id, MF_BYCOMMAND);
+                    applyFontMode(id - IDM_FONT_TT);   // preset: applies, persists, updates the radio
                     SetFocus(hwnd);
                     break;
                 case IDM_PROPERTIES: showPropertiesDialog(); break;
@@ -1973,14 +2051,23 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     InitializeCriticalSection(&g_reqLock);
     loadCore();
 
-    // Bundled Meslo Nerd Font (process-private); Consolas fallback. Old raster fonts (Terminal /
-    // Fixedsys) are switchable at runtime from View->Font; this seeds the default TrueType mode.
-    std::wstring ttf = exeDir() + L"\\MesloLGLDZNerdFont-Regular.ttf";
-    bool haveMeslo = AddFontResourceExW(ttf.c_str(), FR_PRIVATE, 0) > 0;
+    // Bundled fonts (process-private): Meslo Nerd (default TrueType), plus the optional bitmap fonts
+    // Cozette + Tamzen if their .ttf shipped next to the exe. Consolas is the fallback if Meslo is absent.
+    std::wstring dir = exeDir();
+    bool haveMeslo = AddFontResourceExW((dir + L"\\MesloLGLDZNerdFont-Regular.ttf").c_str(), FR_PRIVATE, 0) > 0;
     g_ttFace = haveMeslo ? L"MesloLGLDZ Nerd Font" : L"Consolas";
-    loadColors();                    // Properties->Colors overrides, remembered across restarts
-    applyFontMode(loadFontMode());   // first run -> Terminal 8x12; else the remembered choice. Creates
-                                     // g_fonts + sets g_cw/g_ch (g_hwnd still null, so no relayout yet).
+    g_haveCozette = AddFontResourceExW((dir + L"\\CozetteVector.ttf").c_str(), FR_PRIVATE, 0) > 0;
+    AddFontResourceExW((dir + L"\\CozetteVectorBold.ttf").c_str(), FR_PRIVATE, 0);
+    int tam = 0;
+    for (const wchar_t* f : { L"TamzenForPowerline7x14r.ttf", L"TamzenForPowerline7x14b.ttf",
+                              L"TamzenForPowerline8x16r.ttf", L"TamzenForPowerline8x16b.ttf",
+                              L"TamzenForPowerline10x20r.ttf", L"TamzenForPowerline10x20b.ttf" })
+        tam += AddFontResourceExW((dir + L"\\" + f).c_str(), FR_PRIVATE, 0);
+    g_haveTamzen = tam > 0;
+    buildFontCatalog();
+    loadColors();      // Properties->Colors overrides, remembered across restarts
+    loadFontSel();     // resolve the remembered face+size (first run -> Terminal 8x12)
+    applyFont();       // creates g_fonts + sets g_cw/g_ch (g_hwnd still null, so no relayout yet)
 
     connectControl();
 
