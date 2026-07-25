@@ -205,6 +205,36 @@ public class RustEmulatorCoreTests
     }
 
     [Fact]
+    public void Adapter_SynchronizedOutput_ModeAndDecrqm_MatchManagedCore()
+    {
+        if (!Available) return;
+        var mgHost = new RecordingHost();
+        var rsHost = new RecordingHost();
+        var cs = new TerminalEmulator(20, 5) { Host = mgHost };
+        using var rust = new RustTerminalCore(20, 5) { Host = rsHost };
+        void Feed(string s) { var b = System.Text.Encoding.ASCII.GetBytes(s); cs.Feed(b); rust.Feed(b); }
+
+        Feed("\x1b[?2026$p");                              // DECRQM while reset -> reports 2 (reset)
+        Assert.False(cs.SynchronizedOutput);
+        Assert.False(rust.SynchronizedOutput);
+
+        Feed("\x1b[?2026h");                               // enter synchronized output
+        Assert.True(cs.SynchronizedOutput);
+        Assert.True(rust.SynchronizedOutput);              // surfaced via the adapter Info snapshot
+        Assert.DoesNotContain("2026", rust.DumpModes());   // transient — NOT persisted for reattach
+        Assert.Equal(cs.DumpModes(), rust.DumpModes());
+        Feed("\x1b[?2026$p");                              // DECRQM while set -> reports 1 (set)
+
+        Feed("\x1b[?2026l");                               // leave synchronized output
+        Assert.False(cs.SynchronizedOutput);
+        Assert.False(rust.SynchronizedOutput);
+
+        // Same DECRPM replies, same order, through both cores.
+        Assert.Equal(mgHost.Log, rsHost.Log);
+        Assert.Equal(new[] { "Respond|\x1b[?2026;2$y", "Respond|\x1b[?2026;1$y" }, rsHost.Log);
+    }
+
+    [Fact]
     public void Adapter_DirectImageApi_RoundTrips()
     {
         if (!Available) return;

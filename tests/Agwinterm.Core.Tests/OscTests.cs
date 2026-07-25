@@ -234,8 +234,8 @@ public class OscTests
         var t = new TerminalEmulator(40, 3);
         var host = new RecordingHost(); t.Host = host;
         t.Feed(Encoding.UTF8.GetBytes("\x1b[3 q"));       // DECSCUSR (not implemented; space intermediate dropped by parser)
-        t.Feed(Encoding.UTF8.GetBytes("\x1b[?2026h"));    // synchronized output mode (not implemented)
-        Assert.Contains(host.Unhandleds, u => u.Kind == "MODE" && u.Detail == "?2026 h");
+        t.Feed(Encoding.UTF8.GetBytes("\x1b[?9999h"));    // an unassigned private mode -> MODE tap
+        Assert.Contains(host.Unhandleds, u => u.Kind == "MODE" && u.Detail == "?9999 h");
         Assert.NotEmpty(host.Unhandleds);
     }
 

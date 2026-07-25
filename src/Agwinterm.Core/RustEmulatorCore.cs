@@ -16,7 +16,7 @@ namespace Agwinterm.Core;
 /// </summary>
 public sealed unsafe class RustEmulatorCore : IDisposable
 {
-    public const uint RequiredAbi = 10;
+    public const uint RequiredAbi = 11;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Info
@@ -25,7 +25,7 @@ public sealed unsafe class RustEmulatorCore : IDisposable
         public long ScrollGeneration;
         public uint MouseClick, MouseDrag, MouseMotion, MouseSgr, BracketedPaste;
         public int KeyboardFlags;
-        public uint ScrollTop, ScrollBottom, MarkCount, FocusReporting;
+        public uint ScrollTop, ScrollBottom, MarkCount, FocusReporting, SynchronizedOutput;
     }
 
     [StructLayout(LayoutKind.Sequential)]

@@ -50,6 +50,11 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     /// and ESC[O when it loses focus, so the program can pause/resume (cursor blink, refresh).</summary>
     public bool FocusReporting { get; private set; }
 
+    /// <summary>Synchronized output (DECSET 2026): while set, the host defers painting so a mid-frame
+    /// TUI redraw never reaches the screen partially; the closing 2026l paints the frame atomically.
+    /// Transient render hint — intentionally NOT persisted in <see cref="DumpModes"/>.</summary>
+    public bool SynchronizedOutput { get; private set; }
+
     private int _scrollTop;
     private int _scrollBottom;
 
@@ -298,6 +303,9 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         {
             if (final is 'h' or 'l')
                 SetPrivateMode(parameters, set: final == 'h');
+            else if (final == 'p' && parameters.Count > 0 && parameters[0] == 2026)
+                // DECRQM ?2026$p — report synchronized-output support so apps enable it (1 set, 2 reset).
+                Host?.Respond($"\x1b[?2026;{(SynchronizedOutput ? 1 : 2)}$y");
             else
                 Host?.Unhandled("CSI", $"? {string.Join(';', parameters)} {final}"); // e.g. DECRQM ?…$p
             return;
@@ -371,6 +379,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 case 1003: _mouseMotion = set; break;  // any-motion tracking
                 case 1006: _mouseSgr = set; break;     // SGR extended mouse encoding
                 case 1004: FocusReporting = set; break; // focus in/out reporting
+                case 2026: SynchronizedOutput = set; break; // synchronized output (atomic frames)
                 case 2004: BracketedPaste = set; break; // bracketed paste
                 default: Host?.Unhandled("MODE", $"?{mode} {(set ? 'h' : 'l')}"); break;
             }

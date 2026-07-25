@@ -130,6 +130,7 @@ pub struct Emulator {
     mouse_sgr: bool,
     pub bracketed_paste: bool,
     pub focus_reporting: bool,
+    pub synchronized_output: bool,
 
     scroll_top: usize,
     scroll_bottom: usize,
@@ -193,6 +194,7 @@ impl Emulator {
             mouse_sgr: false,
             bracketed_paste: false,
             focus_reporting: false,
+            synchronized_output: false,
             scroll_top: 0,
             scroll_bottom: rows - 1,
             history: Vec::new(),
@@ -606,6 +608,7 @@ impl Emulator {
                 1003 => self.mouse_motion = set,
                 1006 => self.mouse_sgr = set,
                 1004 => self.focus_reporting = set,
+                2026 => self.synchronized_output = set,
                 2004 => self.bracketed_paste = set,
                 _ => self.push_action(HostAction::Unhandled {
                     kind: "MODE".into(),
@@ -956,6 +959,10 @@ impl Performer for Emulator {
         if prefix == b'?' {
             if ch == b'h' || ch == b'l' {
                 self.set_private_mode(params, ch == b'h');
+            } else if ch == b'p' && params.first() == Some(&2026) {
+                // DECRQM ?2026$p — report synchronized-output support (1 set, 2 reset).
+                let reply = format!("\u{1b}[?2026;{}$y", if self.synchronized_output { 1 } else { 2 });
+                self.push_action(HostAction::Respond { reply });
             } else {
                 self.push_action(HostAction::Unhandled {
                     kind: "CSI".into(),

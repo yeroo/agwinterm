@@ -88,7 +88,11 @@ internal partial class Program
         {
             long gen = session.Emulator.ScrollGeneration;
             if (gen != pane.LastScrollGen) { pane.LastScrollGen = gen; pane.ScrollOffset = 0; pane.ClearSel(); }
-            if (IsSurfaceVisible(pane)) RequestRedraw();
+            // Synchronized output (DECSET ?2026): while the app is mid-frame, defer painting so a
+            // partial redraw never reaches the screen — the closing 2026l chunk clears the mode and
+            // paints the frame atomically. The cursor-blink InvalidateRect still repaints within ~one
+            // blink interval, so a crash that leaves ?2026 open can't freeze the pane for long.
+            if (IsSurfaceVisible(pane) && !session.Emulator.SynchronizedOutput) RequestRedraw();
         };
         // On a transition INTO blocked, play the configured blocked-sound (best-effort, off the UI thread).
         AgentStatus lastStatus = session.Status;
