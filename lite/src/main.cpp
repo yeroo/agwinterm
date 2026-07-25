@@ -92,6 +92,7 @@ static HFONT g_fonts[4];        // [bold][italic]
 static std::wstring g_ttFace;   // the bundled TrueType face (Meslo Nerd, or Consolas fallback)
 static int g_fontMode = 0;      // 0 = TrueType Nerd Font, 1 = Terminal (raster), 2 = Fixedsys (raster)
 static HMENU g_fontMenu;        // View->Font submenu (for the active-font radio mark)
+static HFONT g_uiFont;          // shell UI font (Segoe UI) for the toolbar buttons
 
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
@@ -545,6 +546,89 @@ static void applyFontMode(int mode) {
     }
 }
 
+// ---- Procedural box-drawing ----
+// The raster Terminal/Fixedsys fonts have no Unicode cmap for U+2500.., so GDI draws blanks for the
+// CP437/866 pseudographic borders that Far Manager (and other DOS-heritage TUIs) rely on. Draw them
+// ourselves with GDI so they render crisply in ANY font. Covers the DOS single/double line set plus
+// the solid/half blocks; returns 0 for runes we don't handle (those fall through to the font).
+static uint8_t boxArms(uint32_t r) {
+    // packed (up<<6)|(down<<4)|(left<<2)|right, each 2 bits: 0 none, 1 light, 2 double
+    switch (r) {
+        case 0x2500: return (1 << 2) | 1;                                     // ─
+        case 0x2502: return (1 << 6) | (1 << 4);                              // │
+        case 0x250C: return (1 << 4) | 1;                                     // ┌
+        case 0x2510: return (1 << 4) | (1 << 2);                              // ┐
+        case 0x2514: return (1 << 6) | 1;                                     // └
+        case 0x2518: return (1 << 6) | (1 << 2);                              // ┘
+        case 0x251C: return (1 << 6) | (1 << 4) | 1;                          // ├
+        case 0x2524: return (1 << 6) | (1 << 4) | (1 << 2);                   // ┤
+        case 0x252C: return (1 << 4) | (1 << 2) | 1;                          // ┬
+        case 0x2534: return (1 << 6) | (1 << 2) | 1;                          // ┴
+        case 0x253C: return (1 << 6) | (1 << 4) | (1 << 2) | 1;               // ┼
+        case 0x2550: return (2 << 2) | 2;                                     // ═
+        case 0x2551: return (2 << 6) | (2 << 4);                              // ║
+        case 0x2554: return (2 << 4) | 2;                                     // ╔
+        case 0x2557: return (2 << 4) | (2 << 2);                              // ╗
+        case 0x255A: return (2 << 6) | 2;                                     // ╚
+        case 0x255D: return (2 << 6) | (2 << 2);                              // ╝
+        case 0x2560: return (2 << 6) | (2 << 4) | 2;                          // ╠
+        case 0x2563: return (2 << 6) | (2 << 4) | (2 << 2);                   // ╣
+        case 0x2566: return (2 << 4) | (2 << 2) | 2;                          // ╦
+        case 0x2569: return (2 << 6) | (2 << 2) | 2;                          // ╩
+        case 0x256C: return (2 << 6) | (2 << 4) | (2 << 2) | 2;               // ╬
+        case 0x2552: return (1 << 4) | 2;                                     // ╒
+        case 0x2553: return (2 << 4) | 1;                                     // ╓
+        case 0x2555: return (1 << 4) | (2 << 2);                              // ╕
+        case 0x2556: return (2 << 4) | (1 << 2);                              // ╖
+        case 0x2558: return (1 << 6) | 2;                                     // ╘
+        case 0x2559: return (2 << 6) | 1;                                     // ╙
+        case 0x255B: return (1 << 6) | (2 << 2);                              // ╛
+        case 0x255C: return (2 << 6) | (1 << 2);                              // ╜
+        case 0x255E: return (1 << 6) | (1 << 4) | 2;                          // ╞
+        case 0x255F: return (2 << 6) | (2 << 4) | 1;                          // ╟
+        case 0x2561: return (1 << 6) | (1 << 4) | (2 << 2);                   // ╡
+        case 0x2562: return (2 << 6) | (2 << 4) | (1 << 2);                   // ╢
+        case 0x2564: return (1 << 4) | (2 << 2) | 2;                          // ╤
+        case 0x2565: return (2 << 4) | (1 << 2) | 1;                          // ╥
+        case 0x2567: return (1 << 6) | (2 << 2) | 2;                          // ╧
+        case 0x2568: return (2 << 6) | (1 << 2) | 1;                          // ╨
+        case 0x256A: return (1 << 6) | (1 << 4) | (2 << 2) | 2;               // ╪
+        case 0x256B: return (2 << 6) | (2 << 4) | (1 << 2) | 1;               // ╫
+    }
+    return 0;
+}
+static bool isBoxGlyph(uint32_t r) {
+    if (boxArms(r)) return true;
+    switch (r) { case 0x2580: case 0x2584: case 0x2588: case 0x258C: case 0x2590: return true; }
+    return false;
+}
+static void drawBoxGlyph(HDC dc, int x, int y, int cw, int ch, uint32_t r, COLORREF fg) {
+    HBRUSH br = CreateSolidBrush(fg);
+    switch (r) {   // solid + half blocks (scrollbars, shadows, fills)
+        case 0x2588: { RECT b{ x, y, x + cw, y + ch }; FillRect(dc, &b, br); DeleteObject(br); return; }
+        case 0x2580: { RECT b{ x, y, x + cw, y + ch / 2 }; FillRect(dc, &b, br); DeleteObject(br); return; }
+        case 0x2584: { RECT b{ x, y + ch / 2, x + cw, y + ch }; FillRect(dc, &b, br); DeleteObject(br); return; }
+        case 0x258C: { RECT b{ x, y, x + cw / 2, y + ch }; FillRect(dc, &b, br); DeleteObject(br); return; }
+        case 0x2590: { RECT b{ x + cw / 2, y, x + cw, y + ch }; FillRect(dc, &b, br); DeleteObject(br); return; }
+    }
+    uint8_t a = boxArms(r);
+    int up = (a >> 6) & 3, down = (a >> 4) & 3, left = (a >> 2) & 3, right = a & 3;
+    int cx = x + cw / 2, cy = y + ch / 2, d = 1;   // d = half-gap between the two strokes of a double line
+    auto hline = [&](int x0, int x1, int yy) { RECT rr{ x0, yy, x1, yy + 1 }; FillRect(dc, &rr, br); };
+    auto vline = [&](int y0, int y1, int xx) { RECT rr{ xx, y0, xx + 1, y1 }; FillRect(dc, &rr, br); };
+    // Light arms run edge->center; double arms are two parallel strokes that cross the center by d so
+    // corners/junctions close cleanly.
+    if (left == 1) hline(x, cx + 1, cy);
+    if (left == 2) { hline(x, cx + d + 1, cy - d); hline(x, cx + d + 1, cy + d); }
+    if (right == 1) hline(cx, x + cw, cy);
+    if (right == 2) { hline(cx - d, x + cw, cy - d); hline(cx - d, x + cw, cy + d); }
+    if (up == 1) vline(y, cy + 1, cx);
+    if (up == 2) { vline(y, cy + d + 1, cx - d); vline(y, cy + d + 1, cx + d); }
+    if (down == 1) vline(cy, y + ch, cx);
+    if (down == 2) { vline(cy - d, y + ch, cx - d); vline(cy - d, y + ch, cx + d); }
+    DeleteObject(br);
+}
+
 // ---- GDI paint ----
 static COLORREF toColorRef(uint32_t packed, bool dim) {
     uint32_t r = (packed >> 16) & 0xFF, g = (packed >> 8) & 0xFF, b = packed & 0xFF;
@@ -617,7 +701,9 @@ static void paintPane(HDC mem, int pane, RECT pr) {
                     text.push_back((wchar_t)(0xDC00 + (v & 0x3FF)));
                     dx.push_back(0);
                 } else {
-                    text.push_back((wchar_t)(cc.rune ? cc.rune : L' '));
+                    // Box-drawing runes are painted procedurally after the run (see below); feed the
+                    // font a space so ETO_OPAQUE still lays down the background cell.
+                    text.push_back(isBoxGlyph(cc.rune) ? L' ' : (wchar_t)(cc.rune ? cc.rune : L' '));
                     dx.push_back(g_cw * (int)cc.width);
                 }
                 c += cc.width;
@@ -630,6 +716,18 @@ static void paintPane(HDC mem, int pane, RECT pr) {
             SetBkMode(mem, OPAQUE);
             RECT clip{ x, y, min((LONG)(pr.left + (LONG)c * g_cw), pr.right), y + g_ch };
             ExtTextOutW(mem, x, y, ETO_OPAQUE | ETO_CLIPPED, &clip, text.data(), (UINT)text.size(), dx.data());
+            // Overlay CP437/866 pseudographics with GDI primitives (all cells in this run share fg).
+            {
+                COLORREF boxCol = toColorRef(fg, (styleKey & kAttrDim) != 0);
+                for (uint32_t col = start; col < c; ) {
+                    const FfiCell& bc = view[r * info.cols + col];
+                    uint32_t w = bc.width ? bc.width : 1;
+                    int bx = pr.left + (int)col * g_cw;
+                    if (bx >= pr.right) break;
+                    if (isBoxGlyph(bc.rune)) drawBoxGlyph(mem, bx, y, g_cw, g_ch, bc.rune, boxCol);
+                    col += w;
+                }
+            }
             if (styleKey & (kAttrUnderline | kAttrStrike)) {
                 HBRUSH b = CreateSolidBrush(toColorRef(fg, (styleKey & kAttrDim) != 0));
                 if (styleKey & kAttrUnderline) { RECT u{ x, y + g_ch - 2, clip.right, y + g_ch - 1 }; FillRect(mem, &u, b); }
@@ -1758,6 +1856,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     tb[1].iBitmap = I_IMAGENONE; tb[1].idCommand = IDM_NEWWS; tb[1].fsState = TBSTATE_ENABLED; tb[1].fsStyle = BTNS_AUTOSIZE | BTNS_SHOWTEXT; tb[1].iString = sWs;
     tb[2].iBitmap = I_IMAGENONE; tb[2].idCommand = IDM_SPLIT; tb[2].fsState = TBSTATE_ENABLED; tb[2].fsStyle = BTNS_AUTOSIZE | BTNS_SHOWTEXT; tb[2].iString = sSp;
     SendMessageW(g_toolbar, TB_ADDBUTTONS, 3, (LPARAM)tb);
+    // A new common control defaults to the old System bitmap font; give the buttons the real shell
+    // UI font (Segoe UI on Win10/11) from the theme's message font instead.
+    {
+        NONCLIENTMETRICSW ncm{ sizeof(ncm) };
+        SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+        g_uiFont = CreateFontIndirectW(&ncm.lfMessageFont);
+        SendMessageW(g_toolbar, WM_SETFONT, (WPARAM)g_uiFont, TRUE);
+    }
     SendMessageW(g_toolbar, TB_AUTOSIZE, 0, 0);
     RECT tbr; GetWindowRect(g_toolbar, &tbr); g_toolbarH = tbr.bottom - tbr.top;
 
