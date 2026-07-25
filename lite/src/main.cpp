@@ -93,11 +93,14 @@ static std::wstring g_ttFace;   // the bundled TrueType face (Meslo Nerd, or Con
 static int g_fontMode = 0;      // 0 = TrueType Nerd Font, 1 = Terminal (raster), 2 = Fixedsys (raster)
 static HMENU g_fontMenu;        // View->Font submenu (for the active-font radio mark)
 static HFONT g_uiFont;          // shell UI font (Segoe UI) for the toolbar buttons
+static bool g_customColors = false;   // Properties->Colors: override the terminal's default fg/bg
+static uint32_t g_defFg = 0xC0C0C0;   // packed 0xRRGGBB, legacy cmd.exe light gray on...
+static uint32_t g_defBg = 0x000000;   // ...black
 
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
        IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
-       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107,
+       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108,
        IDM_FONT_TT = 110, IDM_FONT_TERMINAL = 111, IDM_FONT_FIXEDSYS = 112 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202 };
@@ -535,6 +538,18 @@ static void saveFontMode(int mode) {
     RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontMode",
                     REG_DWORD, &v, sizeof(v));
 }
+static void loadColors() {   // Properties->Colors overrides (default fg/bg + on/off), persisted like the font
+    DWORD v, sz;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"CustomColors", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_customColors = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defFg = v & 0xFFFFFF;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defBg = v & 0xFFFFFF;
+}
+static void saveColors() {
+    DWORD v;
+    v = g_customColors ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"CustomColors", REG_DWORD, &v, sizeof(v));
+    v = g_defFg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", REG_DWORD, &v, sizeof(v));
+    v = g_defBg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", REG_DWORD, &v, sizeof(v));
+}
 
 // Apply one of the three font modes; remembered in g_fontMode so View->Font shows the active one.
 static void applyFontMode(int mode) {
@@ -680,6 +695,7 @@ static void paintPane(HDC mem, int pane, RECT pr) {
             if (cell.width == 0) { c++; continue; }
             uint32_t attrs = cell.attrs;
             uint32_t fg = cell.fg, bgc = cell.bg;
+            if (g_customColors) { if (cell.fgKind == 0) fg = g_defFg; if (cell.bgKind == 0) bgc = g_defBg; }
             if (attrs & kAttrInverse) { uint32_t t = fg; fg = bgc; bgc = t; }
             uint32_t styleKey = attrs & (kAttrBold | kAttrItalic | kAttrUnderline | kAttrStrike | kAttrDim);
             uint32_t start = c;
@@ -689,6 +705,7 @@ static void paintPane(HDC mem, int pane, RECT pr) {
                 const FfiCell& cc = view[r * info.cols + c];
                 if (cc.width == 0) { c++; continue; }
                 uint32_t f2 = cc.fg, b2 = cc.bg, a2 = cc.attrs;
+                if (g_customColors) { if (cc.fgKind == 0) f2 = g_defFg; if (cc.bgKind == 0) b2 = g_defBg; }
                 if (a2 & kAttrInverse) { uint32_t t = f2; f2 = b2; b2 = t; }
                 if (f2 != fg || b2 != bgc ||
                     (a2 & (kAttrBold | kAttrItalic | kAttrUnderline | kAttrStrike | kAttrDim)) != styleKey) break;
@@ -797,7 +814,7 @@ static void paint(HDC dc, RECT rc) {
     HDC mem = CreateCompatibleDC(dc);
     HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
     HGDIOBJ oldBmp = SelectObject(mem, bmp);
-    HBRUSH bg = CreateSolidBrush(RGB(0, 0, 0));
+    HBRUSH bg = CreateSolidBrush(g_customColors ? toColorRef(g_defBg, false) : RGB(0, 0, 0));
     FillRect(mem, &rc, bg);
     DeleteObject(bg);
 
@@ -1266,6 +1283,8 @@ static HMENU buildMenuBar() {
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close Session\tCtrl+W");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(file, MF_STRING, IDM_PROPERTIES, L"P&roperties…");
+    AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_RESTART, L"&Restart everything");
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
     HMENU edit = CreatePopupMenu();
@@ -1369,6 +1388,153 @@ static void newSessionDialog(const char* cwd) {
     int c, r; paneGridSize(g_focus, &c, &r);
     Session* s = newSession(c, r, profs[i].app.c_str(), &profs[i].args, cwd);
     if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; syncPaneSizes(); InvalidateRect(g_hwnd, nullptr, FALSE); }
+}
+
+// ---- Properties dialog (cmd.exe-style: font + colors, live preview) ----
+// The legacy Windows console 16-colour palette, so the swatches feel like the old cmd.exe Colors tab.
+static const COLORREF kConsolePalette[16] = {
+    RGB(0,0,0),     RGB(0,0,128),   RGB(0,128,0),   RGB(0,128,128),
+    RGB(128,0,0),   RGB(128,0,128), RGB(128,128,0), RGB(192,192,192),
+    RGB(128,128,128),RGB(0,0,255),  RGB(0,255,0),   RGB(0,255,255),
+    RGB(255,0,0),   RGB(255,0,255), RGB(255,255,0), RGB(255,255,255),
+};
+enum { PID_FONTLIST = 3001, PID_USECOLORS = 3030, PID_TEXT = 3010, PID_BG = 3011, PID_APPLY = 3020 };
+static const int SW_X0 = 16, SW_Y = 156, SW = 20, SW_GAP = 22;   // swatch grid geometry (WM_PAINT + hit-test)
+// Working copies edited by the dialog; committed to the globals on OK/Apply.
+static int g_pMode; static uint32_t g_pFg, g_pBg; static int g_pTarget; static bool g_pUse;
+static HFONT g_pPrev; static HWND g_pHwnd;
+
+static HFONT makePreviewFont(int mode) {
+    switch (mode) {
+        case 1: return CreateFontW(12, 8, 0, 0, FW_NORMAL, 0, 0, 0, OEM_CHARSET, OUT_RASTER_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Terminal");
+        case 2: return CreateFontW(15, 0, 0, 0, FW_NORMAL, 0, 0, 0, OEM_CHARSET, OUT_RASTER_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Fixedsys");
+        default: return CreateFontW(-16, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, g_ttFace.c_str());
+    }
+}
+static void propCommit() {
+    g_fontMode = g_pMode; applyFontMode(g_pMode); saveFontMode(g_pMode);
+    if (g_fontMenu) CheckMenuRadioItem(g_fontMenu, IDM_FONT_TT, IDM_FONT_FIXEDSYS, IDM_FONT_TT + g_pMode, MF_BYCOMMAND);
+    g_customColors = g_pUse; g_defFg = g_pFg; g_defBg = g_pBg; saveColors();
+    InvalidateRect(g_hwnd, nullptr, TRUE);
+}
+static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+        case WM_COMMAND:
+            switch (LOWORD(w)) {
+                case PID_FONTLIST:
+                    if (HIWORD(w) == LBN_SELCHANGE) {
+                        g_pMode = (int)SendMessageW((HWND)l, LB_GETCURSEL, 0, 0);
+                        if (g_pPrev) DeleteObject(g_pPrev);
+                        g_pPrev = makePreviewFont(g_pMode);
+                        InvalidateRect(h, nullptr, FALSE);
+                    }
+                    break;
+                case PID_USECOLORS: g_pUse = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; InvalidateRect(h, nullptr, FALSE); break;
+                case PID_TEXT: g_pTarget = 0; InvalidateRect(h, nullptr, FALSE); break;
+                case PID_BG:   g_pTarget = 1; InvalidateRect(h, nullptr, FALSE); break;
+                case PID_APPLY: propCommit(); break;
+                case IDOK: propCommit(); DestroyWindow(h); break;
+                case IDCANCEL: DestroyWindow(h); break;
+            }
+            return 0;
+        case WM_LBUTTONDOWN: {
+            int mx = GET_X_LPARAM(l), my = GET_Y_LPARAM(l);
+            if (my >= SW_Y && my < SW_Y + SW) {
+                int i = (mx - SW_X0) / SW_GAP;
+                if (i >= 0 && i < 16 && mx >= SW_X0 + i * SW_GAP && mx < SW_X0 + i * SW_GAP + SW) {
+                    COLORREF cr = kConsolePalette[i];
+                    uint32_t packed = (GetRValue(cr) << 16) | (GetGValue(cr) << 8) | GetBValue(cr);
+                    if (g_pTarget == 0) g_pFg = packed; else g_pBg = packed;
+                    if (!g_pUse) { g_pUse = true; CheckDlgButton(h, PID_USECOLORS, BST_CHECKED); }
+                    InvalidateRect(h, nullptr, FALSE);
+                }
+            }
+            return 0;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+            // Colour swatches
+            for (int i = 0; i < 16; i++) {
+                RECT s{ SW_X0 + i * SW_GAP, SW_Y, SW_X0 + i * SW_GAP + SW, SW_Y + SW };
+                HBRUSH b = CreateSolidBrush(kConsolePalette[i]); FillRect(dc, &s, b); DeleteObject(b);
+                FrameRect(dc, &s, (HBRUSH)GetStockObject(BLACK_BRUSH));
+            }
+            // Selected text/bg colour chips
+            auto chip = [&](int x, const wchar_t* lbl, uint32_t packed) {
+                RECT lr{ x, SW_Y + 30, x + 90, SW_Y + 46 };
+                SetBkMode(dc, TRANSPARENT); DrawTextW(dc, lbl, -1, &lr, DT_LEFT | DT_SINGLELINE);
+                RECT cr{ x + 92, SW_Y + 28, x + 118, SW_Y + 48 };
+                HBRUSH b = CreateSolidBrush(RGB((packed >> 16) & 0xFF, (packed >> 8) & 0xFF, packed & 0xFF));
+                FillRect(dc, &cr, b); DeleteObject(b); FrameRect(dc, &cr, (HBRUSH)GetStockObject(BLACK_BRUSH));
+            };
+            chip(16, g_pTarget == 0 ? L"\x25B6 Text" : L"Text", g_pFg);
+            chip(150, g_pTarget == 1 ? L"\x25B6 Background" : L"Background", g_pBg);
+            // Live preview: sample terminal text in the working font + colours
+            RECT pv{ 16, SW_Y + 60, 372, SW_Y + 170 };
+            HBRUSH pb = CreateSolidBrush(RGB((g_pBg >> 16) & 0xFF, (g_pBg >> 8) & 0xFF, g_pBg & 0xFF));
+            FillRect(dc, &pv, pb); DeleteObject(pb);
+            FrameRect(dc, &pv, (HBRUSH)GetStockObject(GRAY_BRUSH));
+            HGDIOBJ of = SelectObject(dc, g_pPrev ? g_pPrev : (HFONT)GetStockObject(OEM_FIXED_FONT));
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB((g_pFg >> 16) & 0xFF, (g_pFg >> 8) & 0xFF, g_pFg & 0xFF));
+            TextOutW(dc, pv.left + 6, pv.top + 6,  L"C:\\> dir", 8);
+            TextOutW(dc, pv.left + 6, pv.top + 24, L"Volume in drive C is SYSTEM", 27);
+            TextOutW(dc, pv.left + 6, pv.top + 42, L"abcdefghij 0123456789 +-*/=", 27);
+            SelectObject(dc, of);
+            EndPaint(h, &ps);
+            return 0;
+        }
+        case WM_CLOSE: DestroyWindow(h); return 0;
+        case WM_DESTROY: if (g_pPrev) { DeleteObject(g_pPrev); g_pPrev = nullptr; } return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void showPropertiesDialog() {
+    static bool reg = false;
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    if (!reg) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = propDlgProc; wc.hInstance = inst; wc.lpszClassName = L"AgwintermLiteProps";
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);
+        RegisterClassW(&wc); reg = true;
+    }
+    // Seed working state from the live settings.
+    g_pMode = g_fontMode; g_pFg = g_defFg; g_pBg = g_defBg; g_pUse = g_customColors; g_pTarget = 0;
+    if (g_pPrev) DeleteObject(g_pPrev);
+    g_pPrev = makePreviewFont(g_pMode);
+    const int W = 396, H = 430;
+    RECT pw; GetWindowRect(g_hwnd, &pw);
+    g_pHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteProps", L"agwinterm lite — Properties",
+                              WS_POPUP | WS_CAPTION | WS_SYSMENU, pw.left + 60, pw.top + 40, W, H, g_hwnd, nullptr, inst, nullptr);
+    HFONT gui = g_uiFont ? g_uiFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    auto mk = [&](const wchar_t* cls, const wchar_t* txt, DWORD st, int x, int y, int w, int hh, int id) {
+        HWND c = CreateWindowExW(0, cls, txt, WS_CHILD | WS_VISIBLE | st, x, y, w, hh, g_pHwnd, (HMENU)(INT_PTR)id, inst, nullptr);
+        SendMessageW(c, WM_SETFONT, (WPARAM)gui, TRUE); return c;
+    };
+    mk(L"STATIC", L"Font:", 0, 16, 12, 120, 16, 0);
+    HWND fl = mk(L"LISTBOX", L"", WS_BORDER | LBS_NOTIFY, 16, 30, 200, 66, PID_FONTLIST);
+    SendMessageW(fl, LB_ADDSTRING, 0, (LPARAM)L"Nerd Font (default)");
+    SendMessageW(fl, LB_ADDSTRING, 0, (LPARAM)L"Terminal 8x12 (raster)");
+    SendMessageW(fl, LB_ADDSTRING, 0, (LPARAM)L"Fixedsys (raster)");
+    SendMessageW(fl, LB_SETCURSEL, g_pMode, 0);
+    mk(L"BUTTON", L"Override default colors", BS_AUTOCHECKBOX, 16, 108, 220, 18, PID_USECOLORS);
+    CheckDlgButton(g_pHwnd, PID_USECOLORS, g_pUse ? BST_CHECKED : BST_UNCHECKED);
+    mk(L"BUTTON", L"Screen &Text", WS_GROUP | BS_AUTORADIOBUTTON, 28, 130, 110, 18, PID_TEXT);
+    mk(L"BUTTON", L"Screen &Background", BS_AUTORADIOBUTTON, 150, 130, 150, 18, PID_BG);
+    CheckDlgButton(g_pHwnd, PID_TEXT, BST_CHECKED);
+    mk(L"BUTTON", L"OK", BS_DEFPUSHBUTTON, 120, 356, 78, 26, IDOK);
+    mk(L"BUTTON", L"Cancel", 0, 204, 356, 78, 26, IDCANCEL);
+    mk(L"BUTTON", L"Apply", 0, 288, 356, 78, 26, PID_APPLY);
+    EnableWindow(g_hwnd, FALSE);
+    ShowWindow(g_pHwnd, SW_SHOW);
+    MSG msg;
+    while (IsWindow(g_pHwnd)) {
+        if (!GetMessageW(&msg, nullptr, 0, 0)) { PostQuitMessage((int)msg.wParam); break; }
+        if (!IsDialogMessageW(g_pHwnd, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+    }
+    EnableWindow(g_hwnd, TRUE);
+    SetForegroundWindow(g_hwnd);
+    SetFocus(g_hwnd);
 }
 
 // Restart everything: relaunch a fresh instance AFTER this one (and its pty-host) has fully exited,
@@ -1632,6 +1798,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     CheckMenuRadioItem(g_fontMenu, IDM_FONT_TT, IDM_FONT_FIXEDSYS, id, MF_BYCOMMAND);
                     SetFocus(hwnd);
                     break;
+                case IDM_PROPERTIES: showPropertiesDialog(); break;
                 case IDM_RESTART: restartApp(); break;
                 case IDM_SHOW: showMainWindow(); break;
                 case IDM_EXIT: DestroyWindow(hwnd); break;
@@ -1811,6 +1978,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     std::wstring ttf = exeDir() + L"\\MesloLGLDZNerdFont-Regular.ttf";
     bool haveMeslo = AddFontResourceExW(ttf.c_str(), FR_PRIVATE, 0) > 0;
     g_ttFace = haveMeslo ? L"MesloLGLDZ Nerd Font" : L"Consolas";
+    loadColors();                    // Properties->Colors overrides, remembered across restarts
     applyFontMode(loadFontMode());   // first run -> Terminal 8x12; else the remembered choice. Creates
                                      // g_fonts + sets g_cw/g_ch (g_hwnd still null, so no relayout yet).
 
