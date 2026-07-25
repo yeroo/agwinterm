@@ -158,6 +158,21 @@ pub struct Emulator {
     sixel_seq: i32,
     pub cell_pixel_width: i32,
     pub cell_pixel_height: i32,
+
+    // Host actions (the IHostActions seam) queued during feed and drained by the C# adapter
+    // after each feed — the Rust core is headless, so it can't invoke the host directly.
+    host_actions: Vec<HostAction>,
+}
+
+/// One host-visible side effect the embedder must perform — the Rust mirror of the C#
+/// `IHostActions` members. Queued during dispatch, drained (and cleared) after each feed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostAction {
+    Notify { title: String, body: String },
+    Progress { state: i32, value: i32 },
+    Clipboard { text: String },
+    Respond { reply: String },
+    Unhandled { kind: String, detail: String },
 }
 
 impl Emulator {
@@ -198,6 +213,21 @@ impl Emulator {
             sixel_seq: -1,
             cell_pixel_width: 8,
             cell_pixel_height: 18,
+            host_actions: Vec::new(),
+        }
+    }
+
+    /// Drain the queued host actions (Notify/Progress/Clipboard/Respond/Unhandled), clearing
+    /// the queue. The C# adapter calls this after each feed and forwards them to `IHostActions`.
+    pub fn take_host_actions(&mut self) -> Vec<HostAction> {
+        core::mem::take(&mut self.host_actions)
+    }
+
+    fn push_action(&mut self, a: HostAction) {
+        // Defensive cap: one feed rarely emits more than a handful; the C# adapter drains after
+        // every feed, so this only bounds a pathological producer that the adapter never reads.
+        if self.host_actions.len() < 4096 {
+            self.host_actions.push(a);
         }
     }
 
@@ -574,7 +604,10 @@ impl Emulator {
                 1003 => self.mouse_motion = set,
                 1006 => self.mouse_sgr = set,
                 2004 => self.bracketed_paste = set,
-                _ => {} // Host.Unhandled — headless drop
+                _ => self.push_action(HostAction::Unhandled {
+                    kind: "MODE".into(),
+                    detail: format!("?{mode} {}", if set { 'h' } else { 'l' }),
+                }),
             }
         }
     }
@@ -754,7 +787,11 @@ impl Emulator {
 
     fn kitty_keyboard(&mut self, prefix: u8, params: &[i32]) {
         match prefix {
-            b'?' => {} // query — Host.Respond, headless drop
+            b'?' => {
+                // query — report the current flags back to the PTY (CSI ? <flags> u).
+                let reply = format!("\u{1b}[?{}u", self.keyboard_flags());
+                self.push_action(HostAction::Respond { reply });
+            }
             b'>' => self.kbd_stack.push(*params.first().unwrap_or(&0)),
             b'=' => {
                 let flags = *params.first().unwrap_or(&0);
@@ -874,7 +911,11 @@ impl Performer for Emulator {
                 let cols = self.screen().cols();
                 self.cursor_col = (cols - 1).min((self.cursor_col / 8 + 1) * 8);
             }
-            _ => {} // NUL ignored; others → Host.Unhandled (headless drop)
+            0 => {} // NUL — historical padding, deliberately ignored (would flood the tap)
+            _ => self.push_action(HostAction::Unhandled {
+                kind: "C0".into(),
+                detail: format!("0x{control:02X}"),
+            }),
         }
     }
 
@@ -888,7 +929,10 @@ impl Performer for Emulator {
                 self.cursor_col = 0;
                 self.index();
             }
-            _ => {}
+            _ => self.push_action(HostAction::Unhandled {
+                kind: "ESC".into(),
+                detail: (ch as char).to_string(),
+            }),
         }
     }
 
@@ -908,6 +952,11 @@ impl Performer for Emulator {
         if prefix == b'?' {
             if ch == b'h' || ch == b'l' {
                 self.set_private_mode(params, ch == b'h');
+            } else {
+                self.push_action(HostAction::Unhandled {
+                    kind: "CSI".into(),
+                    detail: format!("? {} {}", join_params(params), ch as char),
+                });
             }
             return;
         }
@@ -950,7 +999,13 @@ impl Performer for Emulator {
                     self.scroll_region_down();
                 }
             }
-            _ => {}
+            _ => {
+                let pfx = if prefix == 0 { String::new() } else { format!("{} ", prefix as char) };
+                self.push_action(HostAction::Unhandled {
+                    kind: "CSI".into(),
+                    detail: format!("{pfx}{} {}", join_params(params), ch as char),
+                });
+            }
         }
     }
 
@@ -960,13 +1015,74 @@ impl Performer for Emulator {
             0 | 2 => self.title = text,
             7 => self.cwd = text,
             133 => self.ftcs_dispatch(&text),
-            _ => {} // 9/777/52: Host-only side effects; others → Unhandled (headless drop)
+            9 => {
+                // OSC 9;<message> — body-only notification; OSC 9;4;<state>;<value> = ConEmu/WT progress.
+                if let Some(rest) = text.strip_prefix("4;") {
+                    let pp: Vec<&str> = rest.split(';').collect();
+                    let state = pp.first().and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+                    let value = pp
+                        .get(1)
+                        .and_then(|s| s.parse::<i32>().ok())
+                        .map(|v| v.clamp(0, 100))
+                        .unwrap_or(0);
+                    self.push_action(HostAction::Progress { state, value });
+                } else {
+                    self.push_action(HostAction::Notify { title: String::new(), body: text });
+                }
+            }
+            777 => {
+                // OSC 777 ; notify ; <title> ; <body>
+                let parts: Vec<&str> = text.split(';').collect();
+                if parts.len() >= 2 && parts[0] == "notify" {
+                    let title = parts[1].to_string();
+                    let body = if parts.len() >= 3 { parts[2..].join(";") } else { String::new() };
+                    self.push_action(HostAction::Notify { title, body });
+                }
+            }
+            52 => {
+                // OSC 52 ; Pc ; Pd — program writes the clipboard (base64). "?" is a read-back query,
+                // never answered; cap the payload as the managed core does.
+                if let Some(semi) = text.find(';') {
+                    let data = &text[semi + 1..];
+                    if !data.is_empty() && data != "?" && data.len() <= 4_000_000 {
+                        // Tolerate unpadded base64 (some emitters strip '='), like the managed
+                        // core's PadRight before Convert.FromBase64String.
+                        let mut padded = data.to_string();
+                        while padded.len() % 4 != 0 {
+                            padded.push('=');
+                        }
+                        if let Some(bytes) = base64_decode(&padded) {
+                            let decoded = String::from_utf8_lossy(&bytes).into_owned();
+                            if !decoded.is_empty() {
+                                self.push_action(HostAction::Clipboard { text: decoded });
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                let detail = if text.chars().count() > 40 {
+                    let head: String = text.chars().take(40).collect();
+                    format!("{command};{head}…")
+                } else {
+                    format!("{command};{text}")
+                };
+                self.push_action(HostAction::Unhandled { kind: "OSC".into(), detail });
+            }
         }
     }
 
     fn apc_dispatch(&mut self, data: &str) {
         if !data.starts_with('G') {
-            return; // only Kitty graphics (_G...); others → Host.Unhandled (headless drop)
+            // only Kitty graphics (_G...); everything else is a debug-tap Unhandled.
+            let detail = if data.chars().count() > 24 {
+                let head: String = data.chars().take(24).collect();
+                format!("{head}…")
+            } else {
+                data.to_string()
+            };
+            self.push_action(HostAction::Unhandled { kind: "APC".into(), detail });
+            return;
         }
         let body = &data[1..];
         let (control, payload) = match body.find(';') {
@@ -986,7 +1102,16 @@ impl Performer for Emulator {
     }
 
     fn dcs_dispatch(&mut self, payload: &[u8]) {
-        let _ = self.place_sixel(payload); // non-sixel → Host.Unhandled (headless drop)
+        if self.place_sixel(payload) {
+            return;
+        }
+        // Non-sixel DCS (DECRQSS "$q", XTGETTCAP "+q", …): identify by its readable prefix.
+        let n = payload.len().min(16);
+        let head: String = payload[..n].iter().map(|&b| b as char).collect();
+        self.push_action(HostAction::Unhandled {
+            kind: "DCS".into(),
+            detail: format!("{} bytes \"{head}\"", payload.len()),
+        });
     }
 }
 
@@ -1004,6 +1129,11 @@ fn parse_kitty_keys(control: &str) -> HashMap<String, String> {
 
 fn kitty_int(d: &HashMap<String, String>, key: &str, def: i32) -> i32 {
     d.get(key).and_then(|v| v.parse::<i32>().ok()).unwrap_or(def)
+}
+
+/// Semicolon-join CSI parameters for the Unhandled debug tap (mirrors C#'s `string.Join(';', …)`).
+fn join_params(params: &[i32]) -> String {
+    params.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(";")
 }
 
 impl Emulator {

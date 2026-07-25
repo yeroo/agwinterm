@@ -21,12 +21,13 @@ pub mod vtparser;
 pub mod wcwidth;
 
 use cell::{Cell, Color, ColorSpec, ColorSpecKind};
+use emulator::HostAction;
 use screen::ScreenBuffer;
 
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 8;
+pub const ABI_VERSION: u32 = 9;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -407,6 +408,70 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
     unsafe { *out_len = buf.len() as u32 };
     let ptr = buf.as_mut_ptr();
     core::mem::forget(buf);
+    ptr
+}
+
+/// Drain the queued host actions (the IHostActions seam) into a flat blob and CLEAR the queue.
+/// The C# adapter calls this after each feed and forwards each action to `IHostActions`.
+/// Free the returned buffer with `agwcore_free_buf`. Layout (all integers little-endian):
+///   u32 count, then `count` records — u8 kind + payload:
+///     1 Notify    : str title, str body
+///     2 Progress  : i32 state, i32 value
+///     3 Clipboard : str text
+///     4 Respond   : str reply
+///     5 Unhandled : str kind, str detail
+///   where str = u32 byte-length + UTF-8 bytes.
+/// # Safety
+/// `p` from `agwcore_emu_new`; `out_len` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_take_host_actions(p: *mut Terminal, out_len: *mut u32) -> *mut u8 {
+    let Some(t) = (unsafe { p.as_mut() }) else { return core::ptr::null_mut() };
+    if out_len.is_null() {
+        return core::ptr::null_mut();
+    }
+    let actions = t.emu.take_host_actions();
+    if actions.is_empty() {
+        // The common case — no host effects this feed. Signal "nothing" without allocating.
+        unsafe { *out_len = 0 };
+        return core::ptr::null_mut();
+    }
+    fn put_str(buf: &mut Vec<u8>, s: &str) {
+        buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        buf.extend_from_slice(s.as_bytes());
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(&(actions.len() as u32).to_le_bytes());
+    for a in &actions {
+        match a {
+            HostAction::Notify { title, body } => {
+                buf.push(1);
+                put_str(&mut buf, title);
+                put_str(&mut buf, body);
+            }
+            HostAction::Progress { state, value } => {
+                buf.push(2);
+                buf.extend_from_slice(&state.to_le_bytes());
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+            HostAction::Clipboard { text } => {
+                buf.push(3);
+                put_str(&mut buf, text);
+            }
+            HostAction::Respond { reply } => {
+                buf.push(4);
+                put_str(&mut buf, reply);
+            }
+            HostAction::Unhandled { kind, detail } => {
+                buf.push(5);
+                put_str(&mut buf, kind);
+                put_str(&mut buf, detail);
+            }
+        }
+    }
+    let mut boxed = buf.into_boxed_slice();
+    unsafe { *out_len = boxed.len() as u32 };
+    let ptr = boxed.as_mut_ptr();
+    core::mem::forget(boxed);
     ptr
 }
 

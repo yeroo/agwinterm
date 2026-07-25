@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text;
 
 namespace Agwinterm.Core;
@@ -9,10 +10,11 @@ namespace Agwinterm.Core;
 /// reads (renderer snapshots, selection, dumps) stay lock-cheap managed accesses with
 /// unchanged semantics. All calls run under the session lock per the ISession contract.
 ///
-/// Images (kitty/sixel) ARE surfaced as of ABI v8: the Rust core decodes them and this
-/// adapter exposes <see cref="Images"/> / <see cref="Placements"/> (see SyncImages).
-/// Remaining phase-2 gap: host actions are not invoked (no OSC 52 clipboard /
-/// notifications / kitty-query responses) — panes that need those want the managed core.
+/// Images (kitty/sixel) are surfaced (ABI v8) via <see cref="Images"/> / <see cref="Placements"/>,
+/// and host actions are wired (ABI v9): the Rust core queues them during feed and this adapter
+/// drains them after each Sync and forwards to <see cref="Host"/> (OSC 52 clipboard, OSC 9/777
+/// notifications, OSC 9;4 progress, kitty keyboard-query replies, and the Unhandled debug tap) —
+/// so `emulator-core = rust` is now at parity with the managed core for the host seam.
 /// </summary>
 public sealed class RustTerminalCore : ITerminalCore, IDisposable
 {
@@ -62,7 +64,8 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
         _title = _rust.Title;
         _cwd = _rust.Cwd;
         _marks = _rust.GetMarks();
-        SyncImages();   // stream-delivered kitty/sixel become visible on the next frame
+        SyncImages();       // stream-delivered kitty/sixel become visible on the next frame
+        DrainHostActions(); // OSC 52 clipboard / notifications / progress / query replies / taps
     }
 
     // ---- content ----
@@ -113,8 +116,38 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     public string Title => _title;
     public string Cwd => _cwd;
 
-    // ---- host actions: stored but never invoked by the Rust core (phase 2) ----
+    // ---- host actions (ABI v9): the Rust core queues them during feed; DrainHostActions()
+    // (called from Sync) decodes the native blob and forwards each to Host, matching the
+    // managed emulator's IHostActions call sites. ----
     public IHostActions? Host { get; set; }
+
+    private void DrainHostActions()
+    {
+        byte[] blob = _rust.TakeHostActions();   // always drains the native queue (even if Host is null)
+        if (blob.Length == 0) return;
+        var host = Host;
+        if (host is null) return;                // nothing to forward to; queue already cleared
+        using var br = new BinaryReader(new MemoryStream(blob, writable: false));
+        uint count = br.ReadUInt32();
+        for (uint i = 0; i < count; i++)
+        {
+            switch (br.ReadByte())
+            {
+                case 1: { string title = ReadStr(br), body = ReadStr(br); host.Notify(title, body); break; }
+                case 2: { int state = br.ReadInt32(), value = br.ReadInt32(); host.Progress(state, value); break; }
+                case 3: host.ClipboardWrite(ReadStr(br)); break;
+                case 4: host.Respond(ReadStr(br)); break;
+                case 5: { string kind = ReadStr(br), detail = ReadStr(br); host.Unhandled(kind, detail); break; }
+                default: return;                 // unknown tag — blob is corrupt; stop rather than misread
+            }
+        }
+    }
+
+    private static string ReadStr(BinaryReader br)
+    {
+        int len = (int)br.ReadUInt32();
+        return Encoding.UTF8.GetString(br.ReadBytes(len));
+    }
 
     // ---- images (ABI v8): surfaced from the Rust core; KittyImage pixels cached per id so the
     // renderer uploads a texture only once, refreshed on Sync when the id set changes. ----

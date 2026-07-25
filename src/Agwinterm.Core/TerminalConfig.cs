@@ -90,8 +90,8 @@ public sealed class TerminalConfig
     /// <summary>Which terminal core new sessions run on: "managed" (default — the C#
     /// TerminalEmulator) or "rust" (EXPERIMENTAL — the oracle-validated agwinterm-core crate
     /// behind the ITerminalCore seam; falls back to managed with a toast when the native dll
-    /// is missing). kitty/sixel images ARE surfaced (ABI v8); remaining gap in rust mode:
-    /// OSC host actions (clipboard writes, notifications, kitty-keyboard query replies).</summary>
+    /// is missing). kitty/sixel images (ABI v8) and OSC host actions (ABI v9 — clipboard,
+    /// notifications, progress, kitty-keyboard query replies) are both surfaced now.</summary>
     public string EmulatorCore { get; set; } = "managed";
 
     /// <summary>Rebuild each new session's environment from the registry at spawn (WT's
@@ -275,8 +275,8 @@ public sealed class TerminalConfig
         # Terminal core for NEW sessions: "managed" (default) or "rust" (EXPERIMENTAL - the
         # Rust agwinterm-core crate, differentially validated against the managed emulator).
         # Applies to sessions created after the change; falls back to managed with a toast if
-        # the native dll is missing. kitty/sixel images are surfaced; remaining gap in rust
-        # mode: OSC host actions (clipboard writes, desktop notifications, kitty-keyboard replies).
+        # the native dll is missing. kitty/sixel images and OSC host actions (clipboard writes,
+        # desktop notifications, progress, kitty-keyboard query replies) are both surfaced now.
         emulator-core = managed
 
         # Blocked sound: play a sound whenever a session enters the "blocked" agent status (needs

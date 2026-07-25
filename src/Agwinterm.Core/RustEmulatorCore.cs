@@ -16,7 +16,7 @@ namespace Agwinterm.Core;
 /// </summary>
 public sealed unsafe class RustEmulatorCore : IDisposable
 {
-    public const uint RequiredAbi = 8;
+    public const uint RequiredAbi = 9;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Info
@@ -54,6 +54,7 @@ public sealed unsafe class RustEmulatorCore : IDisposable
     private delegate bool EmuCopyGridFn(nint p, NativeCell* cells, uint cap);
     private delegate bool EmuCopyHistoryRowFn(nint p, uint row, NativeCell* cells, uint cap);
     private delegate byte* EmuGetTextFn(nint p, uint which, uint* outLen);
+    private delegate byte* EmuTakeHostActionsFn(nint p, uint* outLen);
     private delegate void FreeBufFn(byte* ptr, uint len);
 
     private static nint _lib;
@@ -65,6 +66,7 @@ public sealed unsafe class RustEmulatorCore : IDisposable
     private static EmuCopyGridFn _copyGrid = null!;
     private static EmuCopyHistoryRowFn _copyHistory = null!;
     private static EmuGetTextFn _getText = null!;
+    private static EmuTakeHostActionsFn _takeHostActions = null!;
     private static FreeBufFn _freeBuf = null!;
 
     /// <summary>Load the native core from <paramref name="dllPath"/> and verify the ABI.
@@ -94,6 +96,7 @@ public sealed unsafe class RustEmulatorCore : IDisposable
             _copyGrid = Get<EmuCopyGridFn>("agwcore_emu_copy_grid");
             _copyHistory = Get<EmuCopyHistoryRowFn>("agwcore_emu_copy_history_row");
             _getText = Get<EmuGetTextFn>("agwcore_emu_get_text");
+            _takeHostActions = Get<EmuTakeHostActionsFn>("agwcore_emu_take_host_actions");
             _freeBuf = Get<FreeBufFn>("agwcore_free_buf");
             _marks = Get<EmuMarksFn>("agwcore_emu_marks");
             _seed = Get<EmuSeedFn>("agwcore_emu_seed_scrollback");
@@ -284,6 +287,18 @@ public sealed unsafe class RustEmulatorCore : IDisposable
         byte* buf = _getText(_handle, which, &len);
         if (buf == null) return "";
         try { return System.Text.Encoding.UTF8.GetString(buf, (int)len); }
+        finally { _freeBuf(buf, len); }
+    }
+
+    /// <summary>Drain the queued host actions (the IHostActions seam) as the raw native blob
+    /// and CLEAR the queue. Returns an empty array when nothing was queued this feed (the
+    /// common case — the native side returns null then). See RustTerminalCore for the layout.</summary>
+    public byte[] TakeHostActions()
+    {
+        uint len;
+        byte* buf = _takeHostActions(_handle, &len);
+        if (buf == null) return Array.Empty<byte>();
+        try { var arr = new byte[len]; Marshal.Copy((nint)buf, arr, 0, (int)len); return arr; }
         finally { _freeBuf(buf, len); }
     }
 
