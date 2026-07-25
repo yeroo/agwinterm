@@ -426,12 +426,10 @@ static void killSession(Session* s) {
     request(req, &rep);
 }
 
-static void closeFocused() {
-    Session* s = focusedSession();
-    if (!s) return;
-    killSession(s);
+static void closeSessionAt(int idx) {
+    if (idx < 0 || idx >= (int)g_sessions.size()) return;
+    killSession(g_sessions[idx]);
     EnterCriticalSection(&g_lock);
-    int idx = g_pane[g_focus];
     g_sessions.erase(g_sessions.begin() + idx);
     for (int p = 0; p < 2; p++) {
         if (g_pane[p] == idx) g_pane[p] = g_sessions.empty() ? -1 : max(0, idx - 1);
@@ -444,6 +442,8 @@ static void closeFocused() {
     InvalidateRect(g_hwnd, nullptr, FALSE);
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // drop the session from the tree
 }
+
+static void closeFocused() { closeSessionAt(g_pane[g_focus]); }
 
 // Toggle the 2-pane split. Splitting spawns an INDEPENDENT new shell for the second pane (like the
 // full app) — not a mirror of the first, so the two panes have separate output.
@@ -957,6 +957,8 @@ static bool handleKeyDown(WPARAM vk) {
     return true;
 }
 
+static void newSessionDialog(const char* cwd = nullptr);   // fwd (defined below, used by the context menu)
+
 // Rebuild the native TreeView sidebar from the session list; select the focused pane's session.
 // UI-thread only (worker threads post WM_APP_REFRESHTREE instead).
 static void refreshTree() {
@@ -1015,23 +1017,27 @@ static void deleteWorkspace(int w) {
 }
 
 // Right-click menu on a tree node — session or workspace, mirroring the full app's sidebar menus.
+// Acts on the RIGHT-CLICKED node (g_ctxParam), not the focused session, and dispatches inline via
+// TPM_RETURNCMD (no WM_COMMAND re-entrancy, no selection change — so the active terminal doesn't jump).
 static void showTreeContextMenu() {
+    bool isSession = g_ctxParam >= 0;
+    int si = isSession ? (int)g_ctxParam : -1;
+    int cws = isSession ? (si < (int)g_sessions.size() ? g_sessions[si]->ws : 0) : (int)(-g_ctxParam - 1);
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu();
-    if (g_ctxParam >= 0) {   // ---- session node ----
-        int sws = (int)g_ctxParam < (int)g_sessions.size() ? g_sessions[(int)g_ctxParam]->ws : 0;
+    if (isSession) {   // ---- session node ----
         AppendMenuW(m, MF_STRING, IDM_NEW, L"&New Session…");
         AppendMenuW(m, MF_STRING, IDM_DUP, L"&Duplicate Session");
-        AppendMenuW(m, MF_STRING, IDM_RENAME, L"Re&name\tF2");
+        AppendMenuW(m, MF_STRING, IDM_RENAME, L"Re&name");
         if ((int)g_workspaces.size() > 1) {
             HMENU sub = CreatePopupMenu();
             for (int w = 0; w < (int)g_workspaces.size(); w++)
-                if (w != sws) AppendMenuW(sub, MF_STRING, IDM_MOVE_BASE + w, g_workspaces[w].c_str());
+                if (w != cws) AppendMenuW(sub, MF_STRING, IDM_MOVE_BASE + w, g_workspaces[w].c_str());
             AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, L"&Move to");
         }
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m, MF_STRING, IDM_CLOSE, L"&Close Session");
-    } else {                 // ---- workspace node ----
+    } else {           // ---- workspace node ----
         AppendMenuW(m, MF_STRING, IDM_NEW, L"&New Session");
         AppendMenuW(m, MF_STRING, IDM_NEWWS, L"New &Workspace");
         AppendMenuW(m, MF_STRING, IDM_RENAME, L"Re&name");
@@ -1039,8 +1045,41 @@ static void showTreeContextMenu() {
         AppendMenuW(m, MF_STRING | ((int)g_workspaces.size() <= 1 ? MF_GRAYED : 0), IDM_DELWS, L"&Delete Workspace");
     }
     SetForegroundWindow(g_hwnd);
-    TrackPopupMenu(m, TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, nullptr);
+    int id = (int)TrackPopupMenu(m, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, g_hwnd, nullptr);
     DestroyMenu(m);
+    if (id == 0) return;   // dismissed
+    switch (id) {
+        case IDM_NEW: g_activeWs = cws; newSessionDialog(); break;
+        case IDM_NEWWS: {
+            wchar_t nm[32]; wsprintfW(nm, L"workspace %d", (int)g_workspaces.size() + 1);
+            g_workspaces.push_back(nm); g_activeWs = (int)g_workspaces.size() - 1; refreshTree();
+            break;
+        }
+        case IDM_DUP:
+            if (isSession) {
+                g_activeWs = cws;
+                int c, r; paneGridSize(g_focus, &c, &r);
+                Session* s = newSession(c, r);
+                if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; syncPaneSizes(); InvalidateRect(g_hwnd, nullptr, FALSE); }
+            }
+            break;
+        case IDM_RENAME:
+            if (g_ctxItem) { SetFocus(g_tree); TreeView_EditLabel(g_tree, g_ctxItem); }   // inline edit
+            break;
+        case IDM_CLOSE:
+            if (isSession) closeSessionAt(si);
+            break;
+        case IDM_DELWS:
+            if (!isSession) deleteWorkspace(cws);
+            break;
+        default:
+            if (isSession && id >= IDM_MOVE_BASE && id < IDM_MOVE_BASE + (int)g_workspaces.size()
+                && si < (int)g_sessions.size()) {
+                g_sessions[si]->ws = id - IDM_MOVE_BASE;   // move to workspace
+                refreshTree();
+            }
+            break;
+    }
 }
 
 static HMENU buildMenuBar() {
@@ -1138,7 +1177,7 @@ static int pickProfileDialog(const std::vector<Profile>& profs) {
 }
 
 // Open the New Session dialog and create the chosen shell (in an optional folder).
-static void newSessionDialog(const char* cwd = nullptr) {
+static void newSessionDialog(const char* cwd) {
     auto profs = detectProfiles();
     int i = pickProfileDialog(profs);
     if (i < 0 || i >= (int)profs.size()) return;
@@ -1353,8 +1392,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (it) {
                     TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = it;
                     TreeView_GetItem(g_tree, &ti);
-                    g_ctxItem = it; g_ctxParam = ti.lParam;
-                    TreeView_SelectItem(g_tree, it);   // selecting updates g_pane / g_activeWs
+                    g_ctxItem = it; g_ctxParam = ti.lParam;   // right-click doesn't change the selection
                     showTreeContextMenu();
                 }
                 return 1;
@@ -1397,18 +1435,6 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     refreshTree();
                     break;
                 }
-                case IDM_DUP: {                                                             // duplicate into the same workspace
-                    int c, r; paneGridSize(g_focus, &c, &r);
-                    Session* s = newSession(c, r);   // g_activeWs = the right-clicked session's workspace
-                    if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; syncPaneSizes(); InvalidateRect(hwnd, nullptr, FALSE); }
-                    break;
-                }
-                case IDM_RENAME:
-                    if (g_ctxItem) { SetFocus(g_tree); TreeView_EditLabel(g_tree, g_ctxItem); }   // inline rename
-                    break;
-                case IDM_DELWS:
-                    if (g_ctxParam < 0) deleteWorkspace((int)(-g_ctxParam - 1));
-                    break;
                 case IDM_RESTART: restartApp(); break;
                 case IDM_SHOW: showMainWindow(); break;
                 case IDM_EXIT: DestroyWindow(hwnd); break;
@@ -1416,12 +1442,8 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     MessageBoxW(hwnd, L"agwinterm lite\nA lightweight native terminal over the Rust pty-host.",
                                 L"About", MB_OK | MB_ICONINFORMATION);
                     break;
-                default:
-                    if (id >= IDM_MOVE_BASE && id < IDM_MOVE_BASE + (int)g_workspaces.size()) {   // move session to workspace
-                        if (g_ctxParam >= 0) { int i = (int)g_ctxParam; if (i < (int)g_sessions.size()) { g_sessions[i]->ws = id - IDM_MOVE_BASE; refreshTree(); } }
-                    } else if (id >= IDM_CLOSE && id <= IDM_PREV) {   // close / split / next / copy / paste / previous
-                        runPaletteItem(id); InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd);
-                    }
+                default:   // menu-bar / tray: close / split / next / copy / paste / previous
+                    if (id >= IDM_CLOSE && id <= IDM_PREV) { runPaletteItem(id); InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); }
                     break;
             }
             return 0;
