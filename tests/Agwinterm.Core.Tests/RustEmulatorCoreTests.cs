@@ -182,6 +182,29 @@ public class RustEmulatorCoreTests
     }
 
     [Fact]
+    public void Adapter_FocusReporting_TracksMode_LikeManagedCore()
+    {
+        if (!Available) return;
+        var cs = new TerminalEmulator(20, 5);
+        using var rust = new RustTerminalCore(20, 5);
+        Assert.False(cs.FocusReporting);
+        Assert.False(rust.FocusReporting);
+
+        var on = System.Text.Encoding.ASCII.GetBytes("\x1b[?1004h");
+        cs.Feed(on); rust.Feed(on);
+        Assert.True(cs.FocusReporting);
+        Assert.True(rust.FocusReporting);                 // surfaced via the adapter's Info snapshot
+        Assert.Equal(cs.DumpModes(), rust.DumpModes());   // and re-synthesized identically for reattach
+        Assert.Contains("\x1b[?1004h", rust.DumpModes());
+
+        var off = System.Text.Encoding.ASCII.GetBytes("\x1b[?1004l");
+        cs.Feed(off); rust.Feed(off);
+        Assert.False(cs.FocusReporting);
+        Assert.False(rust.FocusReporting);
+        Assert.Equal(cs.DumpModes(), rust.DumpModes());
+    }
+
+    [Fact]
     public void Adapter_DirectImageApi_RoundTrips()
     {
         if (!Available) return;

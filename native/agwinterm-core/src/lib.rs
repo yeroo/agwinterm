@@ -27,7 +27,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 9;
+pub const ABI_VERSION: u32 = 10;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -361,6 +361,7 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
     let _ = writeln!(s, "alt:{}", e.is_alt_screen() as u8);
     let _ = writeln!(s, "mouse:{}{}{}{}", mc as u8, md as u8, mm as u8, ms as u8);
     let _ = writeln!(s, "paste:{}", e.bracketed_paste as u8);
+    let _ = writeln!(s, "focus:{}", e.focus_reporting as u8);
     let _ = writeln!(s, "kbd:{}", e.keyboard_flags());
     let _ = writeln!(s, "title:{}", e.title);
     let _ = writeln!(s, "cwd:{}", e.cwd);
@@ -497,6 +498,7 @@ pub struct FfiEmuInfo {
     pub scroll_top: u32,
     pub scroll_bottom: u32,
     pub mark_count: u32,
+    pub focus_reporting: u32,
 }
 
 /// # Safety
@@ -528,6 +530,7 @@ pub unsafe extern "C" fn agwcore_emu_info(p: *mut Terminal, out: *mut FfiEmuInfo
             scroll_top: e.scroll_top() as u32,
             scroll_bottom: e.scroll_bottom() as u32,
             mark_count: e.marks().len() as u32,
+            focus_reporting: e.focus_reporting as u32,
         };
     }
     true

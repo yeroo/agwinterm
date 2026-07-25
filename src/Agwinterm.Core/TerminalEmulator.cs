@@ -46,6 +46,10 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     /// <summary>Bracketed paste mode (DECSET 2004): wrap pasted text in ESC[200~ … ESC[201~.</summary>
     public bool BracketedPaste { get; private set; }
 
+    /// <summary>Focus reporting (DECSET 1004): the host emits ESC[I when the terminal gains focus
+    /// and ESC[O when it loses focus, so the program can pause/resume (cursor blink, refresh).</summary>
+    public bool FocusReporting { get; private set; }
+
     private int _scrollTop;
     private int _scrollBottom;
 
@@ -366,6 +370,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 case 1002: _mouseDrag = set; break;    // button-event (drag) tracking
                 case 1003: _mouseMotion = set; break;  // any-motion tracking
                 case 1006: _mouseSgr = set; break;     // SGR extended mouse encoding
+                case 1004: FocusReporting = set; break; // focus in/out reporting
                 case 2004: BracketedPaste = set; break; // bracketed paste
                 default: Host?.Unhandled("MODE", $"?{mode} {(set ? 'h' : 'l')}"); break;
             }
@@ -862,6 +867,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         if (_mouseMotion) sb.Append("\x1b[?1003h");
         if (_mouseSgr) sb.Append("\x1b[?1006h");
         if (BracketedPaste) sb.Append("\x1b[?2004h");
+        if (FocusReporting) sb.Append("\x1b[?1004h");
         if (Title.Length > 0) sb.Append("\x1b]0;").Append(Title).Append('\x07');
         if (Cwd.Length > 0) sb.Append("\x1b]7;").Append(Cwd).Append('\x07');
         return sb.ToString();
