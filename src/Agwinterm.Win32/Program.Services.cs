@@ -274,14 +274,19 @@ internal partial class Program
 
         // 6. Right group (pinned left of the caption buttons): scratch, split, | , dashboard,
         // quick-terminal, gear — dashboard grouped with quick behind the separator (agterm #217).
+        // Right group, laid out right-to-left; hidden buttons (Interface toggles, #241) close their gap.
         float bw = 38f;
         float rgRight = cw - 3 * CaptionBtnW - 6f;   // right edge of the gear
-        float gearX = rgRight - bw;
-        float quickX = gearX - bw;
-        float dashX = quickX - bw;
-        float divX = dashX - 5f;                     // hairline divider in the gap
-        float splitX = dashX - 10f - bw;
-        float scratchX = splitX - bw;
+        float x = rgRight;
+        float gearX = (x -= bw);                     // gear always shown
+        float quickX = _config.ShowQuickButton ? (x -= bw) : float.NaN;
+        float dashX = _config.ShowDashboardButton ? (x -= bw) : float.NaN;
+        float divX = x - 5f;                         // hairline divider left of the dashboard/quick group
+        bool anyPerSession = _config.ShowSplitButton || _config.ShowScratchButton;
+        if (anyPerSession) x -= 10f;                 // gap after the divider before the per-session buttons
+        float splitX = _config.ShowSplitButton ? (x -= bw) : float.NaN;
+        float scratchX = _config.ShowScratchButton ? (x -= bw) : float.NaN;
+        float rgLeft = x;                            // leftmost used edge — the title must stop before it
 
         // 3. Title at the terminal's leading edge (right of the sidebar): a SINGLE centered row
         // showing the path (agterm-style): custom name -> program OSC title -> full cwd path.
@@ -290,7 +295,7 @@ internal partial class Program
         bool showBell = _config.AttentionButton;
         float titleX = _sidebarW > 0 ? _sidebarW + 10f : togX + togW + 8f;
         float bellW = showBell ? 34f : 0f, bellGap = showBell ? 8f : 0f;
-        float titleAvail = scratchX - 14f - bellW - bellGap - titleX;
+        float titleAvail = rgLeft - 14f - bellW - bellGap - titleX;
         float titleMeasured = MeasureText(title, _uiFont);
         float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail));
         brush.Color = ChromeText;
@@ -311,7 +316,7 @@ internal partial class Program
         // dim = nothing, plain = active/completed, blocked-color = any blocked (uses the configured status color).
         if (showBell)
         {
-            float bellX = MathF.Min(titleX + titleW + bellGap, scratchX - bellW - 14f);
+            float bellX = MathF.Min(titleX + titleW + bellGap, rgLeft - bellW - 14f);
             var (bellBlocked, bellActive) = AttentionState();
             var bellBase = bellBlocked ? StatusDot(AgentStatus.Blocked) : (bellActive ? ChromeText : ChromeDim);
             if ((bellBlocked || bellActive) && !_cursorOn && AnyBlinkAttention())
@@ -330,26 +335,33 @@ internal partial class Program
 
         // scratch (rounded rectangle; filled when active)
         bool scratchOn = _coverKind == 1;
+        if (_config.ShowScratchButton)
         {
             var c = ChromeBtnBg(rt, brush, scratchX, 0, bw, TitleBarH, "scratch", _titleButtons, scratchOn ? ChromeAccent : ChromeDim);
             DrawScratchGlyph(rt, brush, scratchX + bw / 2f, TitleBarH / 2f, c, scratchOn);
         }
         // split (two panes, reflects split state)
         bool splitOn = _active is not null && _active.Panes.Count > 1;
+        if (_config.ShowSplitButton)
         {
             var c = ChromeBtnBg(rt, brush, splitX, 0, bw, TitleBarH, "split", _titleButtons, splitOn ? ChromeAccent : ChromeDim);
             DrawSplitGlyph(rt, brush, splitX + bw / 2f, TitleBarH / 2f, c, splitOn);
         }
-        // hairline divider between per-session toggles and the window-level quick terminal
-        brush.Color = WithA(ChromeText, 0.25f);
-        rt.DrawLine(new System.Numerics.Vector2(divX, 12f), new System.Numerics.Vector2(divX, TitleBarH - 12f), brush, 1f);
+        // hairline divider between per-session toggles and the window-level dashboard/quick group
+        if (anyPerSession && (_config.ShowDashboardButton || _config.ShowQuickButton))
+        {
+            brush.Color = WithA(ChromeText, 0.25f);
+            rt.DrawLine(new System.Numerics.Vector2(divX, 12f), new System.Numerics.Vector2(divX, TitleBarH - 12f), brush, 1f);
+        }
         // dashboard grid (accent while open) — agterm #217
+        if (_config.ShowDashboardButton)
         {
             var c = ChromeBtnBg(rt, brush, dashX, 0, bw, TitleBarH, "dashboard", _titleButtons, _dashboardOpen ? ChromeAccent : ChromeDim);
             DrawDashGlyph(rt, brush, dashX + bw / 2f, TitleBarH / 2f, c);
         }
         // quick terminal (accent when active)
         bool quickOn = _coverKind == 2;
+        if (_config.ShowQuickButton)
         {
             var c = ChromeBtnBg(rt, brush, quickX, 0, bw, TitleBarH, "quick terminal", _titleButtons, quickOn ? ChromeAccent : ChromeDim);
             brush.Color = c;
@@ -841,6 +853,7 @@ internal partial class Program
         "new-session-dir", "right-click-paste", "copy-on-select", "copy-on-ctrl-c", "word-delimiters", "desktop-notifications", "shell-integration",
         "restore-commands", "restore-buffer", "blocked-sound", "notification-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges", "workspace-add-button",
+        "show-scratch-button", "show-split-button", "show-dashboard-button", "show-quick-button",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
         "paste-protection", "clipboard-write", "notification-flash", "claude-update-check", "update-check",
         "session-host", "fresh-env", "emulator-core",
@@ -906,6 +919,10 @@ internal partial class Program
         "toolbar-mode" => ToolbarModeResolved,
         "notification-badges" => _config.NotificationBadges ? "true" : "false",
         "workspace-add-button" => _config.WorkspaceAddButton ? "true" : "false",
+        "show-scratch-button" => _config.ShowScratchButton ? "true" : "false",
+        "show-split-button" => _config.ShowSplitButton ? "true" : "false",
+        "show-dashboard-button" => _config.ShowDashboardButton ? "true" : "false",
+        "show-quick-button" => _config.ShowQuickButton ? "true" : "false",
         "notification-flash" => _config.NotificationFlash,
         "claude-update-check" => _config.ClaudeUpdateCheck ? "true" : "false",
         "update-check" => _config.UpdateCheck ? "true" : "false",

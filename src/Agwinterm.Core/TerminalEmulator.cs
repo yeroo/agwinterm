@@ -63,6 +63,10 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     /// as CSI Vk;Sc;Uc;Kd;Cs;Rc _ (full Win32 KEY_EVENT fidelity) instead of the usual VT input.</summary>
     public bool Win32InputMode { get; private set; }
 
+    /// <summary>Dynamic background set by the program via OSC 11 (agterm #240): 0 = unset (use the theme),
+    /// else 0xFF_RRGGBB (top byte marks "set" so pure black is representable). OSC 111 resets it.</summary>
+    public uint DynamicBg { get; private set; }
+
     private int _scrollTop;
     private int _scrollBottom;
 
@@ -600,6 +604,11 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
             case 7:
                 Cwd = text;
                 break;
+            case 11: // OSC 11 — set/query the terminal background color (per-pane dynamic bg, agterm #240)
+                if (text.Trim() == "?") Host?.Respond("\x1b]11;" + OscColorReply(DynamicBg) + "\x1b\\");
+                else if (TryParseOscColor(text, out uint rgb11)) DynamicBg = 0xFF000000u | rgb11;
+                break;
+            case 111: DynamicBg = 0; break; // reset background to the theme default
             case 133: // FTCS shell-integration marks: A prompt, B command, C output, D;exit done
                 FtcsDispatch(text);
                 break;
@@ -644,6 +653,43 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 Host?.Unhandled("OSC", $"{command};{(text.Length > 40 ? text[..40] + "…" : text)}");
                 break;
         }
+    }
+
+    /// <summary>Parse an OSC color spec (rgb:RR/GG/BB[BB…], #RRGGBB, #RGB) into 0x00RRGGBB.</summary>
+    internal static bool TryParseOscColor(string s, out uint rgb)
+    {
+        rgb = 0;
+        s = s.Trim();
+        if (s.StartsWith("rgb:", StringComparison.Ordinal))
+        {
+            var parts = s[4..].Split('/');
+            if (parts.Length != 3 || !Comp(parts[0], out int r) || !Comp(parts[1], out int g) || !Comp(parts[2], out int b)) return false;
+            rgb = (uint)((r << 16) | (g << 8) | b);
+            return true;
+
+            static bool Comp(string h, out int v)
+            {
+                v = 0;
+                if (h.Length is < 1 or > 4 || !int.TryParse(h, System.Globalization.NumberStyles.HexNumber, null, out int raw)) return false;
+                v = raw * 255 / ((1 << (4 * h.Length)) - 1);   // scale the component to 8-bit (xparse rule)
+                return true;
+            }
+        }
+        if (s.StartsWith('#'))
+        {
+            string h = s[1..];
+            if (h.Length == 6 && int.TryParse(h, System.Globalization.NumberStyles.HexNumber, null, out int v6)) { rgb = (uint)v6; return true; }
+            if (h.Length == 3 && int.TryParse(h, System.Globalization.NumberStyles.HexNumber, null, out int v3))
+            { rgb = (uint)((((v3 >> 8) & 0xF) * 17 << 16) | (((v3 >> 4) & 0xF) * 17 << 8) | ((v3 & 0xF) * 17)); return true; }
+        }
+        return false;
+    }
+
+    /// <summary>Format a stored dynamic bg (0xFF_RRGGBB) as an OSC rgb: reply for the query path.</summary>
+    private static string OscColorReply(uint bg)
+    {
+        int r = (int)(bg >> 16) & 0xFF, g = (int)(bg >> 8) & 0xFF, b = (int)bg & 0xFF;
+        return $"rgb:{r:x2}{r:x2}/{g:x2}{g:x2}/{b:x2}{b:x2}";
     }
 
     private void ApplySgr(IReadOnlyList<int> p)

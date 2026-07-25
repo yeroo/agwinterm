@@ -33,6 +33,7 @@ public interface ITerminalCore
     bool FocusReporting { get; }
     bool SynchronizedOutput { get; }
     bool Win32InputMode { get; }
+    uint DynamicBg { get; }
     int CursorShape { get; }
     int KeyboardFlags { get; }
 

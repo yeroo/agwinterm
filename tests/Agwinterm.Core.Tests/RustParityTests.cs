@@ -312,6 +312,7 @@ public class RustParityTests
         sb.Append($"focus:{(e.FocusReporting ? 1 : 0)}\n");
         sb.Append($"sync:{(e.SynchronizedOutput ? 1 : 0)}\n");
         sb.Append($"win32input:{(e.Win32InputMode ? 1 : 0)}\n");
+        sb.Append($"dynbg:{e.DynamicBg:x8}\n");
         sb.Append($"cursorshape:{e.CursorShape}\n");
         sb.Append($"kbd:{e.KeyboardFlags}\n");
         sb.Append($"title:{e.Title}\n");

@@ -191,6 +191,12 @@ public sealed class TerminalConfig
     /// <summary>Show a "+" on each sidebar workspace row to add a session there (agterm #233/#252). On by default.</summary>
     public bool WorkspaceAddButton { get; set; } = true;
 
+    /// <summary>Individual title-bar button visibility (agterm #241 Interface tab). All on by default.</summary>
+    public bool ShowScratchButton { get; set; } = true;
+    public bool ShowSplitButton { get; set; } = true;
+    public bool ShowDashboardButton { get; set; } = true;
+    public bool ShowQuickButton { get; set; } = true;
+
     /// <summary>Show the title-bar attention bell (hidden entirely when off). On by default.</summary>
     public bool AttentionButton { get; set; } = true;
 
@@ -369,6 +375,12 @@ public sealed class TerminalConfig
 
         # Show a "+" on each sidebar workspace row to add a session in that workspace.
         workspace-add-button = true
+
+        # Individual title-bar button visibility (Interface). Each on by default.
+        show-scratch-button = true
+        show-split-button = true
+        show-dashboard-button = true
+        show-quick-button = true
         attention-button = true
 
         # Terminal bell (BEL, 0x07): audible (system beep) | visual (brief window flash) | both | none.
@@ -456,6 +468,10 @@ public sealed class TerminalConfig
                 case "toolbar-mode": { var m = val.Trim().ToLowerInvariant(); if (m is "normal" or "compact" or "hidden") cfg.ToolbarMode = m; break; }
                 case "notification-badges": cfg.NotificationBadges = ParseBool(val, cfg.NotificationBadges); break;
                 case "workspace-add-button": cfg.WorkspaceAddButton = ParseBool(val, cfg.WorkspaceAddButton); break;
+                case "show-scratch-button": cfg.ShowScratchButton = ParseBool(val, cfg.ShowScratchButton); break;
+                case "show-split-button": cfg.ShowSplitButton = ParseBool(val, cfg.ShowSplitButton); break;
+                case "show-dashboard-button": cfg.ShowDashboardButton = ParseBool(val, cfg.ShowDashboardButton); break;
+                case "show-quick-button": cfg.ShowQuickButton = ParseBool(val, cfg.ShowQuickButton); break;
                 case "attention-button": cfg.AttentionButton = ParseBool(val, cfg.AttentionButton); break;
                 case "status-color-active": if (val.Length > 0) cfg.StatusColorActive = val; break;
                 case "status-color-blocked": if (val.Length > 0) cfg.StatusColorBlocked = val; break;

@@ -132,6 +132,7 @@ pub struct Emulator {
     pub focus_reporting: bool,
     pub synchronized_output: bool,
     pub win32_input_mode: bool,
+    pub dynamic_bg: u32,
     pub cursor_shape: i32,
 
     scroll_top: usize,
@@ -199,6 +200,7 @@ impl Emulator {
             focus_reporting: false,
             synchronized_output: false,
             win32_input_mode: false,
+            dynamic_bg: 0,
             cursor_shape: 0,
             scroll_top: 0,
             scroll_bottom: rows - 1,
@@ -1042,6 +1044,17 @@ impl Performer for Emulator {
             0 | 2 => self.title = text,
             7 => self.cwd = text,
             133 => self.ftcs_dispatch(&text),
+            11 => {
+                // OSC 11 — set/query the terminal background color (per-pane dynamic bg, agterm #240).
+                if text.trim() == "?" {
+                    let (r, g, b) = ((self.dynamic_bg >> 16) & 0xFF, (self.dynamic_bg >> 8) & 0xFF, self.dynamic_bg & 0xFF);
+                    let reply = format!("\u{1b}]11;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\u{1b}\\");
+                    self.push_action(HostAction::Respond { reply });
+                } else if let Some(rgb) = parse_osc_color(&text) {
+                    self.dynamic_bg = 0xFF00_0000 | rgb;
+                }
+            }
+            111 => self.dynamic_bg = 0, // reset background to the theme default
             9 => {
                 // OSC 9;<message> — body-only notification; OSC 9;4;<state>;<value> = ConEmu/WT progress.
                 if let Some(rest) = text.strip_prefix("4;") {
@@ -1156,6 +1169,36 @@ fn parse_kitty_keys(control: &str) -> HashMap<String, String> {
 
 fn kitty_int(d: &HashMap<String, String>, key: &str, def: i32) -> i32 {
     d.get(key).and_then(|v| v.parse::<i32>().ok()).unwrap_or(def)
+}
+
+/// Parse an OSC color spec (rgb:RR/GG/BB[BB…], #RRGGBB, #RGB) into 0x00RRGGBB. (agterm #240)
+fn parse_osc_color(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("rgb:") {
+        let parts: Vec<&str> = rest.split('/').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let comp = |h: &str| -> Option<u32> {
+            if h.is_empty() || h.len() > 4 {
+                return None;
+            }
+            let raw = u32::from_str_radix(h, 16).ok()?;
+            Some(raw * 255 / ((1u32 << (4 * h.len())) - 1)) // scale to 8-bit (xparse rule)
+        };
+        return Some((comp(parts[0])? << 16) | (comp(parts[1])? << 8) | comp(parts[2])?);
+    }
+    if let Some(h) = s.strip_prefix('#') {
+        if h.len() == 6 {
+            return u32::from_str_radix(h, 16).ok();
+        }
+        if h.len() == 3 {
+            let v = u32::from_str_radix(h, 16).ok()?;
+            let (r, g, b) = ((v >> 8) & 0xF, (v >> 4) & 0xF, v & 0xF);
+            return Some(((r * 17) << 16) | ((g * 17) << 8) | (b * 17));
+        }
+    }
+    None
 }
 
 /// Semicolon-join CSI parameters for the Unhandled debug tap (mirrors C#'s `string.Join(';', …)`).

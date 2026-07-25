@@ -699,6 +699,14 @@ internal partial class Program
         {
             var (fmt, cw, ch) = Metrics(pane.FontSize);
             DrawWatermark(ses, ox, oy, pw, ph);   // faint session background, behind the cells
+            // Per-pane dynamic background (OSC 11, agterm #240): the program set its own bg, so fill this
+            // pane with it instead of leaving the (possibly translucent) window backing showing through.
+            uint dbg = pane.S.Emulator.DynamicBg;
+            if (dbg != 0)
+            {
+                brush.Color = new Color4(((dbg >> 16) & 0xFF) / 255f, ((dbg >> 8) & 0xFF) / 255f, (dbg & 0xFF) / 255f, 1f);
+                rt.FillRectangle(new Rect(ox, oy, pw, ph), brush);
+            }
             RenderTerminal(pane.S, ox, oy, fmt, cw, ch, pane.ScrollOffset, pane);
             // Dim non-active panes in a split so the focused one stands out.
             if (layout.Count > 1 && !ReferenceEquals(pane, ses.ActivePane) && _config.InactivePaneDim > 0)
