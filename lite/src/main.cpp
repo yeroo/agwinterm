@@ -68,6 +68,7 @@ static constexpr int kSidebarW = 180;
 struct Session {
     std::string id;
     std::string status = "idle";   // control-API agent status (sidebar dot)
+    std::wstring name;             // custom name (rename); empty = "session N"
     int ws = 0;                    // workspace this session belongs to (index into g_workspaces)
     void* emu = nullptr;
     HANDLE data = INVALID_HANDLE_VALUE;
@@ -81,11 +82,15 @@ struct Session {
 static HWND g_hwnd;
 static HWND g_tree;             // native SysTreeView32 sidebar (sessions)
 static bool g_treeSyncing;      // suppress TVN_SELCHANGED while we rebuild the tree
+static HTREEITEM g_ctxItem;     // right-clicked tree node (for the context menu)
+static LPARAM g_ctxParam;       // its lParam: >=0 session index, <0 = -(workspace+1)
 static HFONT g_fonts[4];        // [bold][italic]
 
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
-       IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104 };
+       IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
+       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107 };
+#define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
 #define WM_APP_TRAY        (WM_APP + 4)   // system-tray icon notifications
@@ -978,8 +983,9 @@ static void refreshTree() {
             if (g_sessions[i]->ws != w) continue;
             Session* s = g_sessions[i];
             const char* st = s->exited ? "exited" : s->status.c_str();
-            wchar_t label[96];
-            wsprintfW(label, L"session %d  ·  %S", i + 1, st);
+            wchar_t label[128];
+            if (!s->name.empty()) wsprintfW(label, L"%s  ·  %S", s->name.c_str(), st);
+            else wsprintfW(label, L"session %d  ·  %S", i + 1, st);
             TVINSERTSTRUCTW tis{};
             tis.hParent = wh;
             tis.hInsertAfter = TVI_LAST;
@@ -993,6 +999,48 @@ static void refreshTree() {
     }
     if (sel) TreeView_SelectItem(g_tree, sel);
     g_treeSyncing = false;
+}
+
+// Remove a workspace; its sessions fall back to the first workspace (indices shift down).
+static void deleteWorkspace(int w) {
+    if ((int)g_workspaces.size() <= 1 || w < 0 || w >= (int)g_workspaces.size()) return;
+    g_workspaces.erase(g_workspaces.begin() + w);
+    for (auto* s : g_sessions) {
+        if (s->ws == w) s->ws = 0;
+        else if (s->ws > w) s->ws--;
+    }
+    if (g_activeWs == w) g_activeWs = 0;
+    else if (g_activeWs > w) g_activeWs--;
+    refreshTree();
+}
+
+// Right-click menu on a tree node — session or workspace, mirroring the full app's sidebar menus.
+static void showTreeContextMenu() {
+    POINT pt; GetCursorPos(&pt);
+    HMENU m = CreatePopupMenu();
+    if (g_ctxParam >= 0) {   // ---- session node ----
+        int sws = (int)g_ctxParam < (int)g_sessions.size() ? g_sessions[(int)g_ctxParam]->ws : 0;
+        AppendMenuW(m, MF_STRING, IDM_NEW, L"&New Session…");
+        AppendMenuW(m, MF_STRING, IDM_DUP, L"&Duplicate Session");
+        AppendMenuW(m, MF_STRING, IDM_RENAME, L"Re&name\tF2");
+        if ((int)g_workspaces.size() > 1) {
+            HMENU sub = CreatePopupMenu();
+            for (int w = 0; w < (int)g_workspaces.size(); w++)
+                if (w != sws) AppendMenuW(sub, MF_STRING, IDM_MOVE_BASE + w, g_workspaces[w].c_str());
+            AppendMenuW(m, MF_POPUP, (UINT_PTR)sub, L"&Move to");
+        }
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(m, MF_STRING, IDM_CLOSE, L"&Close Session");
+    } else {                 // ---- workspace node ----
+        AppendMenuW(m, MF_STRING, IDM_NEW, L"&New Session");
+        AppendMenuW(m, MF_STRING, IDM_NEWWS, L"New &Workspace");
+        AppendMenuW(m, MF_STRING, IDM_RENAME, L"Re&name");
+        AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(m, MF_STRING | ((int)g_workspaces.size() <= 1 ? MF_GRAYED : 0), IDM_DELWS, L"&Delete Workspace");
+    }
+    SetForegroundWindow(g_hwnd);
+    TrackPopupMenu(m, TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, nullptr);
+    DestroyMenu(m);
 }
 
 static HMENU buildMenuBar() {
@@ -1201,7 +1249,8 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_KEYDOWN:
-            if (handleKeyDown(wp)) return 0;
+        case WM_SYSKEYDOWN:   // F10 and Alt-combos arrive here (menu keys); route them to the terminal
+            if (handleKeyDown(wp)) return 0;   // handled (e.g. F10 -> ESC[21~) — suppress menu activation
             break;
         case WM_MOUSEWHEEL: {
             POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
@@ -1297,6 +1346,44 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 SetFocus(hwnd);   // keep typing going to the terminal, not the tree
             }
+            if (nm->idFrom == ID_TREE && nm->code == NM_RCLICK) {   // right-click a node -> context menu
+                POINT cp; GetCursorPos(&cp); ScreenToClient(g_tree, &cp);
+                TVHITTESTINFO ht{}; ht.pt = cp;
+                HTREEITEM it = TreeView_HitTest(g_tree, &ht);
+                if (it) {
+                    TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = it;
+                    TreeView_GetItem(g_tree, &ti);
+                    g_ctxItem = it; g_ctxParam = ti.lParam;
+                    TreeView_SelectItem(g_tree, it);   // selecting updates g_pane / g_activeWs
+                    showTreeContextMenu();
+                }
+                return 1;
+            }
+            if (nm->idFrom == ID_TREE && nm->code == TVN_BEGINLABELEDITW) {   // seed the edit box with the bare name
+                auto* di = (NMTVDISPINFOW*)lp;
+                if (HWND ed = TreeView_GetEditControl(g_tree)) {
+                    if (di->item.lParam >= 0) {
+                        int i = (int)di->item.lParam;
+                        std::wstring bn = (i < (int)g_sessions.size() && !g_sessions[i]->name.empty())
+                                          ? g_sessions[i]->name : (L"session " + std::to_wstring(i + 1));
+                        SetWindowTextW(ed, bn.c_str());
+                    } else {
+                        int w = (int)(-di->item.lParam - 1);
+                        if (w >= 0 && w < (int)g_workspaces.size()) SetWindowTextW(ed, g_workspaces[w].c_str());
+                    }
+                }
+                return 0;   // FALSE = allow the edit
+            }
+            if (nm->idFrom == ID_TREE && nm->code == TVN_ENDLABELEDITW) {   // apply the new name
+                auto* di = (NMTVDISPINFOW*)lp;
+                if (di->item.pszText && di->item.pszText[0]) {
+                    std::wstring txt = di->item.pszText;
+                    if (di->item.lParam >= 0) { int i = (int)di->item.lParam; if (i < (int)g_sessions.size()) g_sessions[i]->name = txt; }
+                    else { int w = (int)(-di->item.lParam - 1); if (w >= 0 && w < (int)g_workspaces.size()) g_workspaces[w] = txt; }
+                    PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // re-decorate with status/count
+                }
+                return 0;   // FALSE — we refresh the label ourselves
+            }
             return 0;
         }
         case WM_COMMAND: {
@@ -1310,6 +1397,18 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     refreshTree();
                     break;
                 }
+                case IDM_DUP: {                                                             // duplicate into the same workspace
+                    int c, r; paneGridSize(g_focus, &c, &r);
+                    Session* s = newSession(c, r);   // g_activeWs = the right-clicked session's workspace
+                    if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; syncPaneSizes(); InvalidateRect(hwnd, nullptr, FALSE); }
+                    break;
+                }
+                case IDM_RENAME:
+                    if (g_ctxItem) { SetFocus(g_tree); TreeView_EditLabel(g_tree, g_ctxItem); }   // inline rename
+                    break;
+                case IDM_DELWS:
+                    if (g_ctxParam < 0) deleteWorkspace((int)(-g_ctxParam - 1));
+                    break;
                 case IDM_RESTART: restartApp(); break;
                 case IDM_SHOW: showMainWindow(); break;
                 case IDM_EXIT: DestroyWindow(hwnd); break;
@@ -1317,8 +1416,12 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     MessageBoxW(hwnd, L"agwinterm lite\nA lightweight native terminal over the Rust pty-host.",
                                 L"About", MB_OK | MB_ICONINFORMATION);
                     break;
-                default:   // close / split / next / copy / paste / previous
-                    if (id >= IDM_CLOSE && id <= IDM_PREV) { runPaletteItem(id); InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); }
+                default:
+                    if (id >= IDM_MOVE_BASE && id < IDM_MOVE_BASE + (int)g_workspaces.size()) {   // move session to workspace
+                        if (g_ctxParam >= 0) { int i = (int)g_ctxParam; if (i < (int)g_sessions.size()) { g_sessions[i]->ws = id - IDM_MOVE_BASE; refreshTree(); } }
+                    } else if (id >= IDM_CLOSE && id <= IDM_PREV) {   // close / split / next / copy / paste / previous
+                        runPaletteItem(id); InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd);
+                    }
                     break;
             }
             return 0;
@@ -1527,7 +1630,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RECT cr; GetClientRect(g_hwnd, &cr);
     g_tree = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
                              WS_CHILD | WS_VISIBLE | TVS_SHOWSELALWAYS | TVS_NOHSCROLL |
-                             TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT,
+                             TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_EDITLABELS,
                              0, 0, kSidebarW, cr.bottom, g_hwnd, (HMENU)ID_TREE, inst, nullptr);
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 
