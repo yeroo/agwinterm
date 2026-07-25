@@ -27,7 +27,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 13;
+pub const ABI_VERSION: u32 = 14;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -363,6 +363,7 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
     let _ = writeln!(s, "paste:{}", e.bracketed_paste as u8);
     let _ = writeln!(s, "focus:{}", e.focus_reporting as u8);
     let _ = writeln!(s, "sync:{}", e.synchronized_output as u8);
+    let _ = writeln!(s, "win32input:{}", e.win32_input_mode as u8);
     let _ = writeln!(s, "cursorshape:{}", e.cursor_shape);
     let _ = writeln!(s, "kbd:{}", e.keyboard_flags());
     let _ = writeln!(s, "title:{}", e.title);
@@ -503,6 +504,7 @@ pub struct FfiEmuInfo {
     pub mark_count: u32,
     pub focus_reporting: u32,
     pub synchronized_output: u32,
+    pub win32_input_mode: u32,
     pub cursor_shape: i32,
 }
 
@@ -537,6 +539,7 @@ pub unsafe extern "C" fn agwcore_emu_info(p: *mut Terminal, out: *mut FfiEmuInfo
             mark_count: e.marks().len() as u32,
             focus_reporting: e.focus_reporting as u32,
             synchronized_output: e.synchronized_output as u32,
+            win32_input_mode: e.win32_input_mode as u32,
             cursor_shape: e.cursor_shape,
         };
     }

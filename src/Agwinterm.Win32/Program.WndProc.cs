@@ -264,6 +264,9 @@ internal partial class Program
                 {
                     char c = (char)wParam;
                     if (_kittyAteChar) { _kittyAteChar = false; return IntPtr.Zero; }   // OnKeyDown already CSI-u-encoded this key
+                    // win32-input-mode encodes the char in the key-down sequence's Uc field, so the
+                    // normal WM_CHAR for this pane is redundant — drop it.
+                    if (ActiveSurface()?.S.Emulator.Win32InputMode == true) return IntPtr.Zero;
                     if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return IntPtr.Zero; }
                     if (_setOpen)
                     {

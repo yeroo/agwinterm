@@ -59,6 +59,10 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     /// 1/2 = block (blink/steady), 3/4 = underline, 5/6 = bar. The renderer decodes shape + blink.</summary>
     public int CursorShape { get; private set; }
 
+    /// <summary>win32-input-mode (DECSET 9001, ConPTY extension): while set, the host encodes each key
+    /// as CSI Vk;Sc;Uc;Kd;Cs;Rc _ (full Win32 KEY_EVENT fidelity) instead of the usual VT input.</summary>
+    public bool Win32InputMode { get; private set; }
+
     private int _scrollTop;
     private int _scrollBottom;
 
@@ -391,6 +395,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 case 1006: _mouseSgr = set; break;     // SGR extended mouse encoding
                 case 1004: FocusReporting = set; break; // focus in/out reporting
                 case 2026: SynchronizedOutput = set; break; // synchronized output (atomic frames)
+                case 9001: Win32InputMode = set; break; // ConPTY win32-input-mode
                 case 2004: BracketedPaste = set; break; // bracketed paste
                 default: Host?.Unhandled("MODE", $"?{mode} {(set ? 'h' : 'l')}"); break;
             }
@@ -888,6 +893,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         if (_mouseSgr) sb.Append("\x1b[?1006h");
         if (BracketedPaste) sb.Append("\x1b[?2004h");
         if (FocusReporting) sb.Append("\x1b[?1004h");
+        if (Win32InputMode) sb.Append("\x1b[?9001h");
         if (CursorShape != 0) sb.Append("\x1b[").Append(CursorShape).Append(" q");
         if (Title.Length > 0) sb.Append("\x1b]0;").Append(Title).Append('\x07');
         if (Cwd.Length > 0) sb.Append("\x1b]7;").Append(Cwd).Append('\x07');
