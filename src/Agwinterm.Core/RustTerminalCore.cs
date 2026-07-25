@@ -89,6 +89,7 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     public bool MouseReporting => MouseClick || MouseDrag || MouseMotion;
     public bool MouseReportsMotion => MouseDrag || MouseMotion;
     public bool BracketedPaste => _info.BracketedPaste != 0;
+    public bool FocusReporting => _info.FocusReporting != 0;
     public int KeyboardFlags => _info.KeyboardFlags;
 
     // ---- scrollback ----

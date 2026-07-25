@@ -526,7 +526,12 @@ internal partial class Program
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
 
             case WM_ACTIVATE:
+                bool wasActive = _windowActive;
                 _windowActive = LoWord(wParam) != 0;   // WA_ACTIVE/WA_CLICKACTIVE vs WA_INACTIVE (drives unfocused dim)
+                // Focus reporting (DECSET ?1004): on a real focus transition, tell the active pane's
+                // app the terminal gained (ESC[I) or lost (ESC[O) focus, so it can pause/resume.
+                if (_windowActive != wasActive && _session is { } fs && fs.Emulator.FocusReporting)
+                    fs.Write(_windowActive ? "\x1b[I"u8.ToArray() : "\x1b[O"u8.ToArray());
                 if (_config.UnfocusedDim > 0) RequestRedraw();
                 if (_windowActive && _frontmostId != Id) // this window is frontmost
                 {

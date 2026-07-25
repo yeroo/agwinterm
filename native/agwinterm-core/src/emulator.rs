@@ -129,6 +129,7 @@ pub struct Emulator {
     mouse_motion: bool,
     mouse_sgr: bool,
     pub bracketed_paste: bool,
+    pub focus_reporting: bool,
 
     scroll_top: usize,
     scroll_bottom: usize,
@@ -191,6 +192,7 @@ impl Emulator {
             mouse_motion: false,
             mouse_sgr: false,
             bracketed_paste: false,
+            focus_reporting: false,
             scroll_top: 0,
             scroll_bottom: rows - 1,
             history: Vec::new(),
@@ -603,6 +605,7 @@ impl Emulator {
                 1002 => self.mouse_drag = set,
                 1003 => self.mouse_motion = set,
                 1006 => self.mouse_sgr = set,
+                1004 => self.focus_reporting = set,
                 2004 => self.bracketed_paste = set,
                 _ => self.push_action(HostAction::Unhandled {
                     kind: "MODE".into(),
@@ -827,6 +830,7 @@ impl Emulator {
         if self.mouse_motion { s.push_str("\u{1b}[?1003h"); }
         if self.mouse_sgr { s.push_str("\u{1b}[?1006h"); }
         if self.bracketed_paste { s.push_str("\u{1b}[?2004h"); }
+        if self.focus_reporting { s.push_str("\u{1b}[?1004h"); }
         if !self.title.is_empty() { s.push_str("\u{1b}]0;"); s.push_str(&self.title); s.push('\u{7}'); }
         if !self.cwd.is_empty() { s.push_str("\u{1b}]7;"); s.push_str(&self.cwd); s.push('\u{7}'); }
         s

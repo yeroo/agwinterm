@@ -30,6 +30,7 @@ public interface ITerminalCore
     bool MouseDrag { get; }
     bool MouseMotion { get; }
     bool BracketedPaste { get; }
+    bool FocusReporting { get; }
     int KeyboardFlags { get; }
 
     // ---- scrollback ----
