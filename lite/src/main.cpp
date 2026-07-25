@@ -16,9 +16,12 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>   // native TreeView (SysTreeView32) sidebar — ships with Windows, no external deps
+#include <shlobj.h>     // SHBrowseForFolder (New Session in Folder…)
 #include <string>
 #include <vector>
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
 
 #include "proto/ptyhost.pb.h"
 #include "proto/pb_encode.h"
@@ -80,7 +83,8 @@ static bool g_treeSyncing;      // suppress TVN_SELCHANGED while we rebuild the 
 static HFONT g_fonts[4];        // [bold][italic]
 
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
-enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_EXIT = 100, IDM_ABOUT = 101 };
+enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
+       IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWFOLDER = 102 };
 enum { ID_TREE = 200 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
 static int g_cw = 8, g_ch = 16;
@@ -312,7 +316,35 @@ static DWORD WINAPI readerThread(void* param) {
     return 0;
 }
 
-static Session* newSession(int cols, int rows) {
+// A launchable shell "voice" for the New Session dialog.
+struct Profile { std::wstring name; std::string app; std::vector<std::string> args; };
+
+static bool isPwshApp(const char* app) {
+    if (!app) return true;
+    std::string a(app);
+    for (char& c : a) c = (char)tolower((unsigned char)c);
+    return a.find("powershell") != std::string::npos || a.find("pwsh") != std::string::npos;
+}
+
+// Detected shells on this machine (the "voices"). PowerShell + cmd are always present.
+static std::vector<Profile> detectProfiles() {
+    auto have = [](const char* p) { return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES; };
+    std::vector<Profile> v;
+    v.push_back({ L"Windows PowerShell", "powershell.exe", {} });
+    if (have("C:\\Program Files\\PowerShell\\7\\pwsh.exe"))
+        v.push_back({ L"PowerShell 7", "C:\\Program Files\\PowerShell\\7\\pwsh.exe", {} });
+    v.push_back({ L"Command Prompt", "cmd.exe", {} });
+    if (have("C:\\Program Files\\Git\\bin\\bash.exe"))
+        v.push_back({ L"Git Bash", "C:\\Program Files\\Git\\bin\\bash.exe", { "-i", "-l" } });
+    char sys[MAX_PATH]; GetSystemDirectoryA(sys, MAX_PATH);
+    std::string wsl = std::string(sys) + "\\wsl.exe";
+    if (have(wsl.c_str())) v.push_back({ L"WSL", wsl, {} });
+    return v;
+}
+
+// cols/rows + an optional profile (app/args) and cwd. Default (no app) = PowerShell with the prompt wrap.
+static Session* newSession(int cols, int rows, const char* app = nullptr,
+                           const std::vector<std::string>* pargs = nullptr, const char* cwd = nullptr) {
     char idbuf[64];
     wsprintfA(idbuf, "lite-%d", g_seq++);
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
@@ -321,15 +353,26 @@ static Session* newSession(int cols, int rows) {
     strcpy_s(req.cmd.create.id, idbuf);
     req.cmd.create.cols = (uint32_t)cols;
     req.cmd.create.rows = (uint32_t)rows;
-    strcpy_s(req.cmd.create.app, "powershell.exe");
-    // -NoExit keeps the shell interactive after the wrap runs; -EncodedCommand runs AFTER the
-    // profile so it chains (not replaces) the user's prompt.
-    std::string enc = base64(kPromptWrap);
-    req.cmd.create.args_count = 4;
-    strcpy_s(req.cmd.create.args[0], "-NoLogo");
-    strcpy_s(req.cmd.create.args[1], "-NoExit");
-    strcpy_s(req.cmd.create.args[2], "-EncodedCommand");
-    strcpy_s(req.cmd.create.args[3], enc.c_str());
+    const char* useApp = app ? app : "powershell.exe";
+    strcpy_s(req.cmd.create.app, useApp);
+    if (cwd && *cwd) strcpy_s(req.cmd.create.cwd, cwd);
+    std::string enc;
+    if (pargs && !pargs->empty()) {                     // explicit profile args -> run app + args as-is
+        int n = (int)pargs->size(); if (n > 4) n = 4;
+        req.cmd.create.args_count = n;
+        for (int i = 0; i < n; i++) strcpy_s(req.cmd.create.args[i], (*pargs)[i].c_str());
+    } else if (isPwshApp(useApp)) {                     // PowerShell: keep the interactive prompt wrap
+        // -NoExit keeps the shell interactive after the wrap runs; -EncodedCommand runs AFTER the
+        // profile so it chains (not replaces) the user's prompt.
+        enc = base64(kPromptWrap);
+        req.cmd.create.args_count = 4;
+        strcpy_s(req.cmd.create.args[0], "-NoLogo");
+        strcpy_s(req.cmd.create.args[1], "-NoExit");
+        strcpy_s(req.cmd.create.args[2], "-EncodedCommand");
+        strcpy_s(req.cmd.create.args[3], enc.c_str());
+    } else {
+        req.cmd.create.args_count = 0;                  // cmd / bash / wsl: launch bare
+    }
     // AGWINTERM_* identity env, so the Claude skill / hooks / agwintermctl inside the
     // session auto-target LITE's control pipe (all non-UI features are protocol).
     auto setEnv = [&](int i, const char* k, const char* v) {
@@ -795,6 +838,7 @@ static void runPaletteItem(int id) {
         case 4: if (!g_sessions.empty()) { g_pane[g_focus] = (g_pane[g_focus] + 1) % (int)g_sessions.size(); syncPaneSizes(); PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0); } break;
         case 5: copySelection(); break;
         case 6: pasteClipboard(); break;
+        case 7: if (!g_sessions.empty()) { int n = (int)g_sessions.size(); g_pane[g_focus] = (g_pane[g_focus] + n - 1) % n; syncPaneSizes(); PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0); } break;   // previous session
     }
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
@@ -929,7 +973,9 @@ static void refreshTree() {
 
 static HMENU buildMenuBar() {
     HMENU file = CreatePopupMenu();
-    AppendMenuW(file, MF_STRING, IDM_NEW, L"&New Session\tCtrl+T");
+    AppendMenuW(file, MF_STRING, IDM_NEW, L"&New Session…\tCtrl+T");
+    AppendMenuW(file, MF_STRING, IDM_NEWFOLDER, L"New Session in &Folder…");
+    AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close Session\tCtrl+W");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
@@ -938,7 +984,9 @@ static HMENU buildMenuBar() {
     AppendMenuW(edit, MF_STRING, IDM_PASTE, L"&Paste\tCtrl+V");
     HMENU view = CreatePopupMenu();
     AppendMenuW(view, MF_STRING, IDM_SPLIT, L"&Split / Unsplit\tCtrl+Shift+D");
+    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_NEXT, L"&Next Session\tCtrl+Tab");
+    AppendMenuW(view, MF_STRING, IDM_PREV, L"&Previous Session");
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agwinterm lite");
     HMENU bar = CreateMenu();
@@ -947,6 +995,103 @@ static HMENU buildMenuBar() {
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)view, L"&View");
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, L"&Help");
     return bar;
+}
+
+// Native folder picker (classic shell browse dialog). Returns "" on cancel.
+static std::string pickFolder() {
+    std::string out;
+    BROWSEINFOW bi{};
+    bi.hwndOwner = g_hwnd;
+    bi.lpszTitle = L"New session in folder:";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS;   // classic style: no COM init required
+    LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
+    if (pidl) {
+        wchar_t path[MAX_PATH];
+        if (SHGetPathFromIDListW(pidl, path)) {
+            int n = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+            out.assign(n > 0 ? n - 1 : 0, 0);
+            if (!out.empty()) WideCharToMultiByte(CP_UTF8, 0, path, -1, &out[0], n, nullptr, nullptr);
+        }
+        CoTaskMemFree(pidl);
+    }
+    return out;
+}
+
+// ---- New Session modal dialog (native popup + listbox, no .rc resource) ----
+static HWND g_dlgList;
+static int g_dlgResult;   // -1 = cancel, else selected profile index
+
+static LRESULT CALLBACK profileDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+        case WM_COMMAND:
+            if (LOWORD(w) == IDOK || (LOWORD(w) == 1000 && HIWORD(w) == LBN_DBLCLK)) {
+                g_dlgResult = (int)SendMessageW(g_dlgList, LB_GETCURSEL, 0, 0);
+                DestroyWindow(h);
+                return 0;
+            }
+            if (LOWORD(w) == IDCANCEL) { g_dlgResult = -1; DestroyWindow(h); return 0; }
+            break;
+        case WM_CLOSE: g_dlgResult = -1; DestroyWindow(h); return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
+// Modal profile picker; returns the chosen index or -1. Runs a local loop with the parent disabled.
+static int pickProfileDialog(const std::vector<Profile>& profs) {
+    static bool reg = false;
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    if (!reg) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = profileDlgProc;
+        wc.hInstance = inst;
+        wc.lpszClassName = L"AgwintermLiteDlg";
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);
+        RegisterClassW(&wc);
+        reg = true;
+    }
+    const int W = 300, H = 250;
+    RECT pw; GetWindowRect(g_hwnd, &pw);
+    HWND dlg = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteDlg", L"New Session",
+                               WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                               pw.left + 70, pw.top + 70, W, H, g_hwnd, nullptr, inst, nullptr);
+    HFONT gui = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    RECT cr; GetClientRect(dlg, &cr);
+    HWND lbl = CreateWindowExW(0, L"STATIC", L"Choose a shell:", WS_CHILD | WS_VISIBLE,
+                               12, 10, cr.right - 24, 18, dlg, nullptr, inst, nullptr);
+    g_dlgList = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+                                WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY,
+                                12, 32, cr.right - 24, cr.bottom - 84, dlg, (HMENU)1000, inst, nullptr);
+    for (const auto& p : profs) SendMessageW(g_dlgList, LB_ADDSTRING, 0, (LPARAM)p.name.c_str());
+    SendMessageW(g_dlgList, LB_SETCURSEL, 0, 0);
+    HWND ok = CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                              cr.right - 176, cr.bottom - 40, 78, 26, dlg, (HMENU)IDOK, inst, nullptr);
+    HWND cancel = CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE,
+                                  cr.right - 90, cr.bottom - 40, 78, 26, dlg, (HMENU)IDCANCEL, inst, nullptr);
+    for (HWND c : { lbl, g_dlgList, ok, cancel }) SendMessageW(c, WM_SETFONT, (WPARAM)gui, TRUE);
+    g_dlgResult = -1;
+    EnableWindow(g_hwnd, FALSE);
+    ShowWindow(dlg, SW_SHOW);
+    SetFocus(g_dlgList);
+    MSG msg;
+    while (IsWindow(dlg)) {
+        if (!GetMessageW(&msg, nullptr, 0, 0)) { PostQuitMessage((int)msg.wParam); break; }  // WM_QUIT — bail
+        if (!IsDialogMessageW(dlg, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+    }
+    EnableWindow(g_hwnd, TRUE);
+    SetForegroundWindow(g_hwnd);
+    SetFocus(g_hwnd);
+    return g_dlgResult;
+}
+
+// Open the New Session dialog and create the chosen shell (in an optional folder).
+static void newSessionDialog(const char* cwd = nullptr) {
+    auto profs = detectProfiles();
+    int i = pickProfileDialog(profs);
+    if (i < 0 || i >= (int)profs.size()) return;
+    int c, r; paneGridSize(g_focus, &c, &r);
+    Session* s = newSession(c, r, profs[i].app.c_str(), &profs[i].args, cwd);
+    if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; syncPaneSizes(); InvalidateRect(g_hwnd, nullptr, FALSE); }
 }
 
 // A 2000's-style app icon drawn at runtime (no .ico asset, no deps): a classic gray 3D-beveled tile
@@ -1105,13 +1250,18 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_COMMAND: {
             int id = LOWORD(wp);
-            if (id == IDM_EXIT) { DestroyWindow(hwnd); return 0; }
-            if (id == IDM_ABOUT) {
-                MessageBoxW(hwnd, L"agwinterm lite\nA lightweight native terminal over the Rust pty-host.",
-                            L"About", MB_OK | MB_ICONINFORMATION);
-                return 0;
+            switch (id) {
+                case IDM_NEW: newSessionDialog(); break;                                    // profile picker
+                case IDM_NEWFOLDER: { auto d = pickFolder(); if (!d.empty()) newSessionDialog(d.c_str()); break; }
+                case IDM_EXIT: DestroyWindow(hwnd); break;
+                case IDM_ABOUT:
+                    MessageBoxW(hwnd, L"agwinterm lite\nA lightweight native terminal over the Rust pty-host.",
+                                L"About", MB_OK | MB_ICONINFORMATION);
+                    break;
+                default:   // close / split / next / copy / paste / previous
+                    if (id >= IDM_CLOSE && id <= IDM_PREV) { runPaletteItem(id); InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); }
+                    break;
             }
-            if (id >= IDM_NEW && id <= IDM_PASTE) { runPaletteItem(id); InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); }
             return 0;
         }
         case WM_DESTROY: {
