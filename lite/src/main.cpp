@@ -15,8 +15,10 @@
 
 #include <windows.h>
 #include <windowsx.h>
+#include <commctrl.h>   // native TreeView (SysTreeView32) sidebar — ships with Windows, no external deps
 #include <string>
 #include <vector>
+#pragma comment(lib, "comctl32.lib")
 
 #include "proto/ptyhost.pb.h"
 #include "proto/pb_encode.h"
@@ -73,7 +75,14 @@ struct Session {
 };
 
 static HWND g_hwnd;
+static HWND g_tree;             // native SysTreeView32 sidebar (sessions)
+static bool g_treeSyncing;      // suppress TVN_SELCHANGED while we rebuild the tree
 static HFONT g_fonts[4];        // [bold][italic]
+
+// Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
+enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_EXIT = 100, IDM_ABOUT = 101 };
+enum { ID_TREE = 200 };
+#define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
 static int g_cw = 8, g_ch = 16;
 static CRITICAL_SECTION g_lock; // guards every session's emu + the session list shape
 static HANDLE g_control = INVALID_HANDLE_VALUE;
@@ -299,6 +308,7 @@ static DWORD WINAPI readerThread(void* param) {
     }
     s->exited = true;   // EOF: child exited, host shut down, or we were superseded
     InvalidateRect(g_hwnd, nullptr, FALSE);
+    PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // reflect the exited marker in the tree
     return 0;
 }
 
@@ -349,6 +359,7 @@ static Session* newSession(int cols, int rows) {
     EnterCriticalSection(&g_lock);
     g_sessions.push_back(s);
     LeaveCriticalSection(&g_lock);
+    PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // add the session to the tree (UI thread)
     return s;
 }
 
@@ -376,6 +387,7 @@ static void closeFocused() {
     if (g_sessions.empty()) { DestroyWindow(g_hwnd); return; }
     syncPaneSizes();
     InvalidateRect(g_hwnd, nullptr, FALSE);
+    PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // drop the session from the tree
 }
 
 // ---- GDI paint ----
@@ -528,47 +540,6 @@ static void paintPane(HDC mem, int pane, RECT pr) {
     }
 }
 
-static void paintSidebar(HDC mem, RECT rc) {
-    RECT side{ 0, 0, kSidebarW, rc.bottom };
-    HBRUSH bg = CreateSolidBrush(RGB(18, 18, 22));
-    FillRect(mem, &side, bg);
-    DeleteObject(bg);
-    SelectObject(mem, g_fonts[0]);
-    SetBkMode(mem, TRANSPARENT);
-    SetTextColor(mem, RGB(140, 140, 150));
-    RECT title{ 10, 8, kSidebarW - 8, 8 + g_ch };
-    DrawTextW(mem, L"sessions  ·  Ctrl+Shift+P", -1, &title, DT_LEFT | DT_SINGLELINE);
-    for (int i = 0; i < (int)g_sessions.size(); i++) {
-        int y = 12 + (i + 1) * (g_ch + 8);
-        bool inPane = g_pane[0] == i || g_pane[1] == i;
-        bool focused = g_pane[g_focus] == i;
-        if (focused) {
-            RECT row{ 0, y - 4, kSidebarW, y + g_ch + 4 };
-            HBRUSH hb = CreateSolidBrush(RGB(38, 40, 48));
-            FillRect(mem, &row, hb);
-            DeleteObject(hb);
-        }
-        SetTextColor(mem, g_sessions[i]->exited ? RGB(120, 90, 90)
-                          : focused ? RGB(230, 230, 235)
-                          : inPane ? RGB(190, 190, 200) : RGB(150, 150, 160));
-        // Status dot (control-API agent status): idle gray, active blue, blocked red, completed green.
-        COLORREF dot = RGB(110, 110, 120);
-        const std::string& st = g_sessions[i]->status;
-        if (g_sessions[i]->exited) dot = RGB(140, 80, 80);
-        else if (st == "active") dot = RGB(80, 140, 230);
-        else if (st == "blocked") dot = RGB(220, 80, 80);
-        else if (st == "completed") dot = RGB(70, 190, 100);
-        RECT d{ 4, y + g_ch / 2 - 3, 10, y + g_ch / 2 + 3 };
-        HBRUSH db = CreateSolidBrush(dot);
-        FillRect(mem, &d, db);
-        DeleteObject(db);
-        wchar_t name[64];
-        wsprintfW(name, L"%s%S", g_sessions[i]->exited ? L"× " : L"", g_sessions[i]->id.c_str());
-        RECT row{ 14, y, kSidebarW - 8, y + g_ch };
-        DrawTextW(mem, name, -1, &row, DT_LEFT | DT_SINGLELINE);
-    }
-}
-
 static void paint(HDC dc, RECT rc) {
     HDC mem = CreateCompatibleDC(dc);
     HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
@@ -577,7 +548,8 @@ static void paint(HDC dc, RECT rc) {
     FillRect(mem, &rc, bg);
     DeleteObject(bg);
 
-    paintSidebar(mem, rc);
+    // The sidebar is now the native SysTreeView32 child (0..kSidebarW); WS_CLIPCHILDREN keeps this
+    // paint out of it. Only the terminal content area (>= kSidebarW) is drawn here.
     for (int p = 0; p < 2; p++) {
         if (g_pane[p] < 0) continue;
         RECT pr;
@@ -820,7 +792,7 @@ static void runPaletteItem(int id) {
             syncPaneSizes();
             break;
         }
-        case 4: if (!g_sessions.empty()) { g_pane[g_focus] = (g_pane[g_focus] + 1) % (int)g_sessions.size(); syncPaneSizes(); } break;
+        case 4: if (!g_sessions.empty()) { g_pane[g_focus] = (g_pane[g_focus] + 1) % (int)g_sessions.size(); syncPaneSizes(); PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0); } break;
         case 5: copySelection(); break;
         case 6: pasteClipboard(); break;
     }
@@ -870,6 +842,7 @@ static bool handleKeyDown(WPARAM vk) {
                 if (!g_sessions.empty()) {
                     g_pane[g_focus] = (g_pane[g_focus] + 1) % (int)g_sessions.size();
                     syncPaneSizes();
+                    PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // follow the switch in the tree
                     InvalidateRect(g_hwnd, nullptr, FALSE);
                 }
                 return true;
@@ -928,6 +901,95 @@ static bool handleKeyDown(WPARAM vk) {
     return true;
 }
 
+// Rebuild the native TreeView sidebar from the session list; select the focused pane's session.
+// UI-thread only (worker threads post WM_APP_REFRESHTREE instead).
+static void refreshTree() {
+    if (!g_tree) return;
+    g_treeSyncing = true;
+    TreeView_DeleteAllItems(g_tree);
+    HTREEITEM sel = nullptr;
+    int focusIdx = g_pane[g_focus];
+    for (int i = 0; i < (int)g_sessions.size(); i++) {
+        Session* s = g_sessions[i];
+        const char* st = s->exited ? "exited" : s->status.c_str();
+        wchar_t label[96];
+        wsprintfW(label, L"session %d  ·  %S", i + 1, st);
+        TVINSERTSTRUCTW tis{};
+        tis.hParent = TVI_ROOT;
+        tis.hInsertAfter = TVI_LAST;
+        tis.item.mask = TVIF_TEXT | TVIF_PARAM;
+        tis.item.pszText = label;
+        tis.item.lParam = i;
+        HTREEITEM h = TreeView_InsertItem(g_tree, &tis);
+        if (i == focusIdx) sel = h;
+    }
+    if (sel) TreeView_SelectItem(g_tree, sel);
+    g_treeSyncing = false;
+}
+
+static HMENU buildMenuBar() {
+    HMENU file = CreatePopupMenu();
+    AppendMenuW(file, MF_STRING, IDM_NEW, L"&New Session\tCtrl+T");
+    AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close Session\tCtrl+W");
+    AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
+    HMENU edit = CreatePopupMenu();
+    AppendMenuW(edit, MF_STRING, IDM_COPY, L"&Copy\tCtrl+C");
+    AppendMenuW(edit, MF_STRING, IDM_PASTE, L"&Paste\tCtrl+V");
+    HMENU view = CreatePopupMenu();
+    AppendMenuW(view, MF_STRING, IDM_SPLIT, L"&Split / Unsplit\tCtrl+Shift+D");
+    AppendMenuW(view, MF_STRING, IDM_NEXT, L"&Next Session\tCtrl+Tab");
+    HMENU help = CreatePopupMenu();
+    AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agwinterm lite");
+    HMENU bar = CreateMenu();
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)file, L"&File");
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)edit, L"&Edit");
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)view, L"&View");
+    AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, L"&Help");
+    return bar;
+}
+
+// A 2000's-style app icon drawn at runtime (no .ico asset, no deps): a classic gray 3D-beveled tile
+// with a sunken black "screen" and a green >_ prompt — the Win2000/XP-era terminal look.
+static HICON makeRetroIcon() {
+    const int S = 32;
+    HDC dc = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP color = CreateCompatibleBitmap(dc, S, S);
+    HBITMAP mask = CreateBitmap(S, S, 1, 1, nullptr);
+    HGDIOBJ ob = SelectObject(mem, color);
+    RECT r{ 0, 0, S, S };
+    HBRUSH gray = CreateSolidBrush(RGB(192, 192, 192));
+    FillRect(mem, &r, gray);
+    DeleteObject(gray);
+    DrawEdge(mem, &r, EDGE_RAISED, BF_RECT);          // raised 3D outer bezel
+    RECT scr{ 5, 5, S - 5, S - 5 };
+    HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(mem, &scr, black);
+    DeleteObject(black);
+    DrawEdge(mem, &scr, EDGE_SUNKEN, BF_RECT);         // sunken 3D screen
+    SetBkMode(mem, TRANSPARENT);
+    SetTextColor(mem, RGB(0, 220, 0));
+    HFONT f = CreateFontW(-11, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                          CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+    HGDIOBJ of = SelectObject(mem, f);
+    TextOutW(mem, 7, 9, L">_", 2);
+    SelectObject(mem, of);
+    DeleteObject(f);
+    HDC memMask = CreateCompatibleDC(dc);
+    HGDIOBJ omb = SelectObject(memMask, mask);
+    PatBlt(memMask, 0, 0, S, S, BLACKNESS);            // all-0 AND-mask = fully opaque icon
+    SelectObject(memMask, omb);
+    DeleteDC(memMask);
+    SelectObject(mem, ob);
+    ICONINFO ii{ TRUE, 0, 0, mask, color };
+    HICON icon = CreateIconIndirect(&ii);
+    DeleteObject(color); DeleteObject(mask);
+    DeleteDC(mem);
+    ReleaseDC(nullptr, dc);
+    return icon;
+}
+
 static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_PAINT: {
@@ -967,23 +1029,15 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_LBUTTONDOWN: {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
             if (g_palette) { g_palette = false; InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); return 0; }
-            if (x < kSidebarW) {   // sidebar row hit-test
-                int i = (y - 12) / (g_ch + 8) - 1;   // rows at 12 + (i+1)*(g_ch+8)
-                if (i >= 0 && i < (int)g_sessions.size()) {
-                    g_pane[g_focus] = i;
-                    syncPaneSizes();
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            } else {
-                int pane, absRow, col;
-                if (hitTest(x, y, &pane, &absRow, &col)) {
-                    g_focus = pane;
-                    // App wants mouse events? Forward the click and skip selection.
-                    if (mouseReport(x, y, 0, true, false)) { SetFocus(hwnd); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-                    g_sel = { pane, true, absRow, col, absRow, col };   // begin drag-select
-                    SetCapture(hwnd);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
+            // The sidebar is the native tree child, so clicks here are always in the terminal area.
+            int pane, absRow, col;
+            if (hitTest(x, y, &pane, &absRow, &col)) {
+                g_focus = pane;
+                // App wants mouse events? Forward the click and skip selection.
+                if (mouseReport(x, y, 0, true, false)) { SetFocus(hwnd); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+                g_sel = { pane, true, absRow, col, absRow, col };   // begin drag-select
+                SetCapture(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
             }
             SetFocus(hwnd);
             return 0;
@@ -1027,8 +1081,39 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_SIZE:
-            if (wp != SIZE_MINIMIZED && !g_sessions.empty()) syncPaneSizes();
+            if (wp != SIZE_MINIMIZED) {
+                if (g_tree) MoveWindow(g_tree, 0, 0, kSidebarW, HIWORD(lp), TRUE);   // dock the tree on the left
+                if (!g_sessions.empty()) syncPaneSizes();
+            }
             return 0;
+        case WM_APP_REFRESHTREE:   // posted from worker threads after a session-list / status change
+            refreshTree();
+            return 0;
+        case WM_NOTIFY: {
+            auto* nm = (NMHDR*)lp;
+            if (nm->idFrom == ID_TREE && nm->code == TVN_SELCHANGEDW && !g_treeSyncing) {
+                auto* nt = (NMTREEVIEWW*)lp;
+                int i = (int)nt->itemNew.lParam;
+                if (i >= 0 && i < (int)g_sessions.size()) {
+                    g_pane[g_focus] = i;
+                    syncPaneSizes();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    SetFocus(hwnd);   // keep typing going to the terminal, not the tree
+                }
+            }
+            return 0;
+        }
+        case WM_COMMAND: {
+            int id = LOWORD(wp);
+            if (id == IDM_EXIT) { DestroyWindow(hwnd); return 0; }
+            if (id == IDM_ABOUT) {
+                MessageBoxW(hwnd, L"agwinterm lite\nA lightweight native terminal over the Rust pty-host.",
+                            L"About", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+            if (id >= IDM_NEW && id <= IDM_PASTE) { runPaletteItem(id); InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); }
+            return 0;
+        }
         case WM_DESTROY: {
             for (Session* s : g_sessions) killSession(s);
             agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
@@ -1141,6 +1226,7 @@ static std::string ctlDispatch(const std::string& line) {
         if (st.empty()) return ctlErr("session status needs a state");
         target->status = st;
         InvalidateRect(g_hwnd, nullptr, FALSE);
+        PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // update the tree's status label
         return ctlOkStr("status set");
     }
     if (cmd == "session.close") {
@@ -1209,22 +1295,36 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
 
     connectControl();
 
+    INITCOMMONCONTROLSEX icc{ sizeof icc, ICC_TREEVIEW_CLASSES };
+    InitCommonControlsEx(&icc);
+
+    HICON appIcon = makeRetroIcon();
     WNDCLASSW wc{};
     wc.lpfnWndProc = wndProc;
     wc.hInstance = inst;
     wc.lpszClassName = L"AgwintermLite";
     wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_IBEAM);
+    wc.hIcon = appIcon;   // 2000's-style terminal icon (window + taskbar)
     RegisterClassW(&wc);
     RECT want{ 0, 0, kSidebarW + 100 * g_cw, 30 * g_ch };
-    AdjustWindowRect(&want, WS_OVERLAPPEDWINDOW, FALSE);
-    g_hwnd = CreateWindowW(L"AgwintermLite", L"agwinterm lite", WS_OVERLAPPEDWINDOW,
+    // WS_CLIPCHILDREN keeps the terminal paint out of the native tree child.
+    AdjustWindowRect(&want, WS_OVERLAPPEDWINDOW, TRUE);   // TRUE = has a menu bar
+    g_hwnd = CreateWindowW(L"AgwintermLite", L"agwinterm lite", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                            CW_USEDEFAULT, CW_USEDEFAULT, want.right - want.left, want.bottom - want.top,
-                           nullptr, nullptr, inst, nullptr);
+                           nullptr, buildMenuBar(), inst, nullptr);
+
+    // Native SysTreeView32 sidebar docked on the left; picking a node selects that session.
+    RECT cr; GetClientRect(g_hwnd, &cr);
+    g_tree = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
+                             WS_CHILD | WS_VISIBLE | TVS_SHOWSELALWAYS | TVS_NOHSCROLL,
+                             0, 0, kSidebarW, cr.bottom, g_hwnd, (HMENU)ID_TREE, inst, nullptr);
+    SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
     ShowWindow(g_hwnd, show);
 
     int cols, rows;
     paneGridSize(0, &cols, &rows);
     if (!newSession(cols, rows)) fatal(L"could not create the first session");
+    refreshTree();
     CreateThread(nullptr, 0, ctlServerThread, nullptr, 0, nullptr);   // agwintermctl --pipe agwinterm-lite
     InvalidateRect(g_hwnd, nullptr, FALSE);
 
