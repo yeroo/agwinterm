@@ -131,6 +131,7 @@ pub struct Emulator {
     pub bracketed_paste: bool,
     pub focus_reporting: bool,
     pub synchronized_output: bool,
+    pub cursor_shape: i32,
 
     scroll_top: usize,
     scroll_bottom: usize,
@@ -195,6 +196,7 @@ impl Emulator {
             bracketed_paste: false,
             focus_reporting: false,
             synchronized_output: false,
+            cursor_shape: 0,
             scroll_top: 0,
             scroll_bottom: rows - 1,
             history: Vec::new(),
@@ -834,6 +836,7 @@ impl Emulator {
         if self.mouse_sgr { s.push_str("\u{1b}[?1006h"); }
         if self.bracketed_paste { s.push_str("\u{1b}[?2004h"); }
         if self.focus_reporting { s.push_str("\u{1b}[?1004h"); }
+        if self.cursor_shape != 0 { s.push_str(&format!("\u{1b}[{} q", self.cursor_shape)); }
         if !self.title.is_empty() { s.push_str("\u{1b}]0;"); s.push_str(&self.title); s.push('\u{7}'); }
         if !self.cwd.is_empty() { s.push_str("\u{1b}]7;"); s.push_str(&self.cwd); s.push('\u{7}'); }
         s
@@ -1008,6 +1011,13 @@ impl Performer for Emulator {
             b'T' => {
                 for _ in 0..p(0, 1) {
                     self.scroll_region_down();
+                }
+            }
+            b'q' if prefix == 0 => {
+                // DECSCUSR (CSI Ps SP q) — cursor shape; the SP intermediate is dropped by the parser.
+                let ps = *params.first().unwrap_or(&0);
+                if (0..=6).contains(&ps) {
+                    self.cursor_shape = ps;
                 }
             }
             _ => {
