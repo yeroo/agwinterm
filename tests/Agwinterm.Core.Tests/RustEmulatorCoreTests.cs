@@ -146,6 +146,7 @@ public class RustEmulatorCoreTests
         public void ClipboardWrite(string text) => Log.Add($"Clipboard|{text}");
         public void Respond(string reply) => Log.Add($"Respond|{reply}");
         public void Unhandled(string kind, string detail) => Log.Add($"Unhandled|{kind}|{detail}");
+        public void Bell() => Log.Add("Bell");
     }
 
     [Fact]
@@ -232,6 +233,20 @@ public class RustEmulatorCoreTests
         // Same DECRPM replies, same order, through both cores.
         Assert.Equal(mgHost.Log, rsHost.Log);
         Assert.Equal(new[] { "Respond|\x1b[?2026;2$y", "Respond|\x1b[?2026;1$y" }, rsHost.Log);
+    }
+
+    [Fact]
+    public void Adapter_Bell_FiresThroughHost_LikeManagedCore()
+    {
+        if (!Available) return;
+        var mgHost = new RecordingHost();
+        var rsHost = new RecordingHost();
+        var cs = new TerminalEmulator(20, 5) { Host = mgHost };
+        using var rust = new RustTerminalCore(20, 5) { Host = rsHost };
+        byte[] bytes = { 0x07, (byte)'x', 0x07 };   // BEL, a printable, BEL
+        cs.Feed(bytes); rust.Feed(bytes);
+        Assert.Equal(mgHost.Log, rsHost.Log);
+        Assert.Equal(2, rsHost.Log.Count(l => l == "Bell"));   // BEL no longer falls through to the C0 tap
     }
 
     [Fact]

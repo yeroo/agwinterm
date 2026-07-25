@@ -175,6 +175,7 @@ pub enum HostAction {
     Progress { state: i32, value: i32 },
     Clipboard { text: String },
     Respond { reply: String },
+    Bell,
     Unhandled { kind: String, detail: String },
 }
 
@@ -921,6 +922,7 @@ impl Performer for Emulator {
                 let cols = self.screen().cols();
                 self.cursor_col = (cols - 1).min((self.cursor_col / 8 + 1) * 8);
             }
+            7 => self.push_action(HostAction::Bell), // BEL — ring the bell (host decides how)
             0 => {} // NUL — historical padding, deliberately ignored (would flood the tap)
             _ => self.push_action(HostAction::Unhandled {
                 kind: "C0".into(),

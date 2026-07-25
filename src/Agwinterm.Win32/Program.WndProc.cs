@@ -197,6 +197,12 @@ internal partial class Program
                     AnnounceNewOutput();
                     return IntPtr.Zero;
                 }
+                if ((int)wParam == BellFlashTimer)
+                {
+                    KillTimer(hwnd, (IntPtr)BellFlashTimer);
+                    RequestRedraw();   // repaint once the flash window has elapsed to clear the overlay
+                    return IntPtr.Zero;
+                }
                 _cursorOn = !_cursorOn;
                 InvalidateRect(hwnd, IntPtr.Zero, false);
                 return IntPtr.Zero;

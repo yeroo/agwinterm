@@ -281,6 +281,7 @@ internal partial class Program
             _app.Post(() => _app.ClipboardSet(text));
         }
         public void Respond(string reply) { _s.NotifyActivity(); _s.Write(Encoding.UTF8.GetBytes(reply)); } // query reply -> PTY
+        public void Bell() => _app.Post(() => _app.RingBell(_pane));                                     // BEL -> beep/flash per config
         public void Unhandled(string kind, string detail) => VtLog.Write(_pane.Id, kind, detail);       // AGWINTERM_VT_LOG tap
     }
 

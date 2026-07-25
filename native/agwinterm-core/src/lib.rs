@@ -27,7 +27,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 12;
+pub const ABI_VERSION: u32 = 13;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -469,6 +469,7 @@ pub unsafe extern "C" fn agwcore_emu_take_host_actions(p: *mut Terminal, out_len
                 put_str(&mut buf, kind);
                 put_str(&mut buf, detail);
             }
+            HostAction::Bell => buf.push(6), // no payload
         }
     }
     let mut boxed = buf.into_boxed_slice();

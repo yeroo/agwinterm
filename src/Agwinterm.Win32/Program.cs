@@ -320,6 +320,9 @@ internal partial class Program : ISessionHost, IWindowHost
     private const int RedrawMinIntervalMs = 15;
     private const int UiaAnnounceTimer = 11;          // debounce: announce new output to a screen reader
     private const int UiaAnnounceQuietMs = 350;       // speak once output has settled this long
+    private const int BellFlashTimer = 13;            // WM_TIMER id: clear the visual-bell flash overlay
+    private long _bellFlashUntil;                     // TickCount64 the visual-bell flash is drawn until
+    private long _lastBellTick;                       // coalesce a BEL flood into one ring
     private long _lastPaintTick;                      // Environment.TickCount64 of the last WM_PAINT render
     private bool _redrawTimerArmed;
 

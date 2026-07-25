@@ -639,6 +639,15 @@ internal partial class Program
                 if (_coverKind == 3) DrawOverlayFooter(rt, brush);          // overlay-only footer
             }
         }
+
+        // Visual bell (config `bell = visual|both`): a brief translucent flash over the content area,
+        // cleared by the BellFlashTimer repaint once the window elapses.
+        if (Environment.TickCount64 < _bellFlashUntil)
+        {
+            var (bx, by, bw, bh) = ContentArea();
+            brush.Color = WithA(C4(_theme.Cursor), 0.22f);
+            rt.FillRectangle(new Rect(bx, by, bw, bh), brush);
+        }
     }
 
     /// <summary>The Ctrl+Tab switcher HUD: a centered panel listing sessions in recency order with the
