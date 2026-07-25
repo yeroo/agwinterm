@@ -54,13 +54,25 @@ internal sealed class FakeSessionHost : ISessionHost
         new(SidebarVisible, Fullscreen, Maximized, QuickVisible, ActiveWs.Name, ActiveSess?.Name);
 
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null)
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
     {
         var w = FindWs(workspace) ?? ActiveWs;
         var s = new Sess { Id = "s" + (++_idSeq + 100), Name = string.IsNullOrEmpty(name) ? $"session {w.Sessions.Count + 1}" : name };
         w.Sessions.Add(s); ActiveSess = s; ActiveWs = w;
         return s.Id;
     }
+
+    public string DuplicateSession(string? target)
+    {
+        var src = Find(target) ?? ActiveSess;
+        var w = src is null ? ActiveWs : Workspaces.First(x => x.Sessions.Contains(src));
+        var s = new Sess { Id = "s" + (++_idSeq + 100), Name = $"session {w.Sessions.Count + 1}" };
+        w.Sessions.Add(s); ActiveSess = s; ActiveWs = w;
+        return s.Id;
+    }
+    public bool WorkspaceCollapse(string? target, bool expand) { var w = FindWs(target) ?? ActiveWs; return w is not null; }
+    public bool SessionRestore(string? target, string command) => Find(target) is not null;
+    public string Events(long since, int limit) => "{\"cursor\":0,\"events\":[]}";
 
     public bool SelectSession(string target) { var s = Find(target); if (s is null) return false; ActiveSess = s; ActiveWs = Workspaces.First(w => w.Sessions.Contains(s)); return true; }
     public bool CloseSession(string target)

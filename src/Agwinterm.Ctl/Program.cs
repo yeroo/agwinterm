@@ -6,7 +6,7 @@ using System.Text.Json;
 // Usage:
 //   agwintermctl ping
 //   agwintermctl tree [--json]
-//   agwintermctl session new [--cwd DIR] [--name NAME]
+//   agwintermctl session new [--cwd DIR] [--name NAME] [--no-select]
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]
@@ -60,6 +60,12 @@ switch (area)
 {
     case "ping": cmd = "ping"; break;
     case "tree": cmd = "tree"; break;
+    case "events": // agwintermctl events [--since CURSOR] [--limit N] — poll status/notification/session/tree events
+        cmd = "events";
+        if (Opt("since") is { } sinceV && int.TryParse(sinceV, out var sinceN)) cargs["since"] = sinceN;
+        if (Opt("limit") is { } limV && int.TryParse(limV, out var limN)) cargs["limit"] = limN;
+        target = null;
+        break;
     case "install" when sub == "hooks": cmd = "install.hooks"; break;
     case "install" when sub == "skill": cmd = "install.skill"; break;
     case "install" when sub == "shell": cmd = "install.shell"; break;
@@ -88,6 +94,8 @@ switch (area)
                 break;
             case "delete": cmd = "workspace.delete"; break;
             case "select": cmd = "workspace.select"; break;
+            case "collapse": cmd = "workspace.collapse"; if (rest.Count > 0) target = rest[0]; break;
+            case "expand": cmd = "workspace.expand"; if (rest.Count > 0) target = rest[0]; break;
             case "focus":
                 cmd = "workspace.focus";
                 cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; // on|off|toggle (focuses the active workspace)
@@ -113,10 +121,13 @@ switch (area)
                 if (Opt("workspace-name") is { } wsn) cargs["workspace-name"] = wsn;
                 if (options.ContainsKey("create-workspace")) cargs["create-workspace"] = true;
                 if (Opt("profile") is { } prof) cargs["profile"] = prof;
+                if (options.ContainsKey("no-select")) cargs["no-select"] = true;   // create in background, keep focus
+                if (options.ContainsKey("wait")) cargs["wait"] = true;             // hold on "press any key" after --command exits
                 target = null; // new isn't targeted
                 break;
             case "select":
             case "close":
+            case "duplicate":
                 target = rest.Count > 0 ? rest[0] : (Opt("target") ?? "active");
                 break;
             case "rename": // session rename <new-name...> [--target ID]
@@ -170,6 +181,7 @@ switch (area)
             case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
             case "flag": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|clear
             case "bind": cargs["agent"] = rest.Count > 0 ? rest[0] : "claude"; break; // bind a resumable agent (claude) | none to clear
+            case "restore": cargs["command"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("command") ?? ""); break; // pin a per-pane restore command | none to clear
             case "background": // session background set <path> [--opacity N] [--mode fit|fill|center|tile] | background clear
                 cargs["action"] = rest.Count > 0 ? rest[0] : "set";
                 if (rest.Count > 1) cargs["path"] = string.Join(' ', rest.Skip(1));

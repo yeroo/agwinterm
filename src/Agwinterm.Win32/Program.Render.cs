@@ -614,8 +614,10 @@ internal partial class Program
         bool floatingPanel = _cover is not null && ((_coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 }) || _coverKind == 2);
         if (_cover is not null && !floatingPanel)
         {
-            var (ox, oy, cw0, _) = ContentArea();
+            var (ox, oy, cw0, ch0) = ContentArea();
             var (fmt, cw, ch) = Metrics(_cover.FontSize);
+            // The scratch terminal keeps its owning session's watermark, so the pane isn't unidentified (#275).
+            if (_coverKind == 1 && OwningSes(_cover) is { } scratchOwner) DrawWatermark(scratchOwner, ox, oy, cw0, ch0);
             RenderTerminal(_cover.S, ox, oy, fmt, cw, ch, _cover.ScrollOffset, _cover);
             DrawCoverBadge(rt, brush, ox + cw0, oy);
             DrawOverlayFooter(rt, brush);
@@ -697,6 +699,14 @@ internal partial class Program
         {
             var (fmt, cw, ch) = Metrics(pane.FontSize);
             DrawWatermark(ses, ox, oy, pw, ph);   // faint session background, behind the cells
+            // Per-pane dynamic background (OSC 11, agterm #240): the program set its own bg, so fill this
+            // pane with it instead of leaving the (possibly translucent) window backing showing through.
+            uint dbg = pane.S.Emulator.DynamicBg;
+            if (dbg != 0)
+            {
+                brush.Color = new Color4(((dbg >> 16) & 0xFF) / 255f, ((dbg >> 8) & 0xFF) / 255f, (dbg & 0xFF) / 255f, 1f);
+                rt.FillRectangle(new Rect(ox, oy, pw, ph), brush);
+            }
             RenderTerminal(pane.S, ox, oy, fmt, cw, ch, pane.ScrollOffset, pane);
             // Dim non-active panes in a split so the focused one stands out.
             if (layout.Count > 1 && !ReferenceEquals(pane, ses.ActivePane) && _config.InactivePaneDim > 0)

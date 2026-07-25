@@ -116,6 +116,10 @@ public sealed class TerminalConfig
     /// (e.g. "SystemNotification"), or a full path to a .wav file.</summary>
     public string BlockedSound { get; set; } = "";
 
+    /// <summary>Sound played when a desktop notification banner is delivered (OSC 9/777 / notify). Off by
+    /// default (empty / "off" / "none" = silent). Same spec forms as <see cref="BlockedSound"/>. (agterm #232)</summary>
+    public string NotificationSound { get; set; } = "";
+
     /// <summary>How much to dim non-active panes in a split (0 = no dimming, 100 = fully dark). Default 35.</summary>
     public int InactivePaneDim { get; set; } = 35;
 
@@ -183,6 +187,15 @@ public sealed class TerminalConfig
 
     /// <summary>Draw the red unread-count pill on sidebar rows (the count still tracks when off). On by default.</summary>
     public bool NotificationBadges { get; set; } = true;
+
+    /// <summary>Show a "+" on each sidebar workspace row to add a session there (agterm #233/#252). On by default.</summary>
+    public bool WorkspaceAddButton { get; set; } = true;
+
+    /// <summary>Individual title-bar button visibility (agterm #241 Interface tab). All on by default.</summary>
+    public bool ShowScratchButton { get; set; } = true;
+    public bool ShowSplitButton { get; set; } = true;
+    public bool ShowDashboardButton { get; set; } = true;
+    public bool ShowQuickButton { get; set; } = true;
 
     /// <summary>Show the title-bar attention bell (hidden entirely when off). On by default.</summary>
     public bool AttentionButton { get; set; } = true;
@@ -288,6 +301,10 @@ public sealed class TerminalConfig
         # exclamation, hand, question), a Windows sound-event alias, or a path to a .wav file.
         blocked-sound =
 
+        # Notification sound: play a sound when a desktop notification banner is delivered. Off by
+        # default. Same values as blocked-sound (empty / off / none = silent).
+        notification-sound =
+
         # Shell integration: inject a pwsh prompt hook (OSC 7) to track the live working
         # directory so it persists/restores accurately. Off by default because the hook can
         # override a customized prompt (e.g. oh-my-posh). Set true to opt in to live-cwd tracking.
@@ -355,6 +372,15 @@ public sealed class TerminalConfig
 
         # Notifications: show the red unread-count pill on sidebar rows; show the title-bar attention bell.
         notification-badges = true
+
+        # Show a "+" on each sidebar workspace row to add a session in that workspace.
+        workspace-add-button = true
+
+        # Individual title-bar button visibility (Interface). Each on by default.
+        show-scratch-button = true
+        show-split-button = true
+        show-dashboard-button = true
+        show-quick-button = true
         attention-button = true
 
         # Terminal bell (BEL, 0x07): audible (system beep) | visual (brief window flash) | both | none.
@@ -416,6 +442,7 @@ public sealed class TerminalConfig
                 case "word-delimiters": cfg.WordDelimiters = val; break;
                 case "desktop-notifications": cfg.DesktopNotifications = ParseBool(val, cfg.DesktopNotifications); break;
                 case "blocked-sound": cfg.BlockedSound = val; break;
+                case "notification-sound": cfg.NotificationSound = val; break;
                 case "inactive-pane-dim": if (int.TryParse(val, out var ipd)) cfg.InactivePaneDim = System.Math.Clamp(ipd, 0, 100); break;
                 case "unfocused-dim": if (int.TryParse(val, out var ufd)) cfg.UnfocusedDim = System.Math.Clamp(ufd, 0, 90); break;
                 case "builtin-glyphs": cfg.BuiltinGlyphs = ParseBool(val, cfg.BuiltinGlyphs); break;
@@ -440,6 +467,11 @@ public sealed class TerminalConfig
                 case "compact-toolbar": cfg.CompactToolbar = ParseBool(val, cfg.CompactToolbar); break;
                 case "toolbar-mode": { var m = val.Trim().ToLowerInvariant(); if (m is "normal" or "compact" or "hidden") cfg.ToolbarMode = m; break; }
                 case "notification-badges": cfg.NotificationBadges = ParseBool(val, cfg.NotificationBadges); break;
+                case "workspace-add-button": cfg.WorkspaceAddButton = ParseBool(val, cfg.WorkspaceAddButton); break;
+                case "show-scratch-button": cfg.ShowScratchButton = ParseBool(val, cfg.ShowScratchButton); break;
+                case "show-split-button": cfg.ShowSplitButton = ParseBool(val, cfg.ShowSplitButton); break;
+                case "show-dashboard-button": cfg.ShowDashboardButton = ParseBool(val, cfg.ShowDashboardButton); break;
+                case "show-quick-button": cfg.ShowQuickButton = ParseBool(val, cfg.ShowQuickButton); break;
                 case "attention-button": cfg.AttentionButton = ParseBool(val, cfg.AttentionButton); break;
                 case "status-color-active": if (val.Length > 0) cfg.StatusColorActive = val; break;
                 case "status-color-blocked": if (val.Length > 0) cfg.StatusColorBlocked = val; break;

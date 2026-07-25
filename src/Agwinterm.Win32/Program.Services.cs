@@ -75,6 +75,8 @@ internal partial class Program
         _toastText = label.Length == 0 ? "(notification)" : label;
         _toastTarget = ses;                       // clicking the banner jumps to the raising session
         SetTimer(_hwnd, (IntPtr)2, 4000, IntPtr.Zero);
+        PlayNotificationSound();                  // opt-in sound on banner delivery (agterm #232)
+        EmitEvent("notification", p.Id, _toastText);   // control-API event log (#273)
         if (_config.DesktopNotifications) TrayNotify(title, body);
         // Background notification → taskbar flash (agterm's opt-in Dock bounce, #215).
         if (!_windowActive && _config.NotificationFlash != "none")
@@ -272,14 +274,19 @@ internal partial class Program
 
         // 6. Right group (pinned left of the caption buttons): scratch, split, | , dashboard,
         // quick-terminal, gear — dashboard grouped with quick behind the separator (agterm #217).
+        // Right group, laid out right-to-left; hidden buttons (Interface toggles, #241) close their gap.
         float bw = 38f;
         float rgRight = cw - 3 * CaptionBtnW - 6f;   // right edge of the gear
-        float gearX = rgRight - bw;
-        float quickX = gearX - bw;
-        float dashX = quickX - bw;
-        float divX = dashX - 5f;                     // hairline divider in the gap
-        float splitX = dashX - 10f - bw;
-        float scratchX = splitX - bw;
+        float x = rgRight;
+        float gearX = (x -= bw);                     // gear always shown
+        float quickX = _config.ShowQuickButton ? (x -= bw) : float.NaN;
+        float dashX = _config.ShowDashboardButton ? (x -= bw) : float.NaN;
+        float divX = x - 5f;                         // hairline divider left of the dashboard/quick group
+        bool anyPerSession = _config.ShowSplitButton || _config.ShowScratchButton;
+        if (anyPerSession) x -= 10f;                 // gap after the divider before the per-session buttons
+        float splitX = _config.ShowSplitButton ? (x -= bw) : float.NaN;
+        float scratchX = _config.ShowScratchButton ? (x -= bw) : float.NaN;
+        float rgLeft = x;                            // leftmost used edge — the title must stop before it
 
         // 3. Title at the terminal's leading edge (right of the sidebar): a SINGLE centered row
         // showing the path (agterm-style): custom name -> program OSC title -> full cwd path.
@@ -288,7 +295,7 @@ internal partial class Program
         bool showBell = _config.AttentionButton;
         float titleX = _sidebarW > 0 ? _sidebarW + 10f : togX + togW + 8f;
         float bellW = showBell ? 34f : 0f, bellGap = showBell ? 8f : 0f;
-        float titleAvail = scratchX - 14f - bellW - bellGap - titleX;
+        float titleAvail = rgLeft - 14f - bellW - bellGap - titleX;
         float titleMeasured = MeasureText(title, _uiFont);
         float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail));
         brush.Color = ChromeText;
@@ -309,7 +316,7 @@ internal partial class Program
         // dim = nothing, plain = active/completed, blocked-color = any blocked (uses the configured status color).
         if (showBell)
         {
-            float bellX = MathF.Min(titleX + titleW + bellGap, scratchX - bellW - 14f);
+            float bellX = MathF.Min(titleX + titleW + bellGap, rgLeft - bellW - 14f);
             var (bellBlocked, bellActive) = AttentionState();
             var bellBase = bellBlocked ? StatusDot(AgentStatus.Blocked) : (bellActive ? ChromeText : ChromeDim);
             if ((bellBlocked || bellActive) && !_cursorOn && AnyBlinkAttention())
@@ -328,26 +335,33 @@ internal partial class Program
 
         // scratch (rounded rectangle; filled when active)
         bool scratchOn = _coverKind == 1;
+        if (_config.ShowScratchButton)
         {
             var c = ChromeBtnBg(rt, brush, scratchX, 0, bw, TitleBarH, "scratch", _titleButtons, scratchOn ? ChromeAccent : ChromeDim);
             DrawScratchGlyph(rt, brush, scratchX + bw / 2f, TitleBarH / 2f, c, scratchOn);
         }
         // split (two panes, reflects split state)
         bool splitOn = _active is not null && _active.Panes.Count > 1;
+        if (_config.ShowSplitButton)
         {
             var c = ChromeBtnBg(rt, brush, splitX, 0, bw, TitleBarH, "split", _titleButtons, splitOn ? ChromeAccent : ChromeDim);
             DrawSplitGlyph(rt, brush, splitX + bw / 2f, TitleBarH / 2f, c, splitOn);
         }
-        // hairline divider between per-session toggles and the window-level quick terminal
-        brush.Color = WithA(ChromeText, 0.25f);
-        rt.DrawLine(new System.Numerics.Vector2(divX, 12f), new System.Numerics.Vector2(divX, TitleBarH - 12f), brush, 1f);
+        // hairline divider between per-session toggles and the window-level dashboard/quick group
+        if (anyPerSession && (_config.ShowDashboardButton || _config.ShowQuickButton))
+        {
+            brush.Color = WithA(ChromeText, 0.25f);
+            rt.DrawLine(new System.Numerics.Vector2(divX, 12f), new System.Numerics.Vector2(divX, TitleBarH - 12f), brush, 1f);
+        }
         // dashboard grid (accent while open) — agterm #217
+        if (_config.ShowDashboardButton)
         {
             var c = ChromeBtnBg(rt, brush, dashX, 0, bw, TitleBarH, "dashboard", _titleButtons, _dashboardOpen ? ChromeAccent : ChromeDim);
             DrawDashGlyph(rt, brush, dashX + bw / 2f, TitleBarH / 2f, c);
         }
         // quick terminal (accent when active)
         bool quickOn = _coverKind == 2;
+        if (_config.ShowQuickButton)
         {
             var c = ChromeBtnBg(rt, brush, quickX, 0, bw, TitleBarH, "quick terminal", _titleButtons, quickOn ? ChromeAccent : ChromeDim);
             brush.Color = c;
@@ -837,8 +851,9 @@ internal partial class Program
         "theme-follow-system", "theme-dark", "theme-light",
         "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "ligatures", "window-opacity", "sidebar-tint", "sidebar-font-size", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "copy-on-ctrl-c", "word-delimiters", "desktop-notifications", "shell-integration",
-        "restore-commands", "restore-buffer", "blocked-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
-        "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges",
+        "restore-commands", "restore-buffer", "blocked-sound", "notification-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
+        "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges", "workspace-add-button",
+        "show-scratch-button", "show-split-button", "show-dashboard-button", "show-quick-button",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
         "paste-protection", "clipboard-write", "notification-flash", "claude-update-check", "update-check",
         "session-host", "fresh-env", "emulator-core",
@@ -893,6 +908,7 @@ internal partial class Program
         "restore-commands" => _config.RestoreCommands ? "true" : "false",
         "restore-buffer" => _config.RestoreBuffer ? "true" : "false",
         "blocked-sound" => _config.BlockedSound,
+        "notification-sound" => _config.NotificationSound,
         "omp-theme" => _config.OmpTheme,
         "omp-integration" => _config.OmpIntegration ? "true" : "false",
         "prompt-engine" => _config.PromptEngine,
@@ -902,6 +918,11 @@ internal partial class Program
         "compact-toolbar" => _config.CompactToolbar ? "true" : "false",
         "toolbar-mode" => ToolbarModeResolved,
         "notification-badges" => _config.NotificationBadges ? "true" : "false",
+        "workspace-add-button" => _config.WorkspaceAddButton ? "true" : "false",
+        "show-scratch-button" => _config.ShowScratchButton ? "true" : "false",
+        "show-split-button" => _config.ShowSplitButton ? "true" : "false",
+        "show-dashboard-button" => _config.ShowDashboardButton ? "true" : "false",
+        "show-quick-button" => _config.ShowQuickButton ? "true" : "false",
         "notification-flash" => _config.NotificationFlash,
         "claude-update-check" => _config.ClaudeUpdateCheck ? "true" : "false",
         "update-check" => _config.UpdateCheck ? "true" : "false",
@@ -1088,7 +1109,7 @@ internal partial class Program
 
     // ---- Persistence: workspace/session tree + selection + sidebar state ----
 
-    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public List<string>? Buffer { get; set; } public string? BufferBlob { get; set; } }
+    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public string? RestoreCommand { get; set; } public List<string>? Buffer { get; set; } public string? BufferBlob { get; set; } }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
     private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; } public string? Profile { get; set; } public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
         // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
@@ -1347,7 +1368,7 @@ internal partial class Program
                                 }
                             }
                             catch { }
-                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, Buffer = buf, BufferBlob = blob });
+                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, RestoreCommand = p.RestoreCommand, Buffer = buf, BufferBlob = blob });
                     }
                     wss.Sessions.Add(ss);
                 }
@@ -1480,6 +1501,7 @@ internal partial class Program
                         {
                             ses.Panes[i].Ratio = pl[i].Ratio > 0 ? pl[i].Ratio : 1f;
                             ses.Panes[i].AgentResume = string.IsNullOrWhiteSpace(pl[i].AgentResume) ? null : pl[i].AgentResume;
+                            ses.Panes[i].RestoreCommand = string.IsNullOrWhiteSpace(pl[i].RestoreCommand) ? null : pl[i].RestoreCommand;
                         }
                         ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
                     }
@@ -1537,6 +1559,21 @@ internal partial class Program
                         });
                     }
 
+                    // Pinned restore command (agterm #271): always re-run on restart, independent of the
+                    // restore-commands toggle — an explicit per-pane opt-in that overrides auto-capture.
+                    for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
+                    {
+                        string pin = pl[i].RestoreCommand ?? "";
+                        if (pin.Length == 0 || !string.IsNullOrWhiteSpace(pl[i].AgentResume)) continue;
+                        if (IsAdopted(ses.Panes[i])) continue;   // still running — don't double-launch
+                        var rpane = ses.Panes[i];
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(2500);
+                            try { rpane.S.Write(System.Text.Encoding.UTF8.GetBytes(pin + "\r")); } catch { }
+                        });
+                    }
+
                     // Opt-in: re-run each pane's captured foreground command once the shell is ready.
                     if (_config.RestoreCommands)
                     {
@@ -1544,6 +1581,7 @@ internal partial class Program
                         for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
                         {
                             if (!string.IsNullOrWhiteSpace(pl[i].AgentResume)) continue; // agent panes handled above
+                            if (!string.IsNullOrWhiteSpace(pl[i].RestoreCommand)) continue; // pinned command handled above
                             if (IsAdopted(ses.Panes[i])) continue;   // the captured command is still running
                             string cmd = pl[i].Command ?? "";
                             if (cmd.Length == 0) continue;

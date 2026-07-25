@@ -236,6 +236,31 @@ public class RustEmulatorCoreTests
     }
 
     [Fact]
+    public void Adapter_DynamicBackground_Osc11_MatchManagedCore()
+    {
+        if (!Available) return;
+        var cs = new TerminalEmulator(20, 5);
+        using var rust = new RustTerminalCore(20, 5);
+        Assert.Equal(0u, cs.DynamicBg);
+        Assert.Equal(0u, rust.DynamicBg);
+
+        var set = System.Text.Encoding.ASCII.GetBytes("\x1b]11;rgb:1a1a/1b1b/2626\x07");   // Tokyo-night-ish bg
+        cs.Feed(set); rust.Feed(set);
+        Assert.Equal(0xFF1A1B26u, cs.DynamicBg);
+        Assert.Equal(cs.DynamicBg, rust.DynamicBg);   // identical parse through both cores
+
+        var hexForm = System.Text.Encoding.ASCII.GetBytes("\x1b]11;#204060\x07");
+        cs.Feed(hexForm); rust.Feed(hexForm);
+        Assert.Equal(0xFF204060u, cs.DynamicBg);
+        Assert.Equal(cs.DynamicBg, rust.DynamicBg);
+
+        var reset = System.Text.Encoding.ASCII.GetBytes("\x1b]111\x07");   // OSC 111 — reset to theme default
+        cs.Feed(reset); rust.Feed(reset);
+        Assert.Equal(0u, cs.DynamicBg);
+        Assert.Equal(0u, rust.DynamicBg);
+    }
+
+    [Fact]
     public void Adapter_Win32InputMode_TracksMode_LikeManagedCore()
     {
         if (!Available) return;

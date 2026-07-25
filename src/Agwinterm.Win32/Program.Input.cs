@@ -116,6 +116,7 @@ internal partial class Program
         switch (action)
         {
             case "new_session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true); break;
+            case "duplicate_session": DuplicateSession(_active); break;
             case "reopen_session": ReopenMostRecent(); break;
             case "new_workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
             case "close_session": case "close_pane": if (_coverKind == 3) CloseActiveOverlay(); else if (_cover is not null) HideCover(); else CloseActivePane(); break;

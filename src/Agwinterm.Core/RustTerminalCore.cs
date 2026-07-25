@@ -92,6 +92,7 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     public bool FocusReporting => _info.FocusReporting != 0;
     public bool SynchronizedOutput => _info.SynchronizedOutput != 0;
     public bool Win32InputMode => _info.Win32InputMode != 0;
+    public uint DynamicBg => _info.DynamicBg;
     public int CursorShape => _info.CursorShape;
     public int KeyboardFlags => _info.KeyboardFlags;
 

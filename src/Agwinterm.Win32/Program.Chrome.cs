@@ -102,6 +102,8 @@ internal partial class Program
                 // Clip + ellipsis so a long workspace name (or enlarged font) stops before the session count.
                 rt.DrawText(ws.Name, _sidebarFont, new Rect(24f, y, _sidebarW - 56f, rowH), brush, DrawTextOptions.Clip);
             rt.DrawText(sessions.Count.ToString(), _sidebarSmall, new Rect(_sidebarW - 28f, y, 22f, rowH), brush);
+            if (_config.WorkspaceAddButton)   // "+" to add a session in this workspace (#233/#252)
+                rt.DrawText("+", _sidebarFont, new Rect(_sidebarW - 46f, y, 16f, rowH), brush);
             _sidebarRows.Add((y, y + rowH, true, ws));
             y += rowH;
 
@@ -263,7 +265,13 @@ internal partial class Program
         {
             if (my < y0 || my >= y1) continue;
             if (ReferenceEquals(item, _showAllMarker)) { _focusedWorkspaceId = null; RequestRedraw(); SaveState(); }
-            else if (isWs && item is Workspace ws) { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); SaveState(); }
+            else if (isWs && item is Workspace ws)
+            {
+                // Click on the "+" adds a session to this workspace (#233); elsewhere toggles collapse.
+                if (_config.WorkspaceAddButton && mx >= _sidebarW - 48f && mx < _sidebarW - 30f)
+                    CreateSession(Guid.NewGuid().ToString(), null, null, ws, true);
+                else { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); SaveState(); }
+            }
             else if (!isWs && item is Ses s) SidebarSelectClick(s, KeyDown(VK_CONTROL), KeyDown(VK_SHIFT));
             return;
         }
@@ -423,6 +431,7 @@ internal partial class Program
             else A("New Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true));
             if (IsElevated()) A("New Non-Elevated Session", "", () => CreateSession(Guid.NewGuid().ToString(), null, null, ses.Ws, true, deElevate: true));
             A("Open Directory…", "", () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ses.Ws, true); });
+            A("Duplicate Session", "", () => DuplicateSession(ses));   // same cwd + profile (#234)
             A("Rename", "F2", () => StartRename(ses));
             A(ses.Flagged ? "Unflag Session" : "Flag Session", "", () => FlagOp(ses, "toggle"));
             List<Workspace> targets;
@@ -582,6 +591,7 @@ internal partial class Program
         }
         RequestRedraw();
         SaveState();
+        EmitEvent("tree");   // control-API event log (#273)
     }
 
     /// <summary>Modal folder picker (native shell). Returns the chosen path or null.</summary>
@@ -649,6 +659,15 @@ internal partial class Program
         if (string.IsNullOrWhiteSpace(bs) || bs.Equals("off", StringComparison.OrdinalIgnoreCase)
             || bs.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
         PlayStatusSound(bs);
+    }
+
+    /// <summary>Play the config's notification-sound on banner delivery (silent when unset / "off" / "none").</summary>
+    private static void PlayNotificationSound()
+    {
+        string ns = _config.NotificationSound;
+        if (string.IsNullOrWhiteSpace(ns) || ns.Equals("off", StringComparison.OrdinalIgnoreCase)
+            || ns.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
+        PlayStatusSound(ns);
     }
 
     /// <summary>Play a sound spec: null/"default" => system alert; a known system-sound name; a .wav path;
@@ -749,6 +768,7 @@ internal partial class Program
                 void A(string label, string hint, Action run) => _palAll.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
                 A("New Session", "Ctrl+Shift+T", () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true));
                 A("New Session…", "", () => TogglePalette(PaletteKind.NewSession));   // pick a shell profile
+                if (_active is not null) A("Duplicate Session", "", () => DuplicateSession(_active));   // same cwd + profile (#234)
                 if (_closedSessions.Count > 0 || _closedWorkspaces.Count > 0)
                 {
                     long sSeq = _closedSessions.Count > 0 ? _closedSessions[^1].Seq : -1;

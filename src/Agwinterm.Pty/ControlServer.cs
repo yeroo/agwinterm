@@ -132,7 +132,8 @@ public sealed class ControlServer : IDisposable
                 case "tree": return HandleTree(host);
                 case "window.state": return HandleWindowState(host);
                 case "session.new": return Ok(host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace"),
-                    GetString(args, "command"), GetString(args, "workspace-name"), GetBool(args, "create-workspace"), GetString(args, "profile")));
+                    GetString(args, "command"), GetString(args, "workspace-name"), GetBool(args, "create-workspace"), GetString(args, "profile"), GetBool(args, "no-select"), GetBool(args, "wait")));
+                case "session.duplicate": return Ok(host.DuplicateSession(target));
                 case "profiles.list": return Ok(host.ProfilesList());
                 case "profiles.reload": return Ok(host.ProfilesReload());
                 case "session.select": return host.SelectSession(target ?? "active") ? Ok("selected") : Err("session not found");
@@ -157,6 +158,8 @@ public sealed class ControlServer : IDisposable
                 case "workspace.delete": return host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found");
                 case "workspace.select": return host.WorkspaceSelect(target) ? Ok("selected") : Err("workspace not found");
                 case "workspace.move": return host.WorkspaceReorder(target, GetString(args, "dir") ?? "down") ? Ok("moved") : Err("workspace not found");
+                case "workspace.collapse": return host.WorkspaceCollapse(target, expand: false) ? Ok("collapsed") : Err("workspace not found");
+                case "workspace.expand": return host.WorkspaceCollapse(target, expand: true) ? Ok("expanded") : Err("workspace not found");
                 case "session.split": host.Split(GetString(args, "op") ?? "toggle"); return Ok("split");
                 case "session.focus": host.FocusPaneDir(GetString(args, "dir") ?? "right"); return Ok("focus");
                 case "session.resize":
@@ -200,6 +203,9 @@ public sealed class ControlServer : IDisposable
                     return host.SessionFlag(target, GetString(args, "op") ?? "toggle") ? Ok("flag") : Err("session not found");
                 case "session.bind":
                     return host.SessionBind(target, GetString(args, "agent") ?? "claude") ? Ok("bound") : Err("session not found");
+                case "session.restore":
+                    return host.SessionRestore(target, GetString(args, "command") ?? "") ? Ok("pinned") : Err("session not found");
+                case "events": return Ok(host.Events(GetInt(args, "since", 0), GetInt(args, "limit", 0)));
                 case "claude.adopt":
                     return Ok(host.AdoptClaude());
                 case "claude.yolo":

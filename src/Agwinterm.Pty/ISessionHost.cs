@@ -8,7 +8,8 @@ namespace Agwinterm.Pty;
 public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
     bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
     int FocusedPane = 0, int PaneCount = 1, bool StatusBlink = false, int OverlaySize = 0,
-    IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null);
+    IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null,
+    IReadOnlyList<string>? RestoreCommands = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -41,7 +42,10 @@ public interface ISessionHost
     /// instead of the shell.
     /// </summary>
     string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null);
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false);
+
+    /// <summary>Clone a session (same cwd + shell profile); returns the new session id. (agterm #234)</summary>
+    string DuplicateSession(string? target);
 
     /// <summary>List the configured shell profiles (name, command, default marker).</summary>
     string ProfilesList();
@@ -89,6 +93,8 @@ public interface ISessionHost
 
     bool WorkspaceRename(string? target, string name);
     bool WorkspaceDelete(string? target);
+    /// <summary>Collapse (expand=false) or expand (true) a single workspace by id; null target = active.</summary>
+    bool WorkspaceCollapse(string? target, bool expand);
     bool WorkspaceSelect(string? target);
     /// <summary>Reorder a workspace among its siblings: dir = up|down|top|bottom.</summary>
     bool WorkspaceReorder(string? target, string dir);
@@ -160,6 +166,11 @@ public interface ISessionHost
     /// agent resumes its own session. <paramref name="agent"/> = "" or "none" clears the binding.
     /// Returns false if the target pane isn't found.</summary>
     bool SessionBind(string? target, string agent);
+    /// <summary>Pin (or clear with ""/"none") a restore command on a pane; re-run every restart. (agterm #271)</summary>
+    bool SessionRestore(string? target, string command);
+    /// <summary>Poll the event log for events after <paramref name="since"/> (0 = all buffered), up to
+    /// <paramref name="limit"/> (0 = no cap). Returns JSON {cursor, events:[{seq,type,session?,info?}]}. (agterm #273)</summary>
+    string Events(long since, int limit);
 
     /// <summary>One-time migration: bind every pane that has an existing Claude transcript for its cwd to
     /// resume that conversation on restart (for sessions started before the launcher wrapper). Returns a summary.</summary>
@@ -222,7 +233,8 @@ public sealed class SingleSessionHost : ISessionHost
             new[] { new SessionSnapshot("single", "session", true, _session.Status) }) };
     public WindowStateSnapshot WindowState() => new(true, false, false, false, "ws", "single");
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null) => "single";
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false) => "single";
+    public string DuplicateSession(string? target) => "";
     public string ProfilesList() => "Windows PowerShell";
     public string ProfilesReload() => "0 profiles loaded";
     public bool SelectSession(string target) => true;
@@ -243,6 +255,7 @@ public sealed class SingleSessionHost : ISessionHost
     public string SessionOutput(string? target) => "";
     public bool WorkspaceRename(string? target, string name) => false;
     public bool WorkspaceDelete(string? target) => false;
+    public bool WorkspaceCollapse(string? target, bool expand) => false;
     public bool WorkspaceSelect(string? target) => false;
     public bool WorkspaceReorder(string? target, string dir) => false;
     public void Split(string op) { }
@@ -270,6 +283,8 @@ public sealed class SingleSessionHost : ISessionHost
     public bool Notify(string? target, string? title, string body) => false;
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;
+    public bool SessionRestore(string? target, string command) => false;
+    public string Events(long since, int limit) => "{\"cursor\":0,\"events\":[]}";
     public string AdoptClaude() => "unsupported";
     public string RestartClaudeYolo(string? target) => "unsupported";
     public string UpdateClaude() => "unsupported";

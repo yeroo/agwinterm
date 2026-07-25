@@ -259,6 +259,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public required ISession S;
         public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
         public string? AgentResume; // resumable agent bound to this pane (e.g. "claude") — relaunched on restart
+        public string? RestoreCommand; // pinned restore command (agterm #271) — always re-run on restart
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
