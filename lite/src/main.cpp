@@ -524,7 +524,7 @@ static void setFont(const wchar_t* face, int height, int width, bool raster) {
 static void applyFontMode(int mode) {
     g_fontMode = mode;
     switch (mode) {
-        case 1: setFont(L"Terminal", 16, 0, true); break;   // classic OEM raster console font
+        case 1: setFont(L"Terminal", 12, 8, true); break;   // classic OEM raster console font, pinned 8x12
         case 2: setFont(L"Fixedsys", 15, 0, true); break;   // the other stock Windows raster fixed font
         default: setFont(g_ttFace.c_str(), -16, 0, false); break;   // bundled Meslo Nerd Font (TrueType)
     }
@@ -1166,7 +1166,7 @@ static HMENU buildMenuBar() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     HMENU font = CreatePopupMenu();   // switch between the Nerd Font and the old Windows raster fonts
     AppendMenuW(font, MF_STRING, IDM_FONT_TT,       L"&Nerd Font (default)");
-    AppendMenuW(font, MF_STRING, IDM_FONT_TERMINAL, L"&Terminal (raster)");
+    AppendMenuW(font, MF_STRING, IDM_FONT_TERMINAL, L"&Terminal 8x12 (raster)");
     AppendMenuW(font, MF_STRING, IDM_FONT_FIXEDSYS, L"&Fixedsys (raster)");
     CheckMenuRadioItem(font, IDM_FONT_TT, IDM_FONT_FIXEDSYS, IDM_FONT_TT + g_fontMode, MF_BYCOMMAND);
     g_fontMenu = font;
