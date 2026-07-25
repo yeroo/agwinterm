@@ -346,6 +346,17 @@ internal static class Win32
     [DllImport("user32.dll")]
     public static extern short GetKeyState(int nVirtKey);
 
+    // Keyboard translation for ConPTY win32-input-mode (DECSET ?9001).
+    [DllImport("user32.dll")]
+    public static extern uint MapVirtualKeyW(uint uCode, uint uMapType);   // 0 = MAPVK_VK_TO_VSC
+    [DllImport("user32.dll")]
+    public static extern bool GetKeyboardState(byte[] lpKeyState);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetKeyboardLayout(uint idThread);
+    [DllImport("user32.dll")]
+    public static extern int ToUnicodeEx(uint wVirtKey, uint wScanCode, byte[] lpKeyState,
+        [Out] char[] pwszBuff, int cchBuff, uint wFlags, IntPtr dwhkl);
+
     [DllImport("user32.dll")]
     public static extern bool DestroyWindow(IntPtr hWnd);
 

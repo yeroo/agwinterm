@@ -32,6 +32,7 @@ public interface ITerminalCore
     bool BracketedPaste { get; }
     bool FocusReporting { get; }
     bool SynchronizedOutput { get; }
+    bool Win32InputMode { get; }
     int CursorShape { get; }
     int KeyboardFlags { get; }
 

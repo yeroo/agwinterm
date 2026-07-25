@@ -1044,6 +1044,12 @@ internal partial class Program
             && _active?.ActivePane?.S is { Status: AgentStatus.Active } asf)
         { asf.SetStatus(AgentStatus.Idle); RequestRedraw(); }
 
+        // win32-input-mode (ConPTY DECSET ?9001): encode every key as a full Win32 KEY_EVENT so
+        // ConPTY can reconstruct it. Key-DOWN only for now (the common case apps read); WM_CHAR for
+        // this pane is swallowed since the character rides in the sequence's Uc field.
+        if (ActiveSurface()?.S.Emulator.Win32InputMode == true)
+        { Send(Win32KeySeq(vk, ctrl, shift, alt)); return true; }
+
         // Kitty keyboard protocol: when an app has enabled it, encode keys in CSI-u form.
         if ((ActiveSurface()?.S.Emulator.KeyboardFlags ?? 0) != 0 && KittyKeyEncode(vk, ctrl, alt, shift) is { } ku)
         { Send(ku); _kittyAteChar = true; return true; }
@@ -1080,6 +1086,23 @@ internal partial class Program
         };
         if (seq is not null) { Send(seq); return true; }
         return false;
+    }
+
+    /// <summary>Encode a key-down in ConPTY win32-input-mode (DECSET ?9001):
+    /// <c>CSI Vk;Sc;Uc;Kd;Cs;Rc _</c> — Vk virtual-key, Sc scan code, Uc translated char (0 for
+    /// non-text keys; it also carries Ctrl/Shift semantics, e.g. Ctrl+A -> 0x01), Kd=1 (down),
+    /// Cs control-key-state bitmask, Rc=1. ConPTY decodes it back into a KEY_EVENT_RECORD.</summary>
+    private static string Win32KeySeq(int vk, bool ctrl, bool shift, bool alt)
+    {
+        uint sc = MapVirtualKeyW((uint)vk, 0);           // MAPVK_VK_TO_VSC
+        var ks = new byte[256];
+        GetKeyboardState(ks);
+        var buf = new char[8];
+        // wFlags bit 2 = don't mutate the kernel keyboard state (so the pending WM_CHAR is untouched).
+        int n = ToUnicodeEx((uint)vk, sc, ks, buf, buf.Length, 0x4, GetKeyboardLayout(0));
+        int uc = n >= 1 ? buf[0] : 0;
+        int cs = (shift ? 0x10 : 0) | (ctrl ? 0x8 : 0) | (alt ? 0x2 : 0); // SHIFT|LEFT_CTRL|LEFT_ALT
+        return $"\x1b[{vk};{sc};{uc};1;{cs};1_";
     }
 
     // Kitty keyboard: OnKeyDown encoded this key, so its following WM_CHAR must be dropped (else

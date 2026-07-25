@@ -131,6 +131,7 @@ pub struct Emulator {
     pub bracketed_paste: bool,
     pub focus_reporting: bool,
     pub synchronized_output: bool,
+    pub win32_input_mode: bool,
     pub cursor_shape: i32,
 
     scroll_top: usize,
@@ -197,6 +198,7 @@ impl Emulator {
             bracketed_paste: false,
             focus_reporting: false,
             synchronized_output: false,
+            win32_input_mode: false,
             cursor_shape: 0,
             scroll_top: 0,
             scroll_bottom: rows - 1,
@@ -612,6 +614,7 @@ impl Emulator {
                 1006 => self.mouse_sgr = set,
                 1004 => self.focus_reporting = set,
                 2026 => self.synchronized_output = set,
+                9001 => self.win32_input_mode = set,
                 2004 => self.bracketed_paste = set,
                 _ => self.push_action(HostAction::Unhandled {
                     kind: "MODE".into(),
@@ -837,6 +840,7 @@ impl Emulator {
         if self.mouse_sgr { s.push_str("\u{1b}[?1006h"); }
         if self.bracketed_paste { s.push_str("\u{1b}[?2004h"); }
         if self.focus_reporting { s.push_str("\u{1b}[?1004h"); }
+        if self.win32_input_mode { s.push_str("\u{1b}[?9001h"); }
         if self.cursor_shape != 0 { s.push_str(&format!("\u{1b}[{} q", self.cursor_shape)); }
         if !self.title.is_empty() { s.push_str("\u{1b}]0;"); s.push_str(&self.title); s.push('\u{7}'); }
         if !self.cwd.is_empty() { s.push_str("\u{1b}]7;"); s.push_str(&self.cwd); s.push('\u{7}'); }

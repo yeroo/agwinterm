@@ -236,6 +236,29 @@ public class RustEmulatorCoreTests
     }
 
     [Fact]
+    public void Adapter_Win32InputMode_TracksMode_LikeManagedCore()
+    {
+        if (!Available) return;
+        var cs = new TerminalEmulator(20, 5);
+        using var rust = new RustTerminalCore(20, 5);
+        Assert.False(cs.Win32InputMode);
+        Assert.False(rust.Win32InputMode);
+
+        var on = System.Text.Encoding.ASCII.GetBytes("\x1b[?9001h");
+        cs.Feed(on); rust.Feed(on);
+        Assert.True(cs.Win32InputMode);
+        Assert.True(rust.Win32InputMode);                  // surfaced via the adapter Info snapshot
+        Assert.Contains("\x1b[?9001h", rust.DumpModes());  // persisted for reattach
+        Assert.Equal(cs.DumpModes(), rust.DumpModes());
+
+        var off = System.Text.Encoding.ASCII.GetBytes("\x1b[?9001l");
+        cs.Feed(off); rust.Feed(off);
+        Assert.False(cs.Win32InputMode);
+        Assert.False(rust.Win32InputMode);
+        Assert.Equal(cs.DumpModes(), rust.DumpModes());
+    }
+
+    [Fact]
     public void Adapter_Bell_FiresThroughHost_LikeManagedCore()
     {
         if (!Available) return;
