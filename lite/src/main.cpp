@@ -84,9 +84,12 @@ static HFONT g_fonts[4];        // [bold][italic]
 
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
-       IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWFOLDER = 102 };
-enum { ID_TREE = 200 };
+       IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWFOLDER = 102, IDM_RESTART = 103, IDM_SHOW = 104 };
+enum { ID_TREE = 200, ID_TRAY = 201 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
+#define WM_APP_TRAY        (WM_APP + 4)   // system-tray icon notifications
+static HICON g_appIcon;
+static NOTIFYICONDATAW g_nid{};
 static int g_cw = 8, g_ch = 16;
 static CRITICAL_SECTION g_lock; // guards every session's emu + the session list shape
 static HANDLE g_control = INVALID_HANDLE_VALUE;
@@ -978,6 +981,7 @@ static HMENU buildMenuBar() {
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close Session\tCtrl+W");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(file, MF_STRING, IDM_RESTART, L"&Restart everything");
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
     HMENU edit = CreatePopupMenu();
     AppendMenuW(edit, MF_STRING, IDM_COPY, L"&Copy\tCtrl+C");
@@ -1092,6 +1096,41 @@ static void newSessionDialog(const char* cwd = nullptr) {
     int c, r; paneGridSize(g_focus, &c, &r);
     Session* s = newSession(c, r, profs[i].app.c_str(), &profs[i].args, cwd);
     if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; syncPaneSizes(); InvalidateRect(g_hwnd, nullptr, FALSE); }
+}
+
+// Restart everything: relaunch a fresh instance AFTER this one (and its pty-host) has fully exited,
+// then quit. The ~1s ping delay avoids the new instance connecting to the dying pty-host.
+static void restartApp() {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring cmd = L"cmd.exe /c ping -n 2 127.0.0.1 >nul & start \"\" \"" + std::wstring(exe) + L"\"";
+    STARTUPINFOW si{ sizeof si };
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    DestroyWindow(g_hwnd);   // WM_DESTROY kills sessions + shuts down the pty-host
+}
+
+static void showMainWindow() {
+    ShowWindow(g_hwnd, SW_SHOW);
+    if (IsIconic(g_hwnd)) ShowWindow(g_hwnd, SW_RESTORE);
+    SetForegroundWindow(g_hwnd);
+}
+
+static void showTrayMenu() {
+    POINT pt; GetCursorPos(&pt);
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, IDM_SHOW, L"&Show agwinterm lite");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IDM_NEW, L"&New Session…");
+    AppendMenuW(m, MF_STRING, IDM_RESTART, L"&Restart");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, IDM_EXIT, L"E&xit");
+    SetForegroundWindow(g_hwnd);   // Win32 quirk: needed so the menu dismisses on click-away
+    TrackPopupMenu(m, TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, nullptr);   // posts WM_COMMAND
+    DestroyMenu(m);
 }
 
 // A 2000's-style app icon drawn at runtime (no .ico asset, no deps): a classic gray 3D-beveled tile
@@ -1234,6 +1273,10 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_REFRESHTREE:   // posted from worker threads after a session-list / status change
             refreshTree();
             return 0;
+        case WM_APP_TRAY:
+            if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) showTrayMenu();
+            else if (LOWORD(lp) == WM_LBUTTONDBLCLK) showMainWindow();
+            return 0;
         case WM_NOTIFY: {
             auto* nm = (NMHDR*)lp;
             if (nm->idFrom == ID_TREE && nm->code == TVN_SELCHANGEDW && !g_treeSyncing) {
@@ -1253,6 +1296,8 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             switch (id) {
                 case IDM_NEW: newSessionDialog(); break;                                    // profile picker
                 case IDM_NEWFOLDER: { auto d = pickFolder(); if (!d.empty()) newSessionDialog(d.c_str()); break; }
+                case IDM_RESTART: restartApp(); break;
+                case IDM_SHOW: showMainWindow(); break;
                 case IDM_EXIT: DestroyWindow(hwnd); break;
                 case IDM_ABOUT:
                     MessageBoxW(hwnd, L"agwinterm lite\nA lightweight native terminal over the Rust pty-host.",
@@ -1265,6 +1310,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_DESTROY: {
+            Shell_NotifyIconW(NIM_DELETE, &g_nid);   // remove the tray icon
             for (Session* s : g_sessions) killSession(s);
             agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
             agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
@@ -1448,13 +1494,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     INITCOMMONCONTROLSEX icc{ sizeof icc, ICC_TREEVIEW_CLASSES };
     InitCommonControlsEx(&icc);
 
-    HICON appIcon = makeRetroIcon();
+    g_appIcon = makeRetroIcon();
     WNDCLASSW wc{};
     wc.lpfnWndProc = wndProc;
     wc.hInstance = inst;
     wc.lpszClassName = L"AgwintermLite";
     wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_IBEAM);
-    wc.hIcon = appIcon;   // 2000's-style terminal icon (window + taskbar)
+    wc.hIcon = g_appIcon;   // 2000's-style terminal icon (window + taskbar)
     RegisterClassW(&wc);
     RECT want{ 0, 0, kSidebarW + 100 * g_cw, 30 * g_ch };
     // WS_CLIPCHILDREN keeps the terminal paint out of the native tree child.
@@ -1469,6 +1515,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
                              WS_CHILD | WS_VISIBLE | TVS_SHOWSELALWAYS | TVS_NOHSCROLL,
                              0, 0, kSidebarW, cr.bottom, g_hwnd, (HMENU)ID_TREE, inst, nullptr);
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+
+    // System-tray icon (right-click for a menu incl. Restart / Exit; double-click restores).
+    g_nid.cbSize = sizeof g_nid;
+    g_nid.hWnd = g_hwnd;
+    g_nid.uID = ID_TRAY;
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_nid.uCallbackMessage = WM_APP_TRAY;
+    g_nid.hIcon = g_appIcon;
+    wcscpy_s(g_nid.szTip, L"agwinterm lite");
+    Shell_NotifyIconW(NIM_ADD, &g_nid);
+
     ShowWindow(g_hwnd, show);
 
     int cols, rows;
