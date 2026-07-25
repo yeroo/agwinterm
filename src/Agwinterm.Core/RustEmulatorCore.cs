@@ -16,7 +16,7 @@ namespace Agwinterm.Core;
 /// </summary>
 public sealed unsafe class RustEmulatorCore : IDisposable
 {
-    public const uint RequiredAbi = 12;
+    public const uint RequiredAbi = 13;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Info

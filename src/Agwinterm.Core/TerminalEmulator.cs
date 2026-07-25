@@ -258,8 +258,9 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
             case 9:                                              // HT
                 CursorCol = Math.Min(Screen.Cols - 1, ((CursorCol / 8) + 1) * 8);
                 break;
+            case 7: Host?.Bell(); break;                         // BEL — ring the bell (host decides how)
             case 0: break; // NUL — historical padding, deliberately ignored (would flood the tap)
-            default: Host?.Unhandled("C0", $"0x{control:X2}"); break; // e.g. BEL 0x07 (no bell yet)
+            default: Host?.Unhandled("C0", $"0x{control:X2}"); break;
         }
     }
 

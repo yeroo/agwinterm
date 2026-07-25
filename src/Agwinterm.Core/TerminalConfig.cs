@@ -70,6 +70,10 @@ public sealed class TerminalConfig
     /// background (agterm's Dock bounce, #215): "none" (default) | "once" | "until-focused".</summary>
     public string NotificationFlash { get; set; } = "none";
 
+    /// <summary>What the terminal bell (BEL, 0x07) does: "audible" (default — a system beep) |
+    /// "visual" (a brief window flash) | "both" | "none".</summary>
+    public string Bell { get; set; } = "audible";
+
     /// <summary>Periodically check the npm registry for a newer Claude Code release and surface a
     /// hint (toast + palette) when one ships. Awareness only — the update itself always stays a
     /// manual, visible <c>claude update</c> (palette → "Update Claude Code").</summary>
@@ -353,6 +357,9 @@ public sealed class TerminalConfig
         notification-badges = true
         attention-button = true
 
+        # Terminal bell (BEL, 0x07): audible (system beep) | visual (brief window flash) | both | none.
+        bell = audible
+
         # Agent-status glyph colors (#RRGGBB) for the sidebar dot + title-bar bell.
         status-color-active = #3C8CFF
         status-color-blocked = #F0A028
@@ -393,6 +400,9 @@ public sealed class TerminalConfig
                 case "clipboard-write": cfg.ClipboardWrite = ParseBool(val, cfg.ClipboardWrite); break;
                 case "notification-flash":
                     if (val is "none" or "once" or "until-focused") cfg.NotificationFlash = val;
+                    break;
+                case "bell":
+                    if (val is "none" or "audible" or "visual" or "both") cfg.Bell = val;
                     break;
                 case "claude-update-check": cfg.ClaudeUpdateCheck = ParseBool(val, cfg.ClaudeUpdateCheck); break;
                 case "update-check": cfg.UpdateCheck = ParseBool(val, cfg.UpdateCheck); break;

@@ -9,10 +9,12 @@ public sealed class RecordingHost : IHostActions
     public readonly List<string> ClipboardWrites = new();
     public readonly List<string> Responses = new();
     public readonly List<(string Kind, string Detail)> Unhandleds = new();
+    public int Bells;
 
     public void Notify(string title, string body) => Notifications.Add((title, body));
     public void Progress(int state, int value) => ProgressReports.Add((state, value));
     public void ClipboardWrite(string text) => ClipboardWrites.Add(text);
     public void Respond(string reply) => Responses.Add(reply);
     public void Unhandled(string kind, string detail) => Unhandleds.Add((kind, detail));
+    public void Bell() => Bells++;
 }

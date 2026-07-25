@@ -27,6 +27,10 @@ public interface IHostActions
     /// (e.g. the kitty keyboard-protocol flags query reply).</summary>
     void Respond(string reply);
 
+    /// <summary>The program rang the bell (BEL, 0x07). The host decides what that means —
+    /// an audible beep, a visual flash, an attention cue, or nothing — per user config.</summary>
+    void Bell();
+
     /// <summary>A syntactically valid escape sequence the emulator has no handler for. A debug tap:
     /// hosts typically log it under an env flag (or no-op) — never user-visible. This is what turns
     /// a protocol gap into one grep instead of a stack of symptom reports.</summary>

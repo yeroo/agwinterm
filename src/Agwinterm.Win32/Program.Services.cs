@@ -92,6 +92,24 @@ internal partial class Program
         RequestRedraw();
     }
 
+    /// <summary>The terminal bell (BEL, 0x07): beep and/or flash per the `bell` config. A BEL flood
+    /// (e.g. `yes` piping bells) coalesces into one ring; the visual flash only shows for an on-screen
+    /// pane. Called on the UI thread via Post from the pane's host.</summary>
+    private void RingBell(Pane pane)
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastBellTick < 120) return;   // coalesce a rapid BEL flood into a single ring
+        _lastBellTick = now;
+        string mode = _config.Bell;
+        if (mode is "audible" or "both") MessageBeep(MB_OK);
+        if ((mode is "visual" or "both") && IsSurfaceVisible(pane))
+        {
+            _bellFlashUntil = now + 100;                                  // ~100 ms flash
+            SetTimer(_hwnd, (IntPtr)BellFlashTimer, 120, IntPtr.Zero);    // repaint to clear it
+            RequestRedraw();
+        }
+    }
+
     /// <summary>Total unread notifications across a session's panes (for the sidebar badge).</summary>
     private static int UnreadOf(Ses s) { int n = 0; foreach (var p in s.Panes) n += p.Unread; return n; }
 
