@@ -22,6 +22,7 @@
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "advapi32.lib")   // registry (persisted font choice)
 
 #include "proto/ptyhost.pb.h"
 #include "proto/pb_encode.h"
@@ -518,6 +519,20 @@ static void setFont(const wchar_t* face, int height, int width, bool raster) {
         if (!g_sessions.empty()) syncPaneSizes();
         InvalidateRect(g_hwnd, nullptr, TRUE);
     }
+}
+
+// Persisted font choice (HKCU\Software\agwinterm-lite\FontMode). First run has no value, so the
+// default is 1 = Terminal 8x12 (Boris's pick); the value is rewritten whenever the font is switched.
+static int loadFontMode() {
+    DWORD v = 1, sz = sizeof(v);
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontMode",
+                 RRF_RT_REG_DWORD, nullptr, &v, &sz);   // leaves v=1 if the value is missing
+    return v <= 2 ? (int)v : 1;
+}
+static void saveFontMode(int mode) {
+    DWORD v = (DWORD)mode;
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontMode",
+                    REG_DWORD, &v, sizeof(v));
 }
 
 // Apply one of the three font modes; remembered in g_fontMode so View->Font shows the active one.
@@ -1515,6 +1530,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDM_FONT_TERMINAL:
                 case IDM_FONT_FIXEDSYS:
                     applyFontMode(id - IDM_FONT_TT);   // 0 Nerd / 1 Terminal / 2 Fixedsys
+                    saveFontMode(g_fontMode);          // remember across restarts
                     CheckMenuRadioItem(g_fontMenu, IDM_FONT_TT, IDM_FONT_FIXEDSYS, id, MF_BYCOMMAND);
                     SetFocus(hwnd);
                     break;
@@ -1697,7 +1713,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     std::wstring ttf = exeDir() + L"\\MesloLGLDZNerdFont-Regular.ttf";
     bool haveMeslo = AddFontResourceExW(ttf.c_str(), FR_PRIVATE, 0) > 0;
     g_ttFace = haveMeslo ? L"MesloLGLDZ Nerd Font" : L"Consolas";
-    applyFontMode(0);   // creates g_fonts + sets g_cw/g_ch (g_hwnd still null, so no relayout yet)
+    applyFontMode(loadFontMode());   // first run -> Terminal 8x12; else the remembered choice. Creates
+                                     // g_fonts + sets g_cw/g_ch (g_hwnd still null, so no relayout yet).
 
     connectControl();
 
