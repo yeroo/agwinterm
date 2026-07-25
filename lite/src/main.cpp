@@ -2011,8 +2011,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 
     // Native toolbar (text buttons) across the top: New Session / New Workspace / Split.
+    // No TBSTYLE_FLAT: flat toolbars hot-track on hover and can leave a button stuck "hot" when the
+    // cursor leaves; classic raised 3D buttons have no hover state and suit the old-skool look.
     g_toolbar = CreateWindowExW(0, TOOLBARCLASSNAMEW, nullptr,
-                                WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_LIST | CCS_TOP,
+                                WS_CHILD | WS_VISIBLE | TBSTYLE_LIST | CCS_TOP,
                                 0, 0, 0, 0, g_hwnd, (HMENU)ID_TOOLBAR, inst, nullptr);
     SendMessageW(g_toolbar, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
     SendMessageW(g_toolbar, TB_SETEXTENDEDSTYLE, 0, TBSTYLE_EX_MIXEDBUTTONS);
