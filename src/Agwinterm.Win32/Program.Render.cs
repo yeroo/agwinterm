@@ -348,7 +348,7 @@ internal partial class Program
         // here while the pump held the lock — see docs/memory-profile-2026-07-09.md).
         var em = session.Emulator;
         int cols, rows, hist, off;
-        bool cursorVisible; int cursorCol, cursorRow;
+        bool cursorVisible; int cursorCol, cursorRow, cursorShape;
         bool drawImages;
         (int PromptLine, int? ExitCode)[] marks;
         lock (session.SyncRoot)
@@ -360,6 +360,7 @@ internal partial class Program
             bool isAlt = em.IsAltScreen;
             off = isAlt ? 0 : Math.Clamp(scrollOffset, 0, hist);
             cursorVisible = em.CursorVisible; cursorCol = em.CursorCol; cursorRow = em.CursorRow;
+            cursorShape = em.CursorShape;   // DECSCUSR (0 = use user config)
             drawImages = !_noImages && em.Placements.Count > 0 && off == 0;
             marks = !isAlt && em.Marks.Count > 0
                 ? em.Marks.Select(m => (m.PromptLine, m.ExitCode)).ToArray()
@@ -549,9 +550,19 @@ internal partial class Program
             {
                 float cx = ox + cursorCol * cw, cy = oy + cursorRow * ch;
                 brush.Color = C4(_theme.Cursor);
-                if (!_config.CursorBlink || _cursorOn)
+                // DECSCUSR (cursorShape): 0 = fall back to the user's config; 1/2 block, 3/4 underline,
+                // 5/6 bar; odd = blinking, even = steady. Style 0 also inherits the config blink.
+                CursorStyle shape = cursorShape switch
                 {
-                    switch (_config.CursorStyle)
+                    0 => _config.CursorStyle,
+                    1 or 2 => CursorStyle.Block,
+                    3 or 4 => CursorStyle.Underline,
+                    _ => CursorStyle.Bar,
+                };
+                bool blink = cursorShape == 0 ? _config.CursorBlink : (cursorShape % 2 == 1);
+                if (!blink || _cursorOn)
+                {
+                    switch (shape)
                     {
                         case CursorStyle.Block: rt.FillRectangle(new Rect(cx, cy, cw, ch), brush); break;
                         case CursorStyle.Underline:

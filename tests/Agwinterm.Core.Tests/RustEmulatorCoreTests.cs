@@ -235,6 +235,36 @@ public class RustEmulatorCoreTests
     }
 
     [Fact]
+    public void Adapter_CursorShape_Decscusr_MatchManagedCore()
+    {
+        if (!Available) return;
+        var cs = new TerminalEmulator(20, 5);
+        using var rust = new RustTerminalCore(20, 5);
+        Assert.Equal(0, cs.CursorShape);
+        Assert.Equal(0, rust.CursorShape);
+
+        // CSI 5 SP q -> blinking bar (the SP intermediate is dropped by the parser).
+        var bar = System.Text.Encoding.ASCII.GetBytes("\x1b[5 q");
+        cs.Feed(bar); rust.Feed(bar);
+        Assert.Equal(5, cs.CursorShape);
+        Assert.Equal(5, rust.CursorShape);                 // surfaced via the adapter Info snapshot
+        Assert.Contains("\x1b[5 q", rust.DumpModes());     // persisted for reattach
+        Assert.Equal(cs.DumpModes(), rust.DumpModes());
+
+        // Out-of-range values are ignored; 0 resets to the terminal default.
+        var bogus = System.Text.Encoding.ASCII.GetBytes("\x1b[9 q");
+        cs.Feed(bogus); rust.Feed(bogus);
+        Assert.Equal(5, cs.CursorShape);
+        Assert.Equal(5, rust.CursorShape);
+
+        var reset = System.Text.Encoding.ASCII.GetBytes("\x1b[0 q");
+        cs.Feed(reset); rust.Feed(reset);
+        Assert.Equal(0, cs.CursorShape);
+        Assert.Equal(0, rust.CursorShape);
+        Assert.Equal(cs.DumpModes(), rust.DumpModes());
+    }
+
+    [Fact]
     public void Adapter_DirectImageApi_RoundTrips()
     {
         if (!Available) return;

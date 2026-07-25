@@ -311,6 +311,7 @@ public class RustParityTests
         sb.Append($"paste:{(e.BracketedPaste ? 1 : 0)}\n");
         sb.Append($"focus:{(e.FocusReporting ? 1 : 0)}\n");
         sb.Append($"sync:{(e.SynchronizedOutput ? 1 : 0)}\n");
+        sb.Append($"cursorshape:{e.CursorShape}\n");
         sb.Append($"kbd:{e.KeyboardFlags}\n");
         sb.Append($"title:{e.Title}\n");
         sb.Append($"cwd:{e.Cwd}\n");

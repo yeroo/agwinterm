@@ -55,6 +55,10 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     /// Transient render hint — intentionally NOT persisted in <see cref="DumpModes"/>.</summary>
     public bool SynchronizedOutput { get; private set; }
 
+    /// <summary>Cursor shape set by DECSCUSR (CSI Ps SP q): 0 = terminal default (use user config),
+    /// 1/2 = block (blink/steady), 3/4 = underline, 5/6 = bar. The renderer decodes shape + blink.</summary>
+    public int CursorShape { get; private set; }
+
     private int _scrollTop;
     private int _scrollBottom;
 
@@ -337,6 +341,12 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
             case 'P': DeleteChars(P(0, 1)); break;   // DCH
             case 'S': for (int i = 0; i < P(0, 1); i++) ScrollRegionUp(); break;   // SU
             case 'T': for (int i = 0; i < P(0, 1); i++) ScrollRegionDown(); break; // SD
+            case 'q' when prefix == '\0': // DECSCUSR (CSI Ps SP q) — cursor shape; the SP intermediate is dropped
+            {
+                int ps = parameters.Count > 0 ? parameters[0] : 0;
+                if (ps is >= 0 and <= 6) CursorShape = ps;   // out-of-range values are ignored
+                break;
+            }
             default:
                 Host?.Unhandled("CSI", $"{(prefix == '\0' ? "" : prefix + " ")}{string.Join(';', parameters)} {final}");
                 break;
@@ -877,6 +887,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         if (_mouseSgr) sb.Append("\x1b[?1006h");
         if (BracketedPaste) sb.Append("\x1b[?2004h");
         if (FocusReporting) sb.Append("\x1b[?1004h");
+        if (CursorShape != 0) sb.Append("\x1b[").Append(CursorShape).Append(" q");
         if (Title.Length > 0) sb.Append("\x1b]0;").Append(Title).Append('\x07');
         if (Cwd.Length > 0) sb.Append("\x1b]7;").Append(Cwd).Append('\x07');
         return sb.ToString();
