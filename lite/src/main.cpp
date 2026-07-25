@@ -68,6 +68,7 @@ static constexpr int kSidebarW = 180;
 struct Session {
     std::string id;
     std::string status = "idle";   // control-API agent status (sidebar dot)
+    int ws = 0;                    // workspace this session belongs to (index into g_workspaces)
     void* emu = nullptr;
     HANDLE data = INVALID_HANDLE_VALUE;
     HANDLE reader = nullptr;
@@ -84,7 +85,7 @@ static HFONT g_fonts[4];        // [bold][italic]
 
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
-       IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWFOLDER = 102, IDM_RESTART = 103, IDM_SHOW = 104 };
+       IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104 };
 enum { ID_TREE = 200, ID_TRAY = 201 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
 #define WM_APP_TRAY        (WM_APP + 4)   // system-tray icon notifications
@@ -94,6 +95,8 @@ static int g_cw = 8, g_ch = 16;
 static CRITICAL_SECTION g_lock; // guards every session's emu + the session list shape
 static HANDLE g_control = INVALID_HANDLE_VALUE;
 static std::vector<Session*> g_sessions;
+static std::vector<std::wstring> g_workspaces = { L"workspace 1" };  // session "folders" (groups)
+static int g_activeWs = 0;           // workspace new sessions are created into
 static int g_pane[2] = { 0, -1 };   // session index per pane; pane[1] = -1 → no split
 static int g_focus = 0;             // focused pane (0/1)
 static int g_seq = 1;
@@ -398,6 +401,7 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
 
     Session* s = new Session();
     s->id = idbuf;
+    s->ws = (g_activeWs >= 0 && g_activeWs < (int)g_workspaces.size()) ? g_activeWs : 0;   // into the active workspace
     s->emu = emu_new(cols, rows);
     s->data = openPipe(std::wstring(rep.body.attach.pipe, rep.body.attach.pipe + strlen(rep.body.attach.pipe)), 5000, true);
     if (s->data == INVALID_HANDLE_VALUE) { emu_free(s->emu); delete s; return nullptr; }
@@ -434,6 +438,21 @@ static void closeFocused() {
     syncPaneSizes();
     InvalidateRect(g_hwnd, nullptr, FALSE);
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // drop the session from the tree
+}
+
+// Toggle the 2-pane split. Splitting spawns an INDEPENDENT new shell for the second pane (like the
+// full app) — not a mirror of the first, so the two panes have separate output.
+static void toggleSplit() {
+    if (g_pane[1] < 0) {
+        int c, r; paneGridSize(g_focus, &c, &r);   // approximate; syncPaneSizes resizes both after
+        Session* s = newSession(c, r);
+        if (s) { g_pane[1] = (int)g_sessions.size() - 1; g_focus = 1; }
+    } else {
+        g_pane[1] = -1; g_focus = 0;
+    }
+    syncPaneSizes();
+    PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+    InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
 // ---- GDI paint ----
@@ -832,12 +851,7 @@ static void runPaletteItem(int id) {
     switch (id) {
         case 1: { int c, r; paneGridSize(g_focus, &c, &r); Session* s = newSession(c, r); if (s) g_pane[g_focus] = (int)g_sessions.size() - 1; break; }
         case 2: closeFocused(); break;
-        case 3: {
-            if (g_pane[1] < 0) g_pane[1] = (int)g_sessions.size() > 1 ? (g_pane[0] + 1) % (int)g_sessions.size() : g_pane[0];
-            else { g_pane[1] = -1; g_focus = 0; }
-            syncPaneSizes();
-            break;
-        }
+        case 3: toggleSplit(); break;   // independent new shell for the second pane
         case 4: if (!g_sessions.empty()) { g_pane[g_focus] = (g_pane[g_focus] + 1) % (int)g_sessions.size(); syncPaneSizes(); PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0); } break;
         case 5: copySelection(); break;
         case 6: pasteClipboard(); break;
@@ -858,17 +872,7 @@ static bool handleKeyDown(WPARAM vk) {
     if (ctrlDown() && shiftDown()) {
         if (vk == 'P') { togglePalette(); return true; }
         switch (vk) {
-            case 'D': {   // split toggle
-                if (g_pane[1] < 0) {
-                    // Prefer a DIFFERENT session for the second pane (wraps); same-session
-                    // mirroring still works if there is only one.
-                    g_pane[1] = (int)g_sessions.size() > 1
-                                ? (g_pane[0] + 1) % (int)g_sessions.size() : g_pane[0];
-                } else { g_pane[1] = -1; g_focus = 0; }
-                syncPaneSizes();
-                InvalidateRect(g_hwnd, nullptr, FALSE);
-                return true;
-            }
+            case 'D': toggleSplit(); return true;   // split with an independent new shell
             case VK_LEFT: g_focus = 0; InvalidateRect(g_hwnd, nullptr, FALSE); return true;
             case VK_RIGHT: if (g_pane[1] >= 0) g_focus = 1; InvalidateRect(g_hwnd, nullptr, FALSE); return true;
         }
@@ -956,19 +960,36 @@ static void refreshTree() {
     TreeView_DeleteAllItems(g_tree);
     HTREEITEM sel = nullptr;
     int focusIdx = g_pane[g_focus];
-    for (int i = 0; i < (int)g_sessions.size(); i++) {
-        Session* s = g_sessions[i];
-        const char* st = s->exited ? "exited" : s->status.c_str();
-        wchar_t label[96];
-        wsprintfW(label, L"session %d  ·  %S", i + 1, st);
-        TVINSERTSTRUCTW tis{};
-        tis.hParent = TVI_ROOT;
-        tis.hInsertAfter = TVI_LAST;
-        tis.item.mask = TVIF_TEXT | TVIF_PARAM;
-        tis.item.pszText = label;
-        tis.item.lParam = i;
-        HTREEITEM h = TreeView_InsertItem(g_tree, &tis);
-        if (i == focusIdx) sel = h;
+    // Group sessions under their workspace ("folder"). lParam encodes the node: >=0 session index,
+    // <0 = -(workspace index + 1).
+    for (int w = 0; w < (int)g_workspaces.size(); w++) {
+        int count = 0;
+        for (auto* s : g_sessions) if (s->ws == w) count++;
+        wchar_t wlabel[96];
+        wsprintfW(wlabel, L"%s  (%d)", g_workspaces[w].c_str(), count);
+        TVINSERTSTRUCTW wt{};
+        wt.hParent = TVI_ROOT;
+        wt.hInsertAfter = TVI_LAST;
+        wt.item.mask = TVIF_TEXT | TVIF_PARAM;
+        wt.item.pszText = wlabel;
+        wt.item.lParam = -(w + 1);
+        HTREEITEM wh = TreeView_InsertItem(g_tree, &wt);
+        for (int i = 0; i < (int)g_sessions.size(); i++) {
+            if (g_sessions[i]->ws != w) continue;
+            Session* s = g_sessions[i];
+            const char* st = s->exited ? "exited" : s->status.c_str();
+            wchar_t label[96];
+            wsprintfW(label, L"session %d  ·  %S", i + 1, st);
+            TVINSERTSTRUCTW tis{};
+            tis.hParent = wh;
+            tis.hInsertAfter = TVI_LAST;
+            tis.item.mask = TVIF_TEXT | TVIF_PARAM;
+            tis.item.pszText = label;
+            tis.item.lParam = i;
+            HTREEITEM h = TreeView_InsertItem(g_tree, &tis);
+            if (i == focusIdx) sel = h;
+        }
+        TreeView_Expand(g_tree, wh, TVE_EXPAND);
     }
     if (sel) TreeView_SelectItem(g_tree, sel);
     g_treeSyncing = false;
@@ -977,7 +998,7 @@ static void refreshTree() {
 static HMENU buildMenuBar() {
     HMENU file = CreatePopupMenu();
     AppendMenuW(file, MF_STRING, IDM_NEW, L"&New Session…\tCtrl+T");
-    AppendMenuW(file, MF_STRING, IDM_NEWFOLDER, L"New Session in &Folder…");
+    AppendMenuW(file, MF_STRING, IDM_NEWWS, L"New &Workspace");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close Session\tCtrl+W");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
@@ -999,26 +1020,6 @@ static HMENU buildMenuBar() {
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)view, L"&View");
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)help, L"&Help");
     return bar;
-}
-
-// Native folder picker (classic shell browse dialog). Returns "" on cancel.
-static std::string pickFolder() {
-    std::string out;
-    BROWSEINFOW bi{};
-    bi.hwndOwner = g_hwnd;
-    bi.lpszTitle = L"New session in folder:";
-    bi.ulFlags = BIF_RETURNONLYFSDIRS;   // classic style: no COM init required
-    LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
-    if (pidl) {
-        wchar_t path[MAX_PATH];
-        if (SHGetPathFromIDListW(pidl, path)) {
-            int n = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
-            out.assign(n > 0 ? n - 1 : 0, 0);
-            if (!out.empty()) WideCharToMultiByte(CP_UTF8, 0, path, -1, &out[0], n, nullptr, nullptr);
-        }
-        CoTaskMemFree(pidl);
-    }
-    return out;
 }
 
 // ---- New Session modal dialog (native popup + listbox, no .rc resource) ----
@@ -1281,13 +1282,20 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* nm = (NMHDR*)lp;
             if (nm->idFrom == ID_TREE && nm->code == TVN_SELCHANGEDW && !g_treeSyncing) {
                 auto* nt = (NMTREEVIEWW*)lp;
-                int i = (int)nt->itemNew.lParam;
-                if (i >= 0 && i < (int)g_sessions.size()) {
-                    g_pane[g_focus] = i;
-                    syncPaneSizes();
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    SetFocus(hwnd);   // keep typing going to the terminal, not the tree
+                LPARAM p = nt->itemNew.lParam;
+                if (p >= 0) {                                   // session node -> select it
+                    int i = (int)p;
+                    if (i < (int)g_sessions.size()) {
+                        g_pane[g_focus] = i;
+                        g_activeWs = g_sessions[i]->ws;         // new sessions follow the selected one's workspace
+                        syncPaneSizes();
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    }
+                } else {                                        // workspace node -> make it the active "folder"
+                    int w = (int)(-p - 1);
+                    if (w >= 0 && w < (int)g_workspaces.size()) g_activeWs = w;
                 }
+                SetFocus(hwnd);   // keep typing going to the terminal, not the tree
             }
             return 0;
         }
@@ -1295,7 +1303,13 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int id = LOWORD(wp);
             switch (id) {
                 case IDM_NEW: newSessionDialog(); break;                                    // profile picker
-                case IDM_NEWFOLDER: { auto d = pickFolder(); if (!d.empty()) newSessionDialog(d.c_str()); break; }
+                case IDM_NEWWS: {                                                            // new workspace ("folder")
+                    wchar_t nm[32]; wsprintfW(nm, L"workspace %d", (int)g_workspaces.size() + 1);
+                    g_workspaces.push_back(nm);
+                    g_activeWs = (int)g_workspaces.size() - 1;
+                    refreshTree();
+                    break;
+                }
                 case IDM_RESTART: restartApp(); break;
                 case IDM_SHOW: showMainWindow(); break;
                 case IDM_EXIT: DestroyWindow(hwnd); break;
@@ -1512,7 +1526,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     // Native SysTreeView32 sidebar docked on the left; picking a node selects that session.
     RECT cr; GetClientRect(g_hwnd, &cr);
     g_tree = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
-                             WS_CHILD | WS_VISIBLE | TVS_SHOWSELALWAYS | TVS_NOHSCROLL,
+                             WS_CHILD | WS_VISIBLE | TVS_SHOWSELALWAYS | TVS_NOHSCROLL |
+                             TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT,
                              0, 0, kSidebarW, cr.bottom, g_hwnd, (HMENU)ID_TREE, inst, nullptr);
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 
