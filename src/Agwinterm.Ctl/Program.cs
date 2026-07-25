@@ -122,6 +122,7 @@ switch (area)
                 if (options.ContainsKey("create-workspace")) cargs["create-workspace"] = true;
                 if (Opt("profile") is { } prof) cargs["profile"] = prof;
                 if (options.ContainsKey("no-select")) cargs["no-select"] = true;   // create in background, keep focus
+                if (options.ContainsKey("wait")) cargs["wait"] = true;             // hold on "press any key" after --command exits
                 target = null; // new isn't targeted
                 break;
             case "select":

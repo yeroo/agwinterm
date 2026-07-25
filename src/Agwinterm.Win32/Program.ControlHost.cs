@@ -197,7 +197,7 @@ internal partial class Program
         }
 
         public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-            string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false)
+            string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
         {
             string id = Guid.NewGuid().ToString();
             Post(() =>
@@ -215,7 +215,7 @@ internal partial class Program
                 }
                 else ws = ActiveWorkspace();
                 // --no-select creates the session in the background, leaving the current focus/selection (agterm #250).
-                CreateSession(id, name, cwd, ws, makeActive: !noSelect, command: command, profileName: profile);
+                CreateSession(id, name, cwd, ws, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
             });
             return id;
         }

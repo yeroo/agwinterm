@@ -102,6 +102,8 @@ internal partial class Program
                 // Clip + ellipsis so a long workspace name (or enlarged font) stops before the session count.
                 rt.DrawText(ws.Name, _sidebarFont, new Rect(24f, y, _sidebarW - 56f, rowH), brush, DrawTextOptions.Clip);
             rt.DrawText(sessions.Count.ToString(), _sidebarSmall, new Rect(_sidebarW - 28f, y, 22f, rowH), brush);
+            if (_config.WorkspaceAddButton)   // "+" to add a session in this workspace (#233/#252)
+                rt.DrawText("+", _sidebarFont, new Rect(_sidebarW - 46f, y, 16f, rowH), brush);
             _sidebarRows.Add((y, y + rowH, true, ws));
             y += rowH;
 
@@ -263,7 +265,13 @@ internal partial class Program
         {
             if (my < y0 || my >= y1) continue;
             if (ReferenceEquals(item, _showAllMarker)) { _focusedWorkspaceId = null; RequestRedraw(); SaveState(); }
-            else if (isWs && item is Workspace ws) { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); SaveState(); }
+            else if (isWs && item is Workspace ws)
+            {
+                // Click on the "+" adds a session to this workspace (#233); elsewhere toggles collapse.
+                if (_config.WorkspaceAddButton && mx >= _sidebarW - 48f && mx < _sidebarW - 30f)
+                    CreateSession(Guid.NewGuid().ToString(), null, null, ws, true);
+                else { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); SaveState(); }
+            }
             else if (!isWs && item is Ses s) SidebarSelectClick(s, KeyDown(VK_CONTROL), KeyDown(VK_SHIFT));
             return;
         }

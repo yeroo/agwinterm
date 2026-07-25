@@ -42,7 +42,7 @@ public interface ISessionHost
     /// instead of the shell.
     /// </summary>
     string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false);
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false);
 
     /// <summary>Clone a session (same cwd + shell profile); returns the new session id. (agterm #234)</summary>
     string DuplicateSession(string? target);
@@ -233,7 +233,7 @@ public sealed class SingleSessionHost : ISessionHost
             new[] { new SessionSnapshot("single", "session", true, _session.Status) }) };
     public WindowStateSnapshot WindowState() => new(true, false, false, false, "ws", "single");
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false) => "single";
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false) => "single";
     public string DuplicateSession(string? target) => "";
     public string ProfilesList() => "Windows PowerShell";
     public string ProfilesReload() => "0 profiles loaded";

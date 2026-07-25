@@ -188,6 +188,9 @@ public sealed class TerminalConfig
     /// <summary>Draw the red unread-count pill on sidebar rows (the count still tracks when off). On by default.</summary>
     public bool NotificationBadges { get; set; } = true;
 
+    /// <summary>Show a "+" on each sidebar workspace row to add a session there (agterm #233/#252). On by default.</summary>
+    public bool WorkspaceAddButton { get; set; } = true;
+
     /// <summary>Show the title-bar attention bell (hidden entirely when off). On by default.</summary>
     public bool AttentionButton { get; set; } = true;
 
@@ -363,6 +366,9 @@ public sealed class TerminalConfig
 
         # Notifications: show the red unread-count pill on sidebar rows; show the title-bar attention bell.
         notification-badges = true
+
+        # Show a "+" on each sidebar workspace row to add a session in that workspace.
+        workspace-add-button = true
         attention-button = true
 
         # Terminal bell (BEL, 0x07): audible (system beep) | visual (brief window flash) | both | none.
@@ -449,6 +455,7 @@ public sealed class TerminalConfig
                 case "compact-toolbar": cfg.CompactToolbar = ParseBool(val, cfg.CompactToolbar); break;
                 case "toolbar-mode": { var m = val.Trim().ToLowerInvariant(); if (m is "normal" or "compact" or "hidden") cfg.ToolbarMode = m; break; }
                 case "notification-badges": cfg.NotificationBadges = ParseBool(val, cfg.NotificationBadges); break;
+                case "workspace-add-button": cfg.WorkspaceAddButton = ParseBool(val, cfg.WorkspaceAddButton); break;
                 case "attention-button": cfg.AttentionButton = ParseBool(val, cfg.AttentionButton); break;
                 case "status-color-active": if (val.Length > 0) cfg.StatusColorActive = val; break;
                 case "status-color-blocked": if (val.Length > 0) cfg.StatusColorBlocked = val; break;

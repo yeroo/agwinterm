@@ -52,7 +52,7 @@ internal partial class Program
     /// When <paramref name="command"/> is set, that argv runs as the pane's process instead of the shell.</summary>
     private Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null,
         bool shellWrap = false, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
-        bool deElevate = false, HandoffArgs? handoff = null)
+        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false)
     {
         var (cols, rows) = GridSizeFor(fontSize);
         // The ONLY session creation site (see ISessionBackend). Handoff panes are pinned in-process
@@ -130,6 +130,11 @@ internal partial class Program
                            new Microsoft.Win32.SafeHandles.SafeFileHandle(h.ConIn, true),
                            new Microsoft.Win32.SafeHandles.SafeFileHandle(h.Signal, true), h.Client, h.ClientPid);
         else if (adopted) { /* reattached to the surviving shell — nothing to launch */ }
+        else if (!string.IsNullOrWhiteSpace(command) && wait)
+            // --wait: run the command, then hold on "press any key" so a build/test/deploy's final
+            // output (or an early failure) stays readable before the session closes (agterm #255 —
+            // the session-surface counterpart of `overlay open --wait`).
+            _ = session.StartAsync("cmd.exe", new[] { "/c", command! + " & echo. & pause" }, verbatimCommandLine: true, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
         else if (!string.IsNullOrWhiteSpace(command) && interactive)
             // Run the command in a fresh shell that STAYS OPEN afterwards (custom-command "new" mode):
             // the user's profile loads (oh-my-posh etc.), the command runs, then it's an interactive shell.
@@ -381,7 +386,7 @@ internal partial class Program
 
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
-        bool deElevate = false, HandoffArgs? handoff = null)
+        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false)
     {
         // Elevated profile from a non-elevated app: hand off to a separate elevated window (UAC).
         if (profileName is not null && !IsElevated()
@@ -406,7 +411,7 @@ internal partial class Program
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         if (name is null && handoff is { Title.Length: > 0 } ht) name = ht.Title;   // label handoff sessions with the app's title
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName, Elevated = IsElevated() && !deElevate };
-        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff));   // first pane shares the session id (control-API back-compat)
+        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff, wait: wait));   // first pane shares the session id (control-API back-compat)
         ses.Active = 0;
         DetectSessionElevation(ses);   // refine ⚡ from the shell's real integrity once it's running
 
