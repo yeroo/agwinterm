@@ -98,8 +98,8 @@ static HFONT g_treeItalic;      // italic variant of the sidebar font (agent "wo
 // Quick + scratch terminals: modal-ish popup windows, each hosting a dedicated (hidden) session. The
 // overlay is a scratch that runs a one-shot command. g_focusOverride redirects input/paint focus to a
 // popup's session while it's active.
-static HWND g_quickHwnd, g_scratchHwnd;
-static Session* g_quickSession, *g_scratchSession, *g_focusOverride;
+static HWND g_quickHwnd, g_scratchHwnd, g_overlayHwnd;
+static Session* g_quickSession, *g_scratchSession, *g_overlaySession, *g_focusOverride;
 static HWND g_toolbar;          // native toolbar (New Session / New Workspace / Split)
 static int g_toolbarH = 0;      // its height; the tree + terminal start below it
 static HIMAGELIST g_tbImages;   // 16x16 Silk icons for the toolbar buttons
@@ -160,6 +160,8 @@ enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, ID
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
 #define WM_APP_TRAY        (WM_APP + 4)   // system-tray icon notifications
+#define WM_APP_OVERLAY     (WM_APP + 5)   // control thread -> UI thread: open an overlay (creates a window)
+static std::string g_pendingOverlayCmd; static int g_pendingOverlaySize;
 static HICON g_appIcon;
 static NOTIFYICONDATAW g_nid{};
 static int g_cw = 8, g_ch = 16;
@@ -334,6 +336,7 @@ static Session* focusedSession() {
 static HWND windowForSession(Session* s) {
     if (s == g_quickSession && g_quickHwnd) return g_quickHwnd;
     if (s == g_scratchSession && g_scratchHwnd) return g_scratchHwnd;
+    if (s == g_overlaySession && g_overlayHwnd) return g_overlayHwnd;
     return g_hwnd;
 }
 
@@ -1936,7 +1939,7 @@ static void paintPopup(HWND h, Session* s) {
     EndPaint(h, &ps);
 }
 static LRESULT CALLBACK popupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    Session* s = (h == g_quickHwnd) ? g_quickSession : g_scratchSession;
+    Session* s = (h == g_quickHwnd) ? g_quickSession : (h == g_scratchHwnd) ? g_scratchSession : g_overlaySession;
     switch (m) {
         case WM_SETFOCUS:  g_focusOverride = s; return 0;
         case WM_KILLFOCUS: if (g_focusOverride == s) g_focusOverride = nullptr; return 0;
@@ -1970,32 +1973,47 @@ static LRESULT CALLBACK popupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_SYSCOMMAND:
             if ((w & 0xFFF0) == SC_MINIMIZE) { ShowWindow(g_hwnd, SW_MINIMIZE); return 0; }   // minimize -> all windows
             break;
-        case WM_CLOSE: ShowWindow(h, SW_HIDE); SetForegroundWindow(g_hwnd); return 0;   // hide; keep the session alive
+        case WM_CLOSE:
+            if (h == g_overlayHwnd) { DestroyWindow(h); return 0; }        // overlay is transient -> tear down
+            ShowWindow(h, SW_HIDE); SetForegroundWindow(g_hwnd); return 0; // quick/scratch: hide, keep the session
+        case WM_DESTROY:
+            if (h == g_overlayHwnd) {   // kill the overlay's session + clear state
+                if (g_focusOverride == g_overlaySession) g_focusOverride = nullptr;
+                if (g_overlaySession)
+                    for (int i = 0; i < (int)g_sessions.size(); i++)
+                        if (g_sessions[i] == g_overlaySession) { closeSessionAt(i); break; }
+                g_overlaySession = nullptr; g_overlayHwnd = nullptr;
+                SetForegroundWindow(g_hwnd);
+            }
+            return 0;
     }
     return DefWindowProcW(h, m, w, l);
 }
+static void ensurePopupClass() {
+    static bool reg = false;
+    if (reg) return;
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = popupProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"AgwintermLitePopup";
+    wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_IBEAM); wc.hIcon = g_appIcon;
+    RegisterClassW(&wc); reg = true;
+}
+// A popup terminal window sized wf x hf fractions of the main window, owned by it (floats above, hides
+// when it minimizes, never behind it).
+static HWND createPopupWindow(const wchar_t* title, double wf, double hf) {
+    ensurePopupClass();
+    RECT mw; GetWindowRect(g_hwnd, &mw);
+    int W = max(30 * g_cw, (int)((mw.right - mw.left) * wf)), H = max(8 * g_ch, (int)((mw.bottom - mw.top) * hf));
+    return CreateWindowExW(0, L"AgwintermLitePopup", title, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                           mw.left + 80, mw.top + 60, W, H, g_hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+}
 // Toggle a quick (scratch=false) or scratch (scratch=true) popup terminal: show/hide, creating its
-// window + dedicated hidden session on first use. Owned by the main window so it floats above it,
-// hides when the main window minimizes, and never sits behind it.
+// window + dedicated hidden session on first use.
 static void togglePopupTerminal(bool scratch) {
     HWND& hw = scratch ? g_scratchHwnd : g_quickHwnd;
     Session*& sess = scratch ? g_scratchSession : g_quickSession;
     if (hw && IsWindowVisible(hw)) { ShowWindow(hw, SW_HIDE); SetForegroundWindow(g_hwnd); return; }
-    HINSTANCE inst = GetModuleHandleW(nullptr);
     if (!hw) {
-        static bool reg = false;
-        if (!reg) {
-            WNDCLASSW wc{};
-            wc.lpfnWndProc = popupProc; wc.hInstance = inst; wc.lpszClassName = L"AgwintermLitePopup";
-            wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_IBEAM); wc.hIcon = g_appIcon;
-            RegisterClassW(&wc); reg = true;
-        }
-        RECT pw; GetWindowRect(g_hwnd, &pw);
-        RECT want{ 0, 0, 80 * g_cw, 24 * g_ch };
-        AdjustWindowRect(&want, WS_OVERLAPPEDWINDOW, FALSE);
-        hw = CreateWindowExW(0, L"AgwintermLitePopup", scratch ? L"agwinterm lite — scratch" : L"agwinterm lite — quick",
-                             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, pw.left + 80, pw.top + 60,
-                             want.right - want.left, want.bottom - want.top, g_hwnd, nullptr, inst, nullptr);
+        hw = createPopupWindow(scratch ? L"agwinterm lite — scratch" : L"agwinterm lite — quick", 0.66, 0.6);
         RECT rc; GetClientRect(hw, &rc);
         sess = newSession(max(1, (int)(rc.right / g_cw)), max(1, (int)(rc.bottom / g_ch)));   // windowForSession routes to hw (set above)
         if (sess) { sess->hidden = true; sess->name = scratch ? L"scratch" : L"quick"; }      // not in the sidebar / not persisted
@@ -2004,6 +2022,21 @@ static void togglePopupTerminal(bool scratch) {
     SetForegroundWindow(hw);
     g_focusOverride = sess;
     InvalidateRect(hw, nullptr, FALSE);
+}
+// Overlay: run a command in a popup over the active session (control-API session.overlay). One at a
+// time; opening a new overlay replaces the previous. An empty command opens a plain shell.
+static void openOverlay(const std::string& command, int sizePct) {
+    if (g_overlayHwnd) DestroyWindow(g_overlayHwnd);   // one at a time; WM_DESTROY kills the old session + clears state
+    double f = sizePct > 0 ? min(0.95, sizePct / 100.0) : 0.7;
+    g_overlayHwnd = createPopupWindow(L"agwinterm lite — overlay", f, f);
+    RECT rc; GetClientRect(g_overlayHwnd, &rc);
+    g_overlaySession = newSession(max(1, (int)(rc.right / g_cw)), max(1, (int)(rc.bottom / g_ch)),
+                                  command.empty() ? nullptr : command.c_str());
+    if (g_overlaySession) { g_overlaySession->hidden = true; g_overlaySession->name = L"overlay"; }
+    ShowWindow(g_overlayHwnd, SW_SHOW);
+    SetForegroundWindow(g_overlayHwnd);
+    g_focusOverride = g_overlaySession;
+    InvalidateRect(g_overlayHwnd, nullptr, FALSE);
 }
 
 static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -2113,6 +2146,12 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) showTrayMenu();
             else if (LOWORD(lp) == WM_LBUTTONDBLCLK) showMainWindow();
             return 0;
+        case WM_APP_OVERLAY: {   // marshaled from the control thread (session.overlay) — create on the UI thread
+            std::string cmd; int sz;
+            EnterCriticalSection(&g_lock); cmd = g_pendingOverlayCmd; sz = g_pendingOverlaySize; LeaveCriticalSection(&g_lock);
+            openOverlay(cmd, sz);
+            return 0;
+        }
         case WM_NOTIFY: {
             auto* nm = (NMHDR*)lp;
             if (nm->idFrom == ID_TREE && nm->code == NM_CUSTOMDRAW) {   // italicise "working" agent rows
@@ -2343,6 +2382,15 @@ static std::string ctlDispatch(const std::string& line) {
         for (int i2 = 0; i2 < (int)g_sessions.size(); i2++)
             if (g_sessions[i2] == target) { g_pane[g_focus] = i2; closeFocused(); break; }
         return ctlOkStr("closed");
+    }
+    if (cmd == "session.overlay") {   // run a command in an overlay popup over the active session
+        std::string action = req.get("args.action");
+        if (action == "close") { if (g_overlayHwnd) PostMessageW(g_overlayHwnd, WM_CLOSE, 0, 0); return ctlOkStr("closed"); }
+        std::string command = req.get("args.command");
+        int sizePct = atoi(req.get("args.size").c_str());
+        EnterCriticalSection(&g_lock); g_pendingOverlayCmd = command; g_pendingOverlaySize = sizePct; LeaveCriticalSection(&g_lock);
+        PostMessageW(g_hwnd, WM_APP_OVERLAY, 0, 0);   // create on the UI thread
+        return ctlOkStr("overlay opened");
     }
     return ctlErr("unknown command '" + cmd + "' (lite subset)");
 }
