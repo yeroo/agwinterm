@@ -74,6 +74,8 @@ struct Session {
     std::wstring name;             // custom name (rename); empty = "session N"
     int ws = 0;                    // workspace this session belongs to (index into g_workspaces)
     bool hidden = false;          // split-pane shell: a real shell, but NOT a sidebar/tree session
+    std::string app, cwd;          // launch spec, remembered so the session can be restored on next launch
+    std::vector<std::string> args; // ("" app = default PowerShell; empty args = wrap/bare per app)
     void* emu = nullptr;
     HANDLE data = INVALID_HANDLE_VALUE;
     HANDLE reader = nullptr;
@@ -90,6 +92,7 @@ static HIMAGELIST g_tbImages;   // 16x16 Silk icons for the toolbar buttons
 static ULONG_PTR g_gdiplusTok;  // GDI+ token (PNG decode)
 static HWND g_tree;             // native SysTreeView32 sidebar (sessions)
 static bool g_treeSyncing;      // suppress TVN_SELCHANGED while we rebuild the tree
+static bool g_restoring;         // true while rebuilding sessions at startup (suppresses state saves)
 static HTREEITEM g_ctxItem;     // right-clicked tree node (for the context menu)
 static LPARAM g_ctxParam;       // its lParam: >=0 session index, <0 = -(workspace+1)
 static HFONT g_fonts[4];        // [bold][italic]
@@ -454,6 +457,9 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
 
     Session* s = new Session();
     s->id = idbuf;
+    s->app = app ? app : "";        // remember the launch spec for session restore
+    if (pargs) s->args = *pargs;
+    s->cwd = cwd ? cwd : "";
     s->ws = (g_activeWs >= 0 && g_activeWs < (int)g_workspaces.size()) ? g_activeWs : 0;   // into the active workspace
     s->emu = emu_new(cols, rows);
     s->data = openPipe(std::wstring(rep.body.attach.pipe, rep.body.attach.pipe + strlen(rep.body.attach.pipe)), 5000, true);
@@ -678,6 +684,47 @@ static void saveWindowRect() {
     RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinW", REG_DWORD, &w, sizeof(w));
     RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinH", REG_DWORD, &h, sizeof(h));
     RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinMax", REG_DWORD, &mx, sizeof(mx));
+}
+
+// ---- session/workspace restore ----
+static std::string narrow(const std::wstring& w) {
+    if (w.empty()) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(n, 0); WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr); return s;
+}
+static std::wstring widen(const std::string& s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    std::wstring w(n, 0); MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n); return w;
+}
+// State file: %LOCALAPPDATA%\agwinterm-lite\sessions.tsv (per-user, created on demand).
+static std::wstring stateFilePath() {
+    wchar_t base[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) == 0) return {};
+    std::wstring dir = std::wstring(base) + L"\\agwinterm-lite";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\sessions.tsv";
+}
+// Snapshot the workspaces + (visible) sessions so next launch can rebuild them. Tab-separated; a
+// session line is: S <ws> <name> <app> <cwd> <arg0> <arg1>...  Split-shells (hidden) aren't persisted.
+static void saveSessionState() {
+    std::wstring path = stateFilePath();
+    if (path.empty()) return;
+    std::string out = "V1\n";
+    for (const auto& w : g_workspaces) out += "W\t" + narrow(w) + "\n";
+    EnterCriticalSection(&g_lock);
+    for (const Session* s : g_sessions) {
+        if (s->hidden) continue;
+        out += "S\t" + std::to_string(s->ws) + "\t" + narrow(s->name) + "\t" + s->app + "\t" + s->cwd;
+        for (const auto& a : s->args) out += "\t" + a;
+        out += "\n";
+    }
+    LeaveCriticalSection(&g_lock);
+    out += "A\t" + std::to_string(g_activeWs) + "\n";
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD wr; WriteFile(f, out.data(), (DWORD)out.size(), &wr, nullptr);
+    CloseHandle(f);
 }
 
 // Select a face+size, apply it, and persist the choice (used by the Properties dialog).
@@ -1328,6 +1375,7 @@ static void refreshTree() {
     }
     if (sel) TreeView_SelectItem(g_tree, sel);
     g_treeSyncing = false;
+    if (!g_restoring) saveSessionState();   // persist the workspace/session structure on every change
 }
 
 // Remove a workspace; its sessions fall back to the first workspace (indices shift down).
@@ -2198,6 +2246,63 @@ static DWORD WINAPI ctlServerThread(void*) {
         CreateThread(nullptr, 0, ctlClientThread, pipe, 0, nullptr);
     }
 }
+
+// Rebuild the saved workspaces + sessions on launch. Returns false (caller opens a default session) if
+// there's nothing to restore. Sessions relaunch with their remembered profile + creation cwd.
+static bool restoreSessions() {
+    std::wstring path = stateFilePath();
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    std::string data; char buf[4096]; DWORD rd;
+    while (ReadFile(f, buf, sizeof buf, &rd, nullptr) && rd) data.append(buf, rd);
+    CloseHandle(f);
+    if (data.empty()) return false;
+
+    std::vector<std::wstring> wss;
+    struct Spec { int ws; std::string name, app, cwd; std::vector<std::string> args; };
+    std::vector<Spec> specs;
+    int activeWs = 0;
+    size_t i = 0;
+    auto split = [](const std::string& l) {
+        std::vector<std::string> ff; size_t p = 0;
+        for (;;) { size_t t = l.find('\t', p); ff.push_back(l.substr(p, t == std::string::npos ? std::string::npos : t - p)); if (t == std::string::npos) break; p = t + 1; }
+        return ff;
+    };
+    while (i < data.size()) {
+        size_t e = data.find('\n', i);
+        std::string l = data.substr(i, e == std::string::npos ? std::string::npos : e - i);
+        i = (e == std::string::npos) ? data.size() : e + 1;
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        if (l.empty()) continue;
+        auto ff = split(l);
+        if (ff[0] == "W" && ff.size() >= 2) wss.push_back(widen(ff[1]));
+        else if (ff[0] == "S" && ff.size() >= 5) {
+            Spec sp; sp.ws = atoi(ff[1].c_str()); sp.name = ff[2]; sp.app = ff[3]; sp.cwd = ff[4];
+            for (size_t k = 5; k < ff.size(); k++) sp.args.push_back(ff[k]);
+            specs.push_back(sp);
+        } else if (ff[0] == "A" && ff.size() >= 2) activeWs = atoi(ff[1].c_str());
+    }
+    if (specs.empty()) return false;
+
+    g_restoring = true;
+    if (!wss.empty()) g_workspaces = wss;
+    int cols, rows; paneGridSize(0, &cols, &rows);
+    int firstIdx = -1;
+    for (const auto& sp : specs) {
+        g_activeWs = (sp.ws >= 0 && sp.ws < (int)g_workspaces.size()) ? sp.ws : 0;
+        Session* s = newSession(cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
+                                sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str());
+        if (s) { s->name = widen(sp.name); if (firstIdx < 0) firstIdx = (int)g_sessions.size() - 1; }
+    }
+    g_restoring = false;
+    if (firstIdx < 0) return false;
+    g_pane[0] = firstIdx; g_pane[1] = -1; g_focus = 0;
+    g_activeWs = (activeWs >= 0 && activeWs < (int)g_workspaces.size()) ? activeWs : 0;
+    syncPaneSizes();
+    refreshTree();
+    return true;
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     InitializeCriticalSection(&g_lock);
     InitializeCriticalSection(&g_reqLock);
@@ -2288,10 +2393,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
 
     ShowWindow(g_hwnd, startMax ? SW_SHOWMAXIMIZED : show);   // restore a maximized session maximized
 
-    int cols, rows;
-    paneGridSize(0, &cols, &rows);
-    if (!newSession(cols, rows)) fatal(L"could not create the first session");
-    refreshTree();
+    if (!restoreSessions()) {   // rebuild the saved workspaces/sessions, or open a fresh default one
+        int cols, rows;
+        paneGridSize(0, &cols, &rows);
+        if (!newSession(cols, rows)) fatal(L"could not create the first session");
+        refreshTree();
+    }
     CreateThread(nullptr, 0, ctlServerThread, nullptr, 0, nullptr);   // agwintermctl --pipe agwinterm-lite
     InvalidateRect(g_hwnd, nullptr, FALSE);
 
