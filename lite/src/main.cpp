@@ -107,6 +107,12 @@ static HFONT g_uiFont;          // shell UI font (Segoe UI) for the toolbar butt
 static bool g_customColors = false;   // Properties->Colors: override the terminal's default fg/bg
 static uint32_t g_defFg = 0xC0C0C0;   // packed 0xRRGGBB, legacy cmd.exe light gray on...
 static uint32_t g_defBg = 0x000000;   // ...black
+static bool g_dosPalette = true;      // Properties->Colors: remap ANSI indices to the muted EGA/VGA DOS palette
+// The authentic 16-colour EGA/VGA text palette (0x00/0x55/0xAA/0xFF steps) — dimmer than modern ANSI,
+// the classic MS-DOS look (e.g. Far's blue becomes 0x0000AA, not a bright 0x0000FF).
+static const uint32_t kEgaPalette[16] = {
+    0x000000, 0x0000AA, 0x00AA00, 0x00AAAA, 0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
+    0x555555, 0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF };
 
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
@@ -598,12 +604,14 @@ static void loadColors() {   // Properties->Colors overrides (default fg/bg + on
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"CustomColors", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_customColors = v != 0;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defFg = v & 0xFFFFFF;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defBg = v & 0xFFFFFF;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DosPalette", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_dosPalette = v != 0;
 }
 static void saveColors() {
     DWORD v;
     v = g_customColors ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"CustomColors", REG_DWORD, &v, sizeof(v));
     v = g_defFg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", REG_DWORD, &v, sizeof(v));
     v = g_defBg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", REG_DWORD, &v, sizeof(v));
+    v = g_dosPalette ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DosPalette", REG_DWORD, &v, sizeof(v));
 }
 
 // Select a face+size, apply it, and persist the choice (used by the Properties dialog).
@@ -747,6 +755,10 @@ static void paintPane(HDC mem, int pane, RECT pr) {
             uint32_t attrs = cell.attrs;
             uint32_t fg = cell.fg, bgc = cell.bg;
             if (g_customColors) { if (cell.fgKind == 0) fg = g_defFg; if (cell.bgKind == 0) bgc = g_defBg; }
+            if (g_dosPalette) {   // remap ANSI indices to the muted DOS palette (fg brightens on bold)
+                if (cell.fgKind == 1) { int ix = cell.fgIndex & 15; if (ix < 8 && (attrs & kAttrBold)) ix += 8; fg = kEgaPalette[ix]; }
+                if (cell.bgKind == 1) bgc = kEgaPalette[cell.bgIndex & 15];
+            }
             if (attrs & kAttrInverse) { uint32_t t = fg; fg = bgc; bgc = t; }
             uint32_t styleKey = attrs & (kAttrBold | kAttrItalic | kAttrUnderline | kAttrStrike | kAttrDim);
             uint32_t start = c;
@@ -757,6 +769,10 @@ static void paintPane(HDC mem, int pane, RECT pr) {
                 if (cc.width == 0) { c++; continue; }
                 uint32_t f2 = cc.fg, b2 = cc.bg, a2 = cc.attrs;
                 if (g_customColors) { if (cc.fgKind == 0) f2 = g_defFg; if (cc.bgKind == 0) b2 = g_defBg; }
+                if (g_dosPalette) {
+                    if (cc.fgKind == 1) { int ix = cc.fgIndex & 15; if (ix < 8 && (a2 & kAttrBold)) ix += 8; f2 = kEgaPalette[ix]; }
+                    if (cc.bgKind == 1) b2 = kEgaPalette[cc.bgIndex & 15];
+                }
                 if (a2 & kAttrInverse) { uint32_t t = f2; f2 = b2; b2 = t; }
                 if (f2 != fg || b2 != bgc ||
                     (a2 & (kAttrBold | kAttrItalic | kAttrUnderline | kAttrStrike | kAttrDim)) != styleKey) break;
@@ -1442,10 +1458,10 @@ static const COLORREF kConsolePalette[16] = {
     RGB(128,128,128),RGB(0,0,255),  RGB(0,255,0),   RGB(0,255,255),
     RGB(255,0,0),   RGB(255,0,255), RGB(255,255,0), RGB(255,255,255),
 };
-enum { PID_FONTLIST = 3001, PID_SIZECOMBO = 3002, PID_USECOLORS = 3030, PID_TEXT = 3010, PID_BG = 3011, PID_APPLY = 3020 };
+enum { PID_FONTLIST = 3001, PID_SIZECOMBO = 3002, PID_USECOLORS = 3030, PID_TEXT = 3010, PID_BG = 3011, PID_APPLY = 3020, PID_DOSPAL = 3031 };
 static const int SW_X0 = 16, SW_Y = 186, SW = 20, SW_GAP = 22;   // swatch grid geometry (WM_PAINT + hit-test)
 // Working copies edited by the dialog; committed to the globals on OK/Apply.
-static int g_pFace, g_pSize; static uint32_t g_pFg, g_pBg; static int g_pTarget; static bool g_pUse;
+static int g_pFace, g_pSize; static uint32_t g_pFg, g_pBg; static int g_pTarget; static bool g_pUse, g_pDos;
 static HFONT g_pPrev; static HWND g_pHwnd, g_pSizeCombo;
 
 static HFONT makePreviewFontSel() {
@@ -1468,8 +1484,8 @@ static void fillSizeCombo(int sel) {   // sizes for the current face; disabled i
     EnableWindow(g_pSizeCombo, e.sizes.size() > 1);
 }
 static void propCommit() {
-    pickFont(g_pFace, g_pSize);   // applies the font, persists face+size, syncs the View->Font radio
-    g_customColors = g_pUse; g_defFg = g_pFg; g_defBg = g_pBg; saveColors();
+    pickFont(g_pFace, g_pSize);   // applies the font, persists face+size
+    g_customColors = g_pUse; g_defFg = g_pFg; g_defBg = g_pBg; g_dosPalette = g_pDos; saveColors();
     InvalidateRect(g_hwnd, nullptr, TRUE);
 }
 static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -1487,6 +1503,7 @@ static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     if (HIWORD(w) == CBN_SELCHANGE) { g_pSize = (int)SendMessageW((HWND)l, CB_GETCURSEL, 0, 0); refreshPreview(h); }
                     break;
                 case PID_USECOLORS: g_pUse = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; InvalidateRect(h, nullptr, TRUE); break;
+                case PID_DOSPAL: g_pDos = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; break;
                 case PID_TEXT: g_pTarget = 0; InvalidateRect(h, nullptr, TRUE); break;
                 case PID_BG:   g_pTarget = 1; InvalidateRect(h, nullptr, TRUE); break;
                 case PID_APPLY: propCommit(); break;
@@ -1510,6 +1527,8 @@ static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         case WM_PAINT: {
             PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+            HGDIOBJ uiOld = SelectObject(dc, g_uiFont ? g_uiFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT));   // never the System bitmap default
+            SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
             // Colour swatches
             for (int i = 0; i < 16; i++) {
                 RECT s{ SW_X0 + i * SW_GAP, SW_Y, SW_X0 + i * SW_GAP + SW, SW_Y + SW };
@@ -1538,6 +1557,7 @@ static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             TextOutW(dc, pv.left + 6, pv.top + 24, L"Volume in drive C is SYSTEM", 27);
             TextOutW(dc, pv.left + 6, pv.top + 42, L"abcdefghij 0123456789 +-*/=", 27);
             SelectObject(dc, of);
+            SelectObject(dc, uiOld);
             EndPaint(h, &ps);
             return 0;
         }
@@ -1556,7 +1576,7 @@ static void showPropertiesDialog() {
         RegisterClassW(&wc); reg = true;
     }
     // Seed working state from the live settings.
-    g_pFace = g_faceIdx; g_pSize = g_sizeIdx; g_pFg = g_defFg; g_pBg = g_defBg; g_pUse = g_customColors; g_pTarget = 0;
+    g_pFace = g_faceIdx; g_pSize = g_sizeIdx; g_pFg = g_defFg; g_pBg = g_defBg; g_pUse = g_customColors; g_pDos = g_dosPalette; g_pTarget = 0;
     if (g_pPrev) DeleteObject(g_pPrev);
     g_pPrev = makePreviewFontSel();
     const int W = 396, H = 452;
@@ -1576,8 +1596,10 @@ static void showPropertiesDialog() {
     mk(L"STATIC", L"Size:", 0, 228, 12, 120, 16, 0);
     g_pSizeCombo = mk(L"COMBOBOX", L"", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST, 228, 30, 140, 240, PID_SIZECOMBO);
     fillSizeCombo(g_pSize);
-    mk(L"BUTTON", L"Override default colors", BS_AUTOCHECKBOX, 16, 134, 220, 18, PID_USECOLORS);
+    mk(L"BUTTON", L"Override default colors", BS_AUTOCHECKBOX, 16, 134, 172, 18, PID_USECOLORS);
     CheckDlgButton(g_pHwnd, PID_USECOLORS, g_pUse ? BST_CHECKED : BST_UNCHECKED);
+    mk(L"BUTTON", L"MS-DOS palette (EGA)", BS_AUTOCHECKBOX, 194, 134, 180, 18, PID_DOSPAL);
+    CheckDlgButton(g_pHwnd, PID_DOSPAL, g_pDos ? BST_CHECKED : BST_UNCHECKED);
     mk(L"BUTTON", L"Screen &Text", WS_GROUP | BS_AUTORADIOBUTTON, 28, 158, 110, 18, PID_TEXT);
     mk(L"BUTTON", L"Screen &Background", BS_AUTORADIOBUTTON, 150, 158, 150, 18, PID_BG);
     CheckDlgButton(g_pHwnd, PID_TEXT, BST_CHECKED);
