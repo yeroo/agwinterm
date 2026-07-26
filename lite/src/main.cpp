@@ -17,12 +17,14 @@
 #include <windowsx.h>
 #include <commctrl.h>   // native TreeView (SysTreeView32) sidebar — ships with Windows, no external deps
 #include <shlobj.h>     // SHBrowseForFolder (New Session in Folder…)
+#include <gdiplus.h>    // load the PNG toolbar icons (ships with Windows, no external deps)
 #include <string>
 #include <vector>
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "advapi32.lib")   // registry (persisted font choice)
+#pragma comment(lib, "gdiplus.lib")    // PNG decode for the toolbar icons
 
 #include "proto/ptyhost.pb.h"
 #include "proto/pb_encode.h"
@@ -84,6 +86,8 @@ struct Session {
 static HWND g_hwnd;
 static HWND g_toolbar;          // native toolbar (New Session / New Workspace / Split)
 static int g_toolbarH = 0;      // its height; the tree + terminal start below it
+static HIMAGELIST g_tbImages;   // 16x16 Silk icons for the toolbar buttons
+static ULONG_PTR g_gdiplusTok;  // GDI+ token (PNG decode)
 static HWND g_tree;             // native SysTreeView32 sidebar (sessions)
 static bool g_treeSyncing;      // suppress TVN_SELCHANGED while we rebuild the tree
 static HTREEITEM g_ctxItem;     // right-clicked tree node (for the context menu)
@@ -1654,6 +1658,25 @@ static void showTrayMenu() {
 
 // A 2000's-style app icon drawn at runtime (no .ico asset, no deps): a classic gray 3D-beveled tile
 // with a sunken black "screen" and a green >_ prompt — the Win2000/XP-era terminal look.
+// Load a PNG into an HBITMAP with its alpha flattened onto bg (the toolbar's face colour) so it
+// blends seamlessly when added to a plain colour image list. Returns null on failure.
+static HBITMAP loadPngFlattened(const std::wstring& path, COLORREF bg) {
+    Gdiplus::Bitmap img(path.c_str());
+    if (img.GetLastStatus() != Gdiplus::Ok) return nullptr;
+    HBITMAP hb = nullptr;
+    img.GetHBITMAP(Gdiplus::Color(GetRValue(bg), GetGValue(bg), GetBValue(bg)), &hb);
+    return hb;
+}
+// Build the toolbar image list from the bundled Silk PNGs (order: New / Workspace / Split).
+static void buildToolbarImages() {
+    g_tbImages = ImageList_Create(16, 16, ILC_COLOR24, 3, 0);
+    COLORREF face = GetSysColor(COLOR_BTNFACE);
+    std::wstring dir = exeDir();
+    for (const wchar_t* f : { L"tb_new.png", L"tb_workspace.png", L"tb_split.png" }) {
+        HBITMAP hb = loadPngFlattened(dir + L"\\" + f, face);
+        if (hb) { ImageList_Add(g_tbImages, hb, nullptr); DeleteObject(hb); }
+    }
+}
 static HICON makeRetroIcon() {
     const int S = 32;
     HDC dc = GetDC(nullptr);
@@ -1803,6 +1826,14 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_NOTIFY: {
             auto* nm = (NMHDR*)lp;
+            if (nm->code == TBN_GETINFOTIPW) {   // toolbar button hover tooltips ("hints")
+                auto* it = (NMTBGETINFOTIPW*)lp;
+                const wchar_t* tip = it->iItem == IDM_NEW ? L"New Session"
+                                   : it->iItem == IDM_NEWWS ? L"New Workspace"
+                                   : it->iItem == IDM_SPLIT ? L"Split / Unsplit" : L"";
+                lstrcpynW(it->pszText, tip, it->cchTextMax);
+                return 0;
+            }
             if (nm->idFrom == ID_TREE && nm->code == TVN_SELCHANGEDW && !g_treeSyncing) {
                 auto* nt = (NMTREEVIEWW*)lp;
                 LPARAM p = nt->itemNew.lParam;
@@ -2050,6 +2081,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     InitializeCriticalSection(&g_lock);
     InitializeCriticalSection(&g_reqLock);
     loadCore();
+    Gdiplus::GdiplusStartupInput gsi;
+    Gdiplus::GdiplusStartup(&g_gdiplusTok, &gsi, nullptr);   // for PNG toolbar-icon decode
 
     // Bundled fonts (process-private): Meslo Nerd (default TrueType), plus the optional bitmap fonts
     // Cozette + Tamzen if their .ttf shipped next to the exe. Consolas is the fallback if Meslo is absent.
@@ -2097,32 +2130,27 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
                              0, 0, kSidebarW, cr.bottom, g_hwnd, (HMENU)ID_TREE, inst, nullptr);
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 
-    // Native toolbar (text buttons) across the top: New Session / New Workspace / Split.
-    // No TBSTYLE_FLAT: flat toolbars hot-track on hover and can leave a button stuck "hot" when the
-    // cursor leaves; classic raised 3D buttons have no hover state and suit the old-skool look.
+    // Native toolbar across the top: New Session / New Workspace / Split, as classic 16px Silk icons
+    // with hover tooltips (TBSTYLE_TOOLTIPS). No TBSTYLE_FLAT: flat toolbars hot-track and can leave a
+    // button stuck "hot"; classic raised 3D buttons have no hover state and suit the old-skool look.
+    buildToolbarImages();
     g_toolbar = CreateWindowExW(0, TOOLBARCLASSNAMEW, nullptr,
-                                WS_CHILD | WS_VISIBLE | TBSTYLE_LIST | CCS_TOP,
+                                WS_CHILD | WS_VISIBLE | TBSTYLE_TOOLTIPS | CCS_TOP,
                                 0, 0, 0, 0, g_hwnd, (HMENU)ID_TOOLBAR, inst, nullptr);
     SendMessageW(g_toolbar, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
-    SendMessageW(g_toolbar, TB_SETEXTENDEDSTYLE, 0, TBSTYLE_EX_MIXEDBUTTONS);
-    int sNew = (int)SendMessageW(g_toolbar, TB_ADDSTRINGW, 0, (LPARAM)L"New Session\0");
-    int sWs  = (int)SendMessageW(g_toolbar, TB_ADDSTRINGW, 0, (LPARAM)L"New Workspace\0");
-    int sSp  = (int)SendMessageW(g_toolbar, TB_ADDSTRINGW, 0, (LPARAM)L"Split\0");
+    SendMessageW(g_toolbar, TB_SETIMAGELIST, 0, (LPARAM)g_tbImages);
     TBBUTTON tb[3] = {};
-    tb[0].iBitmap = I_IMAGENONE; tb[0].idCommand = IDM_NEW;   tb[0].fsState = TBSTATE_ENABLED; tb[0].fsStyle = BTNS_AUTOSIZE | BTNS_SHOWTEXT; tb[0].iString = sNew;
-    tb[1].iBitmap = I_IMAGENONE; tb[1].idCommand = IDM_NEWWS; tb[1].fsState = TBSTATE_ENABLED; tb[1].fsStyle = BTNS_AUTOSIZE | BTNS_SHOWTEXT; tb[1].iString = sWs;
-    tb[2].iBitmap = I_IMAGENONE; tb[2].idCommand = IDM_SPLIT; tb[2].fsState = TBSTATE_ENABLED; tb[2].fsStyle = BTNS_AUTOSIZE | BTNS_SHOWTEXT; tb[2].iString = sSp;
+    tb[0].iBitmap = 0; tb[0].idCommand = IDM_NEW;   tb[0].fsState = TBSTATE_ENABLED; tb[0].fsStyle = BTNS_AUTOSIZE;
+    tb[1].iBitmap = 1; tb[1].idCommand = IDM_NEWWS; tb[1].fsState = TBSTATE_ENABLED; tb[1].fsStyle = BTNS_AUTOSIZE;
+    tb[2].iBitmap = 2; tb[2].idCommand = IDM_SPLIT; tb[2].fsState = TBSTATE_ENABLED; tb[2].fsStyle = BTNS_AUTOSIZE;
     SendMessageW(g_toolbar, TB_ADDBUTTONS, 3, (LPARAM)tb);
-    // A new common control defaults to the old System bitmap font; give the buttons the real shell
-    // UI font (Segoe UI on Win10/11) from the theme's message font instead.
-    {
-        NONCLIENTMETRICSW ncm{ sizeof(ncm) };
-        SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
-        g_uiFont = CreateFontIndirectW(&ncm.lfMessageFont);
-        SendMessageW(g_toolbar, WM_SETFONT, (WPARAM)g_uiFont, TRUE);
-    }
     SendMessageW(g_toolbar, TB_AUTOSIZE, 0, 0);
     RECT tbr; GetWindowRect(g_toolbar, &tbr); g_toolbarH = tbr.bottom - tbr.top;
+
+    // Shell UI font (Segoe UI on Win10/11) for the dialogs (Properties / New Session).
+    NONCLIENTMETRICSW ncm{ sizeof(ncm) };
+    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+    g_uiFont = CreateFontIndirectW(&ncm.lfMessageFont);
 
     // System-tray icon (right-click for a menu incl. Restart / Exit; double-click restores).
     g_nid.cbSize = sizeof g_nid;
