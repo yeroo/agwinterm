@@ -615,6 +615,41 @@ static void saveColors() {
     v = g_defBg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", REG_DWORD, &v, sizeof(v));
     v = g_dosPalette ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DosPalette", REG_DWORD, &v, sizeof(v));
 }
+// Window geometry persistence. loadWindowRect resolves the saved rect (clamped onto a visible monitor
+// so an unplugged screen / resolution change can't strand the window off-screen) and is applied at
+// CreateWindow time so the window appears there directly — no create-then-move flash.
+static bool loadWindowRect(RECT* out, bool* maxed) {
+    const wchar_t* k = L"Software\\agwinterm-lite";
+    DWORD x, y, w, h, mx = 0, sz;
+    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, L"WinW", RRF_RT_REG_DWORD, nullptr, &w, &sz) != ERROR_SUCCESS) return false;
+    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, L"WinH", RRF_RT_REG_DWORD, nullptr, &h, &sz) != ERROR_SUCCESS) return false;
+    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, L"WinX", RRF_RT_REG_DWORD, nullptr, &x, &sz) != ERROR_SUCCESS) return false;
+    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, L"WinY", RRF_RT_REG_DWORD, nullptr, &y, &sz) != ERROR_SUCCESS) return false;
+    sz = sizeof(DWORD); RegGetValueW(HKEY_CURRENT_USER, k, L"WinMax", RRF_RT_REG_DWORD, nullptr, &mx, &sz);
+    if ((int)w < 200 || (int)h < 120) return false;   // sanity guard against a corrupt/degenerate rect
+    RECT rc{ (LONG)(int)x, (LONG)(int)y, (LONG)((int)x + (int)w), (LONG)((int)y + (int)h) };
+    if (!MonitorFromRect(&rc, MONITOR_DEFAULTTONULL)) {   // fully off every screen -> centre on the nearest
+        MONITORINFO mi{ sizeof(mi) }; GetMonitorInfoW(MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST), &mi);
+        int cw = mi.rcWork.right - mi.rcWork.left, ch = mi.rcWork.bottom - mi.rcWork.top;
+        int ww = min((int)w, cw), hh = min((int)h, ch);
+        rc = { mi.rcWork.left + (cw - ww) / 2, mi.rcWork.top + (ch - hh) / 2, 0, 0 };
+        rc.right = rc.left + ww; rc.bottom = rc.top + hh;
+    }
+    *out = rc; *maxed = mx != 0; return true;
+}
+static void saveWindowRect() {
+    WINDOWPLACEMENT wp{ sizeof(wp) };
+    if (!g_hwnd || !GetWindowPlacement(g_hwnd, &wp)) return;
+    RECT rc = wp.rcNormalPosition;   // the restore rect (correct even while maximized/minimized)
+    const wchar_t* k = L"Software\\agwinterm-lite";
+    DWORD x = (DWORD)rc.left, y = (DWORD)rc.top, w = (DWORD)(rc.right - rc.left), h = (DWORD)(rc.bottom - rc.top);
+    DWORD mx = (wp.showCmd == SW_SHOWMAXIMIZED || (wp.flags & WPF_RESTORETOMAXIMIZED)) ? 1 : 0;
+    RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinX", REG_DWORD, &x, sizeof(x));
+    RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinY", REG_DWORD, &y, sizeof(y));
+    RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinW", REG_DWORD, &w, sizeof(w));
+    RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinH", REG_DWORD, &h, sizeof(h));
+    RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinMax", REG_DWORD, &mx, sizeof(mx));
+}
 
 // Select a face+size, apply it, and persist the choice (used by the Properties dialog).
 static void pickFont(int faceIdx, int sizeIdx) {
@@ -1914,7 +1949,9 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case WM_EXITSIZEMOVE: saveWindowRect(); return 0;   // remember geometry after a user move/resize
         case WM_DESTROY: {
+            saveWindowRect();                        // remember window size + position for next launch
             Shell_NotifyIconW(NIM_DELETE, &g_nid);   // remove the tray icon
             for (Session* s : g_sessions) killSession(s);
             agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
@@ -2111,9 +2148,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RECT want{ 0, 0, kSidebarW + 100 * g_cw, 30 * g_ch };
     // WS_CLIPCHILDREN keeps the terminal paint out of the native tree child.
     AdjustWindowRect(&want, WS_OVERLAPPEDWINDOW, TRUE);   // TRUE = has a menu bar
+    int wx = CW_USEDEFAULT, wy = CW_USEDEFAULT, ww = want.right - want.left, wh = want.bottom - want.top;
+    RECT sr; bool startMax = false;
+    if (loadWindowRect(&sr, &startMax)) { wx = sr.left; wy = sr.top; ww = sr.right - sr.left; wh = sr.bottom - sr.top; }
     g_hwnd = CreateWindowW(L"AgwintermLite", L"agwinterm lite", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                           CW_USEDEFAULT, CW_USEDEFAULT, want.right - want.left, want.bottom - want.top,
-                           nullptr, buildMenuBar(), inst, nullptr);
+                           wx, wy, ww, wh, nullptr, buildMenuBar(), inst, nullptr);
 
     // Native SysTreeView32 sidebar docked on the left; picking a node selects that session.
     RECT cr; GetClientRect(g_hwnd, &cr);
@@ -2155,7 +2194,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wcscpy_s(g_nid.szTip, L"agwinterm lite");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 
-    ShowWindow(g_hwnd, show);
+    ShowWindow(g_hwnd, startMax ? SW_SHOWMAXIMIZED : show);   // restore a maximized session maximized
 
     int cols, rows;
     paneGridSize(0, &cols, &rows);
