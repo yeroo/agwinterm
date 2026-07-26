@@ -95,6 +95,11 @@ static int statusClass(const std::string& s) {
 }
 static HWND g_hwnd;
 static HFONT g_treeItalic;      // italic variant of the sidebar font (agent "working" rows)
+// Quick + scratch terminals: modal-ish popup windows, each hosting a dedicated (hidden) session. The
+// overlay is a scratch that runs a one-shot command. g_focusOverride redirects input/paint focus to a
+// popup's session while it's active.
+static HWND g_quickHwnd, g_scratchHwnd;
+static Session* g_quickSession, *g_scratchSession, *g_focusOverride;
 static HWND g_toolbar;          // native toolbar (New Session / New Workspace / Split)
 static int g_toolbarH = 0;      // its height; the tree + terminal start below it
 static HIMAGELIST g_tbImages;   // 16x16 Silk icons for the toolbar buttons
@@ -124,7 +129,7 @@ static bool g_dosPalette = true;      // Properties->Colors: remap ANSI indices 
 // the shell/TUI until the user assigns one in File -> Keyboard. Stored HOTKEY-format: LOBYTE = vk,
 // HIBYTE = HOTKEYF_* (SHIFT 1 / CONTROL 2 / ALT 4). 0 = unbound.
 enum { KB_NEW, KB_NEWWS, KB_CLOSE, KB_SPLIT, KB_NEXT, KB_PREV, KB_COPY, KB_PASTE,
-       KB_PALETTE, KB_FOCUSL, KB_FOCUSR, KB_SCROLLUP, KB_SCROLLDN, KB_COUNT };
+       KB_PALETTE, KB_FOCUSL, KB_FOCUSR, KB_SCROLLUP, KB_SCROLLDN, KB_QUICK, KB_SCRATCH, KB_COUNT };
 struct KbInfo { const wchar_t* label; const wchar_t* reg; };
 static const KbInfo kKbInfo[KB_COUNT] = {
     { L"New Session",      L"Key_New" },     { L"New Workspace",    L"Key_NewWs" },
@@ -133,7 +138,8 @@ static const KbInfo kKbInfo[KB_COUNT] = {
     { L"Copy",             L"Key_Copy" },    { L"Paste",            L"Key_Paste" },
     { L"Command Palette",  L"Key_Palette" }, { L"Focus Left Pane",  L"Key_FocusL" },
     { L"Focus Right Pane", L"Key_FocusR" },  { L"Scroll Up",        L"Key_ScrollUp" },
-    { L"Scroll Down",      L"Key_ScrollDn" },
+    { L"Scroll Down",      L"Key_ScrollDn" }, { L"Quick Terminal",   L"Key_Quick" },
+    { L"Scratch Terminal", L"Key_Scratch" },
 };
 static WORD g_keys[KB_COUNT] = { 0 };
 static bool g_swallowChar = false;   // set when a keydown was consumed by a binding, to drop its WM_CHAR
@@ -148,7 +154,8 @@ static const uint32_t kEgaPalette[16] = {
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
        IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
-       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108, IDM_KEYBOARD = 109 };
+       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108, IDM_KEYBOARD = 109,
+       IDM_QUICK = 120, IDM_SCRATCH = 121 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
@@ -319,8 +326,15 @@ static void paneGridSize(int pane, int* cols, int* rows) {
 }
 
 static Session* focusedSession() {
+    if (g_focusOverride) return g_focusOverride;   // a popup terminal owns input while it's focused
     int idx = g_pane[g_focus];
     return (idx >= 0 && idx < (int)g_sessions.size()) ? g_sessions[idx] : nullptr;
+}
+// The window that displays a session (a popup terminal, else the main window) — repaint target.
+static HWND windowForSession(Session* s) {
+    if (s == g_quickSession && g_quickHwnd) return g_quickHwnd;
+    if (s == g_scratchSession && g_scratchHwnd) return g_scratchHwnd;
+    return g_hwnd;
 }
 
 static void hostResize(Session* s, int cols, int rows) {
@@ -379,10 +393,10 @@ static DWORD WINAPI readerThread(void* param) {
         EnterCriticalSection(&g_lock);
         emu_feed(s->emu, buf.data(), n);
         LeaveCriticalSection(&g_lock);
-        InvalidateRect(g_hwnd, nullptr, FALSE);
+        InvalidateRect(windowForSession(s), nullptr, FALSE);
     }
     s->exited = true;   // EOF: child exited, host shut down, or we were superseded
-    InvalidateRect(g_hwnd, nullptr, FALSE);
+    InvalidateRect(windowForSession(s), nullptr, FALSE);
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // reflect the exited marker in the tree
     return 0;
 }
@@ -836,11 +850,10 @@ static HFONT styleFont(uint32_t attrs) {
     return g_fonts[((attrs & kAttrBold) ? 1 : 0) | ((attrs & kAttrItalic) ? 2 : 0)];
 }
 
-static void paintPane(HDC mem, int pane, RECT pr) {
-    int idx = g_pane[pane];
-    if (idx < 0 || idx >= (int)g_sessions.size()) return;
-    Session* s = g_sessions[idx];
-
+// Render one session's viewport into rect pr. `pane` selects the selection-highlight span (-1 = none,
+// e.g. popup windows); `showCursor` draws the cursor (the focused main pane, or a popup terminal).
+static void paintPane(HDC mem, RECT pr, Session* s, int pane, bool showCursor) {
+    if (!s) return;
     FfiEmuInfo info{};
     EnterCriticalSection(&g_lock);
     emu_info(s->emu, &info);
@@ -963,7 +976,7 @@ static void paintPane(HDC mem, int pane, RECT pr) {
     }
 
     // Cursor (only at live view, only in the focused pane, not while selecting).
-    if (off == 0 && info.cursorVisible && pane == g_focus && info.cursorCol < info.cols && !g_sel.has()) {
+    if (off == 0 && info.cursorVisible && showCursor && info.cursorCol < info.cols && !g_sel.has()) {
         RECT cur{ pr.left + (LONG)info.cursorCol * g_cw, pr.top + (LONG)info.cursorRow * g_ch,
                   pr.left + (LONG)(info.cursorCol + 1) * g_cw, pr.top + (LONG)(info.cursorRow + 1) * g_ch };
         if (cur.right <= pr.right) InvertRect(mem, &cur);
@@ -1010,10 +1023,10 @@ static void paint(HDC dc, RECT rc) {
     // The sidebar is now the native SysTreeView32 child (0..kSidebarW); WS_CLIPCHILDREN keeps this
     // paint out of it. Only the terminal content area (>= kSidebarW) is drawn here.
     for (int p = 0; p < 2; p++) {
-        if (g_pane[p] < 0) continue;
+        if (g_pane[p] < 0 || g_pane[p] >= (int)g_sessions.size()) continue;
         RECT pr;
         paneRect(p, rc, &pr);
-        paintPane(mem, p, pr);
+        paintPane(mem, pr, g_sessions[g_pane[p]], p, p == g_focus);
     }
     if (g_pane[1] >= 0) {   // split divider
         RECT pr0;
@@ -1254,6 +1267,7 @@ static void runPaletteItem(int id) {
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
+static void togglePopupTerminal(bool scratch);   // fwd (quick/scratch popup windows, defined below)
 static void runKbAction(int a) {
     switch (a) {
         case KB_NEW: { int c, r; paneGridSize(g_focus, &c, &r); Session* s = newSession(c, r); if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; InvalidateRect(g_hwnd, nullptr, FALSE); } break; }
@@ -1269,6 +1283,8 @@ static void runKbAction(int a) {
         case KB_FOCUSR: if (g_pane[1] >= 0) g_focus = 1; InvalidateRect(g_hwnd, nullptr, FALSE); break;
         case KB_SCROLLUP: scrollFocused(+10); break;
         case KB_SCROLLDN: scrollFocused(-10); break;
+        case KB_QUICK: togglePopupTerminal(false); break;
+        case KB_SCRATCH: togglePopupTerminal(true); break;
     }
 }
 static bool handleKeyDown(WPARAM vk) {
@@ -1490,6 +1506,9 @@ static HMENU buildMenuBar() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_NEXT, L"&Next Session");
     AppendMenuW(view, MF_STRING, IDM_PREV, L"&Previous Session");
+    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(view, MF_STRING, IDM_QUICK, L"&Quick Terminal");
+    AppendMenuW(view, MF_STRING, IDM_SCRATCH, L"Sc&ratch Terminal");
     // Font selection lives in File -> Properties now (no separate View -> Font submenu).
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agwinterm lite");
@@ -1902,6 +1921,91 @@ static HICON makeRetroIcon() {
     return icon;
 }
 
+// ---- Quick / Scratch popup terminals ----
+static void paintPopup(HWND h, Session* s) {
+    PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+    RECT rc; GetClientRect(h, &rc);
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
+    HGDIOBJ ob = SelectObject(mem, bmp);
+    HBRUSH bg = CreateSolidBrush(g_customColors ? toColorRef(g_defBg, false) : RGB(0, 0, 0));
+    FillRect(mem, &rc, bg); DeleteObject(bg);
+    if (s) paintPane(mem, rc, s, -1, true);   // -1 pane = no selection span; cursor always shown
+    BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, ob); DeleteObject(bmp); DeleteDC(mem);
+    EndPaint(h, &ps);
+}
+static LRESULT CALLBACK popupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    Session* s = (h == g_quickHwnd) ? g_quickSession : g_scratchSession;
+    switch (m) {
+        case WM_SETFOCUS:  g_focusOverride = s; return 0;
+        case WM_KILLFOCUS: if (g_focusOverride == s) g_focusOverride = nullptr; return 0;
+        case WM_ERASEBKGND: return 1;
+        case WM_PAINT: paintPopup(h, s); return 0;
+        case WM_SIZE:
+            if (s && w != SIZE_MINIMIZED) {
+                RECT rc; GetClientRect(h, &rc);
+                hostResize(s, max(1, (int)(rc.right / g_cw)), max(1, (int)(rc.bottom / g_ch)));
+                InvalidateRect(h, nullptr, FALSE);
+            }
+            return 0;
+        case WM_KEYDOWN:
+        case WM_SYSKEYDOWN:
+            g_focusOverride = s;
+            g_swallowChar = handleKeyDown(w);
+            InvalidateRect(h, nullptr, FALSE);
+            if (g_swallowChar) return 0;
+            break;
+        case WM_CHAR: {
+            g_focusOverride = s;
+            if (g_swallowChar) { g_swallowChar = false; return 0; }
+            wchar_t wc = (wchar_t)w;
+            if (s) s->scrollOff = 0;
+            if (wc == L'\r') sendBytes("\r", 1); else sendUtf8(wc);
+            return 0;
+        }
+        case WM_MOUSEWHEEL:
+            if (s) { s->scrollOff = max(0, s->scrollOff + (GET_WHEEL_DELTA_WPARAM(w) > 0 ? 3 : -3)); InvalidateRect(h, nullptr, FALSE); }
+            return 0;
+        case WM_SYSCOMMAND:
+            if ((w & 0xFFF0) == SC_MINIMIZE) { ShowWindow(g_hwnd, SW_MINIMIZE); return 0; }   // minimize -> all windows
+            break;
+        case WM_CLOSE: ShowWindow(h, SW_HIDE); SetForegroundWindow(g_hwnd); return 0;   // hide; keep the session alive
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+// Toggle a quick (scratch=false) or scratch (scratch=true) popup terminal: show/hide, creating its
+// window + dedicated hidden session on first use. Owned by the main window so it floats above it,
+// hides when the main window minimizes, and never sits behind it.
+static void togglePopupTerminal(bool scratch) {
+    HWND& hw = scratch ? g_scratchHwnd : g_quickHwnd;
+    Session*& sess = scratch ? g_scratchSession : g_quickSession;
+    if (hw && IsWindowVisible(hw)) { ShowWindow(hw, SW_HIDE); SetForegroundWindow(g_hwnd); return; }
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    if (!hw) {
+        static bool reg = false;
+        if (!reg) {
+            WNDCLASSW wc{};
+            wc.lpfnWndProc = popupProc; wc.hInstance = inst; wc.lpszClassName = L"AgwintermLitePopup";
+            wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_IBEAM); wc.hIcon = g_appIcon;
+            RegisterClassW(&wc); reg = true;
+        }
+        RECT pw; GetWindowRect(g_hwnd, &pw);
+        RECT want{ 0, 0, 80 * g_cw, 24 * g_ch };
+        AdjustWindowRect(&want, WS_OVERLAPPEDWINDOW, FALSE);
+        hw = CreateWindowExW(0, L"AgwintermLitePopup", scratch ? L"agwinterm lite — scratch" : L"agwinterm lite — quick",
+                             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, pw.left + 80, pw.top + 60,
+                             want.right - want.left, want.bottom - want.top, g_hwnd, nullptr, inst, nullptr);
+        RECT rc; GetClientRect(hw, &rc);
+        sess = newSession(max(1, (int)(rc.right / g_cw)), max(1, (int)(rc.bottom / g_ch)));   // windowForSession routes to hw (set above)
+        if (sess) { sess->hidden = true; sess->name = scratch ? L"scratch" : L"quick"; }      // not in the sidebar / not persisted
+    }
+    ShowWindow(hw, SW_SHOW);
+    SetForegroundWindow(hw);
+    g_focusOverride = sess;
+    InvalidateRect(hw, nullptr, FALSE);
+}
+
 static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_PAINT: {
@@ -2101,6 +2205,8 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 case IDM_PROPERTIES: showPropertiesDialog(); break;
                 case IDM_KEYBOARD: showKeyboardDialog(); break;
+                case IDM_QUICK: togglePopupTerminal(false); break;
+                case IDM_SCRATCH: togglePopupTerminal(true); break;
                 case IDM_RESTART: restartApp(); break;
                 case IDM_SHOW: showMainWindow(); break;
                 case IDM_EXIT: DestroyWindow(hwnd); break;
