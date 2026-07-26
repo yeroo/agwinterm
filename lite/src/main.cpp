@@ -66,6 +66,9 @@ static constexpr uint32_t kAttrBold = 1, kAttrItalic = 2, kAttrUnderline = 4,
                           kAttrInverse = 8, kAttrDim = 16, kAttrStrike = 32;
 static constexpr uint32_t kProtocolVersion = 2;
 static constexpr int kSidebarW = 180;
+static constexpr int kSplitterW = 5;   // draggable divider between the sidebar and the terminal
+static int g_sidebarW = kSidebarW;     // current (resizable) sidebar width
+static bool g_showSidebar = true, g_showToolbar = true, g_showStatus = true;   // View menu toggles (persisted)
 
 // ---- sessions & layout ----
 struct Session {
@@ -102,6 +105,22 @@ static HWND g_quickHwnd, g_scratchHwnd, g_overlayHwnd;
 static Session* g_quickSession, *g_scratchSession, *g_overlaySession, *g_focusOverride;
 static HWND g_toolbar;          // native toolbar (New Session / New Workspace / Split)
 static int g_toolbarH = 0;      // its height; the tree + terminal start below it
+static HWND g_status;           // native status bar (msctls_statusbar32)
+static int g_statusH = 0;       // its height; the terminal ends above it
+// Effective chrome extents (respect the View toggles): content sits between these.
+static int sidebarSpan() { return g_showSidebar ? g_sidebarW + kSplitterW : 0; }
+static int toolbarTop()  { return g_showToolbar ? g_toolbarH : 0; }
+static bool g_splitDrag = false;   // dragging the sidebar splitter
+static void relayout() {   // re-run the WM_SIZE layout + repaint after a toggle / splitter drag
+    RECT c; GetClientRect(g_hwnd, &c);
+    SendMessageW(g_hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(c.right, c.bottom));
+    InvalidateRect(g_hwnd, nullptr, TRUE);
+}
+static bool inSplitter(int x, int y) {
+    if (!g_showSidebar) return false;
+    RECT c; GetClientRect(g_hwnd, &c);
+    return x >= g_sidebarW && x < g_sidebarW + kSplitterW && y >= toolbarTop() && y < c.bottom - (g_showStatus ? g_statusH : 0);
+}
 static HIMAGELIST g_tbImages;   // 16x16 Silk icons for the toolbar buttons
 static ULONG_PTR g_gdiplusTok;  // GDI+ token (PNG decode)
 static HWND g_tree;             // native SysTreeView32 sidebar (sessions)
@@ -158,9 +177,10 @@ static const uint32_t kEgaPalette[16] = {
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
        IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
        IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108, IDM_KEYBOARD = 109,
-       IDM_QUICK = 120, IDM_SCRATCH = 121, IDM_REOPEN = 122 };
+       IDM_QUICK = 120, IDM_SCRATCH = 121, IDM_REOPEN = 122,
+       IDM_TG_SIDEBAR = 123, IDM_TG_TOOLBAR = 124, IDM_TG_STATUS = 125 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
-enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202 };
+enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202, ID_STATUS = 203 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
 #define WM_APP_TRAY        (WM_APP + 4)   // system-tray icon notifications
 #define WM_APP_OVERLAY     (WM_APP + 5)   // control thread -> UI thread: open an overlay (creates a window)
@@ -312,13 +332,14 @@ static void connectControl() {
 
 // ---- pane geometry ----
 static void paneRect(int pane, RECT client, RECT* out) {
-    int contentX = kSidebarW;
-    int top = g_toolbarH;   // terminal content starts below the toolbar
-    int contentW = client.right - kSidebarW;
-    if (g_pane[1] < 0) { *out = { contentX, top, client.right, client.bottom }; return; }
+    int contentX = sidebarSpan();               // right of the sidebar + splitter (0 if hidden)
+    int top = toolbarTop();                     // below the toolbar (0 if hidden)
+    int bottom = client.bottom - (g_showStatus ? g_statusH : 0);   // above the status bar
+    int contentW = client.right - contentX;
+    if (g_pane[1] < 0) { *out = { contentX, top, client.right, bottom }; return; }
     int half = contentW / 2;
-    if (pane == 0) *out = { contentX, top, contentX + half - 1, client.bottom };
-    else *out = { contentX + half + 1, top, client.right, client.bottom };
+    if (pane == 0) *out = { contentX, top, contentX + half - 1, bottom };
+    else *out = { contentX + half + 1, top, client.right, bottom };
 }
 
 static void paneGridSize(int pane, int* cols, int* rows) {
@@ -677,6 +698,10 @@ static void loadColors() {   // Properties->Colors overrides (default fg/bg + on
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defFg = v & 0xFFFFFF;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defBg = v & 0xFFFFFF;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DosPalette", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_dosPalette = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"SidebarW", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS && v >= 90 && v <= 900) g_sidebarW = v;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowSidebar", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showSidebar = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowToolbar", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showToolbar = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowStatus", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showStatus = v != 0;
 }
 static void loadKeys() {   // configurable key bindings; absent = unbound (0)
     for (int a = 0; a < KB_COUNT; a++) {
@@ -696,6 +721,10 @@ static void saveColors() {
     v = g_defFg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", REG_DWORD, &v, sizeof(v));
     v = g_defBg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", REG_DWORD, &v, sizeof(v));
     v = g_dosPalette ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DosPalette", REG_DWORD, &v, sizeof(v));
+    v = g_sidebarW; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"SidebarW", REG_DWORD, &v, sizeof(v));
+    v = g_showSidebar ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowSidebar", REG_DWORD, &v, sizeof(v));
+    v = g_showToolbar ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowToolbar", REG_DWORD, &v, sizeof(v));
+    v = g_showStatus ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowStatus", REG_DWORD, &v, sizeof(v));
 }
 // Window geometry persistence. loadWindowRect resolves the saved rect (clamped onto a visible monitor
 // so an unplugged screen / resolution change can't strand the window off-screen) and is applied at
@@ -1063,16 +1092,22 @@ static void paint(HDC dc, RECT rc) {
     if (g_pane[1] >= 0) {   // split divider
         RECT pr0;
         paneRect(0, rc, &pr0);
-        RECT div{ pr0.right, 0, pr0.right + 2, rc.bottom };
+        RECT div{ pr0.right, pr0.top, pr0.right + 2, pr0.bottom };
         HBRUSH b = CreateSolidBrush(RGB(60, 62, 70));
         FillRect(mem, &div, b);
         DeleteObject(b);
+    }
+    if (g_showSidebar) {   // draggable splitter bar (3-D groove, standard-control look) beside the tree
+        RECT sp{ g_sidebarW, toolbarTop(), g_sidebarW + kSplitterW, rc.bottom - (g_showStatus ? g_statusH : 0) };
+        HBRUSH f = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
+        FillRect(mem, &sp, f); DeleteObject(f);
+        DrawEdge(mem, &sp, EDGE_ETCHED, BF_LEFT | BF_RIGHT);
     }
 
     if (g_palette) {
         int n = (int)(sizeof kPalette / sizeof kPalette[0]);
         int pw = 460, ph = (n + 1) * (g_ch + 8) + 12;
-        int px = kSidebarW + ((rc.right - kSidebarW) - pw) / 2, py = 60;
+        int px = sidebarSpan() + ((rc.right - sidebarSpan()) - pw) / 2, py = 60;
         RECT box{ px, py, px + pw, py + ph };
         HBRUSH bb = CreateSolidBrush(RGB(28, 30, 38));
         FillRect(mem, &box, bb);
@@ -1394,6 +1429,25 @@ static void newSessionDialog(const char* cwd = nullptr);   // fwd (defined below
 
 // Rebuild the native TreeView sidebar from the session list; select the focused pane's session.
 // UI-thread only (worker threads post WM_APP_REFRESHTREE instead).
+// Fill the status bar's four parts: workspace · session count · terminal size · font.
+static void updateStatus() {
+    if (!g_status) return;
+    wchar_t buf[160];
+    const std::wstring& ws = (g_activeWs >= 0 && g_activeWs < (int)g_workspaces.size()) ? g_workspaces[g_activeWs] : g_workspaces[0];
+    SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)ws.c_str());
+    int n = 0; for (auto* s : g_sessions) if (!s->hidden) n++;
+    wsprintfW(buf, L"%d session%s  \x00B7  Rust pty-host", n, n == 1 ? L"" : L"s");
+    SendMessageW(g_status, SB_SETTEXTW, 1, (LPARAM)buf);
+    if (Session* s = focusedSession()) {
+        FfiEmuInfo info{}; EnterCriticalSection(&g_lock); emu_info(s->emu, &info); LeaveCriticalSection(&g_lock);
+        wsprintfW(buf, L"%u \x00D7 %u", info.cols, info.rows); SendMessageW(g_status, SB_SETTEXTW, 2, (LPARAM)buf);
+    }
+    if (!g_catalog.empty() && g_faceIdx >= 0 && g_faceIdx < (int)g_catalog.size()) {
+        const FontEntry& e = g_catalog[g_faceIdx];
+        const wchar_t* sz = (g_sizeIdx >= 0 && g_sizeIdx < (int)e.sizes.size()) ? e.sizes[g_sizeIdx].label : L"";
+        wsprintfW(buf, L"%s %s", e.label, sz); SendMessageW(g_status, SB_SETTEXTW, 3, (LPARAM)buf);
+    }
+}
 static void refreshTree() {
     if (!g_tree) return;
     g_treeSyncing = true;
@@ -1440,6 +1494,7 @@ static void refreshTree() {
     }
     if (sel) TreeView_SelectItem(g_tree, sel);
     g_treeSyncing = false;
+    updateStatus();
     if (!g_restoring) saveSessionState();   // persist the workspace/session structure on every change
 }
 
@@ -1546,6 +1601,10 @@ static HMENU buildMenuBar() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_QUICK, L"&Quick Terminal");
     AppendMenuW(view, MF_STRING, IDM_SCRATCH, L"Sc&ratch Terminal");
+    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(view, MF_STRING | (g_showSidebar ? MF_CHECKED : 0), IDM_TG_SIDEBAR, L"Side&bar");
+    AppendMenuW(view, MF_STRING | (g_showToolbar ? MF_CHECKED : 0), IDM_TG_TOOLBAR, L"&Toolbar");
+    AppendMenuW(view, MF_STRING | (g_showStatus ? MF_CHECKED : 0), IDM_TG_STATUS, L"Status &Bar");
     // Font selection lives in File -> Properties now (no separate View -> Font submenu).
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agwinterm lite");
@@ -2112,6 +2171,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_LBUTTONDOWN: {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            if (inSplitter(x, y)) { g_splitDrag = true; SetCapture(hwnd); return 0; }   // grab the sidebar splitter
             if (g_palette) { g_palette = false; InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); return 0; }
             // The sidebar is the native tree child, so clicks here are always in the terminal area.
             int pane, absRow, col;
@@ -2128,6 +2188,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_MOUSEMOVE: {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            if (g_splitDrag) { RECT c; GetClientRect(hwnd, &c); g_sidebarW = max(90, min((int)(c.right * 0.6), x)); relayout(); return 0; }
             if (wp & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) {   // report drags to a mouse-aware app
                 int held = (wp & MK_LBUTTON) ? 0 : (wp & MK_RBUTTON) ? 2 : 1;
                 if (mouseReport(x, y, held, true, true)) return 0;
@@ -2144,6 +2205,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_LBUTTONUP: {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+            if (g_splitDrag) { g_splitDrag = false; ReleaseCapture(); saveColors(); return 0; }   // persist the new width
             if (mouseReport(x, y, 0, false, false)) return 0;   // release to a mouse-aware app
             if (g_sel.active) {
                 g_sel.active = false;
@@ -2152,9 +2214,13 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case WM_SETCURSOR:
+            if (LOWORD(lp) == HTCLIENT) { POINT p; GetCursorPos(&p); ScreenToClient(hwnd, &p);
+                if (inSplitter(p.x, p.y)) { SetCursor(LoadCursorW(nullptr, (LPCWSTR)IDC_SIZEWE)); return TRUE; } }
+            break;
         case WM_RBUTTONDOWN: {
             int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-            if (x < kSidebarW) return 0;                        // sidebar: no paste (was inserting into the prompt)
+            if (x < sidebarSpan()) return 0;                    // sidebar/splitter: no paste (was inserting into the prompt)
             if (mouseReport(x, y, 2, true, false)) return 0;    // right-click to a mouse-aware app
             pasteClipboard();                                   // else right-click pastes into the terminal
             return 0;
@@ -2166,11 +2232,19 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_SIZE:
             if (wp != SIZE_MINIMIZED) {
-                if (g_toolbar) {   // toolbar spans the top; capture its height for the layout below it
-                    SendMessageW(g_toolbar, TB_AUTOSIZE, 0, 0);
-                    RECT tr; GetWindowRect(g_toolbar, &tr); g_toolbarH = tr.bottom - tr.top;
+                int clientH = HIWORD(lp);
+                if (g_toolbar) {   // standard toolbar spans the top; capture height (0 when hidden)
+                    ShowWindow(g_toolbar, g_showToolbar ? SW_SHOW : SW_HIDE);
+                    if (g_showToolbar) { SendMessageW(g_toolbar, TB_AUTOSIZE, 0, 0); RECT tr; GetWindowRect(g_toolbar, &tr); g_toolbarH = tr.bottom - tr.top; }
                 }
-                if (g_tree) MoveWindow(g_tree, 0, g_toolbarH, kSidebarW, HIWORD(lp) - g_toolbarH, TRUE);   // dock left, below the toolbar
+                if (g_status) {    // standard status bar auto-docks bottom; capture its height (0 when hidden)
+                    ShowWindow(g_status, g_showStatus ? SW_SHOW : SW_HIDE);
+                    if (g_showStatus) { SendMessageW(g_status, WM_SIZE, 0, 0); RECT sr; GetWindowRect(g_status, &sr); g_statusH = sr.bottom - sr.top; }
+                }
+                if (g_tree) {      // resizable sidebar between the toolbar and the status bar
+                    ShowWindow(g_tree, g_showSidebar ? SW_SHOW : SW_HIDE);
+                    if (g_showSidebar) MoveWindow(g_tree, 0, toolbarTop(), g_sidebarW, clientH - toolbarTop() - (g_showStatus ? g_statusH : 0), TRUE);
+                }
                 if (!g_sessions.empty()) syncPaneSizes();
             }
             return 0;
@@ -2282,6 +2356,13 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDM_QUICK: togglePopupTerminal(false); break;
                 case IDM_SCRATCH: togglePopupTerminal(true); break;
                 case IDM_REOPEN: reopenClosed(); break;
+                case IDM_TG_SIDEBAR: case IDM_TG_TOOLBAR: case IDM_TG_STATUS: {
+                    bool& b = id == IDM_TG_SIDEBAR ? g_showSidebar : id == IDM_TG_TOOLBAR ? g_showToolbar : g_showStatus;
+                    b = !b;
+                    CheckMenuItem(GetMenu(hwnd), id, MF_BYCOMMAND | (b ? MF_CHECKED : MF_UNCHECKED));
+                    relayout(); saveColors();
+                    break;
+                }
                 case IDM_RESTART: restartApp(); break;
                 case IDM_SHOW: showMainWindow(); break;
                 case IDM_EXIT: DestroyWindow(hwnd); break;
@@ -2572,9 +2653,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_tree = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
                              WS_CHILD | WS_VISIBLE | TVS_SHOWSELALWAYS | TVS_NOHSCROLL |
                              TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_EDITLABELS,
-                             0, 0, kSidebarW, cr.bottom, g_hwnd, (HMENU)ID_TREE, inst, nullptr);
+                             0, 0, g_sidebarW, cr.bottom, g_hwnd, (HMENU)ID_TREE, inst, nullptr);
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
     { LOGFONTW lf{}; GetObjectW((HFONT)GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf); lf.lfItalic = TRUE; g_treeItalic = CreateFontIndirectW(&lf); }   // "working" rows
+
+    // Native status bar (msctls_statusbar32) — a real standard control, docks itself at the bottom.
+    g_status = CreateWindowExW(0, STATUSCLASSNAMEW, nullptr, WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
+                               0, 0, 0, 0, g_hwnd, (HMENU)ID_STATUS, inst, nullptr);
+    { int parts[4] = { 120, 360, 470, -1 }; SendMessageW(g_status, SB_SETPARTS, 4, (LPARAM)parts); }
 
     // Native toolbar across the top: New Session / New Workspace / Split, as classic 16px Silk icons
     // with hover tooltips (TBSTYLE_TOOLTIPS). No TBSTYLE_FLAT: flat toolbars hot-track and can leave a
