@@ -129,7 +129,8 @@ static bool g_dosPalette = true;      // Properties->Colors: remap ANSI indices 
 // the shell/TUI until the user assigns one in File -> Keyboard. Stored HOTKEY-format: LOBYTE = vk,
 // HIBYTE = HOTKEYF_* (SHIFT 1 / CONTROL 2 / ALT 4). 0 = unbound.
 enum { KB_NEW, KB_NEWWS, KB_CLOSE, KB_SPLIT, KB_NEXT, KB_PREV, KB_COPY, KB_PASTE,
-       KB_PALETTE, KB_FOCUSL, KB_FOCUSR, KB_SCROLLUP, KB_SCROLLDN, KB_QUICK, KB_SCRATCH, KB_COUNT };
+       KB_PALETTE, KB_FOCUSL, KB_FOCUSR, KB_SCROLLUP, KB_SCROLLDN, KB_QUICK, KB_SCRATCH, KB_REOPEN,
+       KB_ZOOMIN, KB_ZOOMOUT, KB_ZOOMRESET, KB_COUNT };
 struct KbInfo { const wchar_t* label; const wchar_t* reg; };
 static const KbInfo kKbInfo[KB_COUNT] = {
     { L"New Session",      L"Key_New" },     { L"New Workspace",    L"Key_NewWs" },
@@ -139,7 +140,9 @@ static const KbInfo kKbInfo[KB_COUNT] = {
     { L"Command Palette",  L"Key_Palette" }, { L"Focus Left Pane",  L"Key_FocusL" },
     { L"Focus Right Pane", L"Key_FocusR" },  { L"Scroll Up",        L"Key_ScrollUp" },
     { L"Scroll Down",      L"Key_ScrollDn" }, { L"Quick Terminal",   L"Key_Quick" },
-    { L"Scratch Terminal", L"Key_Scratch" },
+    { L"Scratch Terminal", L"Key_Scratch" },  { L"Reopen Closed",    L"Key_Reopen" },
+    { L"Zoom In",          L"Key_ZoomIn" },   { L"Zoom Out",         L"Key_ZoomOut" },
+    { L"Zoom Reset",       L"Key_ZoomReset" },
 };
 static WORD g_keys[KB_COUNT] = { 0 };
 static bool g_swallowChar = false;   // set when a keydown was consumed by a binding, to drop its WM_CHAR
@@ -155,7 +158,7 @@ static const uint32_t kEgaPalette[16] = {
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
        IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
        IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108, IDM_KEYBOARD = 109,
-       IDM_QUICK = 120, IDM_SCRATCH = 121 };
+       IDM_QUICK = 120, IDM_SCRATCH = 121, IDM_REOPEN = 122 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
@@ -506,8 +509,16 @@ static void killSession(Session* s) {
     request(req, &rep);
 }
 
+struct ClosedSpec { std::wstring name; int ws; std::string app, cwd; std::vector<std::string> args; };
+static std::vector<ClosedSpec> g_closedStack;   // recently closed sessions, for Reopen Closed Session
+
 static void closeSessionAt(int idx) {
     if (idx < 0 || idx >= (int)g_sessions.size()) return;
+    Session* cs = g_sessions[idx];
+    if (!cs->hidden) {   // remember the launch spec so it can be reopened (skip transient split/popup shells)
+        if (g_closedStack.size() >= 16) g_closedStack.erase(g_closedStack.begin());
+        g_closedStack.push_back({ cs->name, cs->ws, cs->app, cs->cwd, cs->args });
+    }
     killSession(g_sessions[idx]);
     EnterCriticalSection(&g_lock);
     g_sessions.erase(g_sessions.begin() + idx);
@@ -523,6 +534,16 @@ static void closeSessionAt(int idx) {
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // drop the session from the tree
 }
 
+// Reopen the most recently closed session, relaunched with its remembered profile + cwd.
+static void reopenClosed() {
+    if (g_closedStack.empty()) return;
+    ClosedSpec sp = g_closedStack.back(); g_closedStack.pop_back();
+    if (sp.ws >= 0 && sp.ws < (int)g_workspaces.size()) g_activeWs = sp.ws;
+    int c, r; paneGridSize(g_focus, &c, &r);
+    Session* s = newSession(c, r, sp.app.empty() ? nullptr : sp.app.c_str(),
+                            sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str());
+    if (s) { s->name = sp.name; g_pane[g_focus] = (int)g_sessions.size() - 1; syncPaneSizes(); InvalidateRect(g_hwnd, nullptr, FALSE); }
+}
 static void toggleSplit();   // fwd
 static void closeFocused() {
     if (g_focus == 1 && g_pane[1] >= 0) { toggleSplit(); return; }   // closing the split pane = unsplit
@@ -757,6 +778,14 @@ static void saveSessionState() {
 static void pickFont(int faceIdx, int sizeIdx) {
     g_faceIdx = faceIdx; g_sizeIdx = sizeIdx;
     applyFont(); saveFontSel();
+}
+// Step the current face's size: dir>0 bigger, dir<0 smaller, dir==0 reset to the middle size.
+static void fontZoom(int dir) {
+    if (g_catalog.empty() || g_faceIdx < 0 || g_faceIdx >= (int)g_catalog.size()) return;
+    int n = (int)g_catalog[g_faceIdx].sizes.size();
+    int si = dir == 0 ? n / 2 : g_sizeIdx + (dir > 0 ? 1 : -1);
+    si = max(0, min(si, n - 1));
+    if (si != g_sizeIdx) pickFont(g_faceIdx, si);
 }
 
 // ---- Procedural box-drawing ----
@@ -1288,6 +1317,10 @@ static void runKbAction(int a) {
         case KB_SCROLLDN: scrollFocused(-10); break;
         case KB_QUICK: togglePopupTerminal(false); break;
         case KB_SCRATCH: togglePopupTerminal(true); break;
+        case KB_REOPEN: reopenClosed(); break;
+        case KB_ZOOMIN: fontZoom(+1); break;
+        case KB_ZOOMOUT: fontZoom(-1); break;
+        case KB_ZOOMRESET: fontZoom(0); break;
     }
 }
 static bool handleKeyDown(WPARAM vk) {
@@ -1495,6 +1528,7 @@ static HMENU buildMenuBar() {
     AppendMenuW(file, MF_STRING, IDM_NEWWS, L"New &Workspace");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close Session");
+    AppendMenuW(file, MF_STRING, IDM_REOPEN, L"Reop&en Closed Session");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_KEYBOARD, L"&Keyboard…");
     AppendMenuW(file, MF_STRING, IDM_PROPERTIES, L"P&roperties…");
@@ -2068,6 +2102,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_swallowChar) return 0;   // handled (e.g. a bound combo, or F10 -> ESC[21~)
             break;
         case WM_MOUSEWHEEL: {
+            if (LOWORD(wp) & MK_CONTROL) { fontZoom(GET_WHEEL_DELTA_WPARAM(wp) > 0 ? +1 : -1); return 0; }   // Ctrl+wheel = font zoom
             POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
             ScreenToClient(hwnd, &pt);   // wheel coords are screen-relative
             bool up = GET_WHEEL_DELTA_WPARAM(wp) > 0;
@@ -2246,6 +2281,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDM_KEYBOARD: showKeyboardDialog(); break;
                 case IDM_QUICK: togglePopupTerminal(false); break;
                 case IDM_SCRATCH: togglePopupTerminal(true); break;
+                case IDM_REOPEN: reopenClosed(); break;
                 case IDM_RESTART: restartApp(); break;
                 case IDM_SHOW: showMainWindow(); break;
                 case IDM_EXIT: DestroyWindow(hwnd); break;
