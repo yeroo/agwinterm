@@ -85,7 +85,16 @@ struct Session {
     std::vector<FfiCell> hrow;
 };
 
+// Agent status classification for the sidebar: BLOCKED = agent needs you (bold name),
+// WORKING = agent busy (italic name + "(working…)"), NONE = plain.
+enum { AGST_NONE, AGST_WORKING, AGST_BLOCKED };
+static int statusClass(const std::string& s) {
+    if (s == "working" || s == "busy" || s == "active" || s == "running") return AGST_WORKING;
+    if (s == "blocked" || s == "waiting" || s == "attention" || s == "input") return AGST_BLOCKED;
+    return AGST_NONE;
+}
 static HWND g_hwnd;
+static HFONT g_treeItalic;      // italic variant of the sidebar font (agent "working" rows)
 static HWND g_toolbar;          // native toolbar (New Session / New Workspace / Split)
 static int g_toolbarH = 0;      // its height; the tree + terminal start below it
 static HIMAGELIST g_tbImages;   // 16x16 Silk icons for the toolbar buttons
@@ -1358,15 +1367,19 @@ static void refreshTree() {
             if (g_sessions[i]->ws != w || g_sessions[i]->hidden) continue;   // skip split shells
             Session* s = g_sessions[i];
             ++vis;
-            const char* st = s->exited ? "exited" : s->status.c_str();
-            wchar_t label[128];
-            if (!s->name.empty()) wsprintfW(label, L"%s  ·  %S", s->name.c_str(), st);
-            else wsprintfW(label, L"session %d  ·  %S", vis, st);
+            // Agent status cue: name goes bold when the agent needs you (blocked), italic + "(working…)"
+            // while it's busy (italic applied in the tree's NM_CUSTOMDRAW). Others show plain.
+            int cls = s->exited ? AGST_NONE : statusClass(s->status);
+            std::wstring label = s->name.empty() ? (L"session " + std::to_wstring(vis)) : s->name;
+            if (s->exited) label += L"  (exited)";
+            else if (cls == AGST_WORKING) label += L"  (working…)";
             TVINSERTSTRUCTW tis{};
             tis.hParent = wh;
             tis.hInsertAfter = TVI_LAST;
-            tis.item.mask = TVIF_TEXT | TVIF_PARAM;
-            tis.item.pszText = label;
+            tis.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_STATE;
+            tis.item.stateMask = TVIS_BOLD;
+            tis.item.state = (cls == AGST_BLOCKED) ? TVIS_BOLD : 0;
+            tis.item.pszText = (LPWSTR)label.c_str();
             tis.item.lParam = i;
             HTREEITEM h = TreeView_InsertItem(g_tree, &tis);
             if (i == focusIdx) sel = h;
@@ -1998,6 +2011,19 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_NOTIFY: {
             auto* nm = (NMHDR*)lp;
+            if (nm->idFrom == ID_TREE && nm->code == NM_CUSTOMDRAW) {   // italicise "working" agent rows
+                auto* cd = (NMTVCUSTOMDRAW*)lp;
+                if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+                if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    LPARAM p = cd->nmcd.lItemlParam;
+                    if (p >= 0 && p < (LPARAM)g_sessions.size() && !g_sessions[p]->exited &&
+                        statusClass(g_sessions[p]->status) == AGST_WORKING && g_treeItalic) {
+                        SelectObject(cd->nmcd.hdc, g_treeItalic);
+                        return CDRF_NEWFONT;
+                    }
+                }
+                return CDRF_DODEFAULT;
+            }
             if (nm->code == TBN_GETINFOTIPW) {   // toolbar button hover tooltips ("hints")
                 auto* it = (NMTBGETINFOTIPW*)lp;
                 const wchar_t* tip = it->iItem == IDM_NEW ? L"New Session"
@@ -2358,6 +2384,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
                              TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_EDITLABELS,
                              0, 0, kSidebarW, cr.bottom, g_hwnd, (HMENU)ID_TREE, inst, nullptr);
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    { LOGFONTW lf{}; GetObjectW((HFONT)GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf); lf.lfItalic = TRUE; g_treeItalic = CreateFontIndirectW(&lf); }   // "working" rows
 
     // Native toolbar across the top: New Session / New Workspace / Split, as classic 16px Silk icons
     // with hover tooltips (TBSTYLE_TOOLTIPS). No TBSTYLE_FLAT: flat toolbars hot-track and can leave a
