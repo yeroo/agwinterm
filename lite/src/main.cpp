@@ -108,6 +108,23 @@ static bool g_customColors = false;   // Properties->Colors: override the termin
 static uint32_t g_defFg = 0xC0C0C0;   // packed 0xRRGGBB, legacy cmd.exe light gray on...
 static uint32_t g_defBg = 0x000000;   // ...black
 static bool g_dosPalette = true;      // Properties->Colors: remap ANSI indices to the muted EGA/VGA DOS palette
+// Configurable key bindings for every lite action. ALL UNBOUND BY DEFAULT so no combo is stolen from
+// the shell/TUI until the user assigns one in File -> Keyboard. Stored HOTKEY-format: LOBYTE = vk,
+// HIBYTE = HOTKEYF_* (SHIFT 1 / CONTROL 2 / ALT 4). 0 = unbound.
+enum { KB_NEW, KB_NEWWS, KB_CLOSE, KB_SPLIT, KB_NEXT, KB_PREV, KB_COPY, KB_PASTE,
+       KB_PALETTE, KB_FOCUSL, KB_FOCUSR, KB_SCROLLUP, KB_SCROLLDN, KB_COUNT };
+struct KbInfo { const wchar_t* label; const wchar_t* reg; };
+static const KbInfo kKbInfo[KB_COUNT] = {
+    { L"New Session",      L"Key_New" },     { L"New Workspace",    L"Key_NewWs" },
+    { L"Close Session",    L"Key_Close" },   { L"Split / Unsplit",  L"Key_Split" },
+    { L"Next Session",     L"Key_Next" },    { L"Previous Session", L"Key_Prev" },
+    { L"Copy",             L"Key_Copy" },    { L"Paste",            L"Key_Paste" },
+    { L"Command Palette",  L"Key_Palette" }, { L"Focus Left Pane",  L"Key_FocusL" },
+    { L"Focus Right Pane", L"Key_FocusR" },  { L"Scroll Up",        L"Key_ScrollUp" },
+    { L"Scroll Down",      L"Key_ScrollDn" },
+};
+static WORD g_keys[KB_COUNT] = { 0 };
+static bool g_swallowChar = false;   // set when a keydown was consumed by a binding, to drop its WM_CHAR
 // The authentic 16-colour EGA/VGA text palette (0x00/0x55/0xAA/0xFF steps) — dimmer than modern ANSI,
 // the classic MS-DOS look (e.g. Far's blue becomes 0x0000AA, not a bright 0x0000FF). Indexed in ANSI
 // order (0 black, 1 red, 2 green, 3 yellow, 4 blue, 5 magenta, 6 cyan, 7 white; +8 = bright) to match
@@ -119,7 +136,7 @@ static const uint32_t kEgaPalette[16] = {
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
        IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
-       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108 };
+       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108, IDM_KEYBOARD = 109 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
@@ -607,6 +624,18 @@ static void loadColors() {   // Properties->Colors overrides (default fg/bg + on
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defFg = v & 0xFFFFFF;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defBg = v & 0xFFFFFF;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DosPalette", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_dosPalette = v != 0;
+}
+static void loadKeys() {   // configurable key bindings; absent = unbound (0)
+    for (int a = 0; a < KB_COUNT; a++) {
+        DWORD v = 0, sz = sizeof(v);
+        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", kKbInfo[a].reg, RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_keys[a] = (WORD)v;
+    }
+}
+static void saveKeys() {
+    for (int a = 0; a < KB_COUNT; a++) {
+        DWORD v = g_keys[a];
+        RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", kKbInfo[a].reg, REG_DWORD, &v, sizeof(v));
+    }
 }
 static void saveColors() {
     DWORD v;
@@ -1169,6 +1198,23 @@ static void runPaletteItem(int id) {
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
+static void runKbAction(int a) {
+    switch (a) {
+        case KB_NEW: { int c, r; paneGridSize(g_focus, &c, &r); Session* s = newSession(c, r); if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; InvalidateRect(g_hwnd, nullptr, FALSE); } break; }
+        case KB_NEWWS: SendMessageW(g_hwnd, WM_COMMAND, IDM_NEWWS, 0); break;
+        case KB_CLOSE: closeFocused(); break;
+        case KB_SPLIT: toggleSplit(); break;
+        case KB_NEXT: cycleSession(1); break;
+        case KB_PREV: cycleSession(-1); break;
+        case KB_COPY: copySelection(); break;
+        case KB_PASTE: pasteClipboard(); break;
+        case KB_PALETTE: togglePalette(); break;
+        case KB_FOCUSL: g_focus = 0; InvalidateRect(g_hwnd, nullptr, FALSE); break;
+        case KB_FOCUSR: if (g_pane[1] >= 0) g_focus = 1; InvalidateRect(g_hwnd, nullptr, FALSE); break;
+        case KB_SCROLLUP: scrollFocused(+10); break;
+        case KB_SCROLLDN: scrollFocused(-10); break;
+    }
+}
 static bool handleKeyDown(WPARAM vk) {
     if (g_palette) {   // palette captures navigation while open
         int n = (int)(sizeof kPalette / sizeof kPalette[0]);
@@ -1178,31 +1224,14 @@ static bool handleKeyDown(WPARAM vk) {
         if (vk == VK_RETURN) { runPaletteItem(kPalette[g_paletteSel].id); return true; }
         return true;
     }
-    if (ctrlDown() && shiftDown()) {
-        if (vk == 'P') { togglePalette(); return true; }
-        switch (vk) {
-            case 'D': toggleSplit(); return true;   // split with an independent new shell
-            case VK_LEFT: g_focus = 0; InvalidateRect(g_hwnd, nullptr, FALSE); return true;
-            case VK_RIGHT: if (g_pane[1] >= 0) g_focus = 1; InvalidateRect(g_hwnd, nullptr, FALSE); return true;
-        }
+    // Configurable key bindings (all unbound by default, so every combo otherwise reaches the shell).
+    // Match the pressed vk + modifiers against the user's bindings; the same actions are always on the
+    // menu + toolbar. Checked before the xterm-key encoding so a bound combo wins over the default key.
+    {
+        BYTE mods = (BYTE)((shiftDown() ? HOTKEYF_SHIFT : 0) | (ctrlDown() ? HOTKEYF_CONTROL : 0) | (altDown() ? HOTKEYF_ALT : 0));
+        WORD combo = MAKEWORD((BYTE)vk, mods);
+        if (mods) for (int a = 0; a < KB_COUNT; a++) if (g_keys[a] == combo) { runKbAction(a); return true; }
     }
-    if (ctrlDown()) {
-        switch (vk) {
-            case 'C': if (g_sel.has()) { copySelection(); return true; } break;   // no selection → falls through to ^C interrupt
-            case 'V': pasteClipboard(); return true;
-            case 'T': {
-                int cols, rows;
-                paneGridSize(g_focus, &cols, &rows);
-                Session* s = newSession(cols, rows);
-                if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; InvalidateRect(g_hwnd, nullptr, FALSE); }
-                return true;
-            }
-            case 'W': closeFocused(); return true;
-            case VK_TAB: cycleSession(1); return true;   // next visible session (skips split shells)
-        }
-    }
-    if (shiftDown() && vk == VK_PRIOR) { scrollFocused(+10); return true; }
-    if (shiftDown() && vk == VK_NEXT) { scrollFocused(-10); return true; }
 
     // Terminal special keys, encoded with xterm modifiers (mod = 1 + shift + 2*alt + 4*ctrl) so
     // full-screen apps like Far Manager get F1-F12 and Ctrl/Shift/Alt combinations. Three forms:
@@ -1382,22 +1411,23 @@ static void showTreeContextMenu() {
 
 static HMENU buildMenuBar() {
     HMENU file = CreatePopupMenu();
-    AppendMenuW(file, MF_STRING, IDM_NEW, L"&New Session…\tCtrl+T");
+    AppendMenuW(file, MF_STRING, IDM_NEW, L"&New Session…");
     AppendMenuW(file, MF_STRING, IDM_NEWWS, L"New &Workspace");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close Session\tCtrl+W");
+    AppendMenuW(file, MF_STRING, IDM_CLOSE, L"&Close Session");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(file, MF_STRING, IDM_KEYBOARD, L"&Keyboard…");
     AppendMenuW(file, MF_STRING, IDM_PROPERTIES, L"P&roperties…");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_RESTART, L"&Restart everything");
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"E&xit");
     HMENU edit = CreatePopupMenu();
-    AppendMenuW(edit, MF_STRING, IDM_COPY, L"&Copy\tCtrl+C");
-    AppendMenuW(edit, MF_STRING, IDM_PASTE, L"&Paste\tCtrl+V");
+    AppendMenuW(edit, MF_STRING, IDM_COPY, L"&Copy");
+    AppendMenuW(edit, MF_STRING, IDM_PASTE, L"&Paste");
     HMENU view = CreatePopupMenu();
-    AppendMenuW(view, MF_STRING, IDM_SPLIT, L"&Split / Unsplit\tCtrl+Shift+D");
+    AppendMenuW(view, MF_STRING, IDM_SPLIT, L"&Split / Unsplit");
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(view, MF_STRING, IDM_NEXT, L"&Next Session\tCtrl+Tab");
+    AppendMenuW(view, MF_STRING, IDM_NEXT, L"&Next Session");
     AppendMenuW(view, MF_STRING, IDM_PREV, L"&Previous Session");
     // Font selection lives in File -> Properties now (no separate View -> Font submenu).
     HMENU help = CreatePopupMenu();
@@ -1655,6 +1685,67 @@ static void showPropertiesDialog() {
     SetFocus(g_hwnd);
 }
 
+// ---- Keyboard bindings dialog (native hotkey controls; all unbound by default) ----
+static HWND g_kbHwnd, g_kbCtl[KB_COUNT];
+enum { KBID_CLEAR = 4001, KBID_BASE = 4100 };   // KBID_BASE + action = that action's hotkey control
+static LRESULT CALLBACK kbDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+        case WM_COMMAND:
+            switch (LOWORD(w)) {
+                case KBID_CLEAR: for (int a = 0; a < KB_COUNT; a++) SendMessageW(g_kbCtl[a], HKM_SETHOTKEY, 0, 0); return 0;
+                case IDOK:
+                    for (int a = 0; a < KB_COUNT; a++) g_keys[a] = (WORD)SendMessageW(g_kbCtl[a], HKM_GETHOTKEY, 0, 0);
+                    saveKeys(); DestroyWindow(h); return 0;
+                case IDCANCEL: DestroyWindow(h); return 0;
+            }
+            return 0;
+        case WM_CLOSE: DestroyWindow(h); return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+static void showKeyboardDialog() {
+    static bool reg = false;
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    if (!reg) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = kbDlgProc; wc.hInstance = inst; wc.lpszClassName = L"AgwintermLiteKeys";
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);
+        RegisterClassW(&wc); reg = true;
+    }
+    const int W = 360, H = 96 + KB_COUNT * 26 + 56;
+    RECT pw; GetWindowRect(g_hwnd, &pw);
+    g_kbHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteKeys", L"agwinterm lite — Keyboard",
+                               WS_POPUP | WS_CAPTION | WS_SYSMENU, pw.left + 60, pw.top + 40, W, H, g_hwnd, nullptr, inst, nullptr);
+    HFONT gui = g_uiFont ? g_uiFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    auto mk = [&](const wchar_t* cls, const wchar_t* txt, DWORD st, int x, int y, int ww, int hh, int id) {
+        HWND c = CreateWindowExW(0, cls, txt, WS_CHILD | WS_VISIBLE | st, x, y, ww, hh, g_kbHwnd, (HMENU)(INT_PTR)id, inst, nullptr);
+        SendMessageW(c, WM_SETFONT, (WPARAM)gui, TRUE); return c;
+    };
+    mk(L"STATIC", L"Assign a shortcut to each action (Backspace clears; unset = passed to the shell):",
+       0, 16, 10, W - 40, 30, 0);
+    for (int a = 0; a < KB_COUNT; a++) {
+        int y = 50 + a * 26;
+        mk(L"STATIC", kKbInfo[a].label, SS_CENTERIMAGE, 16, y, 150, 22, 0);
+        g_kbCtl[a] = mk(HOTKEY_CLASSW, L"", WS_BORDER, 176, y, 160, 22, KBID_BASE + a);
+        SendMessageW(g_kbCtl[a], HKM_SETRULES, HKCOMB_NONE, MAKEWORD(HOTKEYF_CONTROL, 0));   // bare key -> add Ctrl
+        SendMessageW(g_kbCtl[a], HKM_SETHOTKEY, g_keys[a], 0);
+    }
+    int by = 50 + KB_COUNT * 26 + 8;
+    mk(L"BUTTON", L"Clear all", 0, 16, by, 90, 26, KBID_CLEAR);
+    mk(L"BUTTON", L"OK", BS_DEFPUSHBUTTON, W - 190, by, 82, 26, IDOK);
+    mk(L"BUTTON", L"Cancel", 0, W - 100, by, 82, 26, IDCANCEL);
+    EnableWindow(g_hwnd, FALSE);
+    ShowWindow(g_kbHwnd, SW_SHOW);
+    MSG msg;
+    while (IsWindow(g_kbHwnd)) {
+        if (!GetMessageW(&msg, nullptr, 0, 0)) { PostQuitMessage((int)msg.wParam); break; }
+        if (!IsDialogMessageW(g_kbHwnd, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+    }
+    EnableWindow(g_hwnd, TRUE);
+    SetForegroundWindow(g_hwnd);
+    SetFocus(g_hwnd);
+}
+
 // Restart everything: relaunch a fresh instance AFTER this one (and its pty-host) has fully exited,
 // then quit. The ~1s ping delay avoids the new instance connecting to the dying pty-host.
 static void restartApp() {
@@ -1766,10 +1857,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CHAR: {
             wchar_t wc = (wchar_t)wp;
             if (g_palette) return 0;
-            // Swallow control chars owned by shortcuts: T(20) W(23) D(4) V(22) P(16); C(3) only
-            // when it copied a selection (otherwise ^C must reach the shell as interrupt).
-            if (ctrlDown() && (wc == 20 || wc == 23 || wc == 4 || wc == 22 || wc == 16)) return 0;
-            if (ctrlDown() && wc == 3 && g_sel.has()) return 0;
+            if (g_swallowChar) { g_swallowChar = false; return 0; }   // this char belongs to a keydown a binding consumed
             if (Session* s = focusedSession()) s->scrollOff = 0;
             if (wc == L'\r') { sendBytes("\r", 1); return 0; }
             sendUtf8(wc);
@@ -1777,7 +1865,9 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:   // F10 and Alt-combos arrive here (menu keys); route them to the terminal
-            if (handleKeyDown(wp)) return 0;   // handled (e.g. F10 -> ESC[21~) — suppress menu activation
+            // Reset per keydown; if a binding handled it, swallow the WM_CHAR that TranslateMessage emits.
+            g_swallowChar = handleKeyDown(wp);
+            if (g_swallowChar) return 0;   // handled (e.g. a bound combo, or F10 -> ESC[21~)
             break;
         case WM_MOUSEWHEEL: {
             POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
@@ -1936,6 +2026,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     break;
                 }
                 case IDM_PROPERTIES: showPropertiesDialog(); break;
+                case IDM_KEYBOARD: showKeyboardDialog(); break;
                 case IDM_RESTART: restartApp(); break;
                 case IDM_SHOW: showMainWindow(); break;
                 case IDM_EXIT: DestroyWindow(hwnd); break;
@@ -2129,12 +2220,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_haveTamzen = tam > 0;
     buildFontCatalog();
     loadColors();      // Properties->Colors overrides, remembered across restarts
+    loadKeys();        // configurable key bindings (unbound by default)
     loadFontSel();     // resolve the remembered face+size (first run -> Terminal 8x12)
     applyFont();       // creates g_fonts + sets g_cw/g_ch (g_hwnd still null, so no relayout yet)
 
     connectControl();
 
-    INITCOMMONCONTROLSEX icc{ sizeof icc, ICC_TREEVIEW_CLASSES | ICC_BAR_CLASSES };
+    INITCOMMONCONTROLSEX icc{ sizeof icc, ICC_TREEVIEW_CLASSES | ICC_BAR_CLASSES | ICC_HOTKEY_CLASS };
     InitCommonControlsEx(&icc);
 
     g_appIcon = makeRetroIcon();
