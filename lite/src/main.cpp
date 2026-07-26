@@ -1483,7 +1483,7 @@ static HFONT makePreviewFontSel() {
 static void refreshPreview(HWND h) {
     if (g_pPrev) DeleteObject(g_pPrev);
     g_pPrev = makePreviewFontSel();
-    InvalidateRect(h, nullptr, FALSE);
+    InvalidateRect(h, nullptr, TRUE);
 }
 static void fillSizeCombo(int sel) {   // sizes for the current face; disabled if the face has only one
     SendMessageW(g_pSizeCombo, CB_RESETCONTENT, 0, 0);
@@ -1512,9 +1512,9 @@ static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 case PID_SIZECOMBO:
                     if (HIWORD(w) == CBN_SELCHANGE) { g_pSize = (int)SendMessageW((HWND)l, CB_GETCURSEL, 0, 0); refreshPreview(h); }
                     break;
-                case PID_USECOLORS: g_pUse = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; InvalidateRect(h, nullptr, FALSE); break;
-                case PID_TEXT: g_pTarget = 0; InvalidateRect(h, nullptr, FALSE); break;
-                case PID_BG:   g_pTarget = 1; InvalidateRect(h, nullptr, FALSE); break;
+                case PID_USECOLORS: g_pUse = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; InvalidateRect(h, nullptr, TRUE); break;
+                case PID_TEXT: g_pTarget = 0; InvalidateRect(h, nullptr, TRUE); break;
+                case PID_BG:   g_pTarget = 1; InvalidateRect(h, nullptr, TRUE); break;
                 case PID_APPLY: propCommit(); break;
                 case IDOK: propCommit(); DestroyWindow(h); break;
                 case IDCANCEL: DestroyWindow(h); break;
@@ -1529,7 +1529,7 @@ static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                     uint32_t packed = (GetRValue(cr) << 16) | (GetGValue(cr) << 8) | GetBValue(cr);
                     if (g_pTarget == 0) g_pFg = packed; else g_pBg = packed;
                     if (!g_pUse) { g_pUse = true; CheckDlgButton(h, PID_USECOLORS, BST_CHECKED); }
-                    InvalidateRect(h, nullptr, FALSE);
+                    InvalidateRect(h, nullptr, TRUE);
                 }
             }
             return 0;
@@ -1588,7 +1588,8 @@ static void showPropertiesDialog() {
     const int W = 396, H = 452;
     RECT pw; GetWindowRect(g_hwnd, &pw);
     g_pHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteProps", L"agwinterm lite — Properties",
-                              WS_POPUP | WS_CAPTION | WS_SYSMENU, pw.left + 60, pw.top + 40, W, H, g_hwnd, nullptr, inst, nullptr);
+                              WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,   // erase-on-repaint won't flicker the controls
+                              pw.left + 60, pw.top + 40, W, H, g_hwnd, nullptr, inst, nullptr);
     HFONT gui = g_uiFont ? g_uiFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     auto mk = [&](const wchar_t* cls, const wchar_t* txt, DWORD st, int x, int y, int w, int hh, int id) {
         HWND c = CreateWindowExW(0, cls, txt, WS_CHILD | WS_VISIBLE | st, x, y, w, hh, g_pHwnd, (HMENU)(INT_PTR)id, inst, nullptr);
