@@ -103,7 +103,6 @@ struct FontEntry { const wchar_t* label; const wchar_t* face; int kind; bool ava
 static std::vector<FontEntry> g_catalog;
 static int g_faceIdx = 0, g_sizeIdx = 0;   // current selection into g_catalog
 static bool g_haveCozette = false, g_haveTamzen = false;   // bundled bitmap fonts actually loaded
-static HMENU g_fontMenu;        // View->Font submenu (for the active-font radio mark)
 static HFONT g_uiFont;          // shell UI font (Segoe UI) for the toolbar buttons
 static bool g_customColors = false;   // Properties->Colors: override the terminal's default fg/bg
 static uint32_t g_defFg = 0xC0C0C0;   // packed 0xRRGGBB, legacy cmd.exe light gray on...
@@ -112,8 +111,7 @@ static uint32_t g_defBg = 0x000000;   // ...black
 // Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
        IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
-       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108,
-       IDM_FONT_TT = 110, IDM_FONT_TERMINAL = 111, IDM_FONT_FIXEDSYS = 112 };
+       IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202 };
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
@@ -608,27 +606,10 @@ static void saveColors() {
     v = g_defBg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", REG_DWORD, &v, sizeof(v));
 }
 
-// Tick whichever View->Font preset (if any) matches the current selection.
-static void updateFontMenuRadio() {
-    if (!g_fontMenu || g_faceIdx < 0 || g_faceIdx >= (int)g_catalog.size()) return;
-    const wchar_t* f = g_catalog[g_faceIdx].label;
-    int id = -1;
-    if (wcscmp(f, L"Nerd Font") == 0) id = IDM_FONT_TT;
-    else if (wcscmp(f, L"Terminal") == 0 && g_sizeIdx == 5) id = IDM_FONT_TERMINAL;   // 8x12
-    else if (wcscmp(f, L"Fixedsys") == 0) id = IDM_FONT_FIXEDSYS;
-    if (id >= 0) CheckMenuRadioItem(g_fontMenu, IDM_FONT_TT, IDM_FONT_FIXEDSYS, id, MF_BYCOMMAND);
-    else for (int i = IDM_FONT_TT; i <= IDM_FONT_FIXEDSYS; i++) CheckMenuItem(g_fontMenu, i, MF_BYCOMMAND | MF_UNCHECKED);
-}
-// Select a face+size, apply, persist, and sync the menu (used by View->Font quick presets + Properties).
+// Select a face+size, apply it, and persist the choice (used by the Properties dialog).
 static void pickFont(int faceIdx, int sizeIdx) {
     g_faceIdx = faceIdx; g_sizeIdx = sizeIdx;
-    applyFont(); saveFontSel(); updateFontMenuRadio();
-}
-// View->Font quick presets: Nerd 16 / Terminal 8x12 / Fixedsys.
-static void applyFontMode(int mode) {
-    if (mode == 1) { int i = catFace(L"Terminal"); if (i >= 0) pickFont(i, 5); }
-    else if (mode == 2) { int i = catFace(L"Fixedsys"); if (i >= 0) pickFont(i, 0); }
-    else { int i = catFace(L"Nerd Font"); if (i >= 0) pickFont(i, 1); }
+    applyFont(); saveFontSel();
 }
 
 // ---- Procedural box-drawing ----
@@ -1365,14 +1346,7 @@ static HMENU buildMenuBar() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_NEXT, L"&Next Session\tCtrl+Tab");
     AppendMenuW(view, MF_STRING, IDM_PREV, L"&Previous Session");
-    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
-    HMENU font = CreatePopupMenu();   // switch between the Nerd Font and the old Windows raster fonts
-    AppendMenuW(font, MF_STRING, IDM_FONT_TT,       L"&Nerd Font (default)");
-    AppendMenuW(font, MF_STRING, IDM_FONT_TERMINAL, L"&Terminal 8x12 (raster)");
-    AppendMenuW(font, MF_STRING, IDM_FONT_FIXEDSYS, L"&Fixedsys (raster)");
-    g_fontMenu = font;
-    updateFontMenuRadio();   // tick the preset matching the current selection (if any)
-    AppendMenuW(view, MF_POPUP, (UINT_PTR)font, L"&Font");
+    // Font selection lives in File -> Properties now (no separate View -> Font submenu).
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agwinterm lite");
     HMENU bar = CreateMenu();
@@ -1902,12 +1876,6 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     refreshTree();
                     break;
                 }
-                case IDM_FONT_TT:
-                case IDM_FONT_TERMINAL:
-                case IDM_FONT_FIXEDSYS:
-                    applyFontMode(id - IDM_FONT_TT);   // preset: applies, persists, updates the radio
-                    SetFocus(hwnd);
-                    break;
                 case IDM_PROPERTIES: showPropertiesDialog(); break;
                 case IDM_RESTART: restartApp(); break;
                 case IDM_SHOW: showMainWindow(); break;
