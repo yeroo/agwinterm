@@ -3072,8 +3072,14 @@ public:
     }
 
     // ---- commands ----
-    LRESULT OnCommand(UINT, WPARAM wp, LPARAM, BOOL&) {
+    LRESULT OnCommand(UINT, WPARAM wp, LPARAM lp, BOOL&) {
         int id = LOWORD(wp);
+        // Accept only menu/accelerator commands (lParam == 0) and toolbar button clicks. The tree
+        // FORWARDS its label-edit control's EN_* notifications here as WM_COMMAND, and their control
+        // id can collide with command ids (EN_CHANGE arrived as id 1 == IDM_NEW — so renaming a
+        // workspace opened the New Session dialog).
+        if (lp != 0 && (HWND)lp != g_toolbar) return 0;
+        if (HIWORD(wp) > 1) return 0;   // BN_CLICKED/menu/accel only, never EN_*/CBN_*
         switch (id) {
             case IDM_NEW: newSessionDialog(); break;                                     // profile picker
             case IDM_NEWWS: {                                                            // new workspace ("folder")
