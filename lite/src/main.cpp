@@ -38,6 +38,10 @@ CAppModule _Module;
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "uxtheme.lib")
+// comctl32 v6: needed so DarkMode_* visual styles (incl. DARK SCROLLBARS) can render. Classic mode
+// stays pixel-classic regardless: applyTheme strips the visual style per control there, and an
+// untheme'd v6 control paints with the classic engine — same look as the old no-manifest build.
+#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "advapi32.lib")   // registry (persisted font choice)
@@ -390,12 +394,16 @@ static BOOL CALLBACK themeDlgChild(HWND c, LPARAM) {
     wchar_t cls[32]{};
     GetClassNameW(c, cls, 32);
     darkmode::allowWindow(c, g_th.dark);
-    if (!lstrcmpW(cls, L"ComboBox"))
-        SetWindowTheme(c, g_th.dark ? L"DarkMode_CFD" : L"CFD", nullptr);
-    else if (!lstrcmpW(cls, L"Button") || !lstrcmpW(cls, L"ListBox") || !lstrcmpW(cls, L"ScrollBar") ||
-             !lstrcmpW(cls, L"Edit"))
-        SetWindowTheme(c, g_th.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    // Dark gets the DarkMode_* styles (v6 manifest makes them real — incl. dark scrollbars on the
+    // list boxes); light/classic strip so the dialogs keep their pre-v6 look exactly.
+    if (!lstrcmpW(cls, L"ComboBox")) {
+        if (g_th.dark) SetWindowTheme(c, L"DarkMode_CFD", nullptr); else SetWindowTheme(c, L"", L"");
+    } else if (!lstrcmpW(cls, L"Button") || !lstrcmpW(cls, L"ListBox") || !lstrcmpW(cls, L"ScrollBar") ||
+               !lstrcmpW(cls, L"Edit")) {
+        if (g_th.dark) SetWindowTheme(c, L"DarkMode_Explorer", nullptr); else SetWindowTheme(c, L"", L"");
+    }
     else if (!lstrcmpW(cls, L"msctls_hotkey32")) {
+        SetWindowTheme(c, L"", L"");   // classic engine in every mode; dark fully custom-paints it
         // dark hotkeys are fully custom-painted (see hotkeyProc); swap the light system WS_BORDER
         // for the painted one so no bright frame remains
         LONG st = (LONG)GetWindowLongPtrW(c, GWL_STYLE);
@@ -580,9 +588,11 @@ static void applyTheme() {
     }
     if (g_tree) {
         darkmode::allowWindow(g_tree, g_th.dark);
-        // A themed tree paints its own background and IGNORES TVM_SETBKCOLOR, so for the themed looks
-        // we strip the visual style ("") and own the colours outright. Classic restores the default.
-        SetWindowTheme(g_tree, g_th.classic ? nullptr : L"", g_th.classic ? nullptr : L"");
+        // Dark rides the native DarkMode_Explorer theme (dark rows, dark SCROLLBAR); light keeps the
+        // stripped-style look with our colours; Classic strips too — an untheme'd v6 control paints
+        // with the classic engine, so Classic stays exactly the old no-manifest look.
+        if (g_th.dark) SetWindowTheme(g_tree, L"DarkMode_Explorer", nullptr);
+        else SetWindowTheme(g_tree, L"", L"");
         TreeView_SetBkColor(g_tree,   g_th.classic ? (COLORREF)-1 : g_th.client);
         TreeView_SetTextColor(g_tree, g_th.classic ? (COLORREF)-1 : g_th.text);
         TreeView_SetLineColor(g_tree, g_th.classic ? (COLORREF)-1 : g_th.border);
@@ -597,6 +607,10 @@ static void applyTheme() {
         InvalidateRect(g_tree, nullptr, TRUE);
     }
     if (g_toolbar) {
+        // v6 would theme the toolbar's default painting — strip it outside dark so Classic keeps the
+        // raised 3-D buttons (an untheme'd v6 control uses the classic engine); themed modes are
+        // fully owner-drawn anyway.
+        SetWindowTheme(g_toolbar, g_th.dark ? nullptr : L"", g_th.dark ? nullptr : L"");
         // The classic toolbar draws a #A0A0A0/#FFFFFF 3-D divider at its top — THE white line under
         // the menu on dark. Themed looks drop it (CCS_NODIVIDER); Classic keeps its classic groove.
         LONG st = (LONG)GetWindowLongPtrW(g_toolbar, GWL_STYLE);
@@ -608,7 +622,10 @@ static void applyTheme() {
         }
         buildToolbarImages();   // re-flatten the PNG icons against the new bar colour
     }
-    if (g_status)  InvalidateRect(g_status,  nullptr, TRUE);
+    if (g_status) {
+        SetWindowTheme(g_status, L"", L"");   // always classic-engine: dark own-paints, light/classic keep the old bar
+        InvalidateRect(g_status, nullptr, TRUE);
+    }
     if (g_hwnd) {
         DrawMenuBar(g_hwnd);
         RedrawWindow(g_hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
@@ -3399,8 +3416,9 @@ public:
             if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
             if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                 LRESULT r = CDRF_DODEFAULT;
-                // Themed looks: comctl32 would otherwise draw the selected row with the system
-                // highlight, which is a bright box on a dark sidebar. Paint it from the palette.
+                // Themed looks paint rows from the palette (clearing CDIS_SELECTED so neither the
+                // system highlight nor the theme's selection pill draws over them). Dark keeps the
+                // DarkMode_Explorer window theme purely for its native dark scrollbar.
                 if (!g_th.classic) {
                     bool sel = (cd->nmcd.uItemState & (CDIS_SELECTED | CDIS_FOCUS)) != 0;
                     cd->clrText   = g_th.text;
@@ -4241,9 +4259,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     { int parts[4] = { 120, 360, 470, -1 }; g_frame.m_status.SetParts(4, parts); }
     SetWindowSubclass(g_status, statusProc, 1, 0);   // dark paint takeover (no-op in light/classic)
 
-    // Native toolbar across the top: New Session / New Workspace / Split, as classic 16px Silk icons
-    // with hover tooltips (TBSTYLE_TOOLTIPS). No TBSTYLE_FLAT: flat toolbars hot-track and can leave a
-    // button stuck "hot"; classic raised 3D buttons have no hover state and suit the old-skool look.
+    // Native toolbar across the top: every full-app chrome button, drawn at runtime as the full
+    // app's vector glyphs (see drawToolbarGlyph), with hover tooltips (TBSTYLE_TOOLTIPS). No
+    // TBSTYLE_FLAT: classic raised 3D buttons suit the old-skool Classic look; themed modes
+    // owner-draw the buttons anyway.
     buildToolbarImages();
     g_frame.m_toolbar.Create(g_hwnd, zr, nullptr,
                              WS_CHILD | WS_VISIBLE | TBSTYLE_TOOLTIPS | CCS_TOP, 0, (UINT)ID_TOOLBAR);

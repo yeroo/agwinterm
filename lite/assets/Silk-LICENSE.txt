@@ -1,4 +1,0 @@
-Toolbar icons: Silk icon set 1.3
-by Mark James — https://github.com/legacy-icons/famfamfam-silk (originally famfamfam.com)
-Licensed under Creative Commons Attribution 2.5 (CC-BY-2.5): https://creativecommons.org/licenses/by/2.5/
-Files: tb_new.png (application_add), tb_workspace.png (folder_add), tb_split.png (application_tile_vertical).
