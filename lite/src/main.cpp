@@ -18,9 +18,27 @@
 #include <commctrl.h>   // native TreeView (SysTreeView32) sidebar — ships with Windows, no external deps
 #include <shlobj.h>     // SHBrowseForFolder (New Session in Folder…)
 #include <gdiplus.h>    // load the PNG toolbar icons (ships with Windows, no external deps)
+#include <dwmapi.h>     // dark title bar (DWMWA_USE_IMMERSIVE_DARK_MODE)
+#include <uxtheme.h>    // SetWindowTheme — dark scrollbars on the tree
 #include <string>
 #include <vector>
+
+// ---- WTL (third_party/wtl, MS-PL) — the UI layer is built on ATL/WTL -------------------------
+// Header-only over Win32: same window messages and the same native controls underneath, but with
+// typed control wrappers, message-map crackers and RAII GDI objects instead of hand-rolled switches.
+#include <atlbase.h>
+#include <atlapp.h>
+CAppModule _Module;
+#include <atlwin.h>
+#include <atlframe.h>
+#include <atlctrls.h>
+#include <atlcrack.h>
+#include <atlmisc.h>
+#include <atlgdi.h>
+
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "advapi32.lib")   // registry (persisted font choice)
@@ -67,6 +85,7 @@ static constexpr uint32_t kAttrBold = 1, kAttrItalic = 2, kAttrUnderline = 4,
 static constexpr uint32_t kProtocolVersion = 2;
 static constexpr int kSidebarW = 180;
 static constexpr int kSplitterW = 5;   // draggable divider between the sidebar and the terminal
+static constexpr int kSidebarMinW = 90;   // the splitter will not shrink the left pane past this
 static int g_sidebarW = kSidebarW;     // current (resizable) sidebar width
 static bool g_showSidebar = true, g_showToolbar = true, g_showStatus = true;   // View menu toggles (persisted)
 
@@ -144,6 +163,324 @@ static bool g_customColors = false;   // Properties->Colors: override the termin
 static uint32_t g_defFg = 0xC0C0C0;   // packed 0xRRGGBB, legacy cmd.exe light gray on...
 static uint32_t g_defBg = 0x000000;   // ...black
 static bool g_dosPalette = true;      // Properties->Colors: remap ANSI indices to the muted EGA/VGA DOS palette
+
+// ---- UI theme (Properties -> Appearance) -----------------------------------------------------
+// Four modes. CLASSIC means "hands off": every control keeps whatever the OS draws, which is the
+// look lite shipped with. DARK/LIGHT paint the chrome ourselves (comctl32 will not do it for us).
+// AUTO follows the Windows "app mode" setting and re-resolves on WM_SETTINGCHANGE.
+enum { TH_AUTO = 0, TH_DARK = 1, TH_LIGHT = 2, TH_CLASSIC = 3 };
+static int g_themeMode = TH_AUTO;     // persisted as "Theme"
+struct UiTheme {
+    bool     dark;      // drives the DWM title bar + which control themes we ask for
+    bool     classic;   // true = don't custom-draw anything, let the system do it
+    COLORREF bar;       // toolbar / status bar / menu bar background
+    COLORREF client;    // deepest surface (tree background)
+    COLORREF text;      // normal label text
+    COLORREF dim;       // secondary text
+    COLORREF hot;       // hover fill
+    COLORREF sel;       // selected row fill
+    COLORREF accent;    // focus / hot border
+    COLORREF border;    // separators, grooves
+    uint32_t termFg;    // terminal default foreground (packed 0xRRGGBB)
+    uint32_t termBg;    // terminal default background
+};
+static UiTheme g_th;
+static HBRUSH g_thBrBar = nullptr, g_thBrClient = nullptr;   // cached theme brushes (dialog surfaces)
+
+// Windows "Choose your mode" -> Dark returns 0 here.
+static bool systemUsesDarkApps() {
+    DWORD v = 1, sz = sizeof v;
+    if (RegGetValueW(HKEY_CURRENT_USER,
+                     L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &v, &sz) != ERROR_SUCCESS) return false;
+    return v == 0;
+}
+static bool themeIsDark() { return g_themeMode == TH_DARK || (g_themeMode == TH_AUTO && systemUsesDarkApps()); }
+
+static void resolveTheme() {
+    UiTheme t{};
+    t.classic = (g_themeMode == TH_CLASSIC);
+    t.dark    = !t.classic && themeIsDark();
+    if (t.classic) {                      // whatever the OS uses for dialogs/controls
+        t.bar = GetSysColor(COLOR_BTNFACE);   t.client = GetSysColor(COLOR_WINDOW);
+        t.text = GetSysColor(COLOR_BTNTEXT);  t.dim    = GetSysColor(COLOR_GRAYTEXT);
+        t.hot = GetSysColor(COLOR_BTNHIGHLIGHT); t.sel  = GetSysColor(COLOR_HIGHLIGHT);
+        t.accent = GetSysColor(COLOR_HIGHLIGHT); t.border = GetSysColor(COLOR_BTNSHADOW);
+        t.termFg = 0xC0C0C0; t.termBg = 0x000000;   // the terminal itself stays a terminal
+    } else if (t.dark) {
+        t.bar = RGB(45,45,48); t.client = RGB(30,30,30);
+        t.text = RGB(241,241,241); t.dim = RGB(150,150,150);
+        t.hot = RGB(62,62,64); t.sel = RGB(38,79,120);
+        t.accent = RGB(0,122,204); t.border = RGB(63,63,70);
+        t.termFg = 0xC0C0C0; t.termBg = 0x000000;
+    } else {
+        t.bar = RGB(240,240,240); t.client = RGB(255,255,255);
+        t.text = RGB(26,26,26); t.dim = RGB(110,110,110);
+        t.hot = RGB(229,243,255); t.sel = RGB(205,232,255);
+        t.accent = RGB(0,120,215); t.border = RGB(205,205,205);
+        t.termFg = 0xC0C0C0; t.termBg = 0x000000;
+    }
+    g_th = t;
+    if (g_thBrBar) DeleteObject(g_thBrBar);
+    if (g_thBrClient) DeleteObject(g_thBrClient);
+    g_thBrBar = CreateSolidBrush(t.bar);
+    g_thBrClient = CreateSolidBrush(t.client);
+}
+// Terminal defaults: an explicit Properties override always wins over the theme.
+static uint32_t themeFg() { return g_customColors ? g_defFg : g_th.termFg; }
+static uint32_t themeBg() { return g_customColors ? g_defBg : g_th.termBg; }
+
+// Undocumented uxtheme entry points (Win10 1903+), exported by ordinal only. These are what File
+// Explorer itself uses; opting the process into dark mode is what makes USER32 draw the MENU BAR and
+// popup menus dark, and gives the tree dark scrollbars. Resolved defensively: absent = no-op.
+namespace darkmode {
+    enum PreferredAppMode { Default_, AllowDark, ForceDark, ForceLight, Max_ };
+    typedef PreferredAppMode (WINAPI* fnSetPreferredAppMode)(PreferredAppMode);
+    typedef BOOL (WINAPI* fnAllowDarkModeForWindow)(HWND, BOOL);
+    typedef void (WINAPI* fnFlushMenuThemes)();
+    static fnSetPreferredAppMode    pSetPreferredAppMode    = nullptr;
+    static fnAllowDarkModeForWindow pAllowDarkModeForWindow = nullptr;
+    static fnFlushMenuThemes        pFlushMenuThemes        = nullptr;
+    static void resolve() {
+        static bool done = false; if (done) return; done = true;
+        HMODULE ux = GetModuleHandleW(L"uxtheme.dll");
+        if (!ux) ux = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!ux) return;
+        pSetPreferredAppMode    = (fnSetPreferredAppMode)   GetProcAddress(ux, MAKEINTRESOURCEA(135));
+        pAllowDarkModeForWindow = (fnAllowDarkModeForWindow)GetProcAddress(ux, MAKEINTRESOURCEA(133));
+        pFlushMenuThemes        = (fnFlushMenuThemes)       GetProcAddress(ux, MAKEINTRESOURCEA(136));
+    }
+    static void setAppMode(int mode) {   // TH_* -> process-wide app mode
+        resolve();
+        if (pSetPreferredAppMode)
+            pSetPreferredAppMode(mode == TH_CLASSIC ? Default_ : (themeIsDark() ? ForceDark : ForceLight));
+        if (pFlushMenuThemes) pFlushMenuThemes();
+    }
+    static void allowWindow(HWND h, bool dark) {
+        resolve();
+        if (pAllowDarkModeForWindow && h) pAllowDarkModeForWindow(h, dark ? TRUE : FALSE);
+    }
+}
+
+static void darkTitleBar(HWND h, bool dark) {
+    if (!h) return;
+    BOOL v = dark ? TRUE : FALSE;
+    if (FAILED(DwmSetWindowAttribute(h, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &v, sizeof v)))
+        DwmSetWindowAttribute(h, 19, &v, sizeof v);   // older Win10 builds used attribute 19
+}
+
+// ---- dark menu bar (WM_UAH*) ------------------------------------------------------------------
+// The process dark-mode opt-in themes popup MENUS, but USER32 never themes the menu BAR. The
+// undocumented WM_UAH* messages are the hook Explorer/Notepad++ use to custom-draw it while keeping
+// native behaviour (checkmarks, accelerators, keyboard navigation) everywhere else.
+#define WM_UAHDRAWMENU        0x0091
+#define WM_UAHDRAWMENUITEM    0x0092
+typedef union  { struct { DWORD cx, cy; } rgSizes[2]; } UAHMENUITEMMETRICS;
+typedef struct { DWORD rgcx[4]; DWORD fUpdateMaxWidths : 2; } UAHMENUPOPUPMETRICS;
+typedef struct { HMENU hmenu; HDC hdc; DWORD dwFlags; } UAHMENU;
+typedef struct { int iPosition; UAHMENUITEMMETRICS umim; UAHMENUPOPUPMETRICS umpm; } UAHMENUITEM;
+typedef struct { DRAWITEMSTRUCT dis; UAHMENU um; UAHMENUITEM umi; } UAHDRAWMENUITEM;
+
+// USER32 also paints a light 3-pixel 3-D edge UNDER the menu bar, in the non-client area, that the
+// UAH draw never covers — overpaint it after every non-client paint while a themed look is active.
+static void themeMenuSeam(HWND h) {
+    if (!GetMenu(h)) return;
+    RECT wr, cr; POINT cp{ 0, 0 };
+    GetWindowRect(h, &wr); GetClientRect(h, &cr); ClientToScreen(h, &cp);
+    RECT strip{ cp.x - wr.left, 0, 0, cp.y - wr.top };
+    strip.right = strip.left + cr.right;
+    strip.top = strip.bottom - 4;
+    MENUBARINFO mbi{ sizeof mbi };
+    if (GetMenuBarInfo(h, OBJID_MENU, 0, &mbi)) {
+        int b = mbi.rcBar.bottom - wr.top;
+        if (b < strip.bottom && b > 0) strip.top = b;
+    }
+    if (strip.top >= strip.bottom) return;
+    if (HDC dc = GetWindowDC(h)) {
+        HBRUSH br = CreateSolidBrush(g_th.bar);
+        FillRect(dc, &strip, br);
+        DeleteObject(br);
+        ReleaseDC(h, dc);
+    }
+}
+
+// ---- themed dialogs ---------------------------------------------------------------------------
+// The hand-built dialogs (Properties / Keyboard / New Session) are plain windows, so dark mode is:
+// dark title bar, DarkMode_* visual styles on the children (buttons/lists/combos/scrollbars), and
+// WM_CTLCOLOR* + WM_ERASEBKGND answered with theme brushes. Light/Classic keep the system look.
+static BOOL CALLBACK themeDlgChild(HWND c, LPARAM) {
+    wchar_t cls[32]{};
+    GetClassNameW(c, cls, 32);
+    darkmode::allowWindow(c, g_th.dark);
+    if (!lstrcmpW(cls, L"ComboBox"))
+        SetWindowTheme(c, g_th.dark ? L"DarkMode_CFD" : L"CFD", nullptr);
+    else if (!lstrcmpW(cls, L"Button") || !lstrcmpW(cls, L"ListBox") || !lstrcmpW(cls, L"ScrollBar") ||
+             !lstrcmpW(cls, L"Edit"))
+        SetWindowTheme(c, g_th.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    else if (!lstrcmpW(cls, L"msctls_hotkey32")) {
+        // dark hotkeys are fully custom-painted (see hotkeyProc); swap the light system WS_BORDER
+        // for the painted one so no bright frame remains
+        LONG st = (LONG)GetWindowLongPtrW(c, GWL_STYLE);
+        LONG want = (g_th.dark && !g_th.classic) ? (st & ~WS_BORDER) : (st | WS_BORDER);
+        if (want != st) {
+            SetWindowLongPtrW(c, GWL_STYLE, want);
+            SetWindowPos(c, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+    }
+    InvalidateRect(c, nullptr, TRUE);
+    return TRUE;
+}
+static void themeDialog(HWND dlg) {
+    if (!dlg) return;
+    darkmode::allowWindow(dlg, g_th.dark);
+    darkTitleBar(dlg, g_th.dark);
+    EnumChildWindows(dlg, themeDlgChild, 0);
+    InvalidateRect(dlg, nullptr, TRUE);
+}
+// Shared message handling for the dialog procs; returns true (with *r set) when the theme answered.
+static bool themeDlgMsg(HWND h, UINT m, WPARAM w, LRESULT* r) {
+    if (!g_th.dark || g_th.classic) return false;
+    HDC dc = (HDC)w;
+    switch (m) {
+        case WM_ERASEBKGND: {
+            RECT rc; GetClientRect(h, &rc);
+            FillRect(dc, &rc, g_thBrBar);
+            *r = 1; return true;
+        }
+        case WM_CTLCOLORSTATIC:   // also checkboxes/radios (non-push buttons report as STATIC)
+        case WM_CTLCOLORBTN:
+            SetTextColor(dc, g_th.text); SetBkColor(dc, g_th.bar);
+            *r = (LRESULT)g_thBrBar; return true;
+        case WM_CTLCOLORLISTBOX:
+        case WM_CTLCOLOREDIT:
+            SetTextColor(dc, g_th.text); SetBkColor(dc, g_th.client);
+            *r = (LRESULT)g_thBrClient; return true;
+    }
+    return false;
+}
+
+// ---- dark hotkey fields -----------------------------------------------------------------------
+// msctls_hotkey32 never sends WM_CTLCOLOR* and ignores SetWindowTheme, so dark mode takes over its
+// WM_PAINT outright: dark field, themed border (accent when focused), and the binding text redrawn
+// from HKM_GETHOTKEY (same names the control itself would show).
+static LRESULT CALLBACK hotkeyProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
+    if (m == WM_NCDESTROY) RemoveWindowSubclass(h, hotkeyProc, id);
+    if (g_th.dark && !g_th.classic) {
+        if (m == WM_ERASEBKGND) return 1;
+        if (m == WM_SETFOCUS || m == WM_KILLFOCUS) InvalidateRect(h, nullptr, TRUE);   // focus ring
+        if (m == WM_PAINT) {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(h, &ps);
+            RECT rc; GetClientRect(h, &rc);
+            FillRect(dc, &rc, g_thBrClient);
+            HBRUSH fr = CreateSolidBrush(GetFocus() == h ? g_th.accent : g_th.border);
+            FrameRect(dc, &rc, fr); DeleteObject(fr);
+            WORD hk = (WORD)SendMessageW(h, HKM_GETHOTKEY, 0, 0);
+            std::wstring txt;
+            if (!hk) txt = L"None";
+            else {
+                BYTE mod = HIBYTE(hk), vk = LOBYTE(hk);
+                if (mod & HOTKEYF_CONTROL) txt += L"Ctrl + ";
+                if (mod & HOTKEYF_SHIFT)   txt += L"Shift + ";
+                if (mod & HOTKEYF_ALT)     txt += L"Alt + ";
+                UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) << 16;
+                if (mod & HOTKEYF_EXT) sc |= 0x01000000;
+                wchar_t name[64]{};
+                txt += (GetKeyNameTextW((LONG)sc, name, 64) > 0) ? name : L"?";
+            }
+            HFONT of = g_uiFont ? (HFONT)SelectObject(dc, g_uiFont) : nullptr;
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, hk ? g_th.text : g_th.dim);
+            RECT tr = rc; tr.left += 6;
+            DrawTextW(dc, txt.c_str(), -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            if (of) SelectObject(dc, of);
+            EndPaint(h, &ps);
+            return 0;
+        }
+    }
+    return DefSubclassProc(h, m, w, l);
+}
+
+// ---- dark status bar --------------------------------------------------------------------------
+// The native status bar ignores colour requests entirely; a full WM_PAINT takeover (via comctl32
+// subclassing) is the only clean way. Reads the theme at paint time, so switching just repaints.
+static LRESULT CALLBACK statusProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
+    if (m == WM_NCDESTROY) RemoveWindowSubclass(h, statusProc, id);
+    if (g_th.dark && !g_th.classic) {
+        if (m == WM_ERASEBKGND) return 1;
+        if (m == WM_PAINT) {
+            InvalidateRect(h, nullptr, FALSE);   // repaint whole bar (comctl32 invalidates only the changed part)
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(h, &ps);
+            RECT rc; GetClientRect(h, &rc);
+            HBRUSH chrome = CreateSolidBrush(g_th.bar), border = CreateSolidBrush(g_th.border);
+            FillRect(dc, &rc, chrome);
+            RECT line{ rc.left, rc.top, rc.right, rc.top + 1 };
+            FillRect(dc, &line, border);   // hairline against the terminal
+            int edges[8];
+            int n = (int)SendMessageW(h, SB_GETPARTS, 8, (LPARAM)edges);
+            HFONT of = g_uiFont ? (HFONT)SelectObject(dc, g_uiFont) : nullptr;
+            SetBkMode(dc, TRANSPARENT); SetTextColor(dc, g_th.text);
+            for (int i = 0; i < n; i++) {
+                wchar_t buf[256]{};
+                SendMessageW(h, SB_GETTEXTW, i, (LPARAM)buf);
+                int x0 = i ? edges[i - 1] : 0, x1 = edges[i];
+                if (x1 < 0 || x1 > rc.right) x1 = rc.right;
+                RECT tr{ x0 + 7, rc.top + 2, x1 - 4, rc.bottom };
+                DrawTextW(dc, buf, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+                if (i < n - 1) { RECT sep{ x1, rc.top + 4, x1 + 1, rc.bottom - 3 }; FillRect(dc, &sep, border); }
+            }
+            if (of) SelectObject(dc, of);
+            DeleteObject(chrome); DeleteObject(border);
+            EndPaint(h, &ps);
+            return 0;
+        }
+    }
+    return DefSubclassProc(h, m, w, l);
+}
+
+static void buildToolbarImages();   // fwd — the image list is re-flattened per theme
+
+// Re-theme every live window/control. Safe to call before the frame exists (all handles null-checked).
+static void applyTheme() {
+    resolveTheme();
+#ifdef AGW_THEME_DEBUG
+    { FILE* f = nullptr; _wfopen_s(&f, L"C:\\Users\\boris\\AppData\\Local\\Temp\\lite-theme.txt", L"a");
+      if (f) { fwprintf(f, L"mode=%d dark=%d classic=%d tree=%p hwnd=%p client=%06X\n",
+                        g_themeMode, (int)g_th.dark, (int)g_th.classic, (void*)g_tree, (void*)g_hwnd,
+                        (unsigned)g_th.client); fclose(f); } }
+#endif
+    darkmode::setAppMode(g_themeMode);                     // menu bar + popup menus follow this
+    for (HWND h : { g_hwnd, g_quickHwnd, g_scratchHwnd, g_overlayHwnd }) {
+        if (!h) continue;
+        darkmode::allowWindow(h, g_th.dark);
+        darkTitleBar(h, g_th.dark);
+    }
+    if (g_tree) {
+        darkmode::allowWindow(g_tree, g_th.dark);
+        // A themed tree paints its own background and IGNORES TVM_SETBKCOLOR, so for the themed looks
+        // we strip the visual style ("") and own the colours outright. Classic restores the default.
+        SetWindowTheme(g_tree, g_th.classic ? nullptr : L"", g_th.classic ? nullptr : L"");
+        TreeView_SetBkColor(g_tree,   g_th.classic ? (COLORREF)-1 : g_th.client);
+        TreeView_SetTextColor(g_tree, g_th.classic ? (COLORREF)-1 : g_th.text);
+        TreeView_SetLineColor(g_tree, g_th.classic ? (COLORREF)-1 : g_th.border);
+        // The sunken WS_EX_CLIENTEDGE is drawn with light system colours — drop it on dark.
+        DWORD ex = (DWORD)GetWindowLongPtrW(g_tree, GWL_EXSTYLE);
+        DWORD want = g_th.dark ? (ex & ~WS_EX_CLIENTEDGE) : (ex | WS_EX_CLIENTEDGE);
+        if (want != ex) {
+            SetWindowLongPtrW(g_tree, GWL_EXSTYLE, want);
+            SetWindowPos(g_tree, nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+        InvalidateRect(g_tree, nullptr, TRUE);
+    }
+    if (g_toolbar) buildToolbarImages();   // re-flatten the PNG icons against the new bar colour
+    if (g_status)  InvalidateRect(g_status,  nullptr, TRUE);
+    if (g_hwnd) {
+        DrawMenuBar(g_hwnd);
+        RedrawWindow(g_hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
+    }
+}
 // Configurable key bindings for every lite action. ALL UNBOUND BY DEFAULT so no combo is stolen from
 // the shell/TUI until the user assigns one in File -> Keyboard. Stored HOTKEY-format: LOBYTE = vk,
 // HIBYTE = HOTKEYF_* (SHIFT 1 / CONTROL 2 / ALT 4). 0 = unbound.
@@ -698,6 +1035,7 @@ static void loadColors() {   // Properties->Colors overrides (default fg/bg + on
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defFg = v & 0xFFFFFF;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defBg = v & 0xFFFFFF;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DosPalette", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_dosPalette = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"Theme", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS && v <= TH_CLASSIC) g_themeMode = (int)v;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"SidebarW", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS && v >= 90 && v <= 900) g_sidebarW = v;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowSidebar", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showSidebar = v != 0;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowToolbar", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showToolbar = v != 0;
@@ -721,6 +1059,7 @@ static void saveColors() {
     v = g_defFg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", REG_DWORD, &v, sizeof(v));
     v = g_defBg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", REG_DWORD, &v, sizeof(v));
     v = g_dosPalette ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DosPalette", REG_DWORD, &v, sizeof(v));
+    v = (DWORD)g_themeMode;   RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"Theme", REG_DWORD, &v, sizeof(v));
     v = g_sidebarW; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"SidebarW", REG_DWORD, &v, sizeof(v));
     v = g_showSidebar ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowSidebar", REG_DWORD, &v, sizeof(v));
     v = g_showToolbar ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowToolbar", REG_DWORD, &v, sizeof(v));
@@ -1093,15 +1432,19 @@ static void paint(HDC dc, RECT rc) {
         RECT pr0;
         paneRect(0, rc, &pr0);
         RECT div{ pr0.right, pr0.top, pr0.right + 2, pr0.bottom };
-        HBRUSH b = CreateSolidBrush(RGB(60, 62, 70));
+        HBRUSH b = CreateSolidBrush(g_th.classic ? RGB(60, 62, 70) : g_th.border);
         FillRect(mem, &div, b);
         DeleteObject(b);
     }
-    if (g_showSidebar) {   // draggable splitter bar (3-D groove, standard-control look) beside the tree
+    if (g_showSidebar) {   // draggable splitter bar between the sidebar and the terminal
         RECT sp{ g_sidebarW, toolbarTop(), g_sidebarW + kSplitterW, rc.bottom - (g_showStatus ? g_statusH : 0) };
-        HBRUSH f = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
+        HBRUSH f = CreateSolidBrush(g_th.bar);
         FillRect(mem, &sp, f); DeleteObject(f);
-        DrawEdge(mem, &sp, EDGE_ETCHED, BF_LEFT | BF_RIGHT);
+        // Classic keeps the 3-D etched groove; the themed looks use a flat 1px rule instead, because
+        // DrawEdge only ever draws the system's light/shadow pair and reads as a bright seam on dark.
+        if (g_th.classic) DrawEdge(mem, &sp, EDGE_ETCHED, BF_LEFT | BF_RIGHT);
+        else { RECT ln{ sp.left, sp.top, sp.left + 1, sp.bottom }; HBRUSH lb = CreateSolidBrush(g_th.border);
+               FillRect(mem, &ln, lb); ln.left = sp.right - 1; ln.right = sp.right; FillRect(mem, &ln, lb); DeleteObject(lb); }
     }
 
     if (g_palette) {
@@ -1621,6 +1964,7 @@ static HWND g_dlgList;
 static int g_dlgResult;   // -1 = cancel, else selected profile index
 
 static LRESULT CALLBACK profileDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    { LRESULT tr; if (themeDlgMsg(h, m, w, &tr)) return tr; }   // dark background + control colours
     switch (m) {
         case WM_COMMAND:
             if (LOWORD(w) == IDOK || (LOWORD(w) == 1000 && HIWORD(w) == LBN_DBLCLK)) {
@@ -1669,6 +2013,7 @@ static int pickProfileDialog(const std::vector<Profile>& profs) {
                                   cr.right - 90, cr.bottom - 40, 78, 26, dlg, (HMENU)IDCANCEL, inst, nullptr);
     for (HWND c : { lbl, g_dlgList, ok, cancel }) SendMessageW(c, WM_SETFONT, (WPARAM)gui, TRUE);
     g_dlgResult = -1;
+    themeDialog(dlg);
     EnableWindow(g_hwnd, FALSE);
     ShowWindow(dlg, SW_SHOW);
     SetFocus(g_dlgList);
@@ -1701,10 +2046,11 @@ static const COLORREF kConsolePalette[16] = {
     RGB(128,128,128),RGB(0,0,255),  RGB(0,255,0),   RGB(0,255,255),
     RGB(255,0,0),   RGB(255,0,255), RGB(255,255,0), RGB(255,255,255),
 };
-enum { PID_FONTLIST = 3001, PID_SIZECOMBO = 3002, PID_USECOLORS = 3030, PID_TEXT = 3010, PID_BG = 3011, PID_APPLY = 3020, PID_DOSPAL = 3031 };
+enum { PID_FONTLIST = 3001, PID_SIZECOMBO = 3002, PID_THEME = 3003, PID_USECOLORS = 3030, PID_TEXT = 3010, PID_BG = 3011, PID_APPLY = 3020, PID_DOSPAL = 3031 };
 static const int SW_X0 = 16, SW_Y = 186, SW = 20, SW_GAP = 22;   // swatch grid geometry (WM_PAINT + hit-test)
+static const wchar_t* kThemeNames[4] = { L"Auto (follow Windows)", L"Dark", L"Light", L"Classic" };
 // Working copies edited by the dialog; committed to the globals on OK/Apply.
-static int g_pFace, g_pSize; static uint32_t g_pFg, g_pBg; static int g_pTarget; static bool g_pUse, g_pDos;
+static int g_pFace, g_pSize, g_pTheme; static uint32_t g_pFg, g_pBg; static int g_pTarget; static bool g_pUse, g_pDos;
 static HFONT g_pPrev; static HWND g_pHwnd, g_pSizeCombo;
 
 static HFONT makePreviewFontSel() {
@@ -1728,13 +2074,23 @@ static void fillSizeCombo(int sel) {   // sizes for the current face; disabled i
 }
 static void propCommit() {
     pickFont(g_pFace, g_pSize);   // applies the font, persists face+size
-    g_customColors = g_pUse; g_defFg = g_pFg; g_defBg = g_pBg; g_dosPalette = g_pDos; saveColors();
+    g_customColors = g_pUse; g_defFg = g_pFg; g_defBg = g_pBg; g_dosPalette = g_pDos;
+    if (g_pTheme != g_themeMode) {   // theme switch: re-skin everything live, incl. this open dialog
+        g_themeMode = g_pTheme;
+        applyTheme();
+        themeDialog(g_pHwnd);
+    }
+    saveColors();
     InvalidateRect(g_hwnd, nullptr, TRUE);
 }
 static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    { LRESULT tr; if (themeDlgMsg(h, m, w, &tr)) return tr; }   // dark background + control colours
     switch (m) {
         case WM_COMMAND:
             switch (LOWORD(w)) {
+                case PID_THEME:
+                    if (HIWORD(w) == CBN_SELCHANGE) g_pTheme = (int)SendMessageW((HWND)l, CB_GETCURSEL, 0, 0);
+                    break;
                 case PID_FONTLIST:
                     if (HIWORD(w) == LBN_SELCHANGE) {
                         g_pFace = (int)SendMessageW((HWND)l, LB_GETCURSEL, 0, 0);
@@ -1771,7 +2127,7 @@ static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case WM_PAINT: {
             PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
             HGDIOBJ uiOld = SelectObject(dc, g_uiFont ? g_uiFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT));   // never the System bitmap default
-            SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
+            SetTextColor(dc, g_th.classic ? GetSysColor(COLOR_BTNTEXT) : g_th.text);   // labels follow the theme
             // Colour swatches
             for (int i = 0; i < 16; i++) {
                 RECT s{ SW_X0 + i * SW_GAP, SW_Y, SW_X0 + i * SW_GAP + SW, SW_Y + SW };
@@ -1820,9 +2176,10 @@ static void showPropertiesDialog() {
     }
     // Seed working state from the live settings.
     g_pFace = g_faceIdx; g_pSize = g_sizeIdx; g_pFg = g_defFg; g_pBg = g_defBg; g_pUse = g_customColors; g_pDos = g_dosPalette; g_pTarget = 0;
+    g_pTheme = g_themeMode;
     if (g_pPrev) DeleteObject(g_pPrev);
     g_pPrev = makePreviewFontSel();
-    const int W = 396, H = 452;
+    const int W = 396, H = 490;   // grew for the Theme row (was 452)
     RECT pw; GetWindowRect(g_hwnd, &pw);
     g_pHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteProps", L"agwinterm lite — Properties",
                               WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,   // erase-on-repaint won't flicker the controls
@@ -1846,9 +2203,14 @@ static void showPropertiesDialog() {
     mk(L"BUTTON", L"Screen &Text", WS_GROUP | BS_AUTORADIOBUTTON, 28, 158, 110, 18, PID_TEXT);
     mk(L"BUTTON", L"Screen &Background", BS_AUTORADIOBUTTON, 150, 158, 150, 18, PID_BG);
     CheckDlgButton(g_pHwnd, PID_TEXT, BST_CHECKED);
-    mk(L"BUTTON", L"OK", BS_DEFPUSHBUTTON, 120, 380, 78, 26, IDOK);
-    mk(L"BUTTON", L"Cancel", 0, 204, 380, 78, 26, IDCANCEL);
-    mk(L"BUTTON", L"Apply", 0, 288, 380, 78, 26, PID_APPLY);
+    mk(L"STATIC", L"Theme:", 0, 16, 372, 56, 16, 0);
+    HWND th = mk(L"COMBOBOX", L"", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST, 76, 368, 180, 140, PID_THEME);
+    for (const wchar_t* n : kThemeNames) SendMessageW(th, CB_ADDSTRING, 0, (LPARAM)n);
+    SendMessageW(th, CB_SETCURSEL, g_pTheme, 0);
+    mk(L"BUTTON", L"OK", BS_DEFPUSHBUTTON, 120, 408, 78, 26, IDOK);
+    mk(L"BUTTON", L"Cancel", 0, 204, 408, 78, 26, IDCANCEL);
+    mk(L"BUTTON", L"Apply", 0, 288, 408, 78, 26, PID_APPLY);
+    themeDialog(g_pHwnd);   // dark title bar + DarkMode styles when the dark theme is active
     EnableWindow(g_hwnd, FALSE);
     ShowWindow(g_pHwnd, SW_SHOW);
     MSG msg;
@@ -1865,6 +2227,7 @@ static void showPropertiesDialog() {
 static HWND g_kbHwnd, g_kbCtl[KB_COUNT];
 enum { KBID_CLEAR = 4001, KBID_BASE = 4100 };   // KBID_BASE + action = that action's hotkey control
 static LRESULT CALLBACK kbDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    { LRESULT tr; if (themeDlgMsg(h, m, w, &tr)) return tr; }   // dark background + control colours
     switch (m) {
         case WM_COMMAND:
             switch (LOWORD(w)) {
@@ -1903,6 +2266,7 @@ static void showKeyboardDialog() {
         int y = 50 + a * 26;
         mk(L"STATIC", kKbInfo[a].label, SS_CENTERIMAGE, 16, y, 150, 22, 0);
         g_kbCtl[a] = mk(HOTKEY_CLASSW, L"", WS_BORDER, 176, y, 160, 22, KBID_BASE + a);
+        SetWindowSubclass(g_kbCtl[a], hotkeyProc, 1, 0);   // dark-theme paint takeover
         SendMessageW(g_kbCtl[a], HKM_SETRULES, HKCOMB_NONE, MAKEWORD(HOTKEYF_CONTROL, 0));   // bare key -> add Ctrl
         SendMessageW(g_kbCtl[a], HKM_SETHOTKEY, g_keys[a], 0);
     }
@@ -1910,6 +2274,7 @@ static void showKeyboardDialog() {
     mk(L"BUTTON", L"Clear all", 0, 16, by, 90, 26, KBID_CLEAR);
     mk(L"BUTTON", L"OK", BS_DEFPUSHBUTTON, W - 190, by, 82, 26, IDOK);
     mk(L"BUTTON", L"Cancel", 0, W - 100, by, 82, 26, IDCANCEL);
+    themeDialog(g_kbHwnd);
     EnableWindow(g_hwnd, FALSE);
     ShowWindow(g_kbHwnd, SW_SHOW);
     MSG msg;
@@ -1970,12 +2335,19 @@ static HBITMAP loadPngFlattened(const std::wstring& path, COLORREF bg) {
 }
 // Build the toolbar image list from the bundled Silk PNGs (order: New / Workspace / Split).
 static void buildToolbarImages() {
+    // No comctl32 v6 manifest -> no alpha image lists, so the PNGs are flattened against the bar
+    // colour they will sit on. Rebuilt on every theme switch (the flatten colour changes with it).
+    if (g_tbImages) ImageList_Destroy(g_tbImages);
     g_tbImages = ImageList_Create(16, 16, ILC_COLOR24, 3, 0);
-    COLORREF face = GetSysColor(COLOR_BTNFACE);
+    COLORREF face = g_th.classic ? GetSysColor(COLOR_BTNFACE) : g_th.bar;
     std::wstring dir = exeDir();
     for (const wchar_t* f : { L"tb_new.png", L"tb_workspace.png", L"tb_split.png" }) {
         HBITMAP hb = loadPngFlattened(dir + L"\\" + f, face);
         if (hb) { ImageList_Add(g_tbImages, hb, nullptr); DeleteObject(hb); }
+    }
+    if (g_toolbar) {
+        SendMessageW(g_toolbar, TB_SETIMAGELIST, 0, (LPARAM)g_tbImages);
+        InvalidateRect(g_toolbar, nullptr, TRUE);
     }
 }
 static HICON makeRetroIcon() {
@@ -2067,18 +2439,25 @@ static LRESULT CALLBACK popupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if ((w & 0xFFF0) == SC_MINIMIZE) { ShowWindow(g_hwnd, SW_MINIMIZE); return 0; }   // minimize -> all windows
             break;
         case WM_CLOSE:
-            if (h == g_overlayHwnd) { DestroyWindow(h); return 0; }        // overlay is transient -> tear down
-            ShowWindow(h, SW_HIDE); SetForegroundWindow(g_hwnd); return 0; // quick/scratch: hide, keep the session
-        case WM_DESTROY:
-            if (h == g_overlayHwnd) {   // kill the overlay's session + clear state
-                if (g_focusOverride == g_overlaySession) g_focusOverride = nullptr;
-                if (g_overlaySession)
+            // Overlay and SCRATCH are transient: closing tears the window AND its session down (a
+            // scratch pad you closed is gone — reopening starts fresh). Quick hides and keeps its
+            // session, that being the point of a quick terminal.
+            if (h == g_overlayHwnd || h == g_scratchHwnd) { DestroyWindow(h); return 0; }
+            ShowWindow(h, SW_HIDE); SetForegroundWindow(g_hwnd); return 0;
+        case WM_DESTROY: {
+            Session** slot = (h == g_overlayHwnd) ? &g_overlaySession
+                           : (h == g_scratchHwnd) ? &g_scratchSession : nullptr;
+            if (slot) {   // kill the transient window's session + clear its state
+                if (g_focusOverride == *slot) g_focusOverride = nullptr;
+                if (*slot)
                     for (int i = 0; i < (int)g_sessions.size(); i++)
-                        if (g_sessions[i] == g_overlaySession) { closeSessionAt(i); break; }
-                g_overlaySession = nullptr; g_overlayHwnd = nullptr;
+                        if (g_sessions[i] == *slot) { closeSessionAt(i); break; }
+                *slot = nullptr;
+                if (h == g_overlayHwnd) g_overlayHwnd = nullptr; else g_scratchHwnd = nullptr;
                 SetForegroundWindow(g_hwnd);
             }
             return 0;
+        }
     }
     return DefWindowProcW(h, m, w, l);
 }
@@ -2096,15 +2475,24 @@ static HWND createPopupWindow(const wchar_t* title, double wf, double hf) {
     ensurePopupClass();
     RECT mw; GetWindowRect(g_hwnd, &mw);
     int W = max(30 * g_cw, (int)((mw.right - mw.left) * wf)), H = max(8 * g_ch, (int)((mw.bottom - mw.top) * hf));
-    return CreateWindowExW(0, L"AgwintermLitePopup", title, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                           mw.left + 80, mw.top + 60, W, H, g_hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND h = CreateWindowExW(0, L"AgwintermLitePopup", title, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                             mw.left + 80, mw.top + 60, W, H, g_hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    darkTitleBar(h, g_th.dark);   // popup terminals follow the theme's title bar
+    return h;
 }
 // Toggle a quick (scratch=false) or scratch (scratch=true) popup terminal: show/hide, creating its
 // window + dedicated hidden session on first use.
 static void togglePopupTerminal(bool scratch) {
     HWND& hw = scratch ? g_scratchHwnd : g_quickHwnd;
     Session*& sess = scratch ? g_scratchSession : g_quickSession;
-    if (hw && IsWindowVisible(hw)) { ShowWindow(hw, SW_HIDE); SetForegroundWindow(g_hwnd); return; }
+    if (hw && IsWindowVisible(hw)) {
+        // Dismissing: quick hides (its session is the point), scratch is torn down — a dismissed
+        // scratch pad is gone, however you dismissed it (toggle key, X button, anything).
+        if (scratch) DestroyWindow(hw);
+        else ShowWindow(hw, SW_HIDE);
+        SetForegroundWindow(g_hwnd);
+        return;
+    }
     if (!hw) {
         hw = createPopupWindow(scratch ? L"agwinterm lite — scratch" : L"agwinterm lite — quick", 0.66, 0.6);
         RECT rc; GetClientRect(hw, &rc);
@@ -2132,265 +2520,401 @@ static void openOverlay(const std::string& command, int sizePct) {
     InvalidateRect(g_overlayHwnd, nullptr, FALSE);
 }
 
-static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    switch (msg) {
-        case WM_PAINT: {
-            PAINTSTRUCT ps;
-            HDC dc = BeginPaint(hwnd, &ps);
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            paint(dc, rc);
-            EndPaint(hwnd, &ps);
-            return 0;
+// ---- main frame (WTL) -------------------------------------------------------------------------
+// CFrameWindowImpl gives the frame window traits, class registration and the message-map plumbing;
+// the sidebar tree / toolbar / status bar are WTL control wrappers over the same native controls.
+// Message crackers (MSG_WM_*) replace the old hand-rolled switch — the semantics are unchanged.
+class CMainFrame : public CFrameWindowImpl<CMainFrame> {
+public:
+    DECLARE_FRAME_WND_CLASS_EX(L"AgwintermLite", 0, CS_DBLCLKS, COLOR_WINDOW)
+
+    CTreeViewCtrl  m_tree;      // sidebar (sessions grouped by workspace)
+    CToolBarCtrl   m_toolbar;   // New Session / New Workspace / Split
+    CStatusBarCtrl m_status;    // workspace · count · grid · font
+
+    BEGIN_MSG_MAP(CMainFrame)
+        MSG_WM_PAINT(OnPaint)
+        MSG_WM_ERASEBKGND(OnEraseBkgnd)
+        MSG_WM_CHAR(OnChar)
+        MSG_WM_MOUSEWHEEL(OnMouseWheel)
+        MSG_WM_LBUTTONDOWN(OnLButtonDown)
+        MSG_WM_MOUSEMOVE(OnMouseMove)
+        MSG_WM_LBUTTONUP(OnLButtonUp)
+        MSG_WM_RBUTTONDOWN(OnRButtonDown)
+        MSG_WM_RBUTTONUP(OnRButtonUp)
+        MSG_WM_SIZE(OnSize)
+        MSG_WM_EXITSIZEMOVE(OnExitSizeMove)
+        MSG_WM_SETTINGCHANGE(OnSettingChange)
+        MSG_WM_DESTROY(OnDestroy)
+        MESSAGE_HANDLER(WM_KEYDOWN, OnKey)
+        MESSAGE_HANDLER(WM_SYSKEYDOWN, OnKey)
+        MESSAGE_HANDLER(WM_SETCURSOR, OnSetCursor)
+        MESSAGE_HANDLER(WM_APP_REFRESHTREE, OnRefreshTree)
+        MESSAGE_HANDLER(WM_APP_TRAY, OnTray)
+        MESSAGE_HANDLER(WM_APP_OVERLAY, OnOverlay)
+        MESSAGE_HANDLER(WM_NOTIFY, OnNotify)
+        MESSAGE_HANDLER(WM_COMMAND, OnCommand)
+        MESSAGE_HANDLER(WM_UAHDRAWMENU, OnUahDrawMenu)
+        MESSAGE_HANDLER(WM_UAHDRAWMENUITEM, OnUahDrawMenuItem)
+        MESSAGE_HANDLER(WM_NCPAINT, OnNcPaintSeam)
+        MESSAGE_HANDLER(WM_NCACTIVATE, OnNcPaintSeam)
+        MESSAGE_HANDLER(WM_EXITMENULOOP, OnMenuSeamTouch)
+        MESSAGE_HANDLER(WM_MENUSELECT, OnMenuSeamTouch)
+        CHAIN_MSG_MAP(CFrameWindowImpl<CMainFrame>)
+    END_MSG_MAP()
+
+    // ---- dark menu bar ----
+    LRESULT OnUahDrawMenu(UINT, WPARAM, LPARAM lp, BOOL& bHandled) {
+        if (!g_th.dark) { bHandled = FALSE; return 0; }
+        auto* um = (UAHMENU*)lp;
+        MENUBARINFO mbi{ sizeof mbi };
+        if (!GetMenuBarInfo(m_hWnd, OBJID_MENU, 0, &mbi)) { bHandled = FALSE; return 0; }
+        RECT wr; GetWindowRect(&wr);
+        RECT r = mbi.rcBar; OffsetRect(&r, -wr.left, -wr.top);
+        HBRUSH b = CreateSolidBrush(g_th.bar);
+        FillRect(um->hdc, &r, b);
+        DeleteObject(b);
+        return TRUE;
+    }
+    LRESULT OnUahDrawMenuItem(UINT, WPARAM, LPARAM lp, BOOL& bHandled) {
+        if (!g_th.dark) { bHandled = FALSE; return 0; }
+        auto* dmi = (UAHDRAWMENUITEM*)lp;
+        wchar_t txt[256]{};
+        MENUITEMINFOW mii{ sizeof mii, MIIM_STRING };
+        mii.dwTypeData = txt; mii.cch = 255;
+        GetMenuItemInfoW(dmi->um.hmenu, dmi->umi.iPosition, TRUE, &mii);
+        DWORD st = dmi->dis.itemState;
+        bool hot = (st & (ODS_HOTLIGHT | ODS_SELECTED)) != 0;
+        HBRUSH b = CreateSolidBrush(hot ? g_th.hot : g_th.bar);
+        FillRect(dmi->um.hdc, &dmi->dis.rcItem, b);
+        DeleteObject(b);
+        SetBkMode(dmi->um.hdc, TRANSPARENT);
+        SetTextColor(dmi->um.hdc, (st & (ODS_GRAYED | ODS_DISABLED)) ? g_th.dim : g_th.text);
+        HFONT of = g_uiFont ? (HFONT)SelectObject(dmi->um.hdc, g_uiFont) : nullptr;
+        DrawTextW(dmi->um.hdc, txt, -1, &dmi->dis.rcItem,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | ((st & ODS_NOACCEL) ? DT_HIDEPREFIX : 0));
+        if (of) SelectObject(dmi->um.hdc, of);
+        return TRUE;
+    }
+    LRESULT OnNcPaintSeam(UINT msg, WPARAM wp, LPARAM lp, BOOL&) {
+        LRESULT r = DefWindowProc(msg, wp, lp);
+        if (g_th.dark) themeMenuSeam(m_hWnd);
+        return r;
+    }
+    LRESULT OnMenuSeamTouch(UINT msg, WPARAM wp, LPARAM lp, BOOL&) {
+        LRESULT r = DefWindowProc(msg, wp, lp);
+        if (g_th.dark) themeMenuSeam(m_hWnd);
+        return r;
+    }
+
+    // ---- painting ----
+    void OnPaint(CDCHandle) {
+        CPaintDC dc(m_hWnd);
+        RECT rc; GetClientRect(&rc);
+        paint(dc.m_hDC, rc);
+    }
+    BOOL OnEraseBkgnd(CDCHandle) { return TRUE; }   // everything is double-buffered in paint()
+
+    // ---- keyboard ----
+    void OnChar(TCHAR chr, UINT, UINT) {
+        if (g_palette) return;
+        if (g_swallowChar) { g_swallowChar = false; return; }   // belongs to a keydown a binding consumed
+        if (Session* s = focusedSession()) s->scrollOff = 0;
+        if (chr == L'\r') { sendBytes("\r", 1); return; }
+        sendUtf8((wchar_t)chr);
+    }
+    LRESULT OnKey(UINT, WPARAM wp, LPARAM, BOOL& bHandled) {
+        // Reset per keydown; if a binding handled it, swallow the WM_CHAR TranslateMessage emits.
+        g_swallowChar = handleKeyDown(wp);
+        if (g_swallowChar) return 0;
+        bHandled = FALSE;   // unhandled: let DefWindowProc do its thing (menu keys etc.)
+        return 0;
+    }
+
+    // ---- mouse ----
+    BOOL OnMouseWheel(UINT nFlags, short zDelta, CPoint pt) {
+        if (nFlags & MK_CONTROL) { fontZoom(zDelta > 0 ? +1 : -1); return TRUE; }   // Ctrl+wheel = font zoom
+        ScreenToClient(&pt);                                                        // wheel coords are screen-relative
+        bool up = zDelta > 0;
+        if (mouseReport(pt.x, pt.y, up ? 64 : 65, true, false)) return TRUE;        // to the app if it reports mouse
+        scrollFocused(up ? 3 : -3);
+        return TRUE;
+    }
+    void OnLButtonDown(UINT, CPoint pt) {
+        if (inSplitter(pt.x, pt.y)) { g_splitDrag = true; SetCapture(); return; }   // grab the sidebar splitter
+        if (g_palette) { g_palette = false; Invalidate(FALSE); SetFocus(); return; }
+        // The sidebar is the native tree child, so clicks here are always in the terminal area.
+        int pane, absRow, col;
+        if (hitTest(pt.x, pt.y, &pane, &absRow, &col)) {
+            g_focus = pane;
+            if (mouseReport(pt.x, pt.y, 0, true, false)) { SetFocus(); Invalidate(FALSE); return; }
+            g_sel = { pane, true, absRow, col, absRow, col };   // begin drag-select
+            SetCapture();
+            Invalidate(FALSE);
         }
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_CHAR: {
-            wchar_t wc = (wchar_t)wp;
-            if (g_palette) return 0;
-            if (g_swallowChar) { g_swallowChar = false; return 0; }   // this char belongs to a keydown a binding consumed
-            if (Session* s = focusedSession()) s->scrollOff = 0;
-            if (wc == L'\r') { sendBytes("\r", 1); return 0; }
-            sendUtf8(wc);
-            return 0;
+        SetFocus();
+    }
+    void OnMouseMove(UINT nFlags, CPoint pt) {
+        if (g_splitDrag) {   // the splitter resizes the LEFT pane (the sidebar); terminal takes the rest
+            RECT c; GetClientRect(&c);
+            g_sidebarW = max(kSidebarMinW, min((int)(c.right * 0.6), (int)pt.x));
+            relayout();
+            return;
         }
-        case WM_KEYDOWN:
-        case WM_SYSKEYDOWN:   // F10 and Alt-combos arrive here (menu keys); route them to the terminal
-            // Reset per keydown; if a binding handled it, swallow the WM_CHAR that TranslateMessage emits.
-            g_swallowChar = handleKeyDown(wp);
-            if (g_swallowChar) return 0;   // handled (e.g. a bound combo, or F10 -> ESC[21~)
-            break;
-        case WM_MOUSEWHEEL: {
-            if (LOWORD(wp) & MK_CONTROL) { fontZoom(GET_WHEEL_DELTA_WPARAM(wp) > 0 ? +1 : -1); return 0; }   // Ctrl+wheel = font zoom
-            POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
-            ScreenToClient(hwnd, &pt);   // wheel coords are screen-relative
-            bool up = GET_WHEEL_DELTA_WPARAM(wp) > 0;
-            if (mouseReport(pt.x, pt.y, up ? 64 : 65, true, false)) return 0;   // to the app if it reports mouse
-            scrollFocused(up ? 3 : -3);
-            return 0;
+        if (nFlags & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) {   // report drags to a mouse-aware app
+            int held = (nFlags & MK_LBUTTON) ? 0 : (nFlags & MK_RBUTTON) ? 2 : 1;
+            if (mouseReport(pt.x, pt.y, held, true, true)) return;
         }
-        case WM_LBUTTONDOWN: {
-            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-            if (inSplitter(x, y)) { g_splitDrag = true; SetCapture(hwnd); return 0; }   // grab the sidebar splitter
-            if (g_palette) { g_palette = false; InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); return 0; }
-            // The sidebar is the native tree child, so clicks here are always in the terminal area.
+        if (g_sel.active && (nFlags & MK_LBUTTON)) {
             int pane, absRow, col;
-            if (hitTest(x, y, &pane, &absRow, &col)) {
-                g_focus = pane;
-                // App wants mouse events? Forward the click and skip selection.
-                if (mouseReport(x, y, 0, true, false)) { SetFocus(hwnd); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-                g_sel = { pane, true, absRow, col, absRow, col };   // begin drag-select
-                SetCapture(hwnd);
-                InvalidateRect(hwnd, nullptr, FALSE);
+            if (hitTest(pt.x, pt.y, &pane, &absRow, &col) && pane == g_sel.pane) {
+                g_sel.bRow = absRow; g_sel.bCol = col;
+                Invalidate(FALSE);
             }
-            SetFocus(hwnd);
-            return 0;
-        }
-        case WM_MOUSEMOVE: {
-            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-            if (g_splitDrag) { RECT c; GetClientRect(hwnd, &c); g_sidebarW = max(90, min((int)(c.right * 0.6), x)); relayout(); return 0; }
-            if (wp & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) {   // report drags to a mouse-aware app
-                int held = (wp & MK_LBUTTON) ? 0 : (wp & MK_RBUTTON) ? 2 : 1;
-                if (mouseReport(x, y, held, true, true)) return 0;
-            }
-            if (g_sel.active && (wp & MK_LBUTTON)) {
-                int pane, absRow, col;
-                if (hitTest(x, y, &pane, &absRow, &col) && pane == g_sel.pane) {
-                    g_sel.bRow = absRow;
-                    g_sel.bCol = col;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }
-            return 0;
-        }
-        case WM_LBUTTONUP: {
-            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-            if (g_splitDrag) { g_splitDrag = false; ReleaseCapture(); saveColors(); return 0; }   // persist the new width
-            if (mouseReport(x, y, 0, false, false)) return 0;   // release to a mouse-aware app
-            if (g_sel.active) {
-                g_sel.active = false;
-                ReleaseCapture();
-                if (g_sel.has()) copySelection();   // auto-copy on release (terminal convention)
-            }
-            return 0;
-        }
-        case WM_SETCURSOR:
-            if (LOWORD(lp) == HTCLIENT) { POINT p; GetCursorPos(&p); ScreenToClient(hwnd, &p);
-                if (inSplitter(p.x, p.y)) { SetCursor(LoadCursorW(nullptr, (LPCWSTR)IDC_SIZEWE)); return TRUE; } }
-            break;
-        case WM_RBUTTONDOWN: {
-            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-            if (x < sidebarSpan()) return 0;                    // sidebar/splitter: no paste (was inserting into the prompt)
-            if (mouseReport(x, y, 2, true, false)) return 0;    // right-click to a mouse-aware app
-            pasteClipboard();                                   // else right-click pastes into the terminal
-            return 0;
-        }
-        case WM_RBUTTONUP: {
-            int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-            mouseReport(x, y, 2, false, false);                 // release to a mouse-aware app (harmless otherwise)
-            return 0;
-        }
-        case WM_SIZE:
-            if (wp != SIZE_MINIMIZED) {
-                int clientH = HIWORD(lp);
-                if (g_toolbar) {   // standard toolbar spans the top; capture height (0 when hidden)
-                    ShowWindow(g_toolbar, g_showToolbar ? SW_SHOW : SW_HIDE);
-                    if (g_showToolbar) { SendMessageW(g_toolbar, TB_AUTOSIZE, 0, 0); RECT tr; GetWindowRect(g_toolbar, &tr); g_toolbarH = tr.bottom - tr.top; }
-                }
-                if (g_status) {    // standard status bar auto-docks bottom; capture its height (0 when hidden)
-                    ShowWindow(g_status, g_showStatus ? SW_SHOW : SW_HIDE);
-                    if (g_showStatus) { SendMessageW(g_status, WM_SIZE, 0, 0); RECT sr; GetWindowRect(g_status, &sr); g_statusH = sr.bottom - sr.top; }
-                }
-                if (g_tree) {      // resizable sidebar between the toolbar and the status bar
-                    ShowWindow(g_tree, g_showSidebar ? SW_SHOW : SW_HIDE);
-                    if (g_showSidebar) MoveWindow(g_tree, 0, toolbarTop(), g_sidebarW, clientH - toolbarTop() - (g_showStatus ? g_statusH : 0), TRUE);
-                }
-                if (!g_sessions.empty()) syncPaneSizes();
-            }
-            return 0;
-        case WM_APP_REFRESHTREE:   // posted from worker threads after a session-list / status change
-            refreshTree();
-            return 0;
-        case WM_APP_TRAY:
-            if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) showTrayMenu();
-            else if (LOWORD(lp) == WM_LBUTTONDBLCLK) showMainWindow();
-            return 0;
-        case WM_APP_OVERLAY: {   // marshaled from the control thread (session.overlay) — create on the UI thread
-            std::string cmd; int sz;
-            EnterCriticalSection(&g_lock); cmd = g_pendingOverlayCmd; sz = g_pendingOverlaySize; LeaveCriticalSection(&g_lock);
-            openOverlay(cmd, sz);
-            return 0;
-        }
-        case WM_NOTIFY: {
-            auto* nm = (NMHDR*)lp;
-            if (nm->idFrom == ID_TREE && nm->code == NM_CUSTOMDRAW) {   // italicise "working" agent rows
-                auto* cd = (NMTVCUSTOMDRAW*)lp;
-                if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
-                if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
-                    LPARAM p = cd->nmcd.lItemlParam;
-                    if (p >= 0 && p < (LPARAM)g_sessions.size() && !g_sessions[p]->exited &&
-                        statusClass(g_sessions[p]->status) == AGST_WORKING && g_treeItalic) {
-                        SelectObject(cd->nmcd.hdc, g_treeItalic);
-                        return CDRF_NEWFONT;
-                    }
-                }
-                return CDRF_DODEFAULT;
-            }
-            if (nm->code == TBN_GETINFOTIPW) {   // toolbar button hover tooltips ("hints")
-                auto* it = (NMTBGETINFOTIPW*)lp;
-                const wchar_t* tip = it->iItem == IDM_NEW ? L"New Session"
-                                   : it->iItem == IDM_NEWWS ? L"New Workspace"
-                                   : it->iItem == IDM_SPLIT ? L"Split / Unsplit" : L"";
-                lstrcpynW(it->pszText, tip, it->cchTextMax);
-                return 0;
-            }
-            if (nm->idFrom == ID_TREE && nm->code == TVN_SELCHANGEDW && !g_treeSyncing) {
-                auto* nt = (NMTREEVIEWW*)lp;
-                LPARAM p = nt->itemNew.lParam;
-                if (p >= 0) {                                   // session node -> show it in the MAIN pane
-                    int i = (int)p;
-                    if (i < (int)g_sessions.size()) {
-                        g_pane[0] = i; g_focus = 0;             // tree drives the main pane, not the split shell
-                        g_activeWs = g_sessions[i]->ws;         // new sessions follow the selected one's workspace
-                        syncPaneSizes();
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                    }
-                } else {                                        // workspace node -> make it the active "folder"
-                    int w = (int)(-p - 1);
-                    if (w >= 0 && w < (int)g_workspaces.size()) g_activeWs = w;
-                }
-                SetFocus(hwnd);   // keep typing going to the terminal, not the tree
-            }
-            if (nm->idFrom == ID_TREE && nm->code == NM_RCLICK) {   // right-click a node -> context menu
-                POINT cp; GetCursorPos(&cp); ScreenToClient(g_tree, &cp);
-                TVHITTESTINFO ht{}; ht.pt = cp;
-                HTREEITEM it = TreeView_HitTest(g_tree, &ht);
-                if (it) {
-                    TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = it;
-                    TreeView_GetItem(g_tree, &ti);
-                    g_ctxItem = it; g_ctxParam = ti.lParam;   // right-click doesn't change the selection
-                    showTreeContextMenu();
-                }
-                return 1;
-            }
-            if (nm->idFrom == ID_TREE && nm->code == TVN_BEGINLABELEDITW) {   // seed the edit box with the bare name
-                auto* di = (NMTVDISPINFOW*)lp;
-                if (HWND ed = TreeView_GetEditControl(g_tree)) {
-                    if (di->item.lParam >= 0) {
-                        int i = (int)di->item.lParam;
-                        std::wstring bn = (i < (int)g_sessions.size() && !g_sessions[i]->name.empty())
-                                          ? g_sessions[i]->name : (L"session " + std::to_wstring(i + 1));
-                        SetWindowTextW(ed, bn.c_str());
-                    } else {
-                        int w = (int)(-di->item.lParam - 1);
-                        if (w >= 0 && w < (int)g_workspaces.size()) SetWindowTextW(ed, g_workspaces[w].c_str());
-                    }
-                }
-                return 0;   // FALSE = allow the edit
-            }
-            if (nm->idFrom == ID_TREE && nm->code == TVN_ENDLABELEDITW) {   // apply the new name
-                auto* di = (NMTVDISPINFOW*)lp;
-                if (di->item.pszText && di->item.pszText[0]) {
-                    std::wstring txt = di->item.pszText;
-                    if (di->item.lParam >= 0) { int i = (int)di->item.lParam; if (i < (int)g_sessions.size()) g_sessions[i]->name = txt; }
-                    else { int w = (int)(-di->item.lParam - 1); if (w >= 0 && w < (int)g_workspaces.size()) g_workspaces[w] = txt; }
-                    PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // re-decorate with status/count
-                }
-                return 0;   // FALSE — we refresh the label ourselves
-            }
-            return 0;
-        }
-        case WM_COMMAND: {
-            int id = LOWORD(wp);
-            switch (id) {
-                case IDM_NEW: newSessionDialog(); break;                                    // profile picker
-                case IDM_NEWWS: {                                                            // new workspace ("folder")
-                    wchar_t nm[32]; wsprintfW(nm, L"workspace %d", (int)g_workspaces.size() + 1);
-                    g_workspaces.push_back(nm);
-                    g_activeWs = (int)g_workspaces.size() - 1;
-                    refreshTree();
-                    break;
-                }
-                case IDM_PROPERTIES: showPropertiesDialog(); break;
-                case IDM_KEYBOARD: showKeyboardDialog(); break;
-                case IDM_QUICK: togglePopupTerminal(false); break;
-                case IDM_SCRATCH: togglePopupTerminal(true); break;
-                case IDM_REOPEN: reopenClosed(); break;
-                case IDM_TG_SIDEBAR: case IDM_TG_TOOLBAR: case IDM_TG_STATUS: {
-                    bool& b = id == IDM_TG_SIDEBAR ? g_showSidebar : id == IDM_TG_TOOLBAR ? g_showToolbar : g_showStatus;
-                    b = !b;
-                    CheckMenuItem(GetMenu(hwnd), id, MF_BYCOMMAND | (b ? MF_CHECKED : MF_UNCHECKED));
-                    relayout(); saveColors();
-                    break;
-                }
-                case IDM_RESTART: restartApp(); break;
-                case IDM_SHOW: showMainWindow(); break;
-                case IDM_EXIT: DestroyWindow(hwnd); break;
-                case IDM_ABOUT:
-                    MessageBoxW(hwnd, L"agwinterm lite\nA lightweight native terminal over the Rust pty-host.",
-                                L"About", MB_OK | MB_ICONINFORMATION);
-                    break;
-                default:   // menu-bar / tray: close / split / next / copy / paste / previous
-                    if (id >= IDM_CLOSE && id <= IDM_PREV) { runPaletteItem(id); InvalidateRect(hwnd, nullptr, FALSE); SetFocus(hwnd); }
-                    break;
-            }
-            return 0;
-        }
-        case WM_EXITSIZEMOVE: saveWindowRect(); return 0;   // remember geometry after a user move/resize
-        case WM_DESTROY: {
-            saveWindowRect();                        // remember window size + position for next launch
-            Shell_NotifyIconW(NIM_DELETE, &g_nid);   // remove the tray icon
-            for (Session* s : g_sessions) killSession(s);
-            agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
-            agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
-            req.which_cmd = agwinterm_ptyhost_Request_shutdown_tag;
-            request(req, &rep);
-            PostQuitMessage(0);
-            return 0;
         }
     }
-    return DefWindowProcW(hwnd, msg, wp, lp);
-}
+    void OnLButtonUp(UINT, CPoint pt) {
+        if (g_splitDrag) { g_splitDrag = false; ReleaseCapture(); saveColors(); return; }   // persist the new width
+        if (mouseReport(pt.x, pt.y, 0, false, false)) return;
+        if (g_sel.active) {
+            g_sel.active = false;
+            ReleaseCapture();
+            if (g_sel.has()) copySelection();   // auto-copy on release (terminal convention)
+        }
+    }
+    void OnRButtonDown(UINT, CPoint pt) {
+        if (pt.x < sidebarSpan()) return;                        // sidebar/splitter: no paste
+        if (mouseReport(pt.x, pt.y, 2, true, false)) return;     // right-click to a mouse-aware app
+        pasteClipboard();                                        // else right-click pastes
+    }
+    void OnRButtonUp(UINT, CPoint pt) { mouseReport(pt.x, pt.y, 2, false, false); }
+
+    LRESULT OnSetCursor(UINT, WPARAM, LPARAM lp, BOOL& bHandled) {
+        if (LOWORD(lp) == HTCLIENT) {
+            POINT p; GetCursorPos(&p); ScreenToClient(&p);
+            if (inSplitter(p.x, p.y)) { SetCursor(LoadCursorW(nullptr, (LPCWSTR)IDC_SIZEWE)); return TRUE; }
+            if (p.x >= sidebarSpan()) { SetCursor(LoadCursorW(nullptr, (LPCWSTR)IDC_IBEAM)); return TRUE; }
+        }
+        bHandled = FALSE;
+        return 0;
+    }
+
+    // ---- layout ----
+    void OnSize(UINT nType, CSize size) {
+        if (nType == SIZE_MINIMIZED) return;
+        if (m_toolbar.IsWindow()) {   // standard toolbar spans the top; capture height (0 when hidden)
+            m_toolbar.ShowWindow(g_showToolbar ? SW_SHOW : SW_HIDE);
+            if (g_showToolbar) {
+                m_toolbar.AutoSize();
+                RECT tr; m_toolbar.GetWindowRect(&tr); g_toolbarH = tr.bottom - tr.top;
+            }
+        }
+        if (m_status.IsWindow()) {    // standard status bar auto-docks bottom; capture its height
+            m_status.ShowWindow(g_showStatus ? SW_SHOW : SW_HIDE);
+            if (g_showStatus) {
+                m_status.SendMessage(WM_SIZE, 0, 0);
+                RECT sr; m_status.GetWindowRect(&sr); g_statusH = sr.bottom - sr.top;
+            }
+        }
+        if (m_tree.IsWindow()) {      // resizable sidebar between the toolbar and the status bar
+            m_tree.ShowWindow(g_showSidebar ? SW_SHOW : SW_HIDE);
+            if (g_showSidebar)
+                m_tree.SetWindowPos(nullptr, 0, toolbarTop(), g_sidebarW,
+                                    size.cy - toolbarTop() - (g_showStatus ? g_statusH : 0),
+                                    SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        if (!g_sessions.empty()) syncPaneSizes();
+    }
+    void OnExitSizeMove() { saveWindowRect(); }   // remember geometry after a user move/resize
+
+    // Windows "app mode" flipped (or any policy change): AUTO re-resolves, the rest are unaffected.
+    void OnSettingChange(UINT, LPCTSTR lpszSection) {
+        if (g_themeMode != TH_AUTO) return;
+        if (lpszSection && lstrcmpiW(lpszSection, L"ImmersiveColorSet") != 0) return;
+        applyTheme();
+    }
+
+    // ---- app messages ----
+    LRESULT OnRefreshTree(UINT, WPARAM, LPARAM, BOOL&) { refreshTree(); return 0; }
+    LRESULT OnTray(UINT, WPARAM, LPARAM lp, BOOL&) {
+        if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) showTrayMenu();
+        else if (LOWORD(lp) == WM_LBUTTONDBLCLK) showMainWindow();
+        return 0;
+    }
+    LRESULT OnOverlay(UINT, WPARAM, LPARAM, BOOL&) {   // marshaled from the control thread
+        std::string cmd; int sz;
+        EnterCriticalSection(&g_lock); cmd = g_pendingOverlayCmd; sz = g_pendingOverlaySize; LeaveCriticalSection(&g_lock);
+        openOverlay(cmd, sz);
+        return 0;
+    }
+
+    // ---- notifications ----
+    LRESULT OnNotify(UINT, WPARAM, LPARAM lp, BOOL&) {
+        auto* nm = (NMHDR*)lp;
+        if (nm->idFrom == ID_TREE && nm->code == NM_CUSTOMDRAW) {
+            auto* cd = (NMTVCUSTOMDRAW*)lp;
+            if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+            if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                LRESULT r = CDRF_DODEFAULT;
+                // Themed looks: comctl32 would otherwise draw the selected row with the system
+                // highlight, which is a bright box on a dark sidebar. Paint it from the palette.
+                if (!g_th.classic) {
+                    bool sel = (cd->nmcd.uItemState & (CDIS_SELECTED | CDIS_FOCUS)) != 0;
+                    cd->clrText   = g_th.text;
+                    cd->clrTextBk = sel ? g_th.sel : g_th.client;
+                    cd->nmcd.uItemState &= ~(CDIS_SELECTED | CDIS_FOCUS);
+                    r = CDRF_NEWFONT;
+                }
+                LPARAM p = cd->nmcd.lItemlParam;   // italicise "working" agent rows
+                if (p >= 0 && p < (LPARAM)g_sessions.size() && !g_sessions[p]->exited &&
+                    statusClass(g_sessions[p]->status) == AGST_WORKING && g_treeItalic) {
+                    SelectObject(cd->nmcd.hdc, g_treeItalic);
+                    r = CDRF_NEWFONT;
+                }
+                return r;
+            }
+            return CDRF_DODEFAULT;
+        }
+        if (nm->idFrom == ID_TOOLBAR && nm->code == NM_CUSTOMDRAW && !g_th.classic) {
+            auto* cd = (NMTBCUSTOMDRAW*)lp;   // flat dark/light toolbar; comctl32 draws 3-D otherwise
+            if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) {
+                RECT r; m_toolbar.GetClientRect(&r);
+                HBRUSH b = CreateSolidBrush(g_th.bar); FillRect(cd->nmcd.hdc, &r, b); DeleteObject(b);
+                return CDRF_NOTIFYITEMDRAW;
+            }
+            if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                // comctl32 v5 (no manifest) ignores TBCDRF_NOBACKGROUND and paints its raised 3-D
+                // face over any fill — so draw the whole button ourselves and skip the default.
+                bool hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
+                bool prs = (cd->nmcd.uItemState & (CDIS_SELECTED | CDIS_CHECKED)) != 0;
+                RECT rc = cd->nmcd.rc;
+                HBRUSH b = CreateSolidBrush(prs ? g_th.sel : hot ? g_th.hot : g_th.bar);
+                FillRect(cd->nmcd.hdc, &rc, b); DeleteObject(b);
+                int img = cd->nmcd.dwItemSpec == IDM_NEW ? 0 : cd->nmcd.dwItemSpec == IDM_NEWWS ? 1 : 2;
+                int ix = rc.left + (rc.right - rc.left - 16) / 2;
+                int iy = rc.top + (rc.bottom - rc.top - 16) / 2 + (prs ? 1 : 0);   // classic 1px press nudge
+                ImageList_Draw(g_tbImages, img, cd->nmcd.hdc, ix, iy, ILD_NORMAL);
+                if (hot || prs) { HBRUSH f = CreateSolidBrush(g_th.accent); FrameRect(cd->nmcd.hdc, &rc, f); DeleteObject(f); }
+                return CDRF_SKIPDEFAULT;
+            }
+            return CDRF_DODEFAULT;
+        }
+        if (nm->code == TBN_GETINFOTIPW) {   // toolbar button hover tooltips ("hints")
+            auto* it = (NMTBGETINFOTIPW*)lp;
+            const wchar_t* tip = it->iItem == IDM_NEW ? L"New Session"
+                               : it->iItem == IDM_NEWWS ? L"New Workspace"
+                               : it->iItem == IDM_SPLIT ? L"Split / Unsplit" : L"";
+            lstrcpynW(it->pszText, tip, it->cchTextMax);
+            return 0;
+        }
+        if (nm->idFrom == ID_TREE && nm->code == TVN_SELCHANGEDW && !g_treeSyncing) {
+            auto* nt = (NMTREEVIEWW*)lp;
+            LPARAM p = nt->itemNew.lParam;
+            if (p >= 0) {                                   // session node -> show it in the MAIN pane
+                int i = (int)p;
+                if (i < (int)g_sessions.size()) {
+                    g_pane[0] = i; g_focus = 0;             // tree drives the main pane, not the split shell
+                    g_activeWs = g_sessions[i]->ws;         // new sessions follow the selected one's workspace
+                    syncPaneSizes();
+                    Invalidate(FALSE);
+                }
+            } else {                                        // workspace node -> make it the active "folder"
+                int w = (int)(-p - 1);
+                if (w >= 0 && w < (int)g_workspaces.size()) g_activeWs = w;
+            }
+            SetFocus();   // keep typing going to the terminal, not the tree
+        }
+        if (nm->idFrom == ID_TREE && nm->code == NM_RCLICK) {   // right-click a node -> context menu
+            POINT cp; GetCursorPos(&cp); ::ScreenToClient(g_tree, &cp);
+            TVHITTESTINFO ht{}; ht.pt = cp;
+            HTREEITEM it = TreeView_HitTest(g_tree, &ht);
+            if (it) {
+                TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = it;
+                TreeView_GetItem(g_tree, &ti);
+                g_ctxItem = it; g_ctxParam = ti.lParam;   // right-click doesn't change the selection
+                showTreeContextMenu();
+            }
+            return 1;
+        }
+        if (nm->idFrom == ID_TREE && nm->code == TVN_BEGINLABELEDITW) {   // seed the edit box with the bare name
+            auto* di = (NMTVDISPINFOW*)lp;
+            if (HWND ed = TreeView_GetEditControl(g_tree)) {
+                if (di->item.lParam >= 0) {
+                    int i = (int)di->item.lParam;
+                    std::wstring bn = (i < (int)g_sessions.size() && !g_sessions[i]->name.empty())
+                                      ? g_sessions[i]->name : (L"session " + std::to_wstring(i + 1));
+                    ::SetWindowTextW(ed, bn.c_str());
+                } else {
+                    int w = (int)(-di->item.lParam - 1);
+                    if (w >= 0 && w < (int)g_workspaces.size()) ::SetWindowTextW(ed, g_workspaces[w].c_str());
+                }
+            }
+            return 0;   // FALSE = allow the edit
+        }
+        if (nm->idFrom == ID_TREE && nm->code == TVN_ENDLABELEDITW) {   // apply the new name
+            auto* di = (NMTVDISPINFOW*)lp;
+            if (di->item.pszText && di->item.pszText[0]) {
+                std::wstring txt = di->item.pszText;
+                if (di->item.lParam >= 0) { int i = (int)di->item.lParam; if (i < (int)g_sessions.size()) g_sessions[i]->name = txt; }
+                else { int w = (int)(-di->item.lParam - 1); if (w >= 0 && w < (int)g_workspaces.size()) g_workspaces[w] = txt; }
+                ::PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // re-decorate with status/count
+            }
+            return 0;   // FALSE — we refresh the label ourselves
+        }
+        return 0;
+    }
+
+    // ---- commands ----
+    LRESULT OnCommand(UINT, WPARAM wp, LPARAM, BOOL&) {
+        int id = LOWORD(wp);
+        switch (id) {
+            case IDM_NEW: newSessionDialog(); break;                                     // profile picker
+            case IDM_NEWWS: {                                                            // new workspace ("folder")
+                wchar_t nm[32]; wsprintfW(nm, L"workspace %d", (int)g_workspaces.size() + 1);
+                g_workspaces.push_back(nm);
+                g_activeWs = (int)g_workspaces.size() - 1;
+                refreshTree();
+                break;
+            }
+            case IDM_PROPERTIES: showPropertiesDialog(); break;
+            case IDM_KEYBOARD: showKeyboardDialog(); break;
+            case IDM_QUICK: togglePopupTerminal(false); break;
+            case IDM_SCRATCH: togglePopupTerminal(true); break;
+            case IDM_REOPEN: reopenClosed(); break;
+            case IDM_TG_SIDEBAR: case IDM_TG_TOOLBAR: case IDM_TG_STATUS: {
+                bool& b = id == IDM_TG_SIDEBAR ? g_showSidebar : id == IDM_TG_TOOLBAR ? g_showToolbar : g_showStatus;
+                b = !b;
+                CheckMenuItem(GetMenu(), id, MF_BYCOMMAND | (b ? MF_CHECKED : MF_UNCHECKED));
+                relayout(); saveColors();
+                break;
+            }
+            case IDM_RESTART: restartApp(); break;
+            case IDM_SHOW: showMainWindow(); break;
+            case IDM_EXIT: DestroyWindow(); break;
+            case IDM_ABOUT:
+                MessageBoxW(L"agwinterm lite\nA lightweight native terminal over the Rust pty-host.",
+                            L"About", MB_OK | MB_ICONINFORMATION);
+                break;
+            default:   // menu-bar / tray: close / split / next / copy / paste / previous
+                if (id >= IDM_CLOSE && id <= IDM_PREV) { runPaletteItem(id); Invalidate(FALSE); SetFocus(); }
+                break;
+        }
+        return 0;
+    }
+
+    void OnDestroy() {
+        saveWindowRect();                        // remember window size + position for next launch
+        Shell_NotifyIconW(NIM_DELETE, &g_nid);   // remove the tray icon
+        for (Session* s : g_sessions) killSession(s);
+        agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
+        agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
+        req.which_cmd = agwinterm_ptyhost_Request_shutdown_tag;
+        request(req, &rep);
+        PostQuitMessage(0);
+    }
+};
+
+static CMainFrame g_frame;
 
 
 // ---- control-API server (newline JSON, agwintermctl/skill-compatible subset) ----
@@ -2601,6 +3125,7 @@ static bool restoreSessions() {
 }
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
+    _Module.Init(nullptr, inst);   // ATL/WTL module (window class registration lives here)
     InitializeCriticalSection(&g_lock);
     InitializeCriticalSection(&g_reqLock);
     loadCore();
@@ -2632,51 +3157,58 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     InitCommonControlsEx(&icc);
 
     g_appIcon = makeRetroIcon();
-    WNDCLASSW wc{};
-    wc.lpfnWndProc = wndProc;
-    wc.hInstance = inst;
-    wc.lpszClassName = L"AgwintermLite";
-    wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_IBEAM);
-    wc.hIcon = g_appIcon;   // 2000's-style terminal icon (window + taskbar)
-    RegisterClassW(&wc);
+    applyTheme();   // resolve the saved theme BEFORE any window exists, so nothing flashes light
+
     RECT want{ 0, 0, kSidebarW + 100 * g_cw, 30 * g_ch };
     // WS_CLIPCHILDREN keeps the terminal paint out of the native tree child.
     AdjustWindowRect(&want, WS_OVERLAPPEDWINDOW, TRUE);   // TRUE = has a menu bar
     int wx = CW_USEDEFAULT, wy = CW_USEDEFAULT, ww = want.right - want.left, wh = want.bottom - want.top;
     RECT sr; bool startMax = false;
     if (loadWindowRect(&sr, &startMax)) { wx = sr.left; wy = sr.top; ww = sr.right - sr.left; wh = sr.bottom - sr.top; }
-    g_hwnd = CreateWindowW(L"AgwintermLite", L"agwinterm lite", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                           wx, wy, ww, wh, nullptr, buildMenuBar(), inst, nullptr);
+    bool haveRect = (wx != CW_USEDEFAULT);
+    RECT frameRc{ wx, wy, wx + ww, wy + wh };
+    // WTL frame: CFrameWinTraits already carries WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN.
+    g_hwnd = g_frame.CreateEx(nullptr, haveRect ? &frameRc : nullptr);
+    if (!g_hwnd) fatal(L"could not create the main window");
+    g_frame.SetWindowText(L"agwinterm lite");
+    g_frame.SetMenu(buildMenuBar());
+    g_frame.SetIcon(g_appIcon, TRUE);    // 2000's-style terminal icon (window + taskbar)
+    g_frame.SetIcon(g_appIcon, FALSE);
+    if (wx == CW_USEDEFAULT) g_frame.SetWindowPos(nullptr, 0, 0, ww, wh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
     // Native SysTreeView32 sidebar docked on the left; picking a node selects that session.
     RECT cr; GetClientRect(g_hwnd, &cr);
-    g_tree = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
-                             WS_CHILD | WS_VISIBLE | TVS_SHOWSELALWAYS | TVS_NOHSCROLL |
-                             TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_EDITLABELS,
-                             0, 0, g_sidebarW, cr.bottom, g_hwnd, (HMENU)ID_TREE, inst, nullptr);
+    RECT trc{ 0, 0, g_sidebarW, cr.bottom };
+    g_frame.m_tree.Create(g_hwnd, trc, nullptr,
+                          WS_CHILD | WS_VISIBLE | TVS_SHOWSELALWAYS | TVS_NOHSCROLL |
+                          TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_EDITLABELS,
+                          WS_EX_CLIENTEDGE, (UINT)ID_TREE);
+    g_tree = g_frame.m_tree;   // the rest of the file talks to the raw handle
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
     { LOGFONTW lf{}; GetObjectW((HFONT)GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf); lf.lfItalic = TRUE; g_treeItalic = CreateFontIndirectW(&lf); }   // "working" rows
 
     // Native status bar (msctls_statusbar32) — a real standard control, docks itself at the bottom.
-    g_status = CreateWindowExW(0, STATUSCLASSNAMEW, nullptr, WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
-                               0, 0, 0, 0, g_hwnd, (HMENU)ID_STATUS, inst, nullptr);
-    { int parts[4] = { 120, 360, 470, -1 }; SendMessageW(g_status, SB_SETPARTS, 4, (LPARAM)parts); }
+    RECT zr{ 0, 0, 0, 0 };
+    g_frame.m_status.Create(g_hwnd, zr, nullptr, WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, 0, (UINT)ID_STATUS);
+    g_status = g_frame.m_status;
+    { int parts[4] = { 120, 360, 470, -1 }; g_frame.m_status.SetParts(4, parts); }
+    SetWindowSubclass(g_status, statusProc, 1, 0);   // dark paint takeover (no-op in light/classic)
 
     // Native toolbar across the top: New Session / New Workspace / Split, as classic 16px Silk icons
     // with hover tooltips (TBSTYLE_TOOLTIPS). No TBSTYLE_FLAT: flat toolbars hot-track and can leave a
     // button stuck "hot"; classic raised 3D buttons have no hover state and suit the old-skool look.
     buildToolbarImages();
-    g_toolbar = CreateWindowExW(0, TOOLBARCLASSNAMEW, nullptr,
-                                WS_CHILD | WS_VISIBLE | TBSTYLE_TOOLTIPS | CCS_TOP,
-                                0, 0, 0, 0, g_hwnd, (HMENU)ID_TOOLBAR, inst, nullptr);
-    SendMessageW(g_toolbar, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
-    SendMessageW(g_toolbar, TB_SETIMAGELIST, 0, (LPARAM)g_tbImages);
+    g_frame.m_toolbar.Create(g_hwnd, zr, nullptr,
+                             WS_CHILD | WS_VISIBLE | TBSTYLE_TOOLTIPS | CCS_TOP, 0, (UINT)ID_TOOLBAR);
+    g_toolbar = g_frame.m_toolbar;
+    g_frame.m_toolbar.SetButtonStructSize(sizeof(TBBUTTON));
+    g_frame.m_toolbar.SetImageList(g_tbImages);
     TBBUTTON tb[3] = {};
     tb[0].iBitmap = 0; tb[0].idCommand = IDM_NEW;   tb[0].fsState = TBSTATE_ENABLED; tb[0].fsStyle = BTNS_AUTOSIZE;
     tb[1].iBitmap = 1; tb[1].idCommand = IDM_NEWWS; tb[1].fsState = TBSTATE_ENABLED; tb[1].fsStyle = BTNS_AUTOSIZE;
     tb[2].iBitmap = 2; tb[2].idCommand = IDM_SPLIT; tb[2].fsState = TBSTATE_ENABLED; tb[2].fsStyle = BTNS_AUTOSIZE;
-    SendMessageW(g_toolbar, TB_ADDBUTTONS, 3, (LPARAM)tb);
-    SendMessageW(g_toolbar, TB_AUTOSIZE, 0, 0);
+    g_frame.m_toolbar.AddButtons(3, tb);
+    g_frame.m_toolbar.AutoSize();
     RECT tbr; GetWindowRect(g_toolbar, &tbr); g_toolbarH = tbr.bottom - tbr.top;
 
     // Shell UI font (Segoe UI on Win10/11) for the dialogs (Properties / New Session).
@@ -2694,6 +3226,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wcscpy_s(g_nid.szTip, L"agwinterm lite");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 
+    applyTheme();   // now that the controls exist, colour them (and the title bar) for real
+
     ShowWindow(g_hwnd, startMax ? SW_SHOWMAXIMIZED : show);   // restore a maximized session maximized
 
     if (!restoreSessions()) {   // rebuild the saved workspaces/sessions, or open a fresh default one
@@ -2705,10 +3239,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     CreateThread(nullptr, 0, ctlServerThread, nullptr, 0, nullptr);   // agwintermctl --pipe agwinterm-lite
     InvalidateRect(g_hwnd, nullptr, FALSE);
 
-    MSG msg;
-    while (GetMessageW(&msg, nullptr, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-    return 0;
+    CMessageLoop loop;          // WTL message pump (adds PreTranslateMessage / OnIdle hooks)
+    _Module.AddMessageLoop(&loop);
+    int rc = loop.Run();
+    _Module.RemoveMessageLoop();
+    _Module.Term();
+    return rc;
 }
