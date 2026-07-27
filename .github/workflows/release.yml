@@ -26,21 +26,15 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
-      - name: Build installer
+      # Builds BOTH Inno setups: agwinterm-setup-<ver>.exe (main) and
+      # agwinterm-lite-setup-<ver>.exe (the C++/GDI client, standalone).
+      - name: Build installers
         shell: pwsh
         run: ./installer/build.ps1
 
       - name: Build portable exe
         shell: pwsh
         run: ./installer/build-portable.ps1
-
-      # agwinterm-lite (experimental C++/GDI client for old/low-RAM machines): built with cl.exe
-      # (VS C++ tools are on windows-latest) + the Rust core/host, zipped self-contained. Best-
-      # effort — a lite build break must NOT fail the main release.
-      - name: Build agwinterm-lite (experimental)
-        shell: pwsh
-        continue-on-error: true
-        run: ./installer/build-lite.ps1
 
       # Free, certless supply-chain signing: a Sigstore-backed attestation binding each artifact to
       # this commit + workflow. Verify with:  gh attestation verify <file> --repo yeroo/agwinterm
@@ -50,6 +44,7 @@ jobs:
         with:
           subject-path: |
             installer/Output/agwinterm-setup-*.exe
+            installer/Output/agwinterm-lite-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
 
       - name: Publish GitHub Release
@@ -57,10 +52,10 @@ jobs:
         with:
           files: |
             installer/Output/agwinterm-setup-*.exe
+            installer/Output/agwinterm-lite-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
-            installer/Output/agwinterm-lite-*.zip
           generate_release_notes: true
-          fail_on_unmatched_files: false   # lite zip is best-effort; don't fail the release if absent
+          fail_on_unmatched_files: true    # all three are hard build products now — a missing one is a broken release
 
   # Opens the version-bump PR to microsoft/winget-pkgs for each release. Runs as a job here
   # (not a `release:` workflow) because releases published with GITHUB_TOKEN don't trigger

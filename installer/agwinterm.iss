@@ -41,6 +41,13 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 Source: "stage\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
+[InstallDelete]
+; 0.15.0–0.16.0 bundled the lite terminal inside THIS setup; it now ships from its own installer
+; (agwinterm-lite-setup-<ver>.exe) — an upgrade must clean up what those versions left behind.
+Type: files; Name: "{app}\agwinterm-lite.exe"
+Type: files; Name: "{autoprograms}\{#AppName} lite.lnk"
+Type: files; Name: "{autodesktop}\{#AppName} lite.lnk"
+
 [Icons]
 ; Main terminal — its shortcut seeds server-rust on a first run (harmless once configured).
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Parameters: "{#RustHostArg}"; IconFilename: "{app}\assets\agwinterm.ico"
