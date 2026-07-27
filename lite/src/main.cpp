@@ -133,6 +133,12 @@ static int g_statusH = 0;       // its height; the terminal ends above it
 static int sidebarSpan() { return g_showSidebar ? g_sidebarW + kSplitterW : 0; }
 static int toolbarTop()  { return g_showToolbar ? g_toolbarH : 0; }
 static bool g_splitDrag = false;   // dragging the sidebar splitter
+static bool g_treeDrag = false;    // dragging a session row in the sidebar (drag & drop)
+static int  g_dragIdx = -1;        // session index being dragged
+static HIMAGELIST g_dragImg = nullptr;   // TreeView_CreateDragImage ghost
+static int  g_armIdx = -1;         // session under a fresh left-press (drag candidate)
+static POINT g_armPt{};            // where that press landed (drag threshold)
+static HTREEITEM g_armItem = nullptr;
 static void relayout() {   // re-run the WM_SIZE layout + repaint after a toggle / splitter drag
     RECT c; GetClientRect(g_hwnd, &c);
     SendMessageW(g_hwnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(c.right, c.bottom));
@@ -2924,6 +2930,112 @@ static void openOverlay(const std::string& command, int sizePct) {
     InvalidateRect(g_overlayHwnd, nullptr, FALSE);
 }
 
+// ---- sidebar drag & drop ----------------------------------------------------------------------
+// Reorder g_sessions: take `from` out, put it into `targetWs`, inserted before `insertBefore`
+// (session index in the PRE-move vector; -1 = append at the end). Panes hold indices, so they are
+// remapped through the same removal+insertion the vector undergoes.
+static void moveSessionTo(int from, int targetWs, int insertBefore) {
+    int n = (int)g_sessions.size();
+    if (from < 0 || from >= n || targetWs < 0 || targetWs >= (int)g_workspaces.size()) return;
+    if (insertBefore == from) insertBefore = -1;   // dropping on yourself = just a workspace move
+    EnterCriticalSection(&g_lock);
+    Session* moved = g_sessions[from];
+    g_sessions.erase(g_sessions.begin() + from);
+    int ins = insertBefore < 0 ? (int)g_sessions.size()
+            : (insertBefore > from ? insertBefore - 1 : insertBefore);   // index after the removal
+    g_sessions.insert(g_sessions.begin() + ins, moved);
+    moved->ws = targetWs;
+    auto remap = [&](int idx) {
+        if (idx < 0) return idx;
+        if (idx == from) return ins;
+        int t = idx > from ? idx - 1 : idx;   // removal shift
+        return t >= ins ? t + 1 : t;          // insertion shift
+    };
+    g_pane[0] = remap(g_pane[0]);
+    g_pane[1] = remap(g_pane[1]);
+    LeaveCriticalSection(&g_lock);
+    refreshTree();   // rebuild labels/lParams + persist the new order
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+static void endTreeDrag(bool drop, POINT treePt) {   // treePt in TREE-client coords
+    if (!g_treeDrag) return;
+    g_treeDrag = false;   // FIRST: ReleaseCapture re-enters via WM_CAPTURECHANGED
+    ImageList_DragLeave(g_tree);
+    ImageList_EndDrag();
+    if (g_dragImg) { ImageList_Destroy(g_dragImg); g_dragImg = nullptr; }
+    ReleaseCapture();
+    TreeView_SelectDropTarget(g_tree, nullptr);
+    int from = g_dragIdx; g_dragIdx = -1;
+    if (!drop || from < 0) return;
+    TVHITTESTINFO ht{};
+    ht.pt = treePt;
+    HTREEITEM it = TreeView_HitTest(g_tree, &ht);
+    if (!it) return;
+    TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = it;
+    TreeView_GetItem(g_tree, &ti);
+    if (ti.lParam >= 0 && ti.lParam < (LPARAM)g_sessions.size()) {          // onto a session: insert before it
+        int tj = (int)ti.lParam;
+        if (tj != from) moveSessionTo(from, g_sessions[tj]->ws, tj);
+    } else {                                                                 // onto a workspace: append there
+        int w = (int)(-ti.lParam - 1);
+        if (w >= 0 && w < (int)g_workspaces.size()) moveSessionTo(from, w, -1);
+    }
+}
+// Drag & drop lives in a tree subclass: comctl32's own TVN_BEGINDRAG detection proved unreliable
+// with TVS_EDITLABELS in play, so the press/threshold/move/drop loop is ours — the same
+// deterministic approach as the rest of this port. All coordinates are tree-client.
+static LRESULT CALLBACK treeProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
+    if (m == WM_NCDESTROY) RemoveWindowSubclass(h, treeProc, id);
+    switch (m) {
+        case WM_LBUTTONDOWN: {
+            g_armIdx = -1;
+            TVHITTESTINFO ht{};
+            ht.pt = { GET_X_LPARAM(l), GET_Y_LPARAM(l) };
+            HTREEITEM it = TreeView_HitTest(h, &ht);
+            if (it && (ht.flags & (TVHT_ONITEM | TVHT_ONITEMRIGHT | TVHT_ONITEMINDENT))) {
+                TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = it;
+                TreeView_GetItem(h, &ti);
+                if (ti.lParam >= 0 && ti.lParam < (LPARAM)g_sessions.size()) {
+                    g_armIdx = (int)ti.lParam; g_armPt = ht.pt; g_armItem = it;   // drag candidate
+                }
+            }
+            break;   // default handling still selects the row
+        }
+        case WM_MOUSEMOVE: {
+            POINT pt{ GET_X_LPARAM(l), GET_Y_LPARAM(l) };
+            if (g_treeDrag) {   // live drag: move the ghost + highlight the drop target
+                ImageList_DragShowNolock(FALSE);
+                TVHITTESTINFO ht{}; ht.pt = pt;
+                TreeView_SelectDropTarget(h, TreeView_HitTest(h, &ht));
+                ImageList_DragShowNolock(TRUE);
+                ImageList_DragMove(pt.x, pt.y);
+                return 0;
+            }
+            if (g_armIdx >= 0 && (w & MK_LBUTTON) &&
+                (abs(pt.x - g_armPt.x) > 4 || abs(pt.y - g_armPt.y) > 4)) {   // passed the drag threshold
+                g_dragIdx = g_armIdx; g_armIdx = -1;
+                g_dragImg = TreeView_CreateDragImage(h, g_armItem);
+                if (g_dragImg) { ImageList_BeginDrag(g_dragImg, 0, 8, 8); ImageList_DragEnter(h, pt.x, pt.y); }
+                g_treeDrag = true;
+                SetCapture(h);
+                return 0;
+            }
+            break;
+        }
+        case WM_LBUTTONUP:
+            if (g_treeDrag) { endTreeDrag(true, { GET_X_LPARAM(l), GET_Y_LPARAM(l) }); return 0; }
+            g_armIdx = -1;
+            break;
+        case WM_CAPTURECHANGED:
+            if (g_treeDrag) endTreeDrag(false, { 0, 0 });   // something stole the mouse: cancel cleanly
+            break;
+        case WM_KEYDOWN:
+            if (g_treeDrag && w == VK_ESCAPE) { endTreeDrag(false, { 0, 0 }); return 0; }
+            break;
+    }
+    return DefSubclassProc(h, m, w, l);
+}
+
 // ---- flagged sessions + attention -------------------------------------------------------------
 static bool anyBlocked() {
     for (auto* s : g_sessions)
@@ -3076,6 +3188,7 @@ public:
         sendUtf8((wchar_t)chr);
     }
     LRESULT OnKey(UINT, WPARAM wp, LPARAM, BOOL& bHandled) {
+        if (g_treeDrag && wp == VK_ESCAPE) { endTreeDrag(false, { 0, 0 }); return 0; }   // cancel the drag
         // Reset per keydown; if a binding handled it, swallow the WM_CHAR TranslateMessage emits.
         g_swallowChar = handleKeyDown(wp);
         if (g_swallowChar) return 0;
@@ -3702,6 +3815,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
                           TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_EDITLABELS,
                           WS_EX_CLIENTEDGE, (UINT)ID_TREE);
     g_tree = g_frame.m_tree;   // the rest of the file talks to the raw handle
+    SetWindowSubclass(g_tree, treeProc, 1, 0);   // session drag & drop (own drag-detect loop)
     SendMessageW(g_tree, WM_SETFONT, (WPARAM)(HFONT)GetStockObject(DEFAULT_GUI_FONT), TRUE);
     { LOGFONTW lf{}; GetObjectW((HFONT)GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf); lf.lfItalic = TRUE; g_treeItalic = CreateFontIndirectW(&lf); }   // "working" rows
 
