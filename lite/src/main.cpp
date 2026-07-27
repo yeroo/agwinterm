@@ -86,6 +86,7 @@ static constexpr int kSplitterW = 5;   // draggable divider between the sidebar 
 static constexpr int kSidebarMinW = 90;   // the splitter will not shrink the left pane past this
 static int g_sidebarW = kSidebarW;     // current (resizable) sidebar width
 static bool g_showSidebar = true, g_showToolbar = true, g_showStatus = true;   // View menu toggles (persisted)
+static bool g_flagView = false;   // sidebar shows only flagged sessions (toolbar pennant / View menu)
 
 // ---- sessions & layout ----
 struct Session {
@@ -93,6 +94,7 @@ struct Session {
     std::string status = "idle";   // control-API agent status (sidebar dot)
     std::wstring name;             // custom name (rename); empty = "session N"
     int ws = 0;                    // workspace this session belongs to (index into g_workspaces)
+    bool flagged = false;          // user-flagged (working set); amber pennant in the tree, persisted
     bool hidden = false;          // split-pane shell: a real shell, but NOT a sidebar/tree session
     std::string app, cwd;          // launch spec, remembered so the session can be restored on next launch
     std::vector<std::string> args; // ("" app = default PowerShell; empty args = wrap/bare per app)
@@ -542,7 +544,7 @@ static void applyTheme() {
 // HIBYTE = HOTKEYF_* (SHIFT 1 / CONTROL 2 / ALT 4). 0 = unbound.
 enum { KB_NEW, KB_NEWWS, KB_CLOSE, KB_SPLIT, KB_NEXT, KB_PREV, KB_COPY, KB_PASTE,
        KB_PALETTE, KB_FOCUSL, KB_FOCUSR, KB_SCROLLUP, KB_SCROLLDN, KB_QUICK, KB_SCRATCH, KB_REOPEN,
-       KB_ZOOMIN, KB_ZOOMOUT, KB_ZOOMRESET, KB_COUNT };
+       KB_ZOOMIN, KB_ZOOMOUT, KB_ZOOMRESET, KB_FLAG, KB_FLAGVIEW, KB_ATTENTION, KB_COUNT };
 struct KbInfo { const wchar_t* label; const wchar_t* reg; };
 static const KbInfo kKbInfo[KB_COUNT] = {
     { L"New Session",      L"Key_New" },     { L"New Workspace",    L"Key_NewWs" },
@@ -554,7 +556,8 @@ static const KbInfo kKbInfo[KB_COUNT] = {
     { L"Scroll Down",      L"Key_ScrollDn" }, { L"Quick Terminal",   L"Key_Quick" },
     { L"Scratch Terminal", L"Key_Scratch" },  { L"Reopen Closed",    L"Key_Reopen" },
     { L"Zoom In",          L"Key_ZoomIn" },   { L"Zoom Out",         L"Key_ZoomOut" },
-    { L"Zoom Reset",       L"Key_ZoomReset" },
+    { L"Zoom Reset",       L"Key_ZoomReset" }, { L"Flag / Unflag",   L"Key_Flag" },
+    { L"Flagged View",     L"Key_FlagView" },  { L"Next Blocked",    L"Key_Attention" },
 };
 static WORD g_keys[KB_COUNT] = { 0 };
 static bool g_swallowChar = false;   // set when a keydown was consumed by a binding, to drop its WM_CHAR
@@ -571,24 +574,28 @@ enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, ID
        IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
        IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108, IDM_KEYBOARD = 109,
        IDM_QUICK = 120, IDM_SCRATCH = 121, IDM_REOPEN = 122,
-       IDM_TG_SIDEBAR = 123, IDM_TG_TOOLBAR = 124, IDM_TG_STATUS = 125 };
+       IDM_TG_SIDEBAR = 123, IDM_TG_TOOLBAR = 124, IDM_TG_STATUS = 125,
+       IDM_FLAG = 126, IDM_FLAGVIEW = 127, IDM_ATTENTION = 128 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202, ID_STATUS = 203 };
 
 // Toolbar: every full-app chrome button that has a lite equivalent, in the full app's order
 // (sidebar toggle | session/workspace | split/scratch/quick | recent | settings). Icons are the
 // full app's vector glyphs, redrawn in GDI per theme (see drawToolbarGlyph).
-static const struct { int id; int img; const wchar_t* tip; } kTbButtons[] = {
-    { IDM_TG_SIDEBAR, 0, L"Toggle Sidebar" },
-    { IDM_NEW,        1, L"New Session" },
-    { IDM_NEWWS,      2, L"New Workspace" },
-    { IDM_SPLIT,      3, L"Split / Unsplit" },
-    { IDM_SCRATCH,    4, L"Scratch Terminal" },
-    { IDM_QUICK,      5, L"Quick Terminal" },
-    { IDM_REOPEN,     6, L"Reopen Closed Session" },
-    { IDM_PROPERTIES, 7, L"Properties" },
+static const struct { int id; int img; bool check; const wchar_t* tip; } kTbButtons[] = {
+    { IDM_TG_SIDEBAR, 0, false, L"Toggle Sidebar" },
+    { IDM_NEW,        1, false, L"New Session" },
+    { IDM_NEWWS,      2, false, L"New Workspace" },
+    { IDM_SPLIT,      3, false, L"Split / Unsplit" },
+    { IDM_SCRATCH,    4, false, L"Scratch Terminal" },
+    { IDM_QUICK,      5, false, L"Quick Terminal" },
+    { IDM_FLAGVIEW,   8, true,  L"Flagged View" },
+    { IDM_ATTENTION,  9, false, L"Attention — next blocked session" },
+    { IDM_REOPEN,     6, false, L"Reopen Closed Session" },
+    { IDM_PROPERTIES, 7, false, L"Properties" },
 };
 static constexpr int kTbCount = (int)(sizeof kTbButtons / sizeof kTbButtons[0]);
+static constexpr int kTbImgCount = 11;   // 0..9 per the table + 10 = the bell in the alert colour
 static int tbImageOf(int cmdId) {
     for (const auto& b : kTbButtons) if (b.id == cmdId) return b.img;
     return -1;
@@ -1115,6 +1122,7 @@ static void loadColors() {   // Properties->Colors overrides (default fg/bg + on
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowSidebar", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showSidebar = v != 0;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowToolbar", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showToolbar = v != 0;
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowStatus", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showStatus = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FlagView", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_flagView = v != 0;
 }
 static void loadKeys() {   // configurable key bindings; absent = unbound (0)
     for (int a = 0; a < KB_COUNT; a++) {
@@ -1139,6 +1147,7 @@ static void saveColors() {
     v = g_showSidebar ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowSidebar", REG_DWORD, &v, sizeof(v));
     v = g_showToolbar ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowToolbar", REG_DWORD, &v, sizeof(v));
     v = g_showStatus ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowStatus", REG_DWORD, &v, sizeof(v));
+    v = g_flagView ? 1 : 0;   RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FlagView", REG_DWORD, &v, sizeof(v));
 }
 // Window geometry persistence. loadWindowRect resolves the saved rect (clamped onto a visible monitor
 // so an unplugged screen / resolution change can't strand the window off-screen) and is applied at
@@ -1203,13 +1212,18 @@ static void saveSessionState() {
     std::string out = "V1\n";
     for (const auto& w : g_workspaces) out += "W\t" + narrow(w) + "\n";
     EnterCriticalSection(&g_lock);
+    std::string flagLine;   // "F\t<i>..." = indices (in S-line order) of flagged sessions; old builds skip it
+    int saved = 0;
     for (const Session* s : g_sessions) {
         if (s->hidden) continue;
         out += "S\t" + std::to_string(s->ws) + "\t" + narrow(s->name) + "\t" + s->app + "\t" + s->cwd;
         for (const auto& a : s->args) out += "\t" + a;
         out += "\n";
+        if (s->flagged) flagLine += "\t" + std::to_string(saved);
+        saved++;
     }
     LeaveCriticalSection(&g_lock);
+    if (!flagLine.empty()) out += "F" + flagLine + "\n";
     out += "A\t" + std::to_string(g_activeWs) + "\n";
     HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return;
@@ -1753,6 +1767,9 @@ static void runPaletteItem(int id) {
 }
 
 static void togglePopupTerminal(bool scratch);   // fwd (quick/scratch popup windows, defined below)
+static void toggleFlag(Session* s);              // fwd (flagged sessions, defined below)
+static void toggleFlagView();                    // fwd
+static void nextBlocked();                       // fwd (attention bell)
 static void runKbAction(int a) {
     switch (a) {
         case KB_NEW: { int c, r; paneGridSize(g_focus, &c, &r); Session* s = newSession(c, r); if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; InvalidateRect(g_hwnd, nullptr, FALSE); } break; }
@@ -1774,6 +1791,9 @@ static void runKbAction(int a) {
         case KB_ZOOMIN: fontZoom(+1); break;
         case KB_ZOOMOUT: fontZoom(-1); break;
         case KB_ZOOMRESET: fontZoom(0); break;
+        case KB_FLAG: toggleFlag(focusedSession()); break;
+        case KB_FLAGVIEW: toggleFlagView(); break;
+        case KB_ATTENTION: nextBlocked(); break;
     }
 }
 static bool handleKeyDown(WPARAM vk) {
@@ -1874,11 +1894,13 @@ static void refreshTree() {
     int focusIdx = g_pane[g_focus];
     // Group sessions under their workspace ("folder"). lParam encodes the node: >=0 session index,
     // <0 = -(workspace index + 1).
+    bool anyShown = false;
     for (int w = 0; w < (int)g_workspaces.size(); w++) {
-        int count = 0;
-        for (auto* s : g_sessions) if (s->ws == w && !s->hidden) count++;   // hidden split shells don't count
+        int count = 0, flaggedCount = 0;
+        for (auto* s : g_sessions) if (s->ws == w && !s->hidden) { count++; if (s->flagged) flaggedCount++; }
+        if (g_flagView && flaggedCount == 0) continue;   // flagged view: only workspaces with flagged sessions
         wchar_t wlabel[96];
-        wsprintfW(wlabel, L"%s  (%d)", g_workspaces[w].c_str(), count);
+        wsprintfW(wlabel, L"%s  (%d)", g_workspaces[w].c_str(), g_flagView ? flaggedCount : count);
         TVINSERTSTRUCTW wt{};
         wt.hParent = TVI_ROOT;
         wt.hInsertAfter = TVI_LAST;
@@ -1886,11 +1908,13 @@ static void refreshTree() {
         wt.item.pszText = wlabel;
         wt.item.lParam = -(w + 1);
         HTREEITEM wh = TreeView_InsertItem(g_tree, &wt);
+        anyShown = true;
         int vis = 0;   // visible session number within the workspace
         for (int i = 0; i < (int)g_sessions.size(); i++) {
             if (g_sessions[i]->ws != w || g_sessions[i]->hidden) continue;   // skip split shells
             Session* s = g_sessions[i];
-            ++vis;
+            ++vis;   // stable numbering: count ALL the workspace's sessions, filtered or not
+            if (g_flagView && !s->flagged) continue;                         // flagged view filter
             // Agent status cue: name goes bold when the agent needs you (blocked), italic + "(working…)"
             // while it's busy (italic applied in the tree's NM_CUSTOMDRAW). Others show plain.
             int cls = s->exited ? AGST_NONE : statusClass(s->status);
@@ -1909,6 +1933,14 @@ static void refreshTree() {
             if (i == focusIdx) sel = h;
         }
         TreeView_Expand(g_tree, wh, TVE_EXPAND);
+    }
+    if (g_flagView && !anyShown) {   // hint row; lParam sentinel is out of range for every handler
+        TVINSERTSTRUCTW ti{};
+        ti.hParent = TVI_ROOT; ti.hInsertAfter = TVI_LAST;
+        ti.item.mask = TVIF_TEXT | TVIF_PARAM;
+        ti.item.pszText = (LPWSTR)L"No flagged sessions (right-click one to flag)";
+        ti.item.lParam = -100000;
+        TreeView_InsertItem(g_tree, &ti);
     }
     if (sel) TreeView_SelectItem(g_tree, sel);
     g_treeSyncing = false;
@@ -1936,12 +1968,15 @@ static void showTreeContextMenu() {
     bool isSession = g_ctxParam >= 0;
     int si = isSession ? (int)g_ctxParam : -1;
     int cws = isSession ? (si < (int)g_sessions.size() ? g_sessions[si]->ws : 0) : (int)(-g_ctxParam - 1);
+    if (!isSession && (cws < 0 || cws >= (int)g_workspaces.size())) return;   // hint row etc.
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu();
     if (isSession) {   // ---- session node ----
         AppendMenuW(m, MF_STRING, IDM_NEW, L"&New Session…");
         AppendMenuW(m, MF_STRING, IDM_DUP, L"&Duplicate Session");
         AppendMenuW(m, MF_STRING, IDM_RENAME, L"Re&name");
+        AppendMenuW(m, MF_STRING, IDM_FLAG,
+                    (si < (int)g_sessions.size() && g_sessions[si]->flagged) ? L"Unfla&g" : L"Fla&g");
         if ((int)g_workspaces.size() > 1) {
             HMENU sub = CreatePopupMenu();
             for (int w = 0; w < (int)g_workspaces.size(); w++)
@@ -1978,6 +2013,9 @@ static void showTreeContextMenu() {
             break;
         case IDM_RENAME:
             if (g_ctxItem) { SetFocus(g_tree); TreeView_EditLabel(g_tree, g_ctxItem); }   // inline edit
+            break;
+        case IDM_FLAG:
+            if (isSession && si < (int)g_sessions.size()) toggleFlag(g_sessions[si]);
             break;
         case IDM_CLOSE:
             if (isSession) closeSessionAt(si);
@@ -2019,6 +2057,10 @@ static HMENU buildMenuBar() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_QUICK, L"&Quick Terminal");
     AppendMenuW(view, MF_STRING, IDM_SCRATCH, L"Sc&ratch Terminal");
+    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(view, MF_STRING, IDM_FLAG, L"Fla&g / Unflag Session");
+    AppendMenuW(view, MF_STRING | (g_flagView ? MF_CHECKED : 0), IDM_FLAGVIEW, L"Flagged Vie&w");
+    AppendMenuW(view, MF_STRING, IDM_ATTENTION, L"Next Bloc&ked Session");
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING | (g_showSidebar ? MF_CHECKED : 0), IDM_TG_SIDEBAR, L"Side&bar");
     AppendMenuW(view, MF_STRING | (g_showToolbar ? MF_CHECKED : 0), IDM_TG_TOOLBAR, L"&Toolbar");
@@ -2553,7 +2595,7 @@ static void showTrayMenu() {
 // four are its custom D2D vector glyphs (card+plus, split panes, scratch pad, recents clock) — we
 // redraw those 4x supersampled with round-capped pens and HALFTONE-downscale, so the stroke weight
 // (~1.5px) and smoothness match the font glyphs.
-static const wchar_t kTbFontGlyph[kTbCount] = {
+static const wchar_t kTbFontGlyph[kTbImgCount] = {
     0xE700,   // 0 sidebar  — GlobalNavButton (same as the full app)
     0xE710,   // 1 new sess — Add
     0,        // 2 new ws   — custom (card + plus)
@@ -2562,6 +2604,9 @@ static const wchar_t kTbFontGlyph[kTbCount] = {
     0xE756,   // 5 quick    — CommandPrompt
     0,        // 6 reopen   — custom (recents clock)
     0xE713,   // 7 settings — Settings gear
+    0,        // 8 flag     — custom (pennant, DrawFlagGlyph)
+    0,        // 9 bell     — custom (DrawBellGlyph)
+    0,        // 10 bell    — same shape, alert colour (any session blocked)
 };
 // Custom glyphs drawn on a 64x64 canvas (scaled 4x from the full app's 16px-cell geometry).
 static void drawToolbarGlyph4x(HDC dc, int idx, COLORREF c) {
@@ -2585,6 +2630,19 @@ static void drawToolbarGlyph4x(HDC dc, int idx, COLORREF c) {
             Ellipse(dc, 6, 6, 58, 58);
             ln(32, 32, 32, 15); ln(32, 32, 43, 39);
             break;
+        case 8: { // flagged view: pennant (DrawFlagGlyph)
+            ln(22, 8, 22, 56);
+            POINT p[3] = { { 22, 10 }, { 50, 19 }, { 22, 28 } };
+            Polygon(dc, p, 3);
+            break;
+        }
+        case 9:
+        case 10:  // attention bell (DrawBellGlyph); 10 = alert-coloured build of the same shape
+            Arc(dc, 16, 10, 48, 42, 48, 26, 16, 26);   // dome
+            ln(16, 26, 13, 42); ln(48, 26, 51, 42);    // walls
+            ln(9, 42, 55, 42);                          // rim
+            Ellipse(dc, 28, 46, 36, 53);                // clapper
+            break;
     }
     SelectObject(dc, op); SelectObject(dc, ob);
     DeleteObject(pen);
@@ -2593,7 +2651,7 @@ static void buildToolbarImages() {
     // Rebuilt on every theme switch: icons are composed onto the bar colour in the theme's text
     // colour (no alpha image lists without a v6 manifest, and none needed).
     if (g_tbImages) ImageList_Destroy(g_tbImages);
-    g_tbImages = ImageList_Create(16, 16, ILC_COLOR24, kTbCount, 0);
+    g_tbImages = ImageList_Create(16, 16, ILC_COLOR24, kTbImgCount, 0);
     COLORREF bg = g_th.classic ? GetSysColor(COLOR_BTNFACE) : g_th.bar;
     COLORREF fg = g_th.classic ? GetSysColor(COLOR_BTNTEXT) : g_th.text;
     // The icon font: Segoe Fluent Icons on Win11; Segoe MDL2 Assets carries the same codepoints on
@@ -2602,7 +2660,8 @@ static void buildToolbarImages() {
                                 OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
                                 DEFAULT_PITCH, L"Segoe Fluent Icons");
     HDC sdc = GetDC(nullptr);
-    for (int i = 0; i < kTbCount; i++) {
+    for (int i = 0; i < kTbImgCount; i++) {
+        COLORREF gfg = (i == 10) ? RGB(230, 150, 50) : fg;   // the alert bell is amber in every theme
         HDC mem = CreateCompatibleDC(sdc);
         HBITMAP bm = CreateCompatibleBitmap(sdc, 16, 16);
         HGDIOBJ obm = SelectObject(mem, bm);
@@ -2622,7 +2681,7 @@ static void buildToolbarImages() {
                 SelectObject(mem, mdl2);
             }
             SetBkMode(mem, TRANSPARENT);
-            SetTextColor(mem, fg);
+            SetTextColor(mem, gfg);
             SIZE sz{};
             GetTextExtentPoint32W(mem, ch, 1, &sz);
             TextOutW(mem, (16 - sz.cx) / 2, (16 - sz.cy) / 2, ch, 1);
@@ -2633,7 +2692,7 @@ static void buildToolbarImages() {
             HGDIOBJ obig = SelectObject(big, bigBm);
             RECT br{ 0, 0, 64, 64 };
             FillRect(big, &br, bb);
-            drawToolbarGlyph4x(big, i, fg);
+            drawToolbarGlyph4x(big, i, gfg);
             SetStretchBltMode(mem, HALFTONE);
             SetBrushOrgEx(mem, 0, 0, nullptr);
             StretchBlt(mem, 0, 0, 16, 16, big, 0, 0, 64, 64, SRCCOPY);
@@ -2819,6 +2878,45 @@ static void openOverlay(const std::string& command, int sizePct) {
     SetForegroundWindow(g_overlayHwnd);
     g_focusOverride = g_overlaySession;
     InvalidateRect(g_overlayHwnd, nullptr, FALSE);
+}
+
+// ---- flagged sessions + attention -------------------------------------------------------------
+static bool anyBlocked() {
+    for (auto* s : g_sessions)
+        if (!s->hidden && !s->exited && statusClass(s->status) == AGST_BLOCKED) return true;
+    return false;
+}
+// Jump to the next blocked session (cycling from the current one). The agent-terminal loop: the
+// bell lights, you click it, you're on the session that needs you.
+static void nextBlocked() {
+    int n = (int)g_sessions.size();
+    if (n == 0) return;
+    int start = g_pane[0] >= 0 ? g_pane[0] : 0;
+    for (int k = 1; k <= n; k++) {
+        int i = (start + k) % n;
+        Session* s = g_sessions[i];
+        if (s->hidden || s->exited || statusClass(s->status) != AGST_BLOCKED) continue;
+        g_pane[0] = i; g_focus = 0;
+        g_activeWs = s->ws;
+        syncPaneSizes();
+        refreshTree();   // re-selects the tree row for the new pane-0 session
+        InvalidateRect(g_hwnd, nullptr, FALSE);
+        SetFocus(g_hwnd);
+        return;
+    }
+    MessageBeep(MB_OK);   // nothing blocked right now
+}
+static void toggleFlag(Session* s) {
+    if (!s || s->hidden) return;   // popup/split shells aren't tree sessions
+    s->flagged = !s->flagged;
+    refreshTree();                 // repaints the pennant + persists via saveSessionState
+}
+static void toggleFlagView() {
+    g_flagView = !g_flagView;
+    if (g_hwnd) CheckMenuItem(GetMenu(g_hwnd), IDM_FLAGVIEW, MF_BYCOMMAND | (g_flagView ? MF_CHECKED : MF_UNCHECKED));
+    if (g_toolbar) SendMessageW(g_toolbar, TB_CHECKBUTTON, IDM_FLAGVIEW, MAKELPARAM(g_flagView, 0));
+    refreshTree();
+    saveColors();   // FlagView persists with the other view toggles
 }
 
 // ---- main frame (WTL) -------------------------------------------------------------------------
@@ -3039,7 +3137,11 @@ public:
     }
 
     // ---- app messages ----
-    LRESULT OnRefreshTree(UINT, WPARAM, LPARAM, BOOL&) { refreshTree(); return 0; }
+    LRESULT OnRefreshTree(UINT, WPARAM, LPARAM, BOOL&) {
+        refreshTree();
+        if (g_toolbar) ::InvalidateRect(g_toolbar, nullptr, FALSE);   // bell re-reads anyBlocked()
+        return 0;
+    }
     LRESULT OnTray(UINT, WPARAM, LPARAM lp, BOOL&) {
         if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) showTrayMenu();
         else if (LOWORD(lp) == WM_LBUTTONDBLCLK) showMainWindow();
@@ -3075,7 +3177,29 @@ public:
                     SelectObject(cd->nmcd.hdc, g_treeItalic);
                     r = CDRF_NEWFONT;
                 }
+                if (p >= 0 && p < (LPARAM)g_sessions.size() && g_sessions[p]->flagged)
+                    r |= CDRF_NOTIFYPOSTPAINT;   // pennant marker drawn after the row
                 return r;
+            }
+            if (cd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
+                LPARAM p = cd->nmcd.lItemlParam;
+                if (p >= 0 && p < (LPARAM)g_sessions.size() && g_sessions[p]->flagged) {
+                    // Amber pennant right-aligned in the row (the full app's flag marker colour).
+                    RECT rr;
+                    if (TreeView_GetItemRect(g_tree, (HTREEITEM)cd->nmcd.dwItemSpec, &rr, FALSE)) {
+                        int x = rr.right - 15, cy = (rr.top + rr.bottom) / 2;
+                        COLORREF amber = RGB(245, 194, 66);
+                        HPEN pen = CreatePen(PS_SOLID, 1, amber);
+                        HBRUSH br = CreateSolidBrush(amber);
+                        HGDIOBJ op = SelectObject(cd->nmcd.hdc, pen), ob = SelectObject(cd->nmcd.hdc, br);
+                        MoveToEx(cd->nmcd.hdc, x, cy - 6, nullptr); LineTo(cd->nmcd.hdc, x, cy + 6);
+                        POINT tri[3] = { { x, cy - 6 }, { x + 8, cy - 3 }, { x, cy } };
+                        Polygon(cd->nmcd.hdc, tri, 3);
+                        SelectObject(cd->nmcd.hdc, op); SelectObject(cd->nmcd.hdc, ob);
+                        DeleteObject(pen); DeleteObject(br);
+                    }
+                }
+                return CDRF_DODEFAULT;
             }
             return CDRF_DODEFAULT;
         }
@@ -3095,6 +3219,7 @@ public:
                 HBRUSH b = CreateSolidBrush(prs ? g_th.sel : hot ? g_th.hot : g_th.bar);
                 FillRect(cd->nmcd.hdc, &rc, b); DeleteObject(b);
                 int img = tbImageOf((int)cd->nmcd.dwItemSpec);
+                if (cd->nmcd.dwItemSpec == IDM_ATTENTION && anyBlocked()) img = 10;   // amber bell
                 int ix = rc.left + (rc.right - rc.left - 16) / 2;
                 int iy = rc.top + (rc.bottom - rc.top - 16) / 2 + (prs ? 1 : 0);   // classic 1px press nudge
                 if (img >= 0) ImageList_Draw(g_tbImages, img, cd->nmcd.hdc, ix, iy, ILD_NORMAL);
@@ -3197,6 +3322,9 @@ public:
                 relayout(); saveColors();
                 break;
             }
+            case IDM_FLAG: toggleFlag(focusedSession()); break;
+            case IDM_FLAGVIEW: toggleFlagView(); break;
+            case IDM_ATTENTION: nextBlocked(); break;
             case IDM_RESTART: restartApp(); break;
             case IDM_SHOW: showMainWindow(); break;
             case IDM_EXIT: DestroyWindow(); break;
@@ -3389,7 +3517,7 @@ static bool restoreSessions() {
     if (data.empty()) return false;
 
     std::vector<std::wstring> wss;
-    struct Spec { int ws; std::string name, app, cwd; std::vector<std::string> args; };
+    struct Spec { int ws; std::string name, app, cwd; std::vector<std::string> args; bool flagged = false; };
     std::vector<Spec> specs;
     int activeWs = 0;
     size_t i = 0;
@@ -3410,6 +3538,11 @@ static bool restoreSessions() {
             Spec sp; sp.ws = atoi(ff[1].c_str()); sp.name = ff[2]; sp.app = ff[3]; sp.cwd = ff[4];
             for (size_t k = 5; k < ff.size(); k++) sp.args.push_back(ff[k]);
             specs.push_back(sp);
+        } else if (ff[0] == "F") {   // flagged indices, in S-line order
+            for (size_t k = 1; k < ff.size(); k++) {
+                int fi = atoi(ff[k].c_str());
+                if (fi >= 0 && fi < (int)specs.size()) specs[fi].flagged = true;
+            }
         } else if (ff[0] == "A" && ff.size() >= 2) activeWs = atoi(ff[1].c_str());
     }
     if (specs.empty()) return false;
@@ -3422,7 +3555,7 @@ static bool restoreSessions() {
         g_activeWs = (sp.ws >= 0 && sp.ws < (int)g_workspaces.size()) ? sp.ws : 0;
         Session* s = newSession(cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
                                 sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str());
-        if (s) { s->name = widen(sp.name); if (firstIdx < 0) firstIdx = (int)g_sessions.size() - 1; }
+        if (s) { s->name = widen(sp.name); s->flagged = sp.flagged; if (firstIdx < 0) firstIdx = (int)g_sessions.size() - 1; }
     }
     g_restoring = false;
     if (firstIdx < 0) return false;
@@ -3515,7 +3648,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         tb[i].iBitmap = kTbButtons[i].img;
         tb[i].idCommand = kTbButtons[i].id;
         tb[i].fsState = TBSTATE_ENABLED;
-        tb[i].fsStyle = BTNS_AUTOSIZE;
+        if (kTbButtons[i].check && kTbButtons[i].id == IDM_FLAGVIEW && g_flagView) tb[i].fsState |= TBSTATE_CHECKED;
+        tb[i].fsStyle = BTNS_AUTOSIZE | (kTbButtons[i].check ? BTNS_CHECK : 0);
     }
     g_frame.m_toolbar.AddButtons(kTbCount, tb);
     g_frame.m_toolbar.AutoSize();
