@@ -2,12 +2,11 @@
 ; Build via installer\build.ps1 (publishes to stage\ then runs ISCC on this file).
 
 #define AppName    "agwinterm"
-#define AppVersion "0.16.0"
+#define AppVersion "0.16.1"
 #define AppExe     "Agwinterm.Win32.exe"
-#define LiteExe    "agwinterm-lite.exe"
 #define AppPublisher "Boris Kudriashov"
-; Both terminals default new sessions to the Rust pty-host. The main app reads this as a
-; first-run seed only (it never overrides an existing config); lite always uses the Rust host.
+; The main app defaults new sessions to the Rust pty-host as a first-run seed only (it never
+; overrides an existing config). Lite ships from its own installer (agwinterm-lite.iss).
 #define RustHostArg "--default-session-host server-rust"
 
 [Setup]
@@ -37,7 +36,7 @@ OutputBaseFilename=agwinterm-setup-{#AppVersion}
 ; writes to the user's profile/config behind their back.
 
 [Tasks]
-Name: "desktopicon"; Description: "Create &desktop shortcuts (both terminals)"; GroupDescription: "Shortcuts:"
+Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"
 
 [Files]
 Source: "stage\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -46,9 +45,6 @@ Source: "stage\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs igno
 ; Main terminal — its shortcut seeds server-rust on a first run (harmless once configured).
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Parameters: "{#RustHostArg}"; IconFilename: "{app}\assets\agwinterm.ico"
 Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppExe}"; Parameters: "{#RustHostArg}"; IconFilename: "{app}\assets\agwinterm.ico"; Tasks: desktopicon
-; Lite terminal — always rides the Rust pty-host; uses the main app's icon.
-Name: "{autoprograms}\{#AppName} lite"; Filename: "{app}\{#LiteExe}"; IconFilename: "{app}\assets\agwinterm.ico"
-Name: "{autodesktop}\{#AppName} lite";  Filename: "{app}\{#LiteExe}"; IconFilename: "{app}\assets\agwinterm.ico"; Tasks: desktopicon
 
 [Run]
 ; Launch-on-finish checkbox (interactive installs only) — passes the seed so the very first run

@@ -199,6 +199,35 @@ agwintermctl window new --name scratchpad    # open a second window
 Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
 Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.
 
+## agwinterm-lite — the tiny client
+
+**`agwinterm-lite`** is a second, minimal client for old or low-RAM machines: a single small
+C++ exe (Win32/WTL, no .NET) over the same Rust emulator core and pty-host. It trades the
+custom-drawn chrome for **real native controls** — menu bar, toolbar, TreeView sidebar,
+status bar — in the classic Windows look.
+
+- **Themes**: Dark / Light / Classic / Auto (follows Windows) from *File → Properties*. Dark
+  covers everything — menus, toolbar, sidebar, dialogs, scrollbars, title bar. **Classic** keeps
+  the authentic raised-3D, pre-theme look.
+- **Agent workflow**: per-session agent status (bold = blocked, italic = working), an
+  **attention bell** that lights amber and jumps to the next blocked session, **flagged
+  sessions** with a flagged-only view, **unread badges** (commands finished while a session was
+  off-screen), workspace focus, sidebar **drag & drop**.
+- **Terminals**: workspaces + sessions with restore, a 2-pane split, quick / scratch / overlay
+  popup terminals, font catalog (incl. bundled Cozette & Tamzen bitmap fonts) with live zoom,
+  MS-DOS/EGA palette, cmd.exe-style Properties dialog, fully rebindable keys (all unbound by
+  default — keystrokes belong to your shell).
+- **Scriptable**: the same newline-JSON control pipe, speaking the `agwintermctl` dialect —
+  38 verbs covering sessions, workspaces, windows, and the tree (`agwintermctl --pipe
+  agwinterm-lite tree`). Shells get `AGWINTERM_*` env, so hooks and the agent skill work.
+- **Multi-window, the lite way**: every window is its own tiny process (`--pipe <name>`), all
+  sharing one pty-host; `agwintermctl window new/list/select/...` drives them.
+- **CLI**: `-p/--profile`, `-d/--dir`, `--maximized`, `--no-restore`, `--pipe` — the full app's
+  flag names.
+
+Grab **`agwinterm-lite-<version>-win-x64.zip`** from Releases, or build it (needs the VC++ ATL
+component): `./lite/build.ps1`.
+
 ## Keyboard essentials
 
 | Key | Action |
