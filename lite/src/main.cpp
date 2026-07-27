@@ -95,6 +95,8 @@ struct Session {
     std::wstring name;             // custom name (rename); empty = "session N"
     int ws = 0;                    // workspace this session belongs to (index into g_workspaces)
     bool flagged = false;          // user-flagged (working set); amber pennant in the tree, persisted
+    int seenDone = 0;              // completed-command (FTCS) count when the session was last visible
+    int unread = 0;                // commands finished while NOT visible — red count pill in the tree
     bool hidden = false;          // split-pane shell: a real shell, but NOT a sidebar/tree session
     std::string app, cwd;          // launch spec, remembered so the session can be restored on next launch
     std::vector<std::string> args; // ("" app = default PowerShell; empty args = wrap/bare per app)
@@ -831,15 +833,38 @@ static const wchar_t* kPromptWrap =
     L"if($global:__agwLiteP){& $global:__agwLiteP}else{\"PS $($executionContext.SessionState.Path.CurrentLocation)> \"}}}";
 
 // ---- session lifecycle ----
+// Completed FTCS commands (OSC 133 with an end boundary) in the session's buffer. Call under g_lock.
+static int completedMarks(Session* s) {
+    FfiEmuInfo info{};
+    if (!s->emu || !emu_info(s->emu, &info) || info.markCount == 0) return 0;
+    std::vector<FfiMark> mk(info.markCount);
+    uint32_t nm = emu_marks(s->emu, mk.data(), info.markCount);
+    int done = 0;
+    for (uint32_t i = 0; i < nm; i++) if (mk[i].endLine >= 0) done++;
+    return done;
+}
+
 static DWORD WINAPI readerThread(void* param) {
     Session* s = (Session*)param;
     std::vector<uint8_t> buf(64 * 1024);
     DWORD n;
     while ((n = ovIo(s->data, false, nullptr, buf.data(), (DWORD)buf.size())) > 0) {
+        bool bump = false;
         EnterCriticalSection(&g_lock);
         emu_feed(s->emu, buf.data(), n);
+        // Unread: commands that FINISHED while the session wasn't on screen (noise-free — prompt
+        // repaints don't move the completed count). Visible panes track instead of accumulating.
+        if (!s->hidden) {
+            bool visible = false;
+            for (int p2 = 0; p2 < 2; p2++)
+                if (g_pane[p2] >= 0 && g_pane[p2] < (int)g_sessions.size() && g_sessions[g_pane[p2]] == s) visible = true;
+            int done = completedMarks(s);
+            if (visible) { s->seenDone = done; if (s->unread) { s->unread = 0; bump = true; } }
+            else { int u = done > s->seenDone ? done - s->seenDone : 0; if (u != s->unread) { s->unread = u; bump = true; } }
+        }
         LeaveCriticalSection(&g_lock);
         InvalidateRect(windowForSession(s), nullptr, FALSE);
+        if (bump) PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // repaint the badge
     }
     s->exited = true;   // EOF: child exited, host shut down, or we were superseded
     InvalidateRect(windowForSession(s), nullptr, FALSE);
@@ -1472,6 +1497,7 @@ static void paintPane(HDC mem, RECT pr, Session* s, int pane, bool showCursor) {
     }
     // FTCS prompt pips (OSC 133): a small right-edge marker at each prompt line — green ok,
     // red failed, accent for a still-running command. The agent-status cue for Claude sessions.
+    int doneMarks = 0;   // completed commands seen this paint (unread bookkeeping)
     if (info.markCount > 0) {
         std::vector<FfiMark> marks(info.markCount);
         EnterCriticalSection(&g_lock);
@@ -1479,6 +1505,7 @@ static void paintPane(HDC mem, RECT pr, Session* s, int pane, bool showCursor) {
         LeaveCriticalSection(&g_lock);
         int base = (int)info.historyCount - off;   // buffer-absolute row of the top visible line
         for (uint32_t mi = 0; mi < nm; mi++) {
+            if (marks[mi].endLine >= 0) doneMarks++;
             int vr = (int)marks[mi].promptLine - base;
             if (vr < 0 || vr >= (int)info.rows) continue;
             COLORREF col = RGB(120, 130, 200);   // running (no end yet)
@@ -1490,6 +1517,10 @@ static void paintPane(HDC mem, RECT pr, Session* s, int pane, bool showCursor) {
             FillRect(mem, &pip, b);
             DeleteObject(b);
         }
+    }
+    if (!s->hidden) {   // painting = visible: mark as seen, clear the badge the moment you land here
+        s->seenDone = doneMarks;
+        if (s->unread) { s->unread = 0; PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0); }
     }
 
     // Scrollback indicator: thin right-edge stripe while scrolled.
@@ -3177,26 +3208,48 @@ public:
                     SelectObject(cd->nmcd.hdc, g_treeItalic);
                     r = CDRF_NEWFONT;
                 }
-                if (p >= 0 && p < (LPARAM)g_sessions.size() && g_sessions[p]->flagged)
-                    r |= CDRF_NOTIFYPOSTPAINT;   // pennant marker drawn after the row
+                if (p >= 0 && p < (LPARAM)g_sessions.size() && (g_sessions[p]->flagged || g_sessions[p]->unread > 0))
+                    r |= CDRF_NOTIFYPOSTPAINT;   // pennant / unread badge drawn after the row
                 return r;
             }
             if (cd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
                 LPARAM p = cd->nmcd.lItemlParam;
-                if (p >= 0 && p < (LPARAM)g_sessions.size() && g_sessions[p]->flagged) {
-                    // Amber pennant right-aligned in the row (the full app's flag marker colour).
+                if (p >= 0 && p < (LPARAM)g_sessions.size()) {
                     RECT rr;
                     if (TreeView_GetItemRect(g_tree, (HTREEITEM)cd->nmcd.dwItemSpec, &rr, FALSE)) {
-                        int x = rr.right - 15, cy = (rr.top + rr.bottom) / 2;
-                        COLORREF amber = RGB(245, 194, 66);
-                        HPEN pen = CreatePen(PS_SOLID, 1, amber);
-                        HBRUSH br = CreateSolidBrush(amber);
-                        HGDIOBJ op = SelectObject(cd->nmcd.hdc, pen), ob = SelectObject(cd->nmcd.hdc, br);
-                        MoveToEx(cd->nmcd.hdc, x, cy - 6, nullptr); LineTo(cd->nmcd.hdc, x, cy + 6);
-                        POINT tri[3] = { { x, cy - 6 }, { x + 8, cy - 3 }, { x, cy } };
-                        Polygon(cd->nmcd.hdc, tri, 3);
-                        SelectObject(cd->nmcd.hdc, op); SelectObject(cd->nmcd.hdc, ob);
-                        DeleteObject(pen); DeleteObject(br);
+                        HDC dc = cd->nmcd.hdc;
+                        int cy = (rr.top + rr.bottom) / 2;
+                        if (g_sessions[p]->flagged) {   // amber pennant (full app's flag marker)
+                            int x = rr.right - 15;
+                            COLORREF amber = RGB(245, 194, 66);
+                            HPEN pen = CreatePen(PS_SOLID, 1, amber);
+                            HBRUSH br = CreateSolidBrush(amber);
+                            HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
+                            MoveToEx(dc, x, cy - 6, nullptr); LineTo(dc, x, cy + 6);
+                            POINT tri[3] = { { x, cy - 6 }, { x + 8, cy - 3 }, { x, cy } };
+                            Polygon(dc, tri, 3);
+                            SelectObject(dc, op); SelectObject(dc, ob);
+                            DeleteObject(pen); DeleteObject(br);
+                        }
+                        if (g_sessions[p]->unread > 0) {   // red count pill (full app's notification badge)
+                            wchar_t bn[8];
+                            wsprintfW(bn, L"%d", g_sessions[p]->unread > 99 ? 99 : g_sessions[p]->unread);
+                            HFONT bf = g_uiFont ? g_uiFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+                            HGDIOBJ of = SelectObject(dc, bf);
+                            SIZE sz{}; GetTextExtentPoint32W(dc, bn, lstrlenW(bn), &sz);
+                            int w2 = sz.cx + 10, x1 = rr.right - 20, x0 = x1 - w2;
+                            RECT pill{ x0, cy - 8, x1, cy + 8 };
+                            HBRUSH rb = CreateSolidBrush(RGB(205, 72, 58));
+                            HPEN rp = CreatePen(PS_SOLID, 1, RGB(205, 72, 58));
+                            HGDIOBJ ob2 = SelectObject(dc, rb), op2 = SelectObject(dc, rp);
+                            RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, 12, 12);
+                            SelectObject(dc, ob2); SelectObject(dc, op2);
+                            DeleteObject(rb); DeleteObject(rp);
+                            SetBkMode(dc, TRANSPARENT);
+                            SetTextColor(dc, RGB(255, 255, 255));
+                            DrawTextW(dc, bn, -1, &pill, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                            SelectObject(dc, of);
+                        }
                     }
                 }
                 return CDRF_DODEFAULT;
