@@ -238,9 +238,11 @@ namespace darkmode {
     typedef PreferredAppMode (WINAPI* fnSetPreferredAppMode)(PreferredAppMode);
     typedef BOOL (WINAPI* fnAllowDarkModeForWindow)(HWND, BOOL);
     typedef void (WINAPI* fnFlushMenuThemes)();
+    typedef void (WINAPI* fnRefreshImmersiveColorPolicyState)();
     static fnSetPreferredAppMode    pSetPreferredAppMode    = nullptr;
     static fnAllowDarkModeForWindow pAllowDarkModeForWindow = nullptr;
     static fnFlushMenuThemes        pFlushMenuThemes        = nullptr;
+    static fnRefreshImmersiveColorPolicyState pRefreshImmersive = nullptr;
     static void resolve() {
         static bool done = false; if (done) return; done = true;
         HMODULE ux = GetModuleHandleW(L"uxtheme.dll");
@@ -249,11 +251,13 @@ namespace darkmode {
         pSetPreferredAppMode    = (fnSetPreferredAppMode)   GetProcAddress(ux, MAKEINTRESOURCEA(135));
         pAllowDarkModeForWindow = (fnAllowDarkModeForWindow)GetProcAddress(ux, MAKEINTRESOURCEA(133));
         pFlushMenuThemes        = (fnFlushMenuThemes)       GetProcAddress(ux, MAKEINTRESOURCEA(136));
+        pRefreshImmersive       = (fnRefreshImmersiveColorPolicyState)GetProcAddress(ux, MAKEINTRESOURCEA(104));
     }
     static void setAppMode(int mode) {   // TH_* -> process-wide app mode
         resolve();
         if (pSetPreferredAppMode)
             pSetPreferredAppMode(mode == TH_CLASSIC ? Default_ : (themeIsDark() ? ForceDark : ForceLight));
+        if (pRefreshImmersive) pRefreshImmersive();   // without this the DarkMode_* styles don't render
         if (pFlushMenuThemes) pFlushMenuThemes();
     }
     static void allowWindow(HWND h, bool dark) {
@@ -337,6 +341,13 @@ static void themeDialog(HWND dlg) {
     EnumChildWindows(dlg, themeDlgChild, 0);
     InvalidateRect(dlg, nullptr, TRUE);
 }
+// Owner-drawn dialog buttons (push / checkbox / radio) + combo paint — see drawDlgButton below.
+// Without a comctl32 v6 manifest these are v5/user32 classic controls: DarkMode_* styles cannot
+// render on them, so the themed looks draw them by hand; Classic uses DrawFrameControl, which is
+// the exact classic renderer, so nothing changes there.
+static void drawDlgButton(LPDRAWITEMSTRUCT d);
+static LRESULT CALLBACK comboProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR);
+
 // Shared message handling for the dialog procs; returns true (with *r set) when the theme answered.
 static bool themeDlgMsg(HWND h, UINT m, WPARAM w, LRESULT* r) {
     if (!g_th.dark || g_th.classic) return false;
@@ -366,6 +377,15 @@ static bool themeDlgMsg(HWND h, UINT m, WPARAM w, LRESULT* r) {
 static LRESULT CALLBACK hotkeyProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
     if (m == WM_NCDESTROY) RemoveWindowSubclass(h, hotkeyProc, id);
     if (g_th.dark && !g_th.classic) {
+        if (m == WM_NCPAINT) {   // the classic WS_BORDER ring is drawn here — paint it dark instead
+            if (HDC dc = GetWindowDC(h)) {
+                RECT wr; GetWindowRect(h, &wr);
+                RECT r{ 0, 0, wr.right - wr.left, wr.bottom - wr.top };
+                FrameRect(dc, &r, g_thBrClient);   // outer ring matches the field; painted border inside
+                ReleaseDC(h, dc);
+            }
+            return 0;
+        }
         if (m == WM_ERASEBKGND) return 1;
         if (m == WM_SETFOCUS || m == WM_KILLFOCUS) InvalidateRect(h, nullptr, TRUE);   // focus ring
         if (m == WM_PAINT) {
@@ -474,7 +494,18 @@ static void applyTheme() {
         }
         InvalidateRect(g_tree, nullptr, TRUE);
     }
-    if (g_toolbar) buildToolbarImages();   // re-flatten the PNG icons against the new bar colour
+    if (g_toolbar) {
+        // The classic toolbar draws a #A0A0A0/#FFFFFF 3-D divider at its top — THE white line under
+        // the menu on dark. Themed looks drop it (CCS_NODIVIDER); Classic keeps its classic groove.
+        LONG st = (LONG)GetWindowLongPtrW(g_toolbar, GWL_STYLE);
+        LONG want = g_th.classic ? (st & ~CCS_NODIVIDER) : (st | CCS_NODIVIDER);
+        if (want != st) {
+            SetWindowLongPtrW(g_toolbar, GWL_STYLE, want);
+            SetWindowPos(g_toolbar, nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+        buildToolbarImages();   // re-flatten the PNG icons against the new bar colour
+    }
     if (g_status)  InvalidateRect(g_status,  nullptr, TRUE);
     if (g_hwnd) {
         DrawMenuBar(g_hwnd);
@@ -1965,6 +1996,8 @@ static int g_dlgResult;   // -1 = cancel, else selected profile index
 
 static LRESULT CALLBACK profileDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT tr; if (themeDlgMsg(h, m, w, &tr)) return tr; }   // dark background + control colours
+    if (m == WM_DRAWITEM) { drawDlgButton((LPDRAWITEMSTRUCT)l); return TRUE; }
+    if (m == DM_GETDEFID) return MAKELRESULT(IDOK, DC_HASDEFID);
     switch (m) {
         case WM_COMMAND:
             if (LOWORD(w) == IDOK || (LOWORD(w) == 1000 && HIWORD(w) == LBN_DBLCLK)) {
@@ -2007,9 +2040,9 @@ static int pickProfileDialog(const std::vector<Profile>& profs) {
                                 12, 32, cr.right - 24, cr.bottom - 84, dlg, (HMENU)1000, inst, nullptr);
     for (const auto& p : profs) SendMessageW(g_dlgList, LB_ADDSTRING, 0, (LPARAM)p.name.c_str());
     SendMessageW(g_dlgList, LB_SETCURSEL, 0, 0);
-    HWND ok = CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+    HWND ok = CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                               cr.right - 176, cr.bottom - 40, 78, 26, dlg, (HMENU)IDOK, inst, nullptr);
-    HWND cancel = CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE,
+    HWND cancel = CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                                   cr.right - 90, cr.bottom - 40, 78, 26, dlg, (HMENU)IDCANCEL, inst, nullptr);
     for (HWND c : { lbl, g_dlgList, ok, cancel }) SendMessageW(c, WM_SETFONT, (WPARAM)gui, TRUE);
     g_dlgResult = -1;
@@ -2053,6 +2086,129 @@ static const wchar_t* kThemeNames[4] = { L"Auto (follow Windows)", L"Dark", L"Li
 static int g_pFace, g_pSize, g_pTheme; static uint32_t g_pFg, g_pBg; static int g_pTarget; static bool g_pUse, g_pDos;
 static HFONT g_pPrev; static HWND g_pHwnd, g_pSizeCombo;
 
+// ---- owner-drawn dialog buttons ---------------------------------------------------------------
+// Roles are known by id; check/radio state lives in the working copies (the buttons are plain
+// BS_OWNERDRAW, so nothing auto-toggles — the WM_COMMAND handlers flip the state and repaint).
+static bool dlgBtnChecked(int id) {
+    switch (id) {
+        case PID_USECOLORS: return g_pUse;
+        case PID_DOSPAL:    return g_pDos;
+        case PID_TEXT:      return g_pTarget == 0;
+        case PID_BG:        return g_pTarget == 1;
+    }
+    return false;
+}
+static void drawDlgButton(LPDRAWITEMSTRUCT d) {
+    if (!d || d->CtlType != ODT_BUTTON) return;
+    HDC dc = d->hDC; RECT rc = d->rcItem;
+    int id = (int)d->CtlID;
+    bool check = (id == PID_USECOLORS || id == PID_DOSPAL);
+    bool radio = (id == PID_TEXT || id == PID_BG);
+    bool push  = !check && !radio;
+    bool sel   = (d->itemState & ODS_SELECTED) != 0;
+    bool focus = (d->itemState & ODS_FOCUS) != 0;
+    wchar_t txt[128]{};
+    GetWindowTextW(d->hwndItem, txt, 128);
+    HFONT of = g_uiFont ? (HFONT)SelectObject(dc, g_uiFont) : nullptr;
+    SetBkMode(dc, TRANSPARENT);
+    if (g_th.classic) {   // DrawFrameControl IS the classic renderer — pixel-faithful
+        if (push) {
+            DrawFrameControl(dc, &rc, DFC_BUTTON, DFCS_BUTTONPUSH | (sel ? DFCS_PUSHED : 0));
+            RECT tr = rc; if (sel) OffsetRect(&tr, 1, 1);
+            SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
+            DrawTextW(dc, txt, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            if (focus) { RECT fr = rc; InflateRect(&fr, -4, -4); DrawFocusRect(dc, &fr); }
+        } else {
+            HBRUSH bg = (HBRUSH)(COLOR_BTNFACE + 1);
+            FillRect(dc, &rc, bg);
+            RECT gl{ rc.left, (rc.top + rc.bottom) / 2 - 7, rc.left + 13, (rc.top + rc.bottom) / 2 + 6 };
+            DrawFrameControl(dc, &gl, DFC_BUTTON,
+                             (radio ? DFCS_BUTTONRADIO : DFCS_BUTTONCHECK) | (dlgBtnChecked(id) ? DFCS_CHECKED : 0));
+            RECT tr{ rc.left + 18, rc.top, rc.right, rc.bottom };
+            SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
+            DrawTextW(dc, txt, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            if (focus) { RECT fr = tr; fr.bottom = fr.top + (rc.bottom - rc.top); DrawFocusRect(dc, &fr); }
+        }
+    } else {   // themed: flat fill + painted glyphs, dark and light alike
+        FillRect(dc, &rc, g_thBrBar);
+        SetTextColor(dc, g_th.text);
+        if (push) {
+            HBRUSH face = CreateSolidBrush(sel ? g_th.sel : g_th.hot);
+            FillRect(dc, &rc, face); DeleteObject(face);
+            HBRUSH fr = CreateSolidBrush(focus || sel ? g_th.accent : g_th.border);
+            FrameRect(dc, &rc, fr); DeleteObject(fr);
+            DrawTextW(dc, txt, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        } else {
+            int cy = (rc.top + rc.bottom) / 2;
+            RECT gl{ rc.left, cy - 7, rc.left + 13, cy + 6 };
+            HBRUSH bb = CreateSolidBrush(g_th.dim);
+            if (radio) {   // circle + dot
+                HPEN pen = CreatePen(PS_SOLID, 1, g_th.dim);
+                HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+                Ellipse(dc, gl.left, gl.top, gl.right, gl.bottom);
+                SelectObject(dc, op); SelectObject(dc, ob); DeleteObject(pen);
+                if (dlgBtnChecked(id)) {
+                    HBRUSH dot = CreateSolidBrush(g_th.accent);
+                    HGDIOBJ od = SelectObject(dc, dot); HPEN np = CreatePen(PS_SOLID, 1, g_th.accent);
+                    HGDIOBJ onp = SelectObject(dc, np);
+                    Ellipse(dc, gl.left + 4, gl.top + 4, gl.right - 4, gl.bottom - 4);
+                    SelectObject(dc, od); SelectObject(dc, onp); DeleteObject(dot); DeleteObject(np);
+                }
+            } else {       // box + check mark
+                FrameRect(dc, &gl, bb);
+                if (dlgBtnChecked(id)) {
+                    HPEN pen = CreatePen(PS_SOLID, 2, g_th.accent);
+                    HGDIOBJ op = SelectObject(dc, pen);
+                    MoveToEx(dc, gl.left + 3, gl.top + 6, nullptr);
+                    LineTo(dc, gl.left + 5, gl.top + 9);
+                    LineTo(dc, gl.left + 10, gl.top + 3);
+                    SelectObject(dc, op); DeleteObject(pen);
+                }
+            }
+            DeleteObject(bb);
+            RECT tr{ rc.left + 18, rc.top, rc.right, rc.bottom };
+            DrawTextW(dc, txt, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            if (focus) { HBRUSH fr = CreateSolidBrush(g_th.border); RECT fb = rc; FrameRect(dc, &fb, fr); DeleteObject(fr); }
+        }
+    }
+    if (of) SelectObject(dc, of);
+}
+
+// v5 combo boxes draw a classic light face + arrow that no theme can reach; themed looks take over
+// the whole closed-field paint. The dropdown list is already dark via WM_CTLCOLORLISTBOX.
+static LRESULT CALLBACK comboProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
+    if (m == WM_NCDESTROY) RemoveWindowSubclass(h, comboProc, id);
+    if (!g_th.classic && (m == WM_PAINT || m == WM_ERASEBKGND)) {
+        if (m == WM_ERASEBKGND) return 1;
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc; GetClientRect(h, &rc);
+        bool dropped = SendMessageW(h, CB_GETDROPPEDSTATE, 0, 0) != 0;
+        bool focus = GetFocus() == h;
+        FillRect(dc, &rc, g_thBrClient);
+        HBRUSH fr = CreateSolidBrush((dropped || focus) ? g_th.accent : g_th.border);
+        FrameRect(dc, &rc, fr); DeleteObject(fr);
+        int sel = (int)SendMessageW(h, CB_GETCURSEL, 0, 0);
+        wchar_t txt[128]{};
+        if (sel >= 0) SendMessageW(h, CB_GETLBTEXT, sel, (LPARAM)txt);
+        HFONT of = g_uiFont ? (HFONT)SelectObject(dc, g_uiFont) : nullptr;
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, IsWindowEnabled(h) ? g_th.text : g_th.dim);
+        RECT tr{ rc.left + 6, rc.top, rc.right - 20, rc.bottom };
+        DrawTextW(dc, txt, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        int cx = rc.right - 11, cy = (rc.top + rc.bottom) / 2 - 1;   // ▼
+        POINT a[3] = { { cx - 4, cy - 1 }, { cx + 4, cy - 1 }, { cx, cy + 3 } };
+        HBRUSH ab = CreateSolidBrush(g_th.text); HPEN ap = CreatePen(PS_SOLID, 1, g_th.text);
+        HGDIOBJ ob = SelectObject(dc, ab), op = SelectObject(dc, ap);
+        Polygon(dc, a, 3);
+        SelectObject(dc, ob); SelectObject(dc, op); DeleteObject(ab); DeleteObject(ap);
+        if (of) SelectObject(dc, of);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    return DefSubclassProc(h, m, w, l);
+}
+
 static HFONT makePreviewFontSel() {
     if (g_pFace < 0 || g_pFace >= (int)g_catalog.size()) return nullptr;
     FontEntry& e = g_catalog[g_pFace];
@@ -2085,6 +2241,8 @@ static void propCommit() {
 }
 static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT tr; if (themeDlgMsg(h, m, w, &tr)) return tr; }   // dark background + control colours
+    if (m == WM_DRAWITEM) { drawDlgButton((LPDRAWITEMSTRUCT)l); return TRUE; }
+    if (m == DM_GETDEFID) return MAKELRESULT(IDOK, DC_HASDEFID);   // Enter = OK (owner-draw lost BS_DEFPUSHBUTTON)
     switch (m) {
         case WM_COMMAND:
             switch (LOWORD(w)) {
@@ -2101,10 +2259,15 @@ static LRESULT CALLBACK propDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 case PID_SIZECOMBO:
                     if (HIWORD(w) == CBN_SELCHANGE) { g_pSize = (int)SendMessageW((HWND)l, CB_GETCURSEL, 0, 0); refreshPreview(h); }
                     break;
-                case PID_USECOLORS: g_pUse = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; InvalidateRect(h, nullptr, TRUE); break;
-                case PID_DOSPAL: g_pDos = SendMessageW((HWND)l, BM_GETCHECK, 0, 0) == BST_CHECKED; break;
-                case PID_TEXT: g_pTarget = 0; InvalidateRect(h, nullptr, TRUE); break;
-                case PID_BG:   g_pTarget = 1; InvalidateRect(h, nullptr, TRUE); break;
+                // Owner-drawn buttons don't auto-toggle: flip the working state and repaint them.
+                case PID_USECOLORS: g_pUse = !g_pUse; InvalidateRect((HWND)l, nullptr, TRUE); InvalidateRect(h, nullptr, TRUE); break;
+                case PID_DOSPAL: g_pDos = !g_pDos; InvalidateRect((HWND)l, nullptr, TRUE); break;
+                case PID_TEXT: case PID_BG:
+                    g_pTarget = (LOWORD(w) == PID_BG) ? 1 : 0;
+                    InvalidateRect(GetDlgItem(h, PID_TEXT), nullptr, TRUE);
+                    InvalidateRect(GetDlgItem(h, PID_BG), nullptr, TRUE);
+                    InvalidateRect(h, nullptr, TRUE);
+                    break;
                 case PID_APPLY: propCommit(); break;
                 case IDOK: propCommit(); DestroyWindow(h); break;
                 case IDCANCEL: DestroyWindow(h); break;
@@ -2196,20 +2359,21 @@ static void showPropertiesDialog() {
     mk(L"STATIC", L"Size:", 0, 228, 12, 120, 16, 0);
     g_pSizeCombo = mk(L"COMBOBOX", L"", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST, 228, 30, 140, 240, PID_SIZECOMBO);
     fillSizeCombo(g_pSize);
-    mk(L"BUTTON", L"Override default colors", BS_AUTOCHECKBOX, 16, 134, 172, 18, PID_USECOLORS);
-    CheckDlgButton(g_pHwnd, PID_USECOLORS, g_pUse ? BST_CHECKED : BST_UNCHECKED);
-    mk(L"BUTTON", L"MS-DOS palette (EGA)", BS_AUTOCHECKBOX, 194, 134, 180, 18, PID_DOSPAL);
-    CheckDlgButton(g_pHwnd, PID_DOSPAL, g_pDos ? BST_CHECKED : BST_UNCHECKED);
-    mk(L"BUTTON", L"Screen &Text", WS_GROUP | BS_AUTORADIOBUTTON, 28, 158, 110, 18, PID_TEXT);
-    mk(L"BUTTON", L"Screen &Background", BS_AUTORADIOBUTTON, 150, 158, 150, 18, PID_BG);
-    CheckDlgButton(g_pHwnd, PID_TEXT, BST_CHECKED);
+    // All buttons are BS_OWNERDRAW (drawDlgButton): the v5 classic controls can't be themed, and in
+    // Classic mode DrawFrameControl reproduces the stock look exactly. State lives in g_pUse etc.
+    mk(L"BUTTON", L"Override default colors", BS_OWNERDRAW, 16, 134, 172, 18, PID_USECOLORS);
+    mk(L"BUTTON", L"MS-DOS palette (EGA)", BS_OWNERDRAW, 194, 134, 180, 18, PID_DOSPAL);
+    mk(L"BUTTON", L"Screen &Text", WS_GROUP | BS_OWNERDRAW, 28, 158, 110, 18, PID_TEXT);
+    mk(L"BUTTON", L"Screen &Background", BS_OWNERDRAW, 150, 158, 150, 18, PID_BG);
     mk(L"STATIC", L"Theme:", 0, 16, 372, 56, 16, 0);
     HWND th = mk(L"COMBOBOX", L"", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST, 76, 368, 180, 140, PID_THEME);
     for (const wchar_t* n : kThemeNames) SendMessageW(th, CB_ADDSTRING, 0, (LPARAM)n);
     SendMessageW(th, CB_SETCURSEL, g_pTheme, 0);
-    mk(L"BUTTON", L"OK", BS_DEFPUSHBUTTON, 120, 408, 78, 26, IDOK);
-    mk(L"BUTTON", L"Cancel", 0, 204, 408, 78, 26, IDCANCEL);
-    mk(L"BUTTON", L"Apply", 0, 288, 408, 78, 26, PID_APPLY);
+    SetWindowSubclass(th, comboProc, 1, 0);              // themed closed-field paint (v5 combo)
+    SetWindowSubclass(g_pSizeCombo, comboProc, 1, 0);
+    mk(L"BUTTON", L"OK", BS_OWNERDRAW, 120, 408, 78, 26, IDOK);
+    mk(L"BUTTON", L"Cancel", BS_OWNERDRAW, 204, 408, 78, 26, IDCANCEL);
+    mk(L"BUTTON", L"Apply", BS_OWNERDRAW, 288, 408, 78, 26, PID_APPLY);
     themeDialog(g_pHwnd);   // dark title bar + DarkMode styles when the dark theme is active
     EnableWindow(g_hwnd, FALSE);
     ShowWindow(g_pHwnd, SW_SHOW);
@@ -2228,6 +2392,8 @@ static HWND g_kbHwnd, g_kbCtl[KB_COUNT];
 enum { KBID_CLEAR = 4001, KBID_BASE = 4100 };   // KBID_BASE + action = that action's hotkey control
 static LRESULT CALLBACK kbDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     { LRESULT tr; if (themeDlgMsg(h, m, w, &tr)) return tr; }   // dark background + control colours
+    if (m == WM_DRAWITEM) { drawDlgButton((LPDRAWITEMSTRUCT)l); return TRUE; }
+    if (m == DM_GETDEFID) return MAKELRESULT(IDOK, DC_HASDEFID);
     switch (m) {
         case WM_COMMAND:
             switch (LOWORD(w)) {
@@ -2271,9 +2437,9 @@ static void showKeyboardDialog() {
         SendMessageW(g_kbCtl[a], HKM_SETHOTKEY, g_keys[a], 0);
     }
     int by = 50 + KB_COUNT * 26 + 8;
-    mk(L"BUTTON", L"Clear all", 0, 16, by, 90, 26, KBID_CLEAR);
-    mk(L"BUTTON", L"OK", BS_DEFPUSHBUTTON, W - 190, by, 82, 26, IDOK);
-    mk(L"BUTTON", L"Cancel", 0, W - 100, by, 82, 26, IDCANCEL);
+    mk(L"BUTTON", L"Clear all", BS_OWNERDRAW, 16, by, 90, 26, KBID_CLEAR);
+    mk(L"BUTTON", L"OK", BS_OWNERDRAW, W - 190, by, 82, 26, IDOK);
+    mk(L"BUTTON", L"Cancel", BS_OWNERDRAW, W - 100, by, 82, 26, IDCANCEL);
     themeDialog(g_kbHwnd);
     EnableWindow(g_hwnd, FALSE);
     ShowWindow(g_kbHwnd, SW_SHOW);
