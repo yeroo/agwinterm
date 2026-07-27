@@ -3604,16 +3604,30 @@ static std::string ctlDispatch(const std::string& line) {
     const std::string& cmd = req.get("cmd");
 
     if (cmd == "ping") return ctlOkStr("agwinterm-lite 0.1");
-    if (cmd == "tree") {
-        std::string sess;
-        for (int i2 = 0; i2 < (int)g_sessions.size(); i2++) {
-            if (i2) sess += ",";
-            Session* s = g_sessions[i2];
-            sess += "{\"id\":\"" + jsonEscape(s->id) + "\",\"name\":\"" + jsonEscape(s->id) +
-                    "\",\"active\":" + (g_pane[g_focus] == i2 ? "true" : "false") +
-                    ",\"status\":\"" + jsonEscape(s->status) + "\"}";
+    if (cmd == "tree") {   // real structure: workspaces with their sessions, flags, unread, focus
+        std::string wss;
+        for (int w = 0; w < (int)g_workspaces.size(); w++) {
+            if (w) wss += ",";
+            std::string sess;
+            bool first = true;
+            for (int i2 = 0; i2 < (int)g_sessions.size(); i2++) {
+                Session* s = g_sessions[i2];
+                if (s->ws != w || s->hidden) continue;
+                if (!first) sess += ",";
+                first = false;
+                std::string nm = s->name.empty() ? s->id : narrow(s->name);
+                sess += "{\"id\":\"" + jsonEscape(s->id) + "\",\"name\":\"" + jsonEscape(nm) +
+                        "\",\"active\":" + (g_pane[g_focus] == i2 ? "true" : "false") +
+                        ",\"status\":\"" + jsonEscape(s->status) + "\"" +
+                        ",\"flagged\":" + (s->flagged ? "true" : "false") +
+                        ",\"unread\":" + std::to_string(s->unread) + "}";
+            }
+            wss += "{\"id\":\"" + std::to_string(w) + "\",\"name\":\"" + jsonEscape(narrow(g_workspaces[w])) +
+                   "\",\"active\":" + (w == g_activeWs ? "true" : "false") +
+                   ",\"focused\":" + (w == g_focusWs ? "true" : "false") +
+                   ",\"sessions\":[" + sess + "]}";
         }
-        return ctlOk("{\"workspaces\":[{\"id\":\"lite\",\"name\":\"workspace 1\",\"active\":true,\"sessions\":[" + sess + "]}]}");
+        return ctlOk("{\"workspaces\":[" + wss + "]}");
     }
     if (cmd == "session.new") {
         int cols, rows;
@@ -3668,6 +3682,199 @@ static std::string ctlDispatch(const std::string& line) {
         EnterCriticalSection(&g_lock); g_pendingOverlayCmd = command; g_pendingOverlaySize = sizePct; LeaveCriticalSection(&g_lock);
         PostMessageW(g_hwnd, WM_APP_OVERLAY, 0, 0);   // create on the UI thread
         return ctlOkStr("overlay opened");
+    }
+    // ---- agwintermctl-dialect verbs over the features lite has -------------------------------
+    auto wsResolve = [&](const std::string& sel, bool defaultActive) -> int {
+        if (sel.empty() || sel == "active") return defaultActive ? g_activeWs : -1;
+        bool num = !sel.empty();
+        for (char c : sel) if (!isdigit((unsigned char)c)) { num = false; break; }
+        if (num) { int i2 = atoi(sel.c_str()); return (i2 >= 0 && i2 < (int)g_workspaces.size()) ? i2 : -1; }
+        std::wstring want = widen(sel);
+        for (auto& c : want) c = (wchar_t)towlower(c);
+        for (int i2 = 0; i2 < (int)g_workspaces.size(); i2++) {
+            std::wstring n = g_workspaces[i2];
+            for (auto& c : n) c = (wchar_t)towlower(c);
+            if (n == want || n.find(want) != std::wstring::npos) return i2;
+        }
+        return -1;
+    };
+    auto idxOf = [&](Session* s) -> int {
+        for (int i2 = 0; i2 < (int)g_sessions.size(); i2++) if (g_sessions[i2] == s) return i2;
+        return -1;
+    };
+    auto selectIdx = [&](int i2) {   // the tree-click effects, control-thread safe
+        g_pane[0] = i2; g_focus = 0; g_activeWs = g_sessions[i2]->ws;
+        syncPaneSizes();
+        PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+        InvalidateRect(g_hwnd, nullptr, FALSE);
+    };
+    auto wantOn = [&](const std::string& op, bool cur) { return op == "on" ? true : op == "off" ? false : !cur; };
+
+    if (cmd == "session.flag") {   // op: on|off|toggle|clear (clear = unflag everything)
+        std::string op = req.get("args.op");
+        if (op == "clear") {
+            for (auto* s : g_sessions) s->flagged = false;
+            PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+            return ctlOkStr("cleared");
+        }
+        if (!target) return ctlErr("session not found");
+        target->flagged = wantOn(op, target->flagged);
+        PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+        return ctlOkStr(target->flagged ? "flagged" : "unflagged");
+    }
+    if (cmd == "session.seen") {   // clear the unread badge
+        if (!target) return ctlErr("session not found");
+        EnterCriticalSection(&g_lock);
+        target->seenDone = completedMarks(target);
+        target->unread = 0;
+        LeaveCriticalSection(&g_lock);
+        PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+        return ctlOkStr("seen");
+    }
+    if (cmd == "session.rename") {
+        if (!target) return ctlErr("session not found");
+        std::string nm = req.get("args.name");
+        if (nm.empty()) return ctlErr("rename needs a name");
+        target->name = widen(nm);
+        PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+        return ctlOkStr("renamed");
+    }
+    if (cmd == "session.duplicate") {   // clone the target's launch spec into its workspace
+        if (!target) return ctlErr("session not found");
+        int cols, rows; paneGridSize(0, &cols, &rows);
+        g_activeWs = target->ws;
+        std::string app = target->app; std::vector<std::string> targs = target->args; std::string cwd = target->cwd;
+        Session* s = newSession(cols, rows, app.empty() ? nullptr : app.c_str(),
+                                targs.empty() ? nullptr : &targs, cwd.empty() ? nullptr : cwd.c_str());
+        if (!s) return ctlErr("create failed");
+        selectIdx((int)g_sessions.size() - 1);
+        return ctlOkStr(s->id);
+    }
+    if (cmd == "session.split") {   // op: on|off|toggle over the window's second pane
+        bool cur = g_pane[1] >= 0;
+        if (wantOn(req.get("args.op"), cur) != cur) PostMessageW(g_hwnd, WM_COMMAND, IDM_SPLIT, 0);
+        return ctlOkStr("ok");
+    }
+    if (cmd == "session.scratch" || cmd == "quick") {   // op on|off|toggle (window creation -> UI thread)
+        bool scratch = (cmd == "session.scratch");
+        HWND hw = scratch ? g_scratchHwnd : g_quickHwnd;
+        bool cur = hw && IsWindowVisible(hw);
+        if (wantOn(req.get("args.op"), cur) != cur)
+            PostMessageW(g_hwnd, WM_COMMAND, scratch ? IDM_SCRATCH : IDM_QUICK, 0);
+        return ctlOkStr("ok");
+    }
+    if (cmd == "session.move") {   // workspace <sel> = relocate; dir up|down = reorder within its workspace
+        if (!target) return ctlErr("session not found");
+        int from = idxOf(target);
+        std::string wsSel = req.get("args.workspace");
+        if (!wsSel.empty()) {
+            int w = wsResolve(wsSel, false);
+            if (w < 0) return ctlErr("workspace not found");
+            moveSessionTo(from, w, -1);
+            return ctlOkStr("moved");
+        }
+        std::string dir = req.get("args.dir");
+        int step = (dir == "up") ? -1 : 1;
+        for (int j = from + step; j >= 0 && j < (int)g_sessions.size(); j += step) {
+            if (g_sessions[j]->ws != target->ws || g_sessions[j]->hidden) continue;
+            moveSessionTo(from, target->ws, step < 0 ? j : (j + 1 < (int)g_sessions.size() ? j + 1 : -1));
+            return ctlOkStr("moved");
+        }
+        return ctlOkStr("unchanged");   // already at the edge
+    }
+    if (cmd == "session.copy") {   // the selection's text (only the focused pane has a selection)
+        if (!target) return ctlErr("session not found");
+        if (target != focusedSession() || !g_sel.has()) return ctlOkStr("");
+        return ctlOkStr(selectionText());
+    }
+    if (cmd == "session.paste") {   // paste text (or the clipboard) into the target
+        if (!target) return ctlErr("session not found");
+        std::string text = req.get("args.text");
+        if (text.empty() && OpenClipboard(nullptr)) {   // no text -> clipboard contents
+            if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+                if (const wchar_t* wz = (const wchar_t*)GlobalLock(h)) { text = narrow(wz); GlobalUnlock(h); }
+            }
+            CloseClipboard();
+        }
+        for (char& ch : text) if (ch == '\n') ch = '\r';
+        if (!text.empty() && target->data != INVALID_HANDLE_VALUE)
+            ovIo(target->data, true, text.data(), nullptr, (DWORD)text.size());
+        return ctlOkStr("pasted");
+    }
+    if (cmd == "session.go") {   // dir: next|prev|first|last|next-attention|prev-attention
+        std::string dir = req.get("args.dir");
+        std::vector<int> vis;
+        for (int i2 = 0; i2 < (int)g_sessions.size(); i2++)
+            if (!g_sessions[i2]->hidden && !g_sessions[i2]->exited) vis.push_back(i2);
+        if (vis.empty()) return ctlErr("no sessions");
+        int cur = g_pane[0], pos = 0;
+        for (int k = 0; k < (int)vis.size(); k++) if (vis[k] == cur) pos = k;
+        int pick = -1;
+        if (dir == "first") pick = vis.front();
+        else if (dir == "last") pick = vis.back();
+        else if (dir == "prev") pick = vis[(pos - 1 + (int)vis.size()) % vis.size()];
+        else if (dir == "next-attention" || dir == "prev-attention") {
+            int step = (dir[0] == 'p') ? -1 : 1;
+            for (int k = 1; k <= (int)vis.size(); k++) {
+                int i2 = vis[(pos + step * k % (int)vis.size() + (int)vis.size()) % vis.size()];
+                if (statusClass(g_sessions[i2]->status) == AGST_BLOCKED) { pick = i2; break; }
+            }
+            if (pick < 0) return ctlOkStr("none blocked");
+        } else pick = vis[(pos + 1) % vis.size()];   // next (default)
+        selectIdx(pick);
+        return ctlOkStr(g_sessions[pick]->id);
+    }
+    if (cmd == "workspace.new") {
+        std::string nm = req.get("args.name");
+        g_workspaces.push_back(nm.empty() ? (L"workspace " + std::to_wstring(g_workspaces.size() + 1)) : widen(nm));
+        g_activeWs = (int)g_workspaces.size() - 1;
+        PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+        return ctlOkStr(std::to_string(g_activeWs));
+    }
+    if (cmd == "workspace.rename") {
+        int w = wsResolve(req.get("target"), true);
+        std::string nm = req.get("args.name");
+        if (w < 0) return ctlErr("workspace not found");
+        if (nm.empty()) return ctlErr("rename needs a name");
+        g_workspaces[w] = widen(nm);
+        PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+        return ctlOkStr("renamed");
+    }
+    if (cmd == "workspace.delete") {
+        int w = wsResolve(req.get("target"), true);
+        if (w < 0) return ctlErr("workspace not found");
+        if ((int)g_workspaces.size() <= 1) return ctlErr("cannot delete the last workspace");
+        deleteWorkspace(w);
+        return ctlOkStr("deleted");
+    }
+    if (cmd == "workspace.select") {
+        int w = wsResolve(req.get("target"), false);
+        if (w < 0) return ctlErr("workspace not found");
+        g_activeWs = w;
+        PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+        return ctlOkStr("selected");
+    }
+    if (cmd == "workspace.focus") {   // op on|off|toggle, acts on the active workspace
+        std::string op = req.get("args.op");
+        bool cur = g_focusWs >= 0;
+        bool want = wantOn(op, cur);
+        if (want != cur) toggleFocusWs(want ? g_activeWs : g_focusWs);
+        return ctlOkStr(g_focusWs >= 0 ? "focused" : "unfocused");
+    }
+    if (cmd == "workspace.collapse" || cmd == "workspace.expand") {
+        int w = wsResolve(req.get("target"), true);
+        if (w < 0) return ctlErr("workspace not found");
+        for (HTREEITEM it = TreeView_GetRoot(g_tree); it; it = TreeView_GetNextSibling(g_tree, it)) {
+            TVITEMW ti{}; ti.mask = TVIF_PARAM; ti.hItem = it;
+            TreeView_GetItem(g_tree, &ti);
+            if (ti.lParam == -(w + 1)) { TreeView_Expand(g_tree, it, cmd == "workspace.expand" ? TVE_EXPAND : TVE_COLLAPSE); break; }
+        }
+        return ctlOkStr("ok");
+    }
+    if (cmd == "sidebar") {   // op on|off|toggle
+        bool cur = g_showSidebar;
+        if (wantOn(req.get("args.op"), cur) != cur) PostMessageW(g_hwnd, WM_COMMAND, IDM_TG_SIDEBAR, 0);
+        return ctlOkStr("ok");
     }
     return ctlErr("unknown command '" + cmd + "' (lite subset)");
 }
