@@ -89,6 +89,15 @@ static bool g_showSidebar = true, g_showToolbar = true, g_showStatus = true;   /
 static bool g_flagView = false;   // sidebar shows only flagged sessions (toolbar pennant / View menu)
 static int g_focusWs = -1;        // focused workspace: the sidebar shows only this one (-1 = all)
 
+static std::string narrow(const std::wstring& w);   // fwd (utf conversions live further down)
+
+// ---- launch arguments (same names as the full app; unknown args are ignored) ------------------
+static std::wstring g_argProfile;         // -p/--profile <name>: profile for the launch session
+static std::string  g_argDir;             // -d/--dir/--startingDirectory <path>: its working dir
+static bool g_argMaximized = false;       // --maximized
+static bool g_argNoRestore = false;       // --no-restore: don't rebuild the saved sessions
+static std::wstring g_argPipe;            // --pipe <name>: control-pipe name (default agwinterm-lite)
+
 // ---- sessions & layout ----
 struct Session {
     std::string id;
@@ -946,7 +955,8 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
     req.cmd.create.env_count = 6;
     setEnv(0, "AGWINTERM", "1");
     setEnv(1, "AGWINTERM_ENABLED", "1");
-    setEnv(2, "AGWINTERM_PIPE", "agwinterm-lite");
+    std::string pipeNarrow = g_argPipe.empty() ? "agwinterm-lite" : narrow(g_argPipe);
+    setEnv(2, "AGWINTERM_PIPE", pipeNarrow.c_str());
     setEnv(3, "AGWINTERM_SESSION_ID", idbuf);
     setEnv(4, "AGWINTERM_PANE_ID", idbuf);
     setEnv(5, "TERM_PROGRAM", "agwinterm-lite");
@@ -3683,8 +3693,9 @@ static DWORD WINAPI ctlClientThread(void* param) {
 }
 
 static DWORD WINAPI ctlServerThread(void*) {
+    std::wstring pipeName = L"\\\\.\\pipe\\" + (g_argPipe.empty() ? L"agwinterm-lite" : g_argPipe);
     for (;;) {
-        HANDLE pipe = CreateNamedPipeW(L"\\\\.\\pipe\\agwinterm-lite", PIPE_ACCESS_DUPLEX,
+        HANDLE pipe = CreateNamedPipeW(pipeName.c_str(), PIPE_ACCESS_DUPLEX,
                                        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                                        PIPE_UNLIMITED_INSTANCES, 64 * 1024, 64 * 1024, 0, nullptr);
         if (pipe == INVALID_HANDLE_VALUE) return 1;
@@ -3757,8 +3768,45 @@ static bool restoreSessions() {
     return true;
 }
 
+// Launch arguments — the full app's flags, minus the ones whose feature lite doesn't have
+// (--fullscreen, --pty-host, --app-id, --default-session-host). Unknown args are ignored.
+static void parseLaunchArgs() {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return;
+    for (int i = 1; i < argc; i++) {
+        std::wstring a = argv[i];
+        for (auto& c : a) c = (wchar_t)towlower(c);
+        const wchar_t* v = (i + 1 < argc) ? argv[i + 1] : nullptr;
+        if ((a == L"-p" || a == L"--profile") && v)                            { g_argProfile = v; i++; }
+        else if ((a == L"-d" || a == L"--dir" || a == L"--startingdirectory") && v) { g_argDir = narrow(v); i++; }
+        else if (a == L"--maximized")  g_argMaximized = true;
+        else if (a == L"--no-restore") g_argNoRestore = true;
+        else if (a == L"--pipe" && v)  { g_argPipe = v; i++; }
+    }
+    LocalFree(argv);
+    if (!g_argDir.empty()) {   // a bad directory is ignored, like the full app
+        DWORD at = GetFileAttributesA(g_argDir.c_str());
+        if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) g_argDir.clear();
+    }
+}
+// Map -p/--profile onto a detected profile (case-insensitive substring, so "-p pwsh" or
+// "-p PowerShell 7" both land on PowerShell 7). Returns false = default shell.
+static bool resolveLaunchProfile(std::string& app, std::vector<std::string>& args) {
+    if (g_argProfile.empty()) return false;
+    std::wstring want = g_argProfile;
+    for (auto& c : want) c = (wchar_t)towlower(c);
+    for (const auto& p : detectProfiles()) {
+        std::wstring n = p.name;
+        for (auto& c : n) c = (wchar_t)towlower(c);
+        if (n.find(want) != std::wstring::npos) { app = p.app; args = p.args; return true; }
+    }
+    return false;
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     _Module.Init(nullptr, inst);   // ATL/WTL module (window class registration lives here)
+    parseLaunchArgs();
     InitializeCriticalSection(&g_lock);
     InitializeCriticalSection(&g_reqLock);
     loadCore();
@@ -3864,12 +3912,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
 
     applyTheme();   // now that the controls exist, colour them (and the title bar) for real
 
-    ShowWindow(g_hwnd, startMax ? SW_SHOWMAXIMIZED : show);   // restore a maximized session maximized
+    ShowWindow(g_hwnd, (startMax || g_argMaximized) ? SW_SHOWMAXIMIZED : show);
 
-    if (!restoreSessions()) {   // rebuild the saved workspaces/sessions, or open a fresh default one
+    std::string argApp; std::vector<std::string> argAppArgs;
+    bool haveProf = resolveLaunchProfile(argApp, argAppArgs);
+    bool wantLaunch = haveProf || !g_argDir.empty();   // -p/-d ask for a specific session
+    bool restored = !g_argNoRestore && restoreSessions();
+    if (!restored || wantLaunch) {   // fresh first session, or an EXTRA one for the launch args
         int cols, rows;
         paneGridSize(0, &cols, &rows);
-        if (!newSession(cols, rows)) fatal(L"could not create the first session");
+        Session* s = newSession(cols, rows, haveProf ? argApp.c_str() : nullptr,
+                                (haveProf && !argAppArgs.empty()) ? &argAppArgs : nullptr,
+                                g_argDir.empty() ? nullptr : g_argDir.c_str());
+        if (!s && !restored) fatal(L"could not create the first session");
+        if (s) { g_pane[0] = (int)g_sessions.size() - 1; g_focus = 0; syncPaneSizes(); }
         refreshTree();
     }
     CreateThread(nullptr, 0, ctlServerThread, nullptr, 0, nullptr);   // agwintermctl --pipe agwinterm-lite
