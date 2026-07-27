@@ -17,7 +17,6 @@
 #include <windowsx.h>
 #include <commctrl.h>   // native TreeView (SysTreeView32) sidebar — ships with Windows, no external deps
 #include <shlobj.h>     // SHBrowseForFolder (New Session in Folder…)
-#include <gdiplus.h>    // load the PNG toolbar icons (ships with Windows, no external deps)
 #include <dwmapi.h>     // dark title bar (DWMWA_USE_IMMERSIVE_DARK_MODE)
 #include <uxtheme.h>    // SetWindowTheme — dark scrollbars on the tree
 #include <string>
@@ -42,7 +41,6 @@ CAppModule _Module;
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "advapi32.lib")   // registry (persisted font choice)
-#pragma comment(lib, "gdiplus.lib")    // PNG decode for the toolbar icons
 
 #include "proto/ptyhost.pb.h"
 #include "proto/pb_encode.h"
@@ -140,8 +138,7 @@ static bool inSplitter(int x, int y) {
     RECT c; GetClientRect(g_hwnd, &c);
     return x >= g_sidebarW && x < g_sidebarW + kSplitterW && y >= toolbarTop() && y < c.bottom - (g_showStatus ? g_statusH : 0);
 }
-static HIMAGELIST g_tbImages;   // 16x16 Silk icons for the toolbar buttons
-static ULONG_PTR g_gdiplusTok;  // GDI+ token (PNG decode)
+static HIMAGELIST g_tbImages;   // 16x16 toolbar glyphs, drawn per theme (see drawToolbarGlyph)
 static HWND g_tree;             // native SysTreeView32 sidebar (sessions)
 static bool g_treeSyncing;      // suppress TVN_SELCHANGED while we rebuild the tree
 static bool g_restoring;         // true while rebuilding sessions at startup (suppresses state saves)
@@ -577,6 +574,25 @@ enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, ID
        IDM_TG_SIDEBAR = 123, IDM_TG_TOOLBAR = 124, IDM_TG_STATUS = 125 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202, ID_STATUS = 203 };
+
+// Toolbar: every full-app chrome button that has a lite equivalent, in the full app's order
+// (sidebar toggle | session/workspace | split/scratch/quick | recent | settings). Icons are the
+// full app's vector glyphs, redrawn in GDI per theme (see drawToolbarGlyph).
+static const struct { int id; int img; const wchar_t* tip; } kTbButtons[] = {
+    { IDM_TG_SIDEBAR, 0, L"Toggle Sidebar" },
+    { IDM_NEW,        1, L"New Session" },
+    { IDM_NEWWS,      2, L"New Workspace" },
+    { IDM_SPLIT,      3, L"Split / Unsplit" },
+    { IDM_SCRATCH,    4, L"Scratch Terminal" },
+    { IDM_QUICK,      5, L"Quick Terminal" },
+    { IDM_REOPEN,     6, L"Reopen Closed Session" },
+    { IDM_PROPERTIES, 7, L"Properties" },
+};
+static constexpr int kTbCount = (int)(sizeof kTbButtons / sizeof kTbButtons[0]);
+static int tbImageOf(int cmdId) {
+    for (const auto& b : kTbButtons) if (b.id == cmdId) return b.img;
+    return -1;
+}
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
 #define WM_APP_TRAY        (WM_APP + 4)   // system-tray icon notifications
 #define WM_APP_OVERLAY     (WM_APP + 5)   // control thread -> UI thread: open an overlay (creates a window)
@@ -2531,27 +2547,76 @@ static void showTrayMenu() {
 
 // A 2000's-style app icon drawn at runtime (no .ico asset, no deps): a classic gray 3D-beveled tile
 // with a sunken black "screen" and a green >_ prompt — the Win2000/XP-era terminal look.
-// Load a PNG into an HBITMAP with its alpha flattened onto bg (the toolbar's face colour) so it
-// blends seamlessly when added to a plain colour image list. Returns null on failure.
-static HBITMAP loadPngFlattened(const std::wstring& path, COLORREF bg) {
-    Gdiplus::Bitmap img(path.c_str());
-    if (img.GetLastStatus() != Gdiplus::Ok) return nullptr;
-    HBITMAP hb = nullptr;
-    img.GetHBITMAP(Gdiplus::Color(GetRValue(bg), GetGValue(bg), GetBValue(bg)), &hb);
-    return hb;
-}
-// Build the toolbar image list from the bundled Silk PNGs (order: New / Workspace / Split).
-static void buildToolbarImages() {
-    // No comctl32 v6 manifest -> no alpha image lists, so the PNGs are flattened against the bar
-    // colour they will sit on. Rebuilt on every theme switch (the flatten colour changes with it).
-    if (g_tbImages) ImageList_Destroy(g_tbImages);
-    g_tbImages = ImageList_Create(16, 16, ILC_COLOR24, 3, 0);
-    COLORREF face = g_th.classic ? GetSysColor(COLOR_BTNFACE) : g_th.bar;
-    std::wstring dir = exeDir();
-    for (const wchar_t* f : { L"tb_new.png", L"tb_workspace.png", L"tb_split.png" }) {
-        HBITMAP hb = loadPngFlattened(dir + L"\\" + f, face);
-        if (hb) { ImageList_Add(g_tbImages, hb, nullptr); DeleteObject(hb); }
+// Toolbar icons are the full app's vector glyphs drawn in GDI at runtime (no PNG assets, no GDI+).
+// The full app's toolbar glyphs (Program.Services.cs Draw*Glyph — D2D vector icons), redrawn in GDI
+// at 16x16. Same designs, slightly simplified for the small cell: hamburger, plus, card+plus,
+// two-pane split, scratch pad, quick terminal (>_ in a frame), recents clock, settings gear.
+static void drawToolbarGlyph(HDC dc, int idx, COLORREF c) {
+    HPEN p1 = CreatePen(PS_SOLID, 1, c), p2 = CreatePen(PS_SOLID, 2, c);
+    HGDIOBJ op = SelectObject(dc, p1), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    auto ln = [&](int x0, int y0, int x1, int y1) { MoveToEx(dc, x0, y0, nullptr); LineTo(dc, x1, y1); };
+    switch (idx) {
+        case 0:   // sidebar toggle: hamburger (GlobalNavButton)
+            SelectObject(dc, p2);
+            ln(3, 4, 13, 4); ln(3, 8, 13, 8); ln(3, 12, 13, 12);
+            break;
+        case 1:   // new session: plus (GlyphAdd)
+            SelectObject(dc, p2);
+            ln(8, 3, 8, 14); ln(2, 8, 13, 8);
+            break;
+        case 2:   // new workspace: card + plus (DrawNewWorkspaceGlyph)
+            RoundRect(dc, 2, 2, 11, 11, 3, 3);
+            SelectObject(dc, p2);
+            ln(12, 8, 12, 15); ln(9, 11, 16, 11);
+            break;
+        case 3:   // split: two panes (DrawSplitGlyph)
+            RoundRect(dc, 1, 3, 15, 13, 3, 3);
+            ln(8, 3, 8, 12);
+            break;
+        case 4:   // scratch: pad outline (DrawScratchGlyph)
+            RoundRect(dc, 2, 4, 14, 13, 4, 4);
+            break;
+        case 5:   // quick terminal: frame + >_ (GlyphTerminal)
+            RoundRect(dc, 1, 2, 15, 14, 2, 2);
+            ln(4, 6, 7, 8); ln(7, 8, 4, 10);
+            ln(9, 11, 12, 11);
+            break;
+        case 6:   // reopen closed: recents clock (DrawClockGlyph)
+            Ellipse(dc, 2, 2, 15, 15);
+            ln(8, 8, 8, 4); ln(8, 8, 11, 10);
+            break;
+        case 7: { // settings: gear (GlyphGear, simplified — ring + teeth + hub)
+            Ellipse(dc, 4, 4, 13, 13);
+            ln(8, 1, 8, 4); ln(8, 13, 8, 16); ln(1, 8, 4, 8); ln(13, 8, 16, 8);
+            ln(3, 3, 5, 5); ln(12, 12, 14, 14); ln(12, 5, 14, 3); ln(3, 14, 5, 12);
+            Ellipse(dc, 7, 7, 10, 10);
+            break;
+        }
     }
+    SelectObject(dc, op); SelectObject(dc, ob);
+    DeleteObject(p1); DeleteObject(p2);
+}
+static void buildToolbarImages() {
+    // Runtime-drawn glyphs (no alpha image lists without a v6 manifest anyway): each icon is drawn
+    // onto the bar colour in the theme's text colour, and rebuilt on every theme switch.
+    if (g_tbImages) ImageList_Destroy(g_tbImages);
+    g_tbImages = ImageList_Create(16, 16, ILC_COLOR24, kTbCount, 0);
+    COLORREF bg = g_th.classic ? GetSysColor(COLOR_BTNFACE) : g_th.bar;
+    COLORREF fg = g_th.classic ? GetSysColor(COLOR_BTNTEXT) : g_th.text;
+    HDC sdc = GetDC(nullptr);
+    for (int i = 0; i < kTbCount; i++) {
+        HDC mem = CreateCompatibleDC(sdc);
+        HBITMAP bm = CreateCompatibleBitmap(sdc, 16, 16);
+        HGDIOBJ obm = SelectObject(mem, bm);
+        RECT r{ 0, 0, 16, 16 };
+        HBRUSH bb = CreateSolidBrush(bg);
+        FillRect(mem, &r, bb); DeleteObject(bb);
+        drawToolbarGlyph(mem, i, fg);
+        SelectObject(mem, obm); DeleteDC(mem);
+        ImageList_Add(g_tbImages, bm, nullptr);
+        DeleteObject(bm);
+    }
+    ReleaseDC(nullptr, sdc);
     if (g_toolbar) {
         SendMessageW(g_toolbar, TB_SETIMAGELIST, 0, (LPARAM)g_tbImages);
         InvalidateRect(g_toolbar, nullptr, TRUE);
@@ -2997,10 +3062,10 @@ public:
                 RECT rc = cd->nmcd.rc;
                 HBRUSH b = CreateSolidBrush(prs ? g_th.sel : hot ? g_th.hot : g_th.bar);
                 FillRect(cd->nmcd.hdc, &rc, b); DeleteObject(b);
-                int img = cd->nmcd.dwItemSpec == IDM_NEW ? 0 : cd->nmcd.dwItemSpec == IDM_NEWWS ? 1 : 2;
+                int img = tbImageOf((int)cd->nmcd.dwItemSpec);
                 int ix = rc.left + (rc.right - rc.left - 16) / 2;
                 int iy = rc.top + (rc.bottom - rc.top - 16) / 2 + (prs ? 1 : 0);   // classic 1px press nudge
-                ImageList_Draw(g_tbImages, img, cd->nmcd.hdc, ix, iy, ILD_NORMAL);
+                if (img >= 0) ImageList_Draw(g_tbImages, img, cd->nmcd.hdc, ix, iy, ILD_NORMAL);
                 if (hot || prs) { HBRUSH f = CreateSolidBrush(g_th.accent); FrameRect(cd->nmcd.hdc, &rc, f); DeleteObject(f); }
                 return CDRF_SKIPDEFAULT;
             }
@@ -3008,9 +3073,8 @@ public:
         }
         if (nm->code == TBN_GETINFOTIPW) {   // toolbar button hover tooltips ("hints")
             auto* it = (NMTBGETINFOTIPW*)lp;
-            const wchar_t* tip = it->iItem == IDM_NEW ? L"New Session"
-                               : it->iItem == IDM_NEWWS ? L"New Workspace"
-                               : it->iItem == IDM_SPLIT ? L"Split / Unsplit" : L"";
+            const wchar_t* tip = L"";
+            for (const auto& b : kTbButtons) if (b.id == it->iItem) { tip = b.tip; break; }
             lstrcpynW(it->pszText, tip, it->cchTextMax);
             return 0;
         }
@@ -3342,8 +3406,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     InitializeCriticalSection(&g_lock);
     InitializeCriticalSection(&g_reqLock);
     loadCore();
-    Gdiplus::GdiplusStartupInput gsi;
-    Gdiplus::GdiplusStartup(&g_gdiplusTok, &gsi, nullptr);   // for PNG toolbar-icon decode
 
     // Bundled fonts (process-private): Meslo Nerd (default TrueType), plus the optional bitmap fonts
     // Cozette + Tamzen if their .ttf shipped next to the exe. Consolas is the fallback if Meslo is absent.
@@ -3416,11 +3478,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_toolbar = g_frame.m_toolbar;
     g_frame.m_toolbar.SetButtonStructSize(sizeof(TBBUTTON));
     g_frame.m_toolbar.SetImageList(g_tbImages);
-    TBBUTTON tb[3] = {};
-    tb[0].iBitmap = 0; tb[0].idCommand = IDM_NEW;   tb[0].fsState = TBSTATE_ENABLED; tb[0].fsStyle = BTNS_AUTOSIZE;
-    tb[1].iBitmap = 1; tb[1].idCommand = IDM_NEWWS; tb[1].fsState = TBSTATE_ENABLED; tb[1].fsStyle = BTNS_AUTOSIZE;
-    tb[2].iBitmap = 2; tb[2].idCommand = IDM_SPLIT; tb[2].fsState = TBSTATE_ENABLED; tb[2].fsStyle = BTNS_AUTOSIZE;
-    g_frame.m_toolbar.AddButtons(3, tb);
+    TBBUTTON tb[kTbCount] = {};
+    for (int i = 0; i < kTbCount; i++) {
+        tb[i].iBitmap = kTbButtons[i].img;
+        tb[i].idCommand = kTbButtons[i].id;
+        tb[i].fsState = TBSTATE_ENABLED;
+        tb[i].fsStyle = BTNS_AUTOSIZE;
+    }
+    g_frame.m_toolbar.AddButtons(kTbCount, tb);
     g_frame.m_toolbar.AutoSize();
     RECT tbr; GetWindowRect(g_toolbar, &tbr); g_toolbarH = tbr.bottom - tbr.top;
 
