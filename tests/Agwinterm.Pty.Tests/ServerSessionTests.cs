@@ -155,11 +155,14 @@ public class ServerSessionTests : IDisposable
     {
         string paneId = Guid.NewGuid().ToString();
         var gen1 = _backend.Create(paneId, 60, 10);
-        await gen1.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoProfile" });
-        // Emit a coloured line via ANSI, then scroll it into history.
-        TypeLine(gen1, "$e=[char]27; Write-Host \"$e[31mCOLORLINE$e[0m\"", "COLORLINE");
-        for (int i = 0; i < 14; i++) gen1.Write("echo .\r"u8);   // push COLORLINE into scrollback
-        Thread.Sleep(500);
+        // Non-interactive (same rationale as RustPtyHostTests): the colour line, scroll fillers and
+        // READY marker are all produced by -Command, so the test never depends on interactive
+        // typing echo or cold-start readline latency (both flaked on cold CI runners).
+        const string script =
+            "$e=[char]27; Write-Host ($e+'[31mCOLORLINE'+$e+'[0m'); 1..14|%{'.'}; 'SCROLL-READY'; Start-Sleep 3600";
+        await gen1.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoProfile", "-Command", script });
+        Assert.True(WaitFor(() => GridText(gen1).Contains("SCROLL-READY"), 60000),
+                    "PS -Command output never reached the replica emulator");
         gen1.Detach();
 
         using var gen2 = (ServerSession)_backend.Create(paneId, 60, 10);

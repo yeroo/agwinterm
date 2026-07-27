@@ -45,6 +45,34 @@ public class RustPtyHostTests : IDisposable
         return cond();
     }
 
+    /// <summary>Read the attachment stream until <paramref name="marker"/> appears — pure read, no
+    /// typing (for sessions whose output is driven by -Command rather than interactive input).</summary>
+    private static string ReadUntil(Stream data, string marker, int timeoutMs)
+    {
+        var all = new System.Text.StringBuilder();
+        var buf = new byte[16 * 1024];
+        var sw = Stopwatch.StartNew();
+        using var cts = new CancellationTokenSource();
+        Task<int>? pending = null;
+        try
+        {
+            while (sw.ElapsedMilliseconds < timeoutMs)
+            {
+                pending ??= data.ReadAsync(buf, 0, buf.Length, cts.Token);
+                if (!pending.Wait(250)) continue;
+                int n = pending.Result; pending = null;
+                if (n <= 0) break;
+                all.Append(System.Text.Encoding.UTF8.GetString(buf, 0, n));
+                if (all.ToString().Contains(marker, StringComparison.Ordinal)) break;
+            }
+        }
+        finally
+        {
+            if (pending is { IsCompleted: false }) { cts.Cancel(); try { pending.Wait(5000); } catch (AggregateException) { } }
+        }
+        return all.ToString();
+    }
+
     private static string TypeUntilEcho(Stream data, string line, string marker, int timeoutMs = 20000)
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(line + "\r");
@@ -123,13 +151,18 @@ public class RustPtyHostTests : IDisposable
     {
         if (ExePath is null) return;
         using var client = Start();
-        string id = client.Create(Guid.NewGuid().ToString(), 60, 10, "powershell.exe", new[] { "-NoLogo", "-NoProfile" });
+        // Non-interactive: the colour line, 14 scroll fillers and a READY marker are all produced by
+        // -Command — no typing, so no ConPTY input-echo races and no dependence on how fast an
+        // interactive PowerShell spins up on a cold runner (input typed while the shell initializes
+        // can be silently discarded; this starved the test on CI). Single-quoted so the argument
+        // carries no embedded double quotes through the host's command-line quoting.
+        const string script =
+            "$e=[char]27; Write-Host ($e+'[31mCOLORLINE'+$e+'[0m'); 1..14|%{'.'}; 'SCROLL-READY'; Start-Sleep 3600";
+        string id = client.Create(Guid.NewGuid().ToString(), 60, 10, "powershell.exe",
+                                  new[] { "-NoLogo", "-NoProfile", "-Command", script });
         using (var first = client.Attach(id))
-        {
-            TypeUntilEcho(first.Data, "$e=[char]27; Write-Host \"$e[31mCOLORLINE$e[0m\"", "COLORLINE");
-            for (int i = 0; i < 14; i++) { first.Data.Write("echo .\r"u8.ToArray()); first.Data.Flush(); }
-        }
-        Thread.Sleep(600);   // let COLORLINE scroll into the HOST emulator's history
+            Assert.Contains("SCROLL-READY", ReadUntil(first.Data, "SCROLL-READY", 60000));
+        Thread.Sleep(300);   // small grace for the host emulator to ingest the final bytes
 
         using var second = client.Attach(id, repaint: true);
         // The Rust host must produce an attributed blob that the C# BufferPersist restores with
