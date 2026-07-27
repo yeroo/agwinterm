@@ -225,8 +225,8 @@ status bar — in the classic Windows look.
 - **CLI**: `-p/--profile`, `-d/--dir`, `--maximized`, `--no-restore`, `--pipe` — the full app's
   flag names.
 
-Grab **`agwinterm-lite-<version>-win-x64.zip`** from Releases, or build it (needs the VC++ ATL
-component): `./lite/build.ps1`.
+Grab **`agwinterm-lite-setup-<version>.exe`** from Releases (per-user, no admin), or build it
+(needs the VC++ ATL component): `./lite/build.ps1` (dev build) / `./installer/build-lite.ps1` (setup).
 
 ## Keyboard essentials
 
