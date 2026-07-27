@@ -87,6 +87,7 @@ static constexpr int kSidebarMinW = 90;   // the splitter will not shrink the le
 static int g_sidebarW = kSidebarW;     // current (resizable) sidebar width
 static bool g_showSidebar = true, g_showToolbar = true, g_showStatus = true;   // View menu toggles (persisted)
 static bool g_flagView = false;   // sidebar shows only flagged sessions (toolbar pennant / View menu)
+static int g_focusWs = -1;        // focused workspace: the sidebar shows only this one (-1 = all)
 
 // ---- sessions & layout ----
 struct Session {
@@ -546,7 +547,7 @@ static void applyTheme() {
 // HIBYTE = HOTKEYF_* (SHIFT 1 / CONTROL 2 / ALT 4). 0 = unbound.
 enum { KB_NEW, KB_NEWWS, KB_CLOSE, KB_SPLIT, KB_NEXT, KB_PREV, KB_COPY, KB_PASTE,
        KB_PALETTE, KB_FOCUSL, KB_FOCUSR, KB_SCROLLUP, KB_SCROLLDN, KB_QUICK, KB_SCRATCH, KB_REOPEN,
-       KB_ZOOMIN, KB_ZOOMOUT, KB_ZOOMRESET, KB_FLAG, KB_FLAGVIEW, KB_ATTENTION, KB_COUNT };
+       KB_ZOOMIN, KB_ZOOMOUT, KB_ZOOMRESET, KB_FLAG, KB_FLAGVIEW, KB_ATTENTION, KB_FOCUSWS, KB_COUNT };
 struct KbInfo { const wchar_t* label; const wchar_t* reg; };
 static const KbInfo kKbInfo[KB_COUNT] = {
     { L"New Session",      L"Key_New" },     { L"New Workspace",    L"Key_NewWs" },
@@ -560,6 +561,7 @@ static const KbInfo kKbInfo[KB_COUNT] = {
     { L"Zoom In",          L"Key_ZoomIn" },   { L"Zoom Out",         L"Key_ZoomOut" },
     { L"Zoom Reset",       L"Key_ZoomReset" }, { L"Flag / Unflag",   L"Key_Flag" },
     { L"Flagged View",     L"Key_FlagView" },  { L"Next Blocked",    L"Key_Attention" },
+    { L"Focus Workspace",  L"Key_FocusWs" },
 };
 static WORD g_keys[KB_COUNT] = { 0 };
 static bool g_swallowChar = false;   // set when a keydown was consumed by a binding, to drop its WM_CHAR
@@ -577,7 +579,7 @@ enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, ID
        IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108, IDM_KEYBOARD = 109,
        IDM_QUICK = 120, IDM_SCRATCH = 121, IDM_REOPEN = 122,
        IDM_TG_SIDEBAR = 123, IDM_TG_TOOLBAR = 124, IDM_TG_STATUS = 125,
-       IDM_FLAG = 126, IDM_FLAGVIEW = 127, IDM_ATTENTION = 128 };
+       IDM_FLAG = 126, IDM_FLAGVIEW = 127, IDM_ATTENTION = 128, IDM_FOCUSWS = 129 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202, ID_STATUS = 203 };
 
@@ -1801,6 +1803,7 @@ static void togglePopupTerminal(bool scratch);   // fwd (quick/scratch popup win
 static void toggleFlag(Session* s);              // fwd (flagged sessions, defined below)
 static void toggleFlagView();                    // fwd
 static void nextBlocked();                       // fwd (attention bell)
+static void toggleFocusWs(int w);                // fwd (workspace focus)
 static void runKbAction(int a) {
     switch (a) {
         case KB_NEW: { int c, r; paneGridSize(g_focus, &c, &r); Session* s = newSession(c, r); if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; InvalidateRect(g_hwnd, nullptr, FALSE); } break; }
@@ -1825,6 +1828,7 @@ static void runKbAction(int a) {
         case KB_FLAG: toggleFlag(focusedSession()); break;
         case KB_FLAGVIEW: toggleFlagView(); break;
         case KB_ATTENTION: nextBlocked(); break;
+        case KB_FOCUSWS: toggleFocusWs(g_focusWs >= 0 ? g_focusWs : g_activeWs); break;
     }
 }
 static bool handleKeyDown(WPARAM vk) {
@@ -1903,7 +1907,8 @@ static void updateStatus() {
     if (!g_status) return;
     wchar_t buf[160];
     const std::wstring& ws = (g_activeWs >= 0 && g_activeWs < (int)g_workspaces.size()) ? g_workspaces[g_activeWs] : g_workspaces[0];
-    SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)ws.c_str());
+    std::wstring ws0 = (g_focusWs >= 0) ? ws + L"  (focused)" : ws;
+    SendMessageW(g_status, SB_SETTEXTW, 0, (LPARAM)ws0.c_str());
     int n = 0; for (auto* s : g_sessions) if (!s->hidden) n++;
     wsprintfW(buf, L"%d session%s  \x00B7  Rust pty-host", n, n == 1 ? L"" : L"s");
     SendMessageW(g_status, SB_SETTEXTW, 1, (LPARAM)buf);
@@ -1927,6 +1932,7 @@ static void refreshTree() {
     // <0 = -(workspace index + 1).
     bool anyShown = false;
     for (int w = 0; w < (int)g_workspaces.size(); w++) {
+        if (g_focusWs >= 0 && w != g_focusWs) continue;   // focused workspace: show only it
         int count = 0, flaggedCount = 0;
         for (auto* s : g_sessions) if (s->ws == w && !s->hidden) { count++; if (s->flagged) flaggedCount++; }
         if (g_flagView && flaggedCount == 0) continue;   // flagged view: only workspaces with flagged sessions
@@ -1989,6 +1995,8 @@ static void deleteWorkspace(int w) {
     }
     if (g_activeWs == w) g_activeWs = 0;
     else if (g_activeWs > w) g_activeWs--;
+    if (g_focusWs == w) g_focusWs = -1;
+    else if (g_focusWs > w) g_focusWs--;
     refreshTree();
 }
 
@@ -2020,6 +2028,7 @@ static void showTreeContextMenu() {
         AppendMenuW(m, MF_STRING, IDM_NEW, L"&New Session");
         AppendMenuW(m, MF_STRING, IDM_NEWWS, L"New &Workspace");
         AppendMenuW(m, MF_STRING, IDM_RENAME, L"Re&name");
+        AppendMenuW(m, MF_STRING, IDM_FOCUSWS, g_focusWs == cws ? L"Unf&ocus Workspace" : L"F&ocus Workspace");
         AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m, MF_STRING | ((int)g_workspaces.size() <= 1 ? MF_GRAYED : 0), IDM_DELWS, L"&Delete Workspace");
     }
@@ -2053,6 +2062,9 @@ static void showTreeContextMenu() {
             break;
         case IDM_DELWS:
             if (!isSession) deleteWorkspace(cws);
+            break;
+        case IDM_FOCUSWS:
+            if (!isSession) toggleFocusWs(cws);
             break;
         default:
             if (isSession && id >= IDM_MOVE_BASE && id < IDM_MOVE_BASE + (int)g_workspaces.size()
@@ -2091,6 +2103,7 @@ static HMENU buildMenuBar() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_FLAG, L"Fla&g / Unflag Session");
     AppendMenuW(view, MF_STRING | (g_flagView ? MF_CHECKED : 0), IDM_FLAGVIEW, L"Flagged Vie&w");
+    AppendMenuW(view, MF_STRING | (g_focusWs >= 0 ? MF_CHECKED : 0), IDM_FOCUSWS, L"F&ocus Workspace");
     AppendMenuW(view, MF_STRING, IDM_ATTENTION, L"Next Bloc&ked Session");
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING | (g_showSidebar ? MF_CHECKED : 0), IDM_TG_SIDEBAR, L"Side&bar");
@@ -2929,6 +2942,7 @@ static void nextBlocked() {
         if (s->hidden || s->exited || statusClass(s->status) != AGST_BLOCKED) continue;
         g_pane[0] = i; g_focus = 0;
         g_activeWs = s->ws;
+        if (g_focusWs >= 0) g_focusWs = s->ws;   // focus follows the jump (the row must be visible)
         syncPaneSizes();
         refreshTree();   // re-selects the tree row for the new pane-0 session
         InvalidateRect(g_hwnd, nullptr, FALSE);
@@ -2948,6 +2962,14 @@ static void toggleFlagView() {
     if (g_toolbar) SendMessageW(g_toolbar, TB_CHECKBUTTON, IDM_FLAGVIEW, MAKELPARAM(g_flagView, 0));
     refreshTree();
     saveColors();   // FlagView persists with the other view toggles
+}
+// Focus a workspace: the sidebar narrows to it (the full app's focus pill, lite-style — the toggle
+// lives on the workspace's context menu and in View). Focusing again, or focusing -1, unfocuses.
+static void toggleFocusWs(int w) {
+    g_focusWs = (g_focusWs == w || w < 0 || w >= (int)g_workspaces.size()) ? -1 : w;
+    if (g_focusWs >= 0) g_activeWs = g_focusWs;   // new sessions land in the focused workspace
+    if (g_hwnd) CheckMenuItem(GetMenu(g_hwnd), IDM_FOCUSWS, MF_BYCOMMAND | (g_focusWs >= 0 ? MF_CHECKED : MF_UNCHECKED));
+    refreshTree();   // re-filters + updates the status bar + persists (O record)
 }
 
 // ---- main frame (WTL) -------------------------------------------------------------------------
@@ -3377,6 +3399,7 @@ public:
             }
             case IDM_FLAG: toggleFlag(focusedSession()); break;
             case IDM_FLAGVIEW: toggleFlagView(); break;
+            case IDM_FOCUSWS: toggleFocusWs(g_focusWs >= 0 ? g_focusWs : g_activeWs); break;   // toggle on active ws
             case IDM_ATTENTION: nextBlocked(); break;
             case IDM_RESTART: restartApp(); break;
             case IDM_SHOW: showMainWindow(); break;
@@ -3572,7 +3595,7 @@ static bool restoreSessions() {
     std::vector<std::wstring> wss;
     struct Spec { int ws; std::string name, app, cwd; std::vector<std::string> args; bool flagged = false; };
     std::vector<Spec> specs;
-    int activeWs = 0;
+    int activeWs = 0, focusWs = -1;
     size_t i = 0;
     auto split = [](const std::string& l) {
         std::vector<std::string> ff; size_t p = 0;
@@ -3596,7 +3619,8 @@ static bool restoreSessions() {
                 int fi = atoi(ff[k].c_str());
                 if (fi >= 0 && fi < (int)specs.size()) specs[fi].flagged = true;
             }
-        } else if (ff[0] == "A" && ff.size() >= 2) activeWs = atoi(ff[1].c_str());
+        } else if (ff[0] == "O" && ff.size() >= 2) focusWs = atoi(ff[1].c_str());
+        else if (ff[0] == "A" && ff.size() >= 2) activeWs = atoi(ff[1].c_str());
     }
     if (specs.empty()) return false;
 
@@ -3614,6 +3638,7 @@ static bool restoreSessions() {
     if (firstIdx < 0) return false;
     g_pane[0] = firstIdx; g_pane[1] = -1; g_focus = 0;
     g_activeWs = (activeWs >= 0 && activeWs < (int)g_workspaces.size()) ? activeWs : 0;
+    g_focusWs = (focusWs >= 0 && focusWs < (int)g_workspaces.size()) ? focusWs : -1;
     syncPaneSizes();
     refreshTree();
     return true;
