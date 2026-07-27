@@ -421,6 +421,34 @@ static LRESULT CALLBACK hotkeyProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR 
     return DefSubclassProc(h, m, w, l);
 }
 
+// ---- dark field bezels ------------------------------------------------------------------------
+// v5 listboxes draw their WS_BORDER / WS_EX_CLIENTEDGE bezel with classic system colours that no
+// theme reaches. Let the default NC paint run (it also draws the scrollbar), then repaint the outer
+// bezel rings dark. Classic/light leave the system bezel alone.
+static LRESULT CALLBACK fieldRingProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
+    if (m == WM_NCDESTROY) RemoveWindowSubclass(h, fieldRingProc, id);
+    if (m == WM_NCPAINT && g_th.dark && !g_th.classic) {
+        LRESULT r = DefSubclassProc(h, m, w, l);   // border + scrollbar first
+        if (HDC dc = GetWindowDC(h)) {
+            RECT wr; GetWindowRect(h, &wr);
+            RECT rc{ 0, 0, wr.right - wr.left, wr.bottom - wr.top };
+            HBRUSH br = CreateSolidBrush(g_th.border);
+            FrameRect(dc, &rc, br);                              // outer ring
+            DWORD ex = (DWORD)GetWindowLongPtrW(h, GWL_EXSTYLE);
+            if (ex & WS_EX_CLIENTEDGE) {                          // client edge is 2px deep
+                InflateRect(&rc, -1, -1);
+                HBRUSH in = CreateSolidBrush(g_th.client);
+                FrameRect(dc, &rc, in);
+                DeleteObject(in);
+            }
+            DeleteObject(br);
+            ReleaseDC(h, dc);
+        }
+        return r;
+    }
+    return DefSubclassProc(h, m, w, l);
+}
+
 // ---- dark status bar --------------------------------------------------------------------------
 // The native status bar ignores colour requests entirely; a full WM_PAINT takeover (via comctl32
 // subclassing) is the only clean way. Reads the theme at paint time, so switching just repaints.
@@ -2038,6 +2066,7 @@ static int pickProfileDialog(const std::vector<Profile>& profs) {
     g_dlgList = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY,
                                 12, 32, cr.right - 24, cr.bottom - 84, dlg, (HMENU)1000, inst, nullptr);
+    SetWindowSubclass(g_dlgList, fieldRingProc, 1, 0);   // dark bezel over the classic client edge
     for (const auto& p : profs) SendMessageW(g_dlgList, LB_ADDSTRING, 0, (LPARAM)p.name.c_str());
     SendMessageW(g_dlgList, LB_SETCURSEL, 0, 0);
     HWND ok = CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
@@ -2178,6 +2207,17 @@ static void drawDlgButton(LPDRAWITEMSTRUCT d) {
 // the whole closed-field paint. The dropdown list is already dark via WM_CTLCOLORLISTBOX.
 static LRESULT CALLBACK comboProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
     if (m == WM_NCDESTROY) RemoveWindowSubclass(h, comboProc, id);
+    if (m == WM_NCPAINT && g_th.dark && !g_th.classic) {   // the WS_BORDER ring outside our paint
+        LRESULT r = DefSubclassProc(h, m, w, l);
+        if (HDC dc = GetWindowDC(h)) {
+            RECT wr; GetWindowRect(h, &wr);
+            RECT rc{ 0, 0, wr.right - wr.left, wr.bottom - wr.top };
+            HBRUSH br = CreateSolidBrush(g_th.border);
+            FrameRect(dc, &rc, br); DeleteObject(br);
+            ReleaseDC(h, dc);
+        }
+        return r;
+    }
     if (!g_th.classic && (m == WM_PAINT || m == WM_ERASEBKGND)) {
         if (m == WM_ERASEBKGND) return 1;
         PAINTSTRUCT ps;
@@ -2354,6 +2394,7 @@ static void showPropertiesDialog() {
     };
     mk(L"STATIC", L"Font:", 0, 16, 12, 120, 16, 0);
     HWND fl = mk(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY, 16, 30, 200, 96, PID_FONTLIST);
+    SetWindowSubclass(fl, fieldRingProc, 1, 0);   // dark bezel
     for (const auto& e : g_catalog) SendMessageW(fl, LB_ADDSTRING, 0, (LPARAM)e.label);
     SendMessageW(fl, LB_SETCURSEL, g_pFace, 0);
     mk(L"STATIC", L"Size:", 0, 228, 12, 120, 16, 0);
