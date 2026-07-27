@@ -2990,13 +2990,16 @@ public:
     }
     void OnRButtonUp(UINT, CPoint pt) { mouseReport(pt.x, pt.y, 2, false, false); }
 
-    LRESULT OnSetCursor(UINT, WPARAM, LPARAM lp, BOOL& bHandled) {
-        if (LOWORD(lp) == HTCLIENT) {
+    LRESULT OnSetCursor(UINT, WPARAM wp, LPARAM lp, BOOL& bHandled) {
+        // Children (toolbar/tree/status) forward WM_SETCURSOR here; wParam names the window the
+        // cursor is actually in. Only claim the cursor for OUR client area — otherwise the toolbar
+        // ends up with an I-beam whenever the sidebar is hidden (sidebarSpan() becomes 0).
+        if ((HWND)wp == m_hWnd && LOWORD(lp) == HTCLIENT) {
             POINT p; GetCursorPos(&p); ScreenToClient(&p);
             if (inSplitter(p.x, p.y)) { SetCursor(LoadCursorW(nullptr, (LPCWSTR)IDC_SIZEWE)); return TRUE; }
             if (p.x >= sidebarSpan()) { SetCursor(LoadCursorW(nullptr, (LPCWSTR)IDC_IBEAM)); return TRUE; }
         }
-        bHandled = FALSE;
+        bHandled = FALSE;   // a child's cursor is the child's business
         return 0;
     }
 
