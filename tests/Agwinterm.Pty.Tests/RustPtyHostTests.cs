@@ -126,10 +126,18 @@ public class RustPtyHostTests : IDisposable
         string id = client.Create(Guid.NewGuid().ToString(), 60, 10, "powershell.exe", new[] { "-NoLogo", "-NoProfile" });
         using (var first = client.Attach(id))
         {
-            TypeUntilEcho(first.Data, "$e=[char]27; Write-Host \"$e[31mCOLORLINE$e[0m\"", "COLORLINE");
+            // The marker is concatenated in the TYPED line so the ConPTY input echo never contains
+            // it whole — TypeUntilEcho can only match Write-Host's OUTPUT, proving the command ran
+            // (previously the wait could return on the keystroke echo, before execution).
+            TypeUntilEcho(first.Data, "$e=[char]27; Write-Host (\"$e[31mCOLOR\" + \"LINE$e[0m\")", "COLORLINE");
             for (int i = 0; i < 14; i++) { first.Data.Write("echo .\r"u8.ToArray()); first.Data.Flush(); }
+            // Deterministic scroll barrier: PowerShell processes input serially, so seeing this
+            // expression's OUTPUT proves every echo above executed — COLORLINE is now deep in the
+            // host emulator's history regardless of how slow the runner is (the fixed 600 ms sleep
+            // alone flaked on cold CI machines).
+            TypeUntilEcho(first.Data, "(\"SCROLL\" + \"-DONE\")", "SCROLL-DONE");
         }
-        Thread.Sleep(600);   // let COLORLINE scroll into the HOST emulator's history
+        Thread.Sleep(300);   // small grace for the host emulator to ingest the final bytes
 
         using var second = client.Attach(id, repaint: true);
         // The Rust host must produce an attributed blob that the C# BufferPersist restores with
