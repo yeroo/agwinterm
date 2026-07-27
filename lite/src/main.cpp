@@ -98,6 +98,64 @@ static bool g_argMaximized = false;       // --maximized
 static bool g_argNoRestore = false;       // --no-restore: don't rebuild the saved sessions
 static std::wstring g_argPipe;            // --pipe <name>: control-pipe name (default agwinterm-lite)
 
+static HWND g_hwnd;   // main frame (declared early: the instance registry compares against it)
+
+// ---- multi-window (multi-process): each lite window is one process ---------------------------
+// The instance name comes from --pipe; the default instance is "agwinterm-lite". It namespaces the
+// session ids on the SHARED pty-host, the state file, and the saved window geometry — that is what
+// lets any number of lite windows coexist. Instances see each other through a registry of
+// name -> {pid, hwnd} entries under HKCU, which the window.* control verbs act on.
+static std::wstring g_instance = L"agwinterm-lite";   // resolved in parseLaunchArgs
+static std::string  g_idPrefix = "lite";              // session-id prefix ("<prefix>-N")
+static bool g_isDefaultInstance = true;
+static const wchar_t* kInstKey = L"Software\\agwinterm-lite\\Instances";
+
+static void announceInstance(HWND hwnd) {   // name -> [pid, hwnd] (REG_BINARY, 16 bytes)
+    unsigned long long v[2] = { GetCurrentProcessId(), (unsigned long long)(uintptr_t)hwnd };
+    RegSetKeyValueW(HKEY_CURRENT_USER, kInstKey, g_instance.c_str(), REG_BINARY, v, sizeof v);
+}
+static void retractInstance() {
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kInstKey, 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS) {
+        RegDeleteValueW(k, g_instance.c_str());
+        RegCloseKey(k);
+    }
+}
+struct InstanceInfo { std::wstring name; DWORD pid; HWND hwnd; };
+static std::vector<InstanceInfo> listInstances() {   // live entries only; stale ones are pruned
+    std::vector<InstanceInfo> out;
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kInstKey, 0, KEY_READ | KEY_SET_VALUE, &k) != ERROR_SUCCESS) return out;
+    wchar_t name[128]; BYTE data[16];
+    std::vector<std::wstring> stale;
+    for (DWORD i = 0;; i++) {
+        DWORD nl = 128, dl = sizeof data, type = 0;
+        LONG r = RegEnumValueW(k, i, name, &nl, nullptr, &type, data, &dl);
+        if (r == ERROR_NO_MORE_ITEMS) break;
+        if (r != ERROR_SUCCESS || type != REG_BINARY || dl != 16) continue;
+        unsigned long long pid = *(unsigned long long*)data, hw = *(unsigned long long*)(data + 8);
+        HWND hwnd = (HWND)(uintptr_t)hw;
+        bool alive = IsWindow(hwnd);
+        if (alive) {   // confirm the pid still owns it (guards against hwnd reuse)
+            DWORD wp = 0; GetWindowThreadProcessId(hwnd, &wp);
+            alive = (wp == (DWORD)pid);
+        }
+        if (alive) out.push_back({ name, (DWORD)pid, hwnd });
+        else stale.push_back(name);
+    }
+    for (const auto& s : stale) RegDeleteValueW(k, s.c_str());
+    RegCloseKey(k);
+    return out;
+}
+static const InstanceInfo* findInstance(const std::vector<InstanceInfo>& v, const std::wstring& sel) {
+    if (sel.empty() || sel == L"active") {
+        for (const auto& e : v) if (e.hwnd == g_hwnd) return &e;   // "active" = this instance
+        return nullptr;
+    }
+    for (const auto& e : v) if (lstrcmpiW(e.name.c_str(), sel.c_str()) == 0) return &e;
+    return nullptr;
+}
+
 // ---- sessions & layout ----
 struct Session {
     std::string id;
@@ -127,7 +185,6 @@ static int statusClass(const std::string& s) {
     if (s == "blocked" || s == "waiting" || s == "attention" || s == "input") return AGST_BLOCKED;
     return AGST_NONE;
 }
-static HWND g_hwnd;
 static HFONT g_treeItalic;      // italic variant of the sidebar font (agent "working" rows)
 // Quick + scratch terminals: modal-ish popup windows, each hosting a dedicated (hidden) session. The
 // overlay is a scratch that runs a one-shot command. g_focusOverride redirects input/paint focus to a
@@ -919,7 +976,7 @@ static std::vector<Profile> detectProfiles() {
 static Session* newSession(int cols, int rows, const char* app = nullptr,
                            const std::vector<std::string>* pargs = nullptr, const char* cwd = nullptr) {
     char idbuf[64];
-    wsprintfA(idbuf, "lite-%d", g_seq++);
+    wsprintfA(idbuf, "%s-%d", g_idPrefix.c_str(), g_seq++);
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_create_tag;
@@ -1195,14 +1252,17 @@ static void saveColors() {
 // Window geometry persistence. loadWindowRect resolves the saved rect (clamped onto a visible monitor
 // so an unplugged screen / resolution change can't strand the window off-screen) and is applied at
 // CreateWindow time so the window appears there directly — no create-then-move flash.
+static std::wstring geoName(const wchar_t* base) {   // per-instance geometry value names
+    return g_isDefaultInstance ? base : (std::wstring(base) + L"-" + g_instance);
+}
 static bool loadWindowRect(RECT* out, bool* maxed) {
     const wchar_t* k = L"Software\\agwinterm-lite";
     DWORD x, y, w, h, mx = 0, sz;
-    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, L"WinW", RRF_RT_REG_DWORD, nullptr, &w, &sz) != ERROR_SUCCESS) return false;
-    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, L"WinH", RRF_RT_REG_DWORD, nullptr, &h, &sz) != ERROR_SUCCESS) return false;
-    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, L"WinX", RRF_RT_REG_DWORD, nullptr, &x, &sz) != ERROR_SUCCESS) return false;
-    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, L"WinY", RRF_RT_REG_DWORD, nullptr, &y, &sz) != ERROR_SUCCESS) return false;
-    sz = sizeof(DWORD); RegGetValueW(HKEY_CURRENT_USER, k, L"WinMax", RRF_RT_REG_DWORD, nullptr, &mx, &sz);
+    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, geoName(L"WinW").c_str(), RRF_RT_REG_DWORD, nullptr, &w, &sz) != ERROR_SUCCESS) return false;
+    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, geoName(L"WinH").c_str(), RRF_RT_REG_DWORD, nullptr, &h, &sz) != ERROR_SUCCESS) return false;
+    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, geoName(L"WinX").c_str(), RRF_RT_REG_DWORD, nullptr, &x, &sz) != ERROR_SUCCESS) return false;
+    sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, geoName(L"WinY").c_str(), RRF_RT_REG_DWORD, nullptr, &y, &sz) != ERROR_SUCCESS) return false;
+    sz = sizeof(DWORD); RegGetValueW(HKEY_CURRENT_USER, k, geoName(L"WinMax").c_str(), RRF_RT_REG_DWORD, nullptr, &mx, &sz);
     if ((int)w < 200 || (int)h < 120) return false;   // sanity guard against a corrupt/degenerate rect
     RECT rc{ (LONG)(int)x, (LONG)(int)y, (LONG)((int)x + (int)w), (LONG)((int)y + (int)h) };
     if (!MonitorFromRect(&rc, MONITOR_DEFAULTTONULL)) {   // fully off every screen -> centre on the nearest
@@ -1221,11 +1281,11 @@ static void saveWindowRect() {
     const wchar_t* k = L"Software\\agwinterm-lite";
     DWORD x = (DWORD)rc.left, y = (DWORD)rc.top, w = (DWORD)(rc.right - rc.left), h = (DWORD)(rc.bottom - rc.top);
     DWORD mx = (wp.showCmd == SW_SHOWMAXIMIZED || (wp.flags & WPF_RESTORETOMAXIMIZED)) ? 1 : 0;
-    RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinX", REG_DWORD, &x, sizeof(x));
-    RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinY", REG_DWORD, &y, sizeof(y));
-    RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinW", REG_DWORD, &w, sizeof(w));
-    RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinH", REG_DWORD, &h, sizeof(h));
-    RegSetKeyValueW(HKEY_CURRENT_USER, k, L"WinMax", REG_DWORD, &mx, sizeof(mx));
+    RegSetKeyValueW(HKEY_CURRENT_USER, k, geoName(L"WinX").c_str(), REG_DWORD, &x, sizeof(x));
+    RegSetKeyValueW(HKEY_CURRENT_USER, k, geoName(L"WinY").c_str(), REG_DWORD, &y, sizeof(y));
+    RegSetKeyValueW(HKEY_CURRENT_USER, k, geoName(L"WinW").c_str(), REG_DWORD, &w, sizeof(w));
+    RegSetKeyValueW(HKEY_CURRENT_USER, k, geoName(L"WinH").c_str(), REG_DWORD, &h, sizeof(h));
+    RegSetKeyValueW(HKEY_CURRENT_USER, k, geoName(L"WinMax").c_str(), REG_DWORD, &mx, sizeof(mx));
 }
 
 // ---- session/workspace restore ----
@@ -1245,7 +1305,8 @@ static std::wstring stateFilePath() {
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) == 0) return {};
     std::wstring dir = std::wstring(base) + L"\\agwinterm-lite";
     CreateDirectoryW(dir.c_str(), nullptr);
-    return dir + L"\\sessions.tsv";
+    // Named instances keep their own session state; the default instance keeps the classic name.
+    return dir + (g_isDefaultInstance ? L"\\sessions.tsv" : (L"\\sessions-" + g_instance + L".tsv"));
 }
 // Snapshot the workspaces + (visible) sessions so next launch can rebuild them. Tab-separated; a
 // session line is: S <ws> <name> <app> <cwd> <arg0> <arg1>...  Split-shells (hidden) aren't persisted.
@@ -3542,10 +3603,14 @@ public:
         saveWindowRect();                        // remember window size + position for next launch
         Shell_NotifyIconW(NIM_DELETE, &g_nid);   // remove the tray icon
         for (Session* s : g_sessions) killSession(s);
-        agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
-        agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
-        req.which_cmd = agwinterm_ptyhost_Request_shutdown_tag;
-        request(req, &rep);
+        retractInstance();
+        // The pty-host is SHARED between windows: only the last one out turns off the lights.
+        if (listInstances().empty()) {
+            agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
+            agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
+            req.which_cmd = agwinterm_ptyhost_Request_shutdown_tag;
+            request(req, &rep);
+        }
         PostQuitMessage(0);
     }
 };
@@ -3876,6 +3941,91 @@ static std::string ctlDispatch(const std::string& line) {
         if (wantOn(req.get("args.op"), cur) != cur) PostMessageW(g_hwnd, WM_COMMAND, IDM_TG_SIDEBAR, 0);
         return ctlOkStr("ok");
     }
+    // ---- window.* — each lite window is a process; the instance registry is the "library" ------
+    if (cmd.rfind("window.", 0) == 0) {
+        auto insts = listInstances();
+        std::wstring sel = widen(req.get("target"));
+        if (cmd == "window.list") {
+            HWND fg = GetForegroundWindow();
+            std::string out;
+            for (size_t i2 = 0; i2 < insts.size(); i2++) {
+                if (i2) out += ",";
+                out += "{\"id\":\"" + jsonEscape(narrow(insts[i2].name)) +
+                       "\",\"name\":\"" + jsonEscape(narrow(insts[i2].name)) +
+                       "\",\"open\":true,\"active\":" + (insts[i2].hwnd == fg ? "true" : "false") + "}";
+            }
+            return ctlOk("[" + out + "]");
+        }
+        if (cmd == "window.new") {
+            std::wstring nm = widen(req.get("args.name"));
+            if (nm.empty()) {   // pick a free name
+                for (int n = 2;; n++) {
+                    nm = L"win-" + std::to_wstring(n);
+                    if (!findInstance(insts, nm)) break;
+                }
+            } else if (findInstance(insts, nm)) return ctlErr("window '" + narrow(nm) + "' already exists");
+            wchar_t exe[MAX_PATH];
+            GetModuleFileNameW(nullptr, exe, MAX_PATH);
+            std::wstring cl = L"\"" + std::wstring(exe) + L"\" --pipe " + nm;
+            STARTUPINFOW si{ sizeof si }; PROCESS_INFORMATION pi{};
+            std::vector<wchar_t> buf(cl.begin(), cl.end()); buf.push_back(0);
+            if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
+                return ctlErr("spawn failed");
+            CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+            return ctlOkStr(narrow(nm));
+        }
+        const InstanceInfo* w = findInstance(insts, sel);
+        if (!w) return ctlErr("window not found");
+        if (cmd == "window.select") {
+            if (IsIconic(w->hwnd)) ShowWindow(w->hwnd, SW_RESTORE);
+            SetForegroundWindow(w->hwnd);
+            return ctlOkStr("selected");
+        }
+        if (cmd == "window.close" || cmd == "window.delete") {
+            std::wstring nm = w->name;   // copy before the instance dies
+            PostMessageW(w->hwnd, WM_CLOSE, 0, 0);
+            if (cmd == "window.delete" && lstrcmpiW(nm.c_str(), L"agwinterm-lite") != 0) {
+                Sleep(800);   // let it finish its teardown writes, then drop its saved state
+                wchar_t base[MAX_PATH];
+                if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) {
+                    std::wstring f = std::wstring(base) + L"\\agwinterm-lite\\sessions-" + nm + L".tsv";
+                    DeleteFileW(f.c_str());
+                }
+            }
+            return ctlOkStr(cmd == "window.delete" ? "deleted" : "closed");
+        }
+        if (cmd == "window.rename") {   // identity is the pipe name; rename retitles the window
+            std::string nm = req.get("args.name");
+            if (nm.empty()) return ctlErr("rename needs a name");
+            SetWindowTextW(w->hwnd, (L"agwinterm lite \x2014 " + widen(nm)).c_str());
+            return ctlOkStr("renamed");
+        }
+        if (cmd == "window.zoom") {
+            ShowWindow(w->hwnd, IsZoomed(w->hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+            return ctlOkStr(IsZoomed(w->hwnd) ? "maximized" : "restored");
+        }
+        if (cmd == "window.move" || cmd == "window.resize") {
+            RECT rc; GetWindowRect(w->hwnd, &rc);
+            int x = rc.left, y = rc.top, cw = rc.right - rc.left, chh = rc.bottom - rc.top;
+            std::string sx = req.get("args.x"), sy = req.get("args.y"), sw = req.get("args.w"), sh = req.get("args.h");
+            if (!sx.empty()) x = atoi(sx.c_str());
+            if (!sy.empty()) y = atoi(sy.c_str());
+            if (!sw.empty()) cw = atoi(sw.c_str());
+            if (!sh.empty()) chh = atoi(sh.c_str());
+            SetWindowPos(w->hwnd, nullptr, x, y, cw, chh, SWP_NOZORDER | SWP_NOACTIVATE);
+            return ctlOkStr("ok");
+        }
+        if (cmd == "window.state") {
+            RECT rc; GetWindowRect(w->hwnd, &rc);
+            return ctlOk("{\"name\":\"" + jsonEscape(narrow(w->name)) +
+                         "\",\"x\":" + std::to_string(rc.left) + ",\"y\":" + std::to_string(rc.top) +
+                         ",\"w\":" + std::to_string(rc.right - rc.left) + ",\"h\":" + std::to_string(rc.bottom - rc.top) +
+                         ",\"maximized\":" + (IsZoomed(w->hwnd) ? "true" : "false") +
+                         ",\"minimized\":" + (IsIconic(w->hwnd) ? "true" : "false") +
+                         ",\"active\":" + (GetForegroundWindow() == w->hwnd ? "true" : "false") + "}");
+        }
+        return ctlErr("unknown command '" + cmd + "' (lite subset)");
+    }
     return ctlErr("unknown command '" + cmd + "' (lite subset)");
 }
 
@@ -3996,6 +4146,14 @@ static void parseLaunchArgs() {
         DWORD at = GetFileAttributesA(g_argDir.c_str());
         if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) g_argDir.clear();
     }
+    if (!g_argPipe.empty() && g_argPipe != L"agwinterm-lite") {   // named instance
+        g_instance = g_argPipe;
+        g_isDefaultInstance = false;
+        std::string p;   // sanitized session-id prefix (alnum/dash only)
+        for (wchar_t c : g_argPipe)
+            if (iswalnum(c) || c == L'-' || c == L'_') p += (char)towlower(c);
+        g_idPrefix = p.empty() ? "lite" : p;
+    }
 }
 // Map -p/--profile onto a detected profile (case-insensitive substring, so "-p pwsh" or
 // "-p PowerShell 7" both land on PowerShell 7). Returns false = default shell.
@@ -4056,7 +4214,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     // WTL frame: CFrameWinTraits already carries WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN.
     g_hwnd = g_frame.CreateEx(nullptr, haveRect ? &frameRc : nullptr);
     if (!g_hwnd) fatal(L"could not create the main window");
-    g_frame.SetWindowText(L"agwinterm lite");
+    g_frame.SetWindowText(g_isDefaultInstance ? L"agwinterm lite"
+                                              : (L"agwinterm lite \x2014 " + g_instance).c_str());
+    announceInstance(g_hwnd);   // visible to the other windows' window.* verbs
     g_frame.SetMenu(buildMenuBar());
     g_frame.SetIcon(g_appIcon, TRUE);    // 2000's-style terminal icon (window + taskbar)
     g_frame.SetIcon(g_appIcon, FALSE);
