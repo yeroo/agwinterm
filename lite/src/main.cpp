@@ -2548,61 +2548,59 @@ static void showTrayMenu() {
 // A 2000's-style app icon drawn at runtime (no .ico asset, no deps): a classic gray 3D-beveled tile
 // with a sunken black "screen" and a green >_ prompt — the Win2000/XP-era terminal look.
 // Toolbar icons are the full app's vector glyphs drawn in GDI at runtime (no PNG assets, no GDI+).
-// The full app's toolbar glyphs (Program.Services.cs Draw*Glyph — D2D vector icons), redrawn in GDI
-// at 16x16. Same designs, slightly simplified for the small cell: hamburger, plus, card+plus,
-// two-pane split, scratch pad, quick terminal (>_ in a frame), recents clock, settings gear.
-static void drawToolbarGlyph(HDC dc, int idx, COLORREF c) {
-    HPEN p1 = CreatePen(PS_SOLID, 1, c), p2 = CreatePen(PS_SOLID, 2, c);
-    HGDIOBJ op = SelectObject(dc, p1), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+// Toolbar icons: exactly what the full app shows. Four of its buttons ARE Segoe Fluent Icons font
+// glyphs (hamburger/add/terminal/gear) — we render the same codepoints with the icon font. The other
+// four are its custom D2D vector glyphs (card+plus, split panes, scratch pad, recents clock) — we
+// redraw those 4x supersampled with round-capped pens and HALFTONE-downscale, so the stroke weight
+// (~1.5px) and smoothness match the font glyphs.
+static const wchar_t kTbFontGlyph[kTbCount] = {
+    0xE700,   // 0 sidebar  — GlobalNavButton (same as the full app)
+    0xE710,   // 1 new sess — Add
+    0,        // 2 new ws   — custom (card + plus)
+    0,        // 3 split    — custom (two panes)
+    0,        // 4 scratch  — custom (pad)
+    0xE756,   // 5 quick    — CommandPrompt
+    0,        // 6 reopen   — custom (recents clock)
+    0xE713,   // 7 settings — Settings gear
+};
+// Custom glyphs drawn on a 64x64 canvas (scaled 4x from the full app's 16px-cell geometry).
+static void drawToolbarGlyph4x(HDC dc, int idx, COLORREF c) {
+    LOGBRUSH lb{ BS_SOLID, c, 0 };
+    HPEN pen = ExtCreatePen(PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_ROUND | PS_JOIN_ROUND, 6, &lb, 0, nullptr);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
     auto ln = [&](int x0, int y0, int x1, int y1) { MoveToEx(dc, x0, y0, nullptr); LineTo(dc, x1, y1); };
     switch (idx) {
-        case 0:   // sidebar toggle: hamburger (GlobalNavButton)
-            SelectObject(dc, p2);
-            ln(3, 4, 13, 4); ln(3, 8, 13, 8); ln(3, 12, 13, 12);
+        case 2:   // new workspace: card upper-left + plus lower-right (DrawNewWorkspaceGlyph)
+            RoundRect(dc, 8, 8, 46, 46, 14, 14);
+            ln(50, 26, 50, 50); ln(38, 38, 62, 38);
             break;
-        case 1:   // new session: plus (GlyphAdd)
-            SelectObject(dc, p2);
-            ln(8, 3, 8, 14); ln(2, 8, 13, 8);
+        case 3:   // split: two panes, centre divider (DrawSplitGlyph)
+            RoundRect(dc, 4, 12, 60, 52, 14, 14);
+            ln(32, 12, 32, 51);
             break;
-        case 2:   // new workspace: card + plus (DrawNewWorkspaceGlyph)
-            RoundRect(dc, 2, 2, 11, 11, 3, 3);
-            SelectObject(dc, p2);
-            ln(12, 8, 12, 15); ln(9, 11, 16, 11);
-            break;
-        case 3:   // split: two panes (DrawSplitGlyph)
-            RoundRect(dc, 1, 3, 15, 13, 3, 3);
-            ln(8, 3, 8, 12);
-            break;
-        case 4:   // scratch: pad outline (DrawScratchGlyph)
-            RoundRect(dc, 2, 4, 14, 13, 4, 4);
-            break;
-        case 5:   // quick terminal: frame + >_ (GlyphTerminal)
-            RoundRect(dc, 1, 2, 15, 14, 2, 2);
-            ln(4, 6, 7, 8); ln(7, 8, 4, 10);
-            ln(9, 11, 12, 11);
+        case 4:   // scratch: rounded pad (DrawScratchGlyph)
+            RoundRect(dc, 4, 12, 60, 52, 18, 18);
             break;
         case 6:   // reopen closed: recents clock (DrawClockGlyph)
-            Ellipse(dc, 2, 2, 15, 15);
-            ln(8, 8, 8, 4); ln(8, 8, 11, 10);
+            Ellipse(dc, 6, 6, 58, 58);
+            ln(32, 32, 32, 15); ln(32, 32, 43, 39);
             break;
-        case 7: { // settings: gear (GlyphGear, simplified — ring + teeth + hub)
-            Ellipse(dc, 4, 4, 13, 13);
-            ln(8, 1, 8, 4); ln(8, 13, 8, 16); ln(1, 8, 4, 8); ln(13, 8, 16, 8);
-            ln(3, 3, 5, 5); ln(12, 12, 14, 14); ln(12, 5, 14, 3); ln(3, 14, 5, 12);
-            Ellipse(dc, 7, 7, 10, 10);
-            break;
-        }
     }
     SelectObject(dc, op); SelectObject(dc, ob);
-    DeleteObject(p1); DeleteObject(p2);
+    DeleteObject(pen);
 }
 static void buildToolbarImages() {
-    // Runtime-drawn glyphs (no alpha image lists without a v6 manifest anyway): each icon is drawn
-    // onto the bar colour in the theme's text colour, and rebuilt on every theme switch.
+    // Rebuilt on every theme switch: icons are composed onto the bar colour in the theme's text
+    // colour (no alpha image lists without a v6 manifest, and none needed).
     if (g_tbImages) ImageList_Destroy(g_tbImages);
     g_tbImages = ImageList_Create(16, 16, ILC_COLOR24, kTbCount, 0);
     COLORREF bg = g_th.classic ? GetSysColor(COLOR_BTNFACE) : g_th.bar;
     COLORREF fg = g_th.classic ? GetSysColor(COLOR_BTNTEXT) : g_th.text;
+    // The icon font: Segoe Fluent Icons on Win11; Segoe MDL2 Assets carries the same codepoints on
+    // Win10. ANTIALIASED (grayscale) rather than ClearType: no subpixel fringing on the bar colour.
+    HFONT icoFont = CreateFontW(-15, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+                                OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                                DEFAULT_PITCH, L"Segoe Fluent Icons");
     HDC sdc = GetDC(nullptr);
     for (int i = 0; i < kTbCount; i++) {
         HDC mem = CreateCompatibleDC(sdc);
@@ -2610,13 +2608,44 @@ static void buildToolbarImages() {
         HGDIOBJ obm = SelectObject(mem, bm);
         RECT r{ 0, 0, 16, 16 };
         HBRUSH bb = CreateSolidBrush(bg);
-        FillRect(mem, &r, bb); DeleteObject(bb);
-        drawToolbarGlyph(mem, i, fg);
+        FillRect(mem, &r, bb);
+        if (kTbFontGlyph[i]) {   // authentic Fluent glyph, centred
+            HGDIOBJ of = SelectObject(mem, icoFont);
+            wchar_t ch[2] = { kTbFontGlyph[i], 0 };
+            // Fall back to MDL2 if Fluent isn't installed (pre-Win11): same codepoints there.
+            wchar_t face[LF_FACESIZE] = L"";
+            GetTextFaceW(mem, LF_FACESIZE, face);
+            if (lstrcmpiW(face, L"Segoe Fluent Icons") != 0) {
+                static HFONT mdl2 = CreateFontW(-15, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+                                                OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                                                DEFAULT_PITCH, L"Segoe MDL2 Assets");
+                SelectObject(mem, mdl2);
+            }
+            SetBkMode(mem, TRANSPARENT);
+            SetTextColor(mem, fg);
+            SIZE sz{};
+            GetTextExtentPoint32W(mem, ch, 1, &sz);
+            TextOutW(mem, (16 - sz.cx) / 2, (16 - sz.cy) / 2, ch, 1);
+            SelectObject(mem, of);
+        } else {                 // custom vector glyph: 4x supersample -> HALFTONE downscale
+            HDC big = CreateCompatibleDC(sdc);
+            HBITMAP bigBm = CreateCompatibleBitmap(sdc, 64, 64);
+            HGDIOBJ obig = SelectObject(big, bigBm);
+            RECT br{ 0, 0, 64, 64 };
+            FillRect(big, &br, bb);
+            drawToolbarGlyph4x(big, i, fg);
+            SetStretchBltMode(mem, HALFTONE);
+            SetBrushOrgEx(mem, 0, 0, nullptr);
+            StretchBlt(mem, 0, 0, 16, 16, big, 0, 0, 64, 64, SRCCOPY);
+            SelectObject(big, obig); DeleteObject(bigBm); DeleteDC(big);
+        }
+        DeleteObject(bb);
         SelectObject(mem, obm); DeleteDC(mem);
         ImageList_Add(g_tbImages, bm, nullptr);
         DeleteObject(bm);
     }
     ReleaseDC(nullptr, sdc);
+    DeleteObject(icoFont);
     if (g_toolbar) {
         SendMessageW(g_toolbar, TB_SETIMAGELIST, 0, (LPARAM)g_tbImages);
         InvalidateRect(g_toolbar, nullptr, TRUE);
