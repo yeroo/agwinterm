@@ -1043,6 +1043,11 @@ impl Performer for Emulator {
         match command {
             0 | 2 => self.title = text,
             7 => self.cwd = text,
+            // OSC 9;9 — ConEmu "set working directory". Crucially this is the cwd form that
+            // conhost/ConPTY passes THROUGH to the client (it swallows OSC 7), so under a pty-host
+            // it is the only way the live cwd reaches the terminal-side emulator. Other OSC 9
+            // payloads (notify / 9;4 progress) fall through to the host-actions arm below.
+            9 if text.starts_with("9;") => self.cwd = text[2..].trim_matches('"').to_string(),
             133 => self.ftcs_dispatch(&text),
             11 => {
                 // OSC 11 — set/query the terminal background color (per-pane dynamic bg, agterm #240).

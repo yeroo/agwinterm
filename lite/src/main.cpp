@@ -80,6 +80,8 @@ static bool (*emu_info)(void*, FfiEmuInfo*);
 static bool (*emu_copy_grid)(void*, FfiCell*, uint32_t);
 static bool (*emu_copy_history_row)(void*, uint32_t, FfiCell*, uint32_t);
 static uint32_t (*emu_marks)(void*, FfiMark*, uint32_t);
+static uint8_t* (*emu_get_text)(void*, uint32_t, uint32_t*);   // 0 title, 1 cwd (OSC 7), 2 modes
+static void (*core_free_buf)(uint8_t*, uint32_t);
 
 static constexpr uint32_t kRequiredAbi = 15;
 static constexpr uint32_t kAttrBold = 1, kAttrItalic = 2, kAttrUnderline = 4,
@@ -172,6 +174,7 @@ struct Session {
     bool hidden = false;          // split-pane shell: a real shell, but NOT a sidebar/tree session
     std::string app, cwd;          // launch spec, remembered so the session can be restored on next launch
     std::vector<std::string> args; // ("" app = default PowerShell; empty args = wrap/bare per app)
+    DWORD childPid = 0;            // shell pid from the attach reply (live-cwd query for restore)
     void* emu = nullptr;
     HANDLE data = INVALID_HANDLE_VALUE;
     HANDLE reader = nullptr;
@@ -816,7 +819,9 @@ static void loadCore() {
     emu_copy_grid = (decltype(emu_copy_grid))GetProcAddress(m, "agwcore_emu_copy_grid");
     emu_copy_history_row = (decltype(emu_copy_history_row))GetProcAddress(m, "agwcore_emu_copy_history_row");
     emu_marks = (decltype(emu_marks))GetProcAddress(m, "agwcore_emu_marks");
-    if (!core_abi || !emu_new || !emu_feed || !emu_info || !emu_copy_grid || !emu_resize || !emu_free || !emu_copy_history_row || !emu_marks)
+    emu_get_text = (decltype(emu_get_text))GetProcAddress(m, "agwcore_emu_get_text");
+    core_free_buf = (decltype(core_free_buf))GetProcAddress(m, "agwcore_free_buf");
+    if (!core_abi || !emu_new || !emu_feed || !emu_info || !emu_copy_grid || !emu_resize || !emu_free || !emu_copy_history_row || !emu_marks || !emu_get_text || !core_free_buf)
         fatal(L"agwinterm_core.dll: exports missing");
     if (core_abi() != kRequiredAbi) fatal(L"agwinterm_core.dll: ABI mismatch (need v15)");
 }
@@ -923,6 +928,11 @@ static std::string base64(const std::wstring& s) {
 static const wchar_t* kPromptWrap =
     L"if(-not $global:__agwLiteWrap){$global:__agwLiteWrap=$true;$global:__agwLiteP=$function:prompt;"
     L"function global:prompt{$ec=if($?){0}else{1};$e=[char]27;$b=[char]7;"
+    // Sync the PROCESS cwd to the shell's location: Set-Location alone doesn't move it, and the
+    // process cwd (read from the PEB at save time) is how session restore learns the live dir —
+    // conhost/ConPTY filters cwd OSC sequences (7 and 9;9) out of the stream, so VT can't carry it.
+    L"$l=$executionContext.SessionState.Path.CurrentLocation;"
+    L"if($l.Provider.Name -eq 'FileSystem'){[Environment]::CurrentDirectory=$l.ProviderPath};"
     L"[Console]::Write(\"$e]133;D;$ec$b$e]133;A$b\");"
     L"if($global:__agwLiteP){& $global:__agwLiteP}else{\"PS $($executionContext.SessionState.Path.CurrentLocation)> \"}}}";
 
@@ -1051,6 +1061,7 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
     s->cwd = cwd ? cwd : "";
     s->ws = (g_activeWs >= 0 && g_activeWs < (int)g_workspaces.size()) ? g_activeWs : 0;   // into the active workspace
     s->emu = emu_new(cols, rows);
+    s->childPid = rep.body.attach.child_pid;
     s->data = openPipe(std::wstring(rep.body.attach.pipe, rep.body.attach.pipe + strlen(rep.body.attach.pipe)), 5000, true);
     if (s->data == INVALID_HANDLE_VALUE) { emu_free(s->emu); delete s; return nullptr; }
     s->reader = CreateThread(nullptr, 0, readerThread, s, 0, nullptr);
@@ -1351,6 +1362,62 @@ static std::wstring stateFilePath() {
     return dir + (g_isDefaultInstance ? L"\\sessions.tsv" : (L"\\sessions-" + g_instance + L".tsv"));
 }
 // Snapshot the workspaces + (visible) sessions so next launch can rebuild them. Tab-separated; a
+// The session's LIVE working directory: the prompt wrap (and starship/omp shell integration) emits
+// OSC 7 file:// URLs, which the core emulator tracks. Convert "file://host/C:/dir%20x" -> "C:\dir x";
+// empty (no OSC 7 seen, or the dir vanished) means "fall back to the creation cwd". Call under g_lock.
+// Read a process's live current directory from its PEB (ProcessParameters.CurrentDirectory) —
+// conhost/ConPTY filters cwd OSC sequences out of the output stream, so asking the shell process
+// itself is the only reliable channel. Returns "" on any failure.
+static std::string processCwd(DWORD pid) {
+    typedef LONG(WINAPI* fnQIP)(HANDLE, int, void*, ULONG, ULONG*);
+    static fnQIP qip = (fnQIP)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess");
+    if (!qip || !pid) return "";
+    HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (!h) return "";
+    std::string out;
+    struct { PVOID Reserved1; PVOID PebBaseAddress; PVOID Reserved2[2]; ULONG_PTR UniqueProcessId; PVOID Reserved3; } pbi{};
+    if (qip(h, 0 /*ProcessBasicInformation*/, &pbi, sizeof pbi, nullptr) == 0 && pbi.PebBaseAddress) {
+        PVOID params = nullptr; SIZE_T rd = 0;
+        // PEB+0x20 = ProcessParameters (x64); RTL_USER_PROCESS_PARAMETERS+0x38 = CurrentDirectory.DosPath (UNICODE_STRING)
+        if (ReadProcessMemory(h, (char*)pbi.PebBaseAddress + 0x20, &params, sizeof params, &rd) && params) {
+            struct { USHORT Len, Max; PWSTR Buf; } us{};
+            if (ReadProcessMemory(h, (char*)params + 0x38, &us, sizeof us, &rd) && us.Buf && us.Len) {
+                std::wstring w(us.Len / 2, L'\0');
+                if (ReadProcessMemory(h, us.Buf, &w[0], us.Len, &rd)) {
+                    while (!w.empty() && w.back() == L'\\' && w.size() > 3) w.pop_back();   // "C:\x\" -> "C:\x", keep "C:\"
+                    out = narrow(w);
+                }
+            }
+        }
+    }
+    CloseHandle(h);
+    return out;
+}
+
+static std::string sessionLiveCwd(const Session* s) {
+    std::string cw = processCwd(s->childPid);            // the shell's real cwd, straight from its PEB
+    if (!cw.empty()) return cw;
+    if (!s->emu) return "";
+    uint32_t len = 0;                                    // fallback: OSC 7/9;9 seen by the emulator
+    uint8_t* buf = emu_get_text(s->emu, 1, &len);
+    if (!buf) return "";
+    std::string url((const char*)buf, len);
+    core_free_buf(buf, len);
+    if (url.rfind("file://", 0) == 0) {
+        size_t slash = url.find('/', 7);                 // skip the host part
+        url = (slash == std::string::npos) ? "" : url.substr(slash + 1);
+    }
+    std::string path;
+    for (size_t i = 0; i < url.size(); i++) {            // %-decode + URL slashes -> backslashes
+        if (url[i] == '%' && i + 2 < url.size())
+            { path += (char)strtol(url.substr(i + 1, 2).c_str(), nullptr, 16); i += 2; }
+        else path += (url[i] == '/') ? '\\' : url[i];
+    }
+    if (path.size() < 2 || path[1] != ':') return "";    // not a drive path (WSL etc.) — keep fallback
+    DWORD attr = GetFileAttributesA(path.c_str());
+    return (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) ? path : "";
+}
+
 // session line is: S <ws> <name> <app> <cwd> <arg0> <arg1>...  Split-shells (hidden) aren't persisted.
 static void saveSessionState() {
     std::wstring path = stateFilePath();
@@ -1362,7 +1429,8 @@ static void saveSessionState() {
     int saved = 0;
     for (const Session* s : g_sessions) {
         if (s->hidden) continue;
-        out += "S\t" + std::to_string(s->ws) + "\t" + narrow(s->name) + "\t" + s->app + "\t" + s->cwd;
+        std::string cw = sessionLiveCwd(s);              // live dir (OSC 7) wins over the creation dir
+        out += "S\t" + std::to_string(s->ws) + "\t" + narrow(s->name) + "\t" + s->app + "\t" + (cw.empty() ? s->cwd : cw);
         for (const auto& a : s->args) out += "\t" + a;
         out += "\n";
         if (s->flagged) flagLine += "\t" + std::to_string(saved);
@@ -3627,6 +3695,9 @@ public:
 
     void OnDestroy() {
         saveWindowRect();                        // remember window size + position for next launch
+        saveSessionState();                      // final save with LIVE cwds — while the shells are
+                                                 // still alive to answer the PEB query; the periodic
+                                                 // saves only fire on structural changes, not on cd
         Shell_NotifyIconW(NIM_DELETE, &g_nid);   // remove the tray icon
         for (Session* s : g_sessions) killSession(s);
         retractInstance();
