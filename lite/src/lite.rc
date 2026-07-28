@@ -1,0 +1,4 @@
+// agwinterm-lite resources: the app icon (VGA black + cyan), embedded so Explorer, the
+// taskbar and shortcuts all pick it up from the exe itself. Icon id 1 = first icon,
+// which Explorer uses as the file icon by convention.
+1 ICON "..\\assets\\agwinterm-lite.ico"

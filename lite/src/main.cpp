@@ -697,7 +697,8 @@ static int tbImageOf(int cmdId) {
 #define WM_APP_TRAY        (WM_APP + 4)   // system-tray icon notifications
 #define WM_APP_OVERLAY     (WM_APP + 5)   // control thread -> UI thread: open an overlay (creates a window)
 static std::string g_pendingOverlayCmd; static int g_pendingOverlaySize;
-static HICON g_appIcon;
+static HICON g_appIcon;         // big (taskbar / alt-tab)
+static HICON g_appIconSm;       // small (title bar / tray)
 static NOTIFYICONDATAW g_nid{};
 static int g_cw = 8, g_ch = 16;
 static CRITICAL_SECTION g_lock; // guards every session's emu + the session list shape
@@ -1815,6 +1816,16 @@ static void pasteClipboard() {
 static void runPaletteItem(int id);   // fwd
 
 static void sendUtf8(wchar_t wc) {
+    // User interrupt: Esc / Ctrl+C typed into the terminal clears a "working" agent status — an
+    // interrupted agent turn never fires its Stop hook, so the status would stick forever (agterm
+    // #185 / main-app parity: scoped to working-class; blocked stays until the agent or user acts).
+    if (wc == 0x1B || wc == 0x03) {
+        Session* s = focusedSession();
+        if (s && statusClass(s->status) == AGST_WORKING) {
+            s->status = "idle";
+            PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
+        }
+    }
     char utf8[8];
     int n = WideCharToMultiByte(CP_UTF8, 0, &wc, 1, utf8, sizeof utf8, nullptr, nullptr);
     if (n > 0) sendBytes(utf8, n);
@@ -1974,6 +1985,10 @@ static bool handleKeyDown(WPARAM vk) {
         case VK_F11: tilde = 23; break;
         case VK_F12: tilde = 24; break;
         case VK_TAB: if (shiftDown()) { sendBytes("\x1b[Z", 3); if (Session* s = focusedSession()) s->scrollOff = 0; return true; } return false; // Shift+Tab = back-tab; plain Tab -> WM_CHAR
+        // Backspace: the raw WM_CHAR bytes are INVERTED vs the xterm/Windows Terminal convention
+        // (plain -> 0x08 which apps read as Ctrl+Backspace "kill word", Ctrl+ -> 0x7F). Encode at
+        // keydown instead: plain DEL 0x7F, Ctrl+Backspace 0x08 (word delete stays available).
+        case VK_BACK: sendBytes(ctrlDown() ? "\x08" : "\x7f", 1); if (Session* s = focusedSession()) s->scrollOff = 0; return true;
         default: return false;
     }
     char buf[32];
@@ -2848,43 +2863,12 @@ static void buildToolbarImages() {
         InvalidateRect(g_toolbar, nullptr, TRUE);
     }
 }
-static HICON makeRetroIcon() {
-    const int S = 32;
-    HDC dc = GetDC(nullptr);
-    HDC mem = CreateCompatibleDC(dc);
-    HBITMAP color = CreateCompatibleBitmap(dc, S, S);
-    HBITMAP mask = CreateBitmap(S, S, 1, 1, nullptr);
-    HGDIOBJ ob = SelectObject(mem, color);
-    RECT r{ 0, 0, S, S };
-    HBRUSH gray = CreateSolidBrush(RGB(192, 192, 192));
-    FillRect(mem, &r, gray);
-    DeleteObject(gray);
-    DrawEdge(mem, &r, EDGE_RAISED, BF_RECT);          // raised 3D outer bezel
-    RECT scr{ 5, 5, S - 5, S - 5 };
-    HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
-    FillRect(mem, &scr, black);
-    DeleteObject(black);
-    DrawEdge(mem, &scr, EDGE_SUNKEN, BF_RECT);         // sunken 3D screen
-    SetBkMode(mem, TRANSPARENT);
-    SetTextColor(mem, RGB(0, 220, 0));
-    HFONT f = CreateFontW(-11, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                          CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-    HGDIOBJ of = SelectObject(mem, f);
-    TextOutW(mem, 7, 9, L">_", 2);
-    SelectObject(mem, of);
-    DeleteObject(f);
-    HDC memMask = CreateCompatibleDC(dc);
-    HGDIOBJ omb = SelectObject(memMask, mask);
-    PatBlt(memMask, 0, 0, S, S, BLACKNESS);            // all-0 AND-mask = fully opaque icon
-    SelectObject(memMask, omb);
-    DeleteDC(memMask);
-    SelectObject(mem, ob);
-    ICONINFO ii{ TRUE, 0, 0, mask, color };
-    HICON icon = CreateIconIndirect(&ii);
-    DeleteObject(color); DeleteObject(mask);
-    DeleteDC(mem);
-    ReleaseDC(nullptr, dc);
-    return icon;
+// App icon: the embedded VGA black+cyan .ico (resource id 1 in lite.rc). Big (taskbar/alt-tab)
+// and small (title bar/tray) sizes are loaded separately so neither gets scaled.
+static HICON loadAppIcon(bool small_) {
+    int w = GetSystemMetrics(small_ ? SM_CXSMICON : SM_CXICON);
+    int h = GetSystemMetrics(small_ ? SM_CYSMICON : SM_CYICON);
+    return (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON, w, h, 0);
 }
 
 // ---- Quick / Scratch popup terminals ----
@@ -4218,7 +4202,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     INITCOMMONCONTROLSEX icc{ sizeof icc, ICC_TREEVIEW_CLASSES | ICC_BAR_CLASSES | ICC_HOTKEY_CLASS };
     InitCommonControlsEx(&icc);
 
-    g_appIcon = makeRetroIcon();
+    g_appIcon = loadAppIcon(false);
+    g_appIconSm = loadAppIcon(true);
     applyTheme();   // resolve the saved theme BEFORE any window exists, so nothing flashes light
 
     RECT want{ 0, 0, kSidebarW + 100 * g_cw, 30 * g_ch };
@@ -4236,8 +4221,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
                                               : (L"agwinterm lite \x2014 " + g_instance).c_str());
     announceInstance(g_hwnd);   // visible to the other windows' window.* verbs
     g_frame.SetMenu(buildMenuBar());
-    g_frame.SetIcon(g_appIcon, TRUE);    // 2000's-style terminal icon (window + taskbar)
-    g_frame.SetIcon(g_appIcon, FALSE);
+    g_frame.SetIcon(g_appIcon, TRUE);    // VGA black+cyan terminal icon (window + taskbar)
+    g_frame.SetIcon(g_appIconSm, FALSE);
     if (wx == CW_USEDEFAULT) g_frame.SetWindowPos(nullptr, 0, 0, ww, wh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
     // Native SysTreeView32 sidebar docked on the left; picking a node selects that session.
@@ -4292,7 +4277,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_nid.uID = ID_TRAY;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_APP_TRAY;
-    g_nid.hIcon = g_appIcon;
+    g_nid.hIcon = g_appIconSm;
     wcscpy_s(g_nid.szTip, L"agwinterm lite");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 

@@ -19,8 +19,8 @@ DisableDirPage=auto
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-SetupIconFile=..\src\Agwinterm.Win32\assets\agwinterm.ico
-UninstallDisplayIcon={app}\agwinterm.ico
+SetupIconFile=..\lite\assets\agwinterm-lite.ico
+UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 WizardStyle=modern
 Compression=lzma2
@@ -34,9 +34,14 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 Source: "stage-lite\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
+[InstallDelete]
+; ≤0.16.2 shipped the main app's icon file for the shortcuts; the icon is embedded in the exe now.
+Type: files; Name: "{app}\agwinterm.ico"
+
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\agwinterm.ico"
-Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppExe}"; IconFilename: "{app}\agwinterm.ico"; Tasks: desktopicon
+; No IconFilename: the exe embeds the lite icon (VGA black + cyan), shortcuts pick it up.
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
+Name: "{autodesktop}\{#AppName}";  Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
