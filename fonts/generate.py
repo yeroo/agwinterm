@@ -68,17 +68,12 @@ def parse_manifest(path):
 
 
 def cell_geometry(ttf_path, nominal):
-    """Largest em size whose ascent+descent fits the nominal cell height."""
+    """Nominal = EM size (matches how lite numbers its TrueType faces, so 'AGWin Bitmap 16'
+    is the same visual size as 'Nerd Font 16'); the cell is ascent+descent at that em."""
     font = TTFont(ttf_path)
     hhea, upm = font["hhea"], font["head"].unitsPerEm
     asc, desc = hhea.ascent, -hhea.descent
     em = nominal
-    while em > 4:
-        a = round(asc * em / upm)
-        d = round(desc * em / upm)
-        if a + d <= nominal:
-            break
-        em -= 1
     advance = font["hmtx"]["x"][0]  # 'x' advance == the mono advance
     cellw = round(advance * em / upm)
     post = font["post"]
@@ -222,7 +217,7 @@ def synth_box(cp, w, h):
 
 def rasterize(cps, ttf_path, nominal):
     em, cellw, asc, desc, upos, uth = cell_geometry(ttf_path, nominal)
-    cellh = nominal
+    cellh = asc + desc
     pil = ImageFont.truetype(str(ttf_path), em)
     cmap = TTFont(ttf_path).getBestCmap()
     records, atlas = [], bytearray()
