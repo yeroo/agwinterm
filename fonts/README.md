@@ -109,6 +109,23 @@ binary-search glyph lookup, synthetic bold (1px overstrike), underline/strike fr
 pack metrics, and uncovered code points render as bordered hex cells (3x5 micro
 digits) instead of empty boxes.
 
+## Performance
+
+`agwinterm-lite.exe --bench-agbf` prints the pack benchmarks (headless, no window).
+Measured on the dev machine, release build, cold loads with CRC validation, 1M
+random glyph lookups, 100 full 120×40 grid composes of mixed ASCII/box/CJK:
+
+| pack | load | lookup | grid 120×40 | resident |
+|---|---|---|---|---|
+| agwin-bitmap-16 | 8.3 ms | 51 ns/op | 1.9 ms/frame | 470 KiB |
+| agwin-bitmap-20 | 7.7 ms | 52 ns/op | 3.1 ms/frame | 656 KiB |
+| agwin-bitmap-complete-16 | 9.8 ms | 77 ns/op | 2.1 ms/frame | 4.5 MiB |
+| agwin-bitmap-complete-20 | 11.4 ms | 77 ns/op | 3.3 ms/frame | 5.8 MiB |
+
+The 67k-record Complete index costs ~26 ns extra per binary-search lookup; a full
+grid compose stays around 2–3 ms — repaints are nowhere near the frame budget
+even on the Complete packs.
+
 ## Status / TODO (tracked for the Complete family)
 
 - emoji atlas (color records) + grapheme-cluster resolution; italic strikes

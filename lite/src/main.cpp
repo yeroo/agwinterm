@@ -102,6 +102,7 @@ static std::wstring g_argProfile;         // -p/--profile <name>: profile for th
 static std::string  g_argDir;             // -d/--dir/--startingDirectory <path>: its working dir
 static bool g_argMaximized = false;       // --maximized
 static bool g_argNoRestore = false;       // --no-restore: don't rebuild the saved sessions
+static bool g_argBenchAgbf = false;       // --bench-agbf: print pack benchmarks to the console, exit
 static std::wstring g_argPipe;            // --pipe <name>: control-pipe name (default agwinterm-lite)
 
 static HWND g_hwnd;   // main frame (declared early: the instance registry compares against it)
@@ -1732,6 +1733,68 @@ static void agbfPaintGrid(HDC mem, RECT pr, const FfiCell* view, const FfiEmuInf
     BITMAPINFO bi{};
     bi.bmiHeader = { sizeof(BITMAPINFOHEADER), W, -H, 1, 32, BI_RGB };
     SetDIBitsToDevice(mem, pr.left, pr.top, W, H, 0, 0, 0, H, fb.data(), &bi, DIB_RGB_COLORS);
+}
+
+// --bench-agbf: the spec's benchmark deliverable — load time, glyph lookup, full-grid render and
+// resident size for every committed pack, printed to the launching console. No window, no session.
+static int agbfBench() {
+    AttachConsole(ATTACH_PARENT_PROCESS);
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    auto say = [&](const char* s) { DWORD wr; WriteFile(out, s, (DWORD)strlen(s), &wr, nullptr); };
+    LARGE_INTEGER f, t0, t1;
+    QueryPerformanceFrequency(&f);
+    auto us = [&](LARGE_INTEGER a, LARGE_INTEGER b) { return (b.QuadPart - a.QuadPart) * 1000000 / f.QuadPart; };
+    say("\npack                          load        lookup     grid 120x40   resident\n");
+    HDC screen = GetDC(nullptr);
+    for (int complete = 0; complete <= 1; complete++)
+        for (int s : { 14, 16, 18, 20 }) {
+            g_agbfPack.ok = false;                       // force a cold reload
+            QueryPerformanceCounter(&t0);
+            bool ok = agbfLoad(s, complete != 0);
+            QueryPerformanceCounter(&t1);
+            char name[48], line[160];
+            sprintf_s(name, complete ? "agwin-bitmap-complete-%d" : "agwin-bitmap-%d", s);
+            if (!ok) { sprintf_s(line, "%-28s MISSING\n", name); say(line); continue; }
+            long long loadUs = us(t0, t1);
+            uint32_t n = g_agbfPack.h->glyphCount;       // lookups: 1M deterministic LCG-picked cps
+            uint64_t seed = 0x243F6A8885A308D3ull;
+            const AgbfRec* volatile sink = nullptr;
+            QueryPerformanceCounter(&t0);
+            for (int i = 0; i < 1000000; i++) {
+                seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+                sink = agbfFind(g_agbfPack.recs[(seed >> 33) % n].cp);
+            }
+            QueryPerformanceCounter(&t1);
+            long long lookupNs = us(t0, t1) / 1000;      // total us over 1M ops -> ns per lookup
+            AgbfCell cc = agbfCell(s);
+            g_cw = cc.w; g_ch = cc.h;
+            FfiEmuInfo info{}; info.cols = 120; info.rows = 40;
+            std::vector<FfiCell> grid((size_t)info.cols * info.rows);
+            static const uint32_t runes[] = { 'A', 'z', '0', 0x2500, 0x2551, 0x2588, 0x0416, 0xE0B0, 0x4E2D };
+            for (size_t i = 0; i < grid.size(); i++) {   // mixed content incl. a wide CJK every 9th cell
+                FfiCell& c = grid[i];
+                c.rune = runes[i % 9]; c.width = 1;
+                if (c.rune == 0x4E2D) { if ((i % info.cols) + 1 < info.cols) { c.width = 2; grid[++i].rune = 0; } else c.rune = 'A'; }
+                c.fgKind = 2; c.fg = 0xC0C0C0; c.bgKind = 2; c.bg = 0x101010;
+            }
+            RECT pr{ 0, 0, (LONG)info.cols * g_cw, (LONG)info.rows * g_ch };
+            HDC mem = CreateCompatibleDC(screen);
+            HBITMAP bmp = CreateCompatibleBitmap(screen, pr.right, pr.bottom);
+            HGDIOBJ old = SelectObject(mem, bmp);
+            agbfPaintGrid(mem, pr, grid.data(), info);   // warm-up (fb vector alloc)
+            QueryPerformanceCounter(&t0);
+            for (int i = 0; i < 100; i++) agbfPaintGrid(mem, pr, grid.data(), info);
+            QueryPerformanceCounter(&t1);
+            long long frameUs = us(t0, t1) / 100;
+            SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem);
+            sprintf_s(line, "%-28s %5lld.%lld ms %6lld ns/op %8lld us/frame %7zu KiB\n",
+                      name, loadUs / 1000, loadUs % 1000 / 100, lookupNs, frameUs,
+                      g_agbfPack.bytes.size() / 1024);
+            say(line);
+            (void)sink;
+        }
+    ReleaseDC(nullptr, screen);
+    return 0;
 }
 
 static void paintPane(HDC mem, RECT pr, Session* s, int pane, bool showCursor) {
@@ -4420,6 +4483,7 @@ static void parseLaunchArgs() {
         else if ((a == L"-d" || a == L"--dir" || a == L"--startingdirectory") && v) { g_argDir = narrow(v); i++; }
         else if (a == L"--maximized")  g_argMaximized = true;
         else if (a == L"--no-restore") g_argNoRestore = true;
+        else if (a == L"--bench-agbf") g_argBenchAgbf = true;
         else if (a == L"--pipe" && v)  { g_argPipe = v; i++; }
     }
     LocalFree(argv);
@@ -4453,6 +4517,7 @@ static bool resolveLaunchProfile(std::string& app, std::vector<std::string>& arg
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     _Module.Init(nullptr, inst);   // ATL/WTL module (window class registration lives here)
     parseLaunchArgs();
+    if (g_argBenchAgbf) return agbfBench();   // headless pack benchmark, no window/session
     InitializeCriticalSection(&g_lock);
     InitializeCriticalSection(&g_reqLock);
     loadCore();
