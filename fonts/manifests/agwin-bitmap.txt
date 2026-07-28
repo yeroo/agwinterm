@@ -1,0 +1,42 @@
+# AGWin Bitmap glyph manifest — what goes into the normal (non-Complete) packs.
+# Lines: "RANGE lo-hi" (inclusive, hex), "CP xx" (single code point), "# comment".
+# The generator includes a listed code point only if the source font actually covers it.
+
+# -- text ---------------------------------------------------------------------
+RANGE 0020-007E    # printable ASCII
+RANGE 00A0-00FF    # Latin-1 Supplement
+RANGE 0100-017F    # Latin Extended-A (the useful European set)
+RANGE 0370-03FF    # Greek (technical text)
+RANGE 0400-04FF    # Cyrillic (complete practical coverage)
+RANGE 0500-052F    # Cyrillic Supplement
+RANGE 2010-205E    # general punctuation (dashes, quotes, bullet, ellipsis...)
+RANGE 20A0-20BF    # currency symbols
+RANGE 2100-214F    # letterlike (№ ™ Ω ℓ ...)
+RANGE 2190-21FF    # arrows
+RANGE 2200-22FF    # mathematical operators
+RANGE 2300-23FF    # technical symbols
+RANGE 2500-257F    # box drawing (SYNTHESIZED from cell geometry, see generator)
+RANGE 2580-259F    # block elements (synthesized)
+RANGE 25A0-25FF    # geometric shapes
+RANGE 2600-26FF    # misc symbols (warnings, stars...)
+RANGE 2700-27BF    # dingbats (check marks, crosses)
+RANGE 2800-28FF    # Braille patterns
+CP FFFD            # replacement character
+
+# -- Nerd Fonts private-use sets (from the patched font) ----------------------
+RANGE E000-E00A    # Pomicons
+RANGE E0A0-E0A3    # Powerline (synthesized separators where solid)
+RANGE E0B0-E0BF    # Powerline Extra separators (solid ones synthesized)
+RANGE E0C0-E0D7    # Powerline Extra (flames, digits, honeycomb...)
+RANGE E200-E2A9    # Font Awesome Extension
+RANGE E300-E3E3    # Weather
+RANGE E5FA-E6B7    # Seti-UI + Custom (folder/file-type icons)
+RANGE E700-E8EF    # Devicons
+RANGE EA60-EC1E    # Codicons (VS Code: error/warning/info/git...)
+RANGE F000-F2FF    # Font Awesome (classic set: status, files, arrows)
+RANGE F300-F381    # Font Logos (OS logos)
+RANGE F400-F533    # Octicons (git branch/commit/PR...)
+RANGE 23FB-23FE    # IEC power symbols
+CP 2665            # heart
+CP 26A1            # zap
+CP F2A1            # (FA continued)
