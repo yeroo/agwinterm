@@ -81,7 +81,9 @@ jobs:
           $version = '${{ github.ref_name }}'.TrimStart('v')
           $url = "https://github.com/${{ github.repository }}/releases/download/v$version/agwinterm-setup-$version.exe"
           Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
-          .\wingetcreate.exe update yeroo.agwinterm --version $version --urls $url --submit --token $env:WINGET_TOKEN
+          # "|x64" pins the architecture: wingetcreate sniffs the Inno stub as x86 and otherwise
+          # can't match the manifest's x64 installer node (this kept winget stuck at 0.10.0).
+          .\wingetcreate.exe update yeroo.agwinterm --version $version --urls "$url|x64" --submit --token $env:WINGET_TOKEN
 
   # Packs and pushes the Chocolatey package to the community feed on each release. Every version
   # then goes through Chocolatey's moderation queue (automated validation + VM install test +
