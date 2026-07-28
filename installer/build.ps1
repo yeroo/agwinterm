@@ -63,15 +63,14 @@ if ($LASTEXITCODE -ne 0) { throw "lite build failed" }
 Copy-Item (Join-Path $root "lite\bin\agwinterm-lite.exe") $stageLite -Force
 Copy-Item $coreDll $stageLite -Force
 Copy-Item $ptyExe  $stageLite -Force
-Copy-Item (Join-Path $root "lite\assets\*") $stageLite -Force
-Copy-Item (Join-Path $root "src\Agwinterm.Win32\assets\agwinterm.ico") $stageLite -Force
+Copy-Item (Join-Path $root "lite\assets\*") $stageLite -Force   # fonts + licenses + lite icon
 
 # sanity: required payload present in each stage
 foreach ($f in @("Agwinterm.Win32.exe","agwintermctl.exe","agwinterm_core.dll","agwinterm-ptyhost.exe","MesloLGLDZNerdFont-Regular.ttf","assets\agwinterm.ico")) {
   if (-not (Test-Path (Join-Path $stage $f))) { throw "main stage missing $f" }
 }
 if (-not (Get-ChildItem (Join-Path $stage "themes") -Filter *.conf -ErrorAction SilentlyContinue)) { throw "main stage missing themes\*.conf" }
-foreach ($f in @("agwinterm-lite.exe","agwinterm_core.dll","agwinterm-ptyhost.exe","agwinterm.ico","CozetteVector.ttf")) {
+foreach ($f in @("agwinterm-lite.exe","agwinterm_core.dll","agwinterm-ptyhost.exe","agwinterm-lite.ico","CozetteVector.ttf")) {
   if (-not (Test-Path (Join-Path $stageLite $f))) { throw "lite stage missing $f" }
 }
 Write-Host ("stage OK: main {0} files, lite {1} files" -f (Get-ChildItem $stage -Recurse -File).Count, (Get-ChildItem $stageLite -Recurse -File).Count) -ForegroundColor Green

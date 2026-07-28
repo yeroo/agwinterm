@@ -39,9 +39,8 @@ foreach ($f in @("agwinterm-lite.exe", "agwinterm-ptyhost.exe", "agwinterm_core.
   if (-not (Test-Path (Join-Path $bin $f))) { throw "lite bin missing $f" }
   Copy-Item (Join-Path $bin $f) $stageLite -Force
 }
-Copy-Item (Join-Path $root "lite\assets\*") $stageLite -Force
-Copy-Item (Join-Path $root "src\Agwinterm.Win32\assets\agwinterm.ico") $stageLite -Force
-foreach ($f in @("agwinterm.ico", "CozetteVector.ttf", "MesloLGLDZNerdFont-Regular.ttf")) {
+Copy-Item (Join-Path $root "lite\assets\*") $stageLite -Force   # fonts + licenses + lite icon
+foreach ($f in @("agwinterm-lite.ico", "CozetteVector.ttf", "MesloLGLDZNerdFont-Regular.ttf")) {
   if (-not (Test-Path (Join-Path $stageLite $f))) { throw "lite stage missing $f" }
 }
 
