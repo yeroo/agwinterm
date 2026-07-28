@@ -19,6 +19,7 @@
 #include <shlobj.h>     // SHBrowseForFolder (New Session in Folder…)
 #include <dwmapi.h>     // dark title bar (DWMWA_USE_IMMERSIVE_DARK_MODE)
 #include <uxtheme.h>    // SetWindowTheme — dark scrollbars on the tree
+#include <algorithm>    // std::stable_sort (command-palette ranking)
 #include <string>
 #include <vector>
 
@@ -670,13 +671,13 @@ static const uint32_t kEgaPalette[16] = {
     0x000000, 0xAA0000, 0x00AA00, 0xAA5500, 0x0000AA, 0xAA00AA, 0x00AAAA, 0xAAAAAA,
     0x555555, 0xFF5555, 0x55FF55, 0xFFFF55, 0x5555FF, 0xFF55FF, 0x55FFFF, 0xFFFFFF };
 
-// Menu command ids reuse the palette action ids (1 new, 2 close, 3 split, 4 next, 5 copy, 6 paste).
+// Menu command ids (the command palette posts these too — one implementation per action).
 enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, IDM_PASTE = 6, IDM_PREV = 7,
        IDM_EXIT = 100, IDM_ABOUT = 101, IDM_NEWWS = 102, IDM_RESTART = 103, IDM_SHOW = 104,
        IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108, IDM_KEYBOARD = 109,
        IDM_QUICK = 120, IDM_SCRATCH = 121, IDM_REOPEN = 122,
        IDM_TG_SIDEBAR = 123, IDM_TG_TOOLBAR = 124, IDM_TG_STATUS = 125,
-       IDM_FLAG = 126, IDM_FLAGVIEW = 127, IDM_ATTENTION = 128, IDM_FOCUSWS = 129 };
+       IDM_FLAG = 126, IDM_FLAGVIEW = 127, IDM_ATTENTION = 128, IDM_FOCUSWS = 129, IDM_PALETTE = 130 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202, ID_STATUS = 203 };
 
@@ -733,18 +734,106 @@ struct Sel {
 };
 static Sel g_sel;
 
-// ---- command palette ----
+// ---- command palette: type-to-filter overlay over every action -------------------------------
+// One entry per action lite has (menu commands, keyboard-only actions, theme switches). Executed
+// via the same WM_COMMAND / runKbAction paths the menu and bindings use — the palette adds no
+// second implementation of anything. Shortcut column shows the user's LIVE binding (g_keys).
 static bool g_palette = false;
-struct PaletteItem { const wchar_t* label; int id; };
-static const PaletteItem kPalette[] = {
-    { L"New session          Ctrl+T", 1 },
-    { L"Close session        Ctrl+W", 2 },
-    { L"Split / unsplit      Ctrl+Shift+D", 3 },
-    { L"Next session         Ctrl+Tab", 4 },
-    { L"Copy selection       Ctrl+C", 5 },
-    { L"Paste                Ctrl+V", 6 },
+struct PalAction {
+    const wchar_t* label;
+    int idm;     // WM_COMMAND id to post (0 = none, use kb)
+    int kb;      // KB_* action for the live-shortcut label / direct dispatch (-1 = none)
+    int theme;   // TH_* to switch to (-1 = not a theme entry)
 };
-static int g_paletteSel = 0;
+static const PalAction kPalActions[] = {
+    { L"New Session",              IDM_NEW,        KB_NEW,       -1 },
+    { L"New Workspace",            IDM_NEWWS,      KB_NEWWS,     -1 },
+    { L"Close Session",            IDM_CLOSE,      KB_CLOSE,     -1 },
+    { L"Duplicate Session",        IDM_DUP,        -1,           -1 },
+    { L"Rename",                   IDM_RENAME,     -1,           -1 },
+    { L"Reopen Closed Session",    IDM_REOPEN,     KB_REOPEN,    -1 },
+    { L"Split / Unsplit",          IDM_SPLIT,      KB_SPLIT,     -1 },
+    { L"Next Session",             IDM_NEXT,       KB_NEXT,      -1 },
+    { L"Previous Session",         IDM_PREV,       KB_PREV,      -1 },
+    { L"Copy",                     IDM_COPY,       KB_COPY,      -1 },
+    { L"Paste",                    IDM_PASTE,      KB_PASTE,     -1 },
+    { L"Quick Terminal",           IDM_QUICK,      KB_QUICK,     -1 },
+    { L"Scratch Terminal",         IDM_SCRATCH,    KB_SCRATCH,   -1 },
+    { L"Flag / Unflag Session",    IDM_FLAG,       KB_FLAG,      -1 },
+    { L"Flagged View",             IDM_FLAGVIEW,   KB_FLAGVIEW,  -1 },
+    { L"Next Blocked Session",     IDM_ATTENTION,  KB_ATTENTION, -1 },
+    { L"Focus Workspace",          IDM_FOCUSWS,    KB_FOCUSWS,   -1 },
+    { L"Delete Workspace",         IDM_DELWS,      -1,           -1 },
+    { L"Focus Left Pane",          0,              KB_FOCUSL,    -1 },
+    { L"Focus Right Pane",         0,              KB_FOCUSR,    -1 },
+    { L"Zoom In",                  0,              KB_ZOOMIN,    -1 },
+    { L"Zoom Out",                 0,              KB_ZOOMOUT,   -1 },
+    { L"Zoom Reset",               0,              KB_ZOOMRESET, -1 },
+    { L"Toggle Sidebar",           IDM_TG_SIDEBAR, -1,           -1 },
+    { L"Toggle Toolbar",           IDM_TG_TOOLBAR, -1,           -1 },
+    { L"Toggle Status Bar",        IDM_TG_STATUS,  -1,           -1 },
+    { L"Theme: Follow Windows",    0,              -1,           TH_AUTO },
+    { L"Theme: Dark",              0,              -1,           TH_DARK },
+    { L"Theme: Light",             0,              -1,           TH_LIGHT },
+    { L"Theme: Classic",           0,              -1,           TH_CLASSIC },
+    { L"Keyboard…",           IDM_KEYBOARD,   -1,           -1 },
+    { L"Properties…",         IDM_PROPERTIES, -1,           -1 },
+    { L"Restart Everything",       IDM_RESTART,    -1,           -1 },
+    { L"About agwinterm lite",     IDM_ABOUT,      -1,           -1 },
+    { L"Exit",                     IDM_EXIT,       -1,           -1 },
+};
+static constexpr int kPalCount = (int)(sizeof kPalActions / sizeof kPalActions[0]);
+static constexpr int kPalMaxRows = 12;         // list viewport height (rows)
+static std::wstring g_palQuery;
+static std::vector<int> g_palHits;             // filtered indices into kPalActions, best first
+static int g_paletteSel = 0;                   // selection: index into g_palHits
+static int g_palTop = 0;                       // first visible row of the viewport
+static RECT g_palBox{}, g_palList{};           // last painted geometry (mouse hit-testing)
+
+// Fuzzy match: every query char must appear in order; starts of words score higher, consecutive
+// runs higher still. Returns <0 for no match. Case-insensitive.
+static int palScore(const wchar_t* label, const std::wstring& q) {
+    if (q.empty()) return 0;
+    int score = 0, run = 0;
+    size_t qi = 0;
+    bool boundary = true;                       // previous label char started a word
+    for (const wchar_t* p = label; *p && qi < q.size(); p++) {
+        if (towlower(*p) == towlower(q[qi])) {
+            score += 1 + run + (boundary ? 4 : 0) + (p == label ? 4 : 0);
+            run = 2; qi++;
+        } else run = 0;
+        boundary = !iswalnum(*p);
+    }
+    return qi == q.size() ? score : -1;
+}
+
+static void palFilter() {
+    g_palHits.clear();
+    int scores[kPalCount];
+    for (int i = 0; i < kPalCount; i++)
+        if ((scores[i] = palScore(kPalActions[i].label, g_palQuery)) >= 0) g_palHits.push_back(i);
+    std::stable_sort(g_palHits.begin(), g_palHits.end(),
+                     [&](int a, int b) { return scores[a] > scores[b]; });
+    g_paletteSel = 0; g_palTop = 0;
+}
+
+// "Ctrl+Shift+P" for a MAKEWORD(vk, HOTKEYF_*) combo — the Keyboard dialog's storage format.
+static std::wstring palKeyName(WORD combo) {
+    if (!combo) return L"";
+    BYTE vk = LOBYTE(combo), m = HIBYTE(combo);
+    std::wstring s;
+    if (m & HOTKEYF_CONTROL) s += L"Ctrl+";
+    if (m & HOTKEYF_SHIFT)   s += L"Shift+";
+    if (m & HOTKEYF_ALT)     s += L"Alt+";
+    UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    switch (vk) {   // extended keys need the KF_EXTENDED bit or GetKeyNameText says "Num 8" etc.
+        case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_INSERT: case VK_DELETE:
+        case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT: sc |= KF_EXTENDED; break;
+    }
+    wchar_t name[64];
+    if (GetKeyNameTextW((LONG)(sc << 16), name, 64) > 0) s += name;
+    return s;
+}
 
 static void fatal(const wchar_t* msg) {
     MessageBoxW(nullptr, msg, L"agwinterm-lite", MB_ICONERROR);
@@ -1302,6 +1391,9 @@ static void loadColors() {   // Properties->Colors overrides (default fg/bg + on
     sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FlagView", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_flagView = v != 0;
 }
 static void loadKeys() {   // configurable key bindings; absent = unbound (0)
+    // One seeded default: Ctrl+Shift+P opens the command palette (parity with the full app).
+    // Any saved Keyboard settings override it — the dialog writes every action, including 0s.
+    g_keys[KB_PALETTE] = MAKEWORD('P', HOTKEYF_CONTROL | HOTKEYF_SHIFT);
     for (int a = 0; a < KB_COUNT; a++) {
         DWORD v = 0, sz = sizeof(v);
         if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", kKbInfo[a].reg, RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_keys[a] = (WORD)v;
@@ -2009,31 +2101,75 @@ static void paint(HDC dc, RECT rc) {
                FillRect(mem, &ln, lb); ln.left = sp.right - 1; ln.right = sp.right; FillRect(mem, &ln, lb); DeleteObject(lb); }
     }
 
-    if (g_palette) {
-        int n = (int)(sizeof kPalette / sizeof kPalette[0]);
-        int pw = 460, ph = (n + 1) * (g_ch + 8) + 12;
-        int px = sidebarSpan() + ((rc.right - sidebarSpan()) - pw) / 2, py = 60;
-        RECT box{ px, py, px + pw, py + ph };
-        HBRUSH bb = CreateSolidBrush(RGB(28, 30, 38));
-        FillRect(mem, &box, bb);
-        DeleteObject(bb);
-        FrameRect(mem, &box, (HBRUSH)GetStockObject(GRAY_BRUSH));
+    if (g_palette) {   // command palette overlay: query row + filtered, scrollable action list
+        int n = (int)g_palHits.size();
+        int rowH = g_ch + 8, rows = min(n, kPalMaxRows);
+        int pw = min(520, (int)(rc.right - sidebarSpan()) - 24); if (pw < 240) pw = 240;
+        int ph = rowH + 14 + max(rows, 1) * rowH + 8;
+        int px = sidebarSpan() + ((rc.right - sidebarSpan()) - pw) / 2, py = toolbarTop() + 16;
+        g_palBox = { px, py, px + pw, py + ph };
+        HBRUSH bb = CreateSolidBrush(g_th.bar);
+        FillRect(mem, &g_palBox, bb); DeleteObject(bb);
+        HBRUSH fr = CreateSolidBrush(g_th.accent);
+        FrameRect(mem, &g_palBox, fr); DeleteObject(fr);
         SelectObject(mem, g_fonts[0]);
         SetBkMode(mem, TRANSPARENT);
-        SetTextColor(mem, RGB(150, 150, 160));
-        RECT hdr{ px + 14, py + 8, px + pw - 8, py + 8 + g_ch };
-        DrawTextW(mem, L"command palette  (↑↓ Enter · Esc)", -1, &hdr, DT_LEFT | DT_SINGLELINE);
-        for (int i = 0; i < n; i++) {
-            int iy = py + 8 + (i + 1) * (g_ch + 8);
-            if (i == g_paletteSel) {
-                RECT sel{ px + 4, iy - 3, px + pw - 4, iy + g_ch + 3 };
-                HBRUSH sb = CreateSolidBrush(RGB(50, 90, 150));
-                FillRect(mem, &sel, sb);
-                DeleteObject(sb);
+
+        RECT qbox{ px + 6, py + 6, px + pw - 6, py + 6 + rowH };   // query field on the client surface
+        HBRUSH qb = CreateSolidBrush(g_th.client);
+        FillRect(mem, &qbox, qb); DeleteObject(qb);
+        HBRUSH qf = CreateSolidBrush(g_th.border);
+        FrameRect(mem, &qbox, qf); DeleteObject(qf);
+        RECT qr{ qbox.left + 8, qbox.top + 4, qbox.right - 8, qbox.bottom - 4 };
+        if (g_palQuery.empty()) {
+            SetTextColor(mem, g_th.dim);
+            DrawTextW(mem, L"Type a command…", -1, &qr, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        } else {
+            SetTextColor(mem, g_th.text);
+            DrawTextW(mem, g_palQuery.c_str(), -1, &qr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        }
+        SIZE qe{};   // caret after the query text
+        GetTextExtentPoint32W(mem, g_palQuery.c_str(), (int)g_palQuery.size(), &qe);
+        int cx = min((int)qr.left + qe.cx + 1, (int)qr.right - 2);
+        RECT caret{ cx, qr.top + 1, cx + 1, qr.bottom - 1 };
+        HBRUSH cb = CreateSolidBrush(g_th.accent);
+        FillRect(mem, &caret, cb); DeleteObject(cb);
+
+        int ly = qbox.bottom + 8;
+        g_palList = { px + 4, ly, px + pw - 4, ly + max(rows, 1) * rowH };
+        if (!n) {
+            SetTextColor(mem, g_th.dim);
+            RECT er{ px + 16, ly, px + pw - 8, ly + rowH };
+            DrawTextW(mem, L"No matching commands", -1, &er, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        }
+        COLORREF selText = g_th.classic ? GetSysColor(COLOR_HIGHLIGHTTEXT) : g_th.text;
+        for (int v = 0; v < rows; v++) {
+            int i = g_palTop + v;
+            if (i >= n) break;
+            const PalAction& a = kPalActions[g_palHits[i]];
+            int iy = ly + v * rowH;
+            bool cur = (i == g_paletteSel);
+            if (cur) {
+                RECT sel{ px + 4, iy, px + pw - 4, iy + rowH };
+                HBRUSH sb = CreateSolidBrush(g_th.sel);
+                FillRect(mem, &sel, sb); DeleteObject(sb);
             }
-            SetTextColor(mem, i == g_paletteSel ? RGB(240, 240, 245) : RGB(200, 200, 210));
-            RECT ir{ px + 16, iy, px + pw - 8, iy + g_ch };
-            DrawTextW(mem, kPalette[i].label, -1, &ir, DT_LEFT | DT_SINGLELINE);
+            RECT ir{ px + 16, iy, px + pw - 16, iy + rowH };
+            SetTextColor(mem, cur ? selText : g_th.text);
+            DrawTextW(mem, a.label, -1, &ir, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            std::wstring key = a.kb >= 0 ? palKeyName(g_keys[a.kb]) : L"";
+            if (a.theme >= 0 && a.theme == g_themeMode) key = L"✓";   // active theme check
+            if (!key.empty()) {
+                SetTextColor(mem, cur ? selText : g_th.dim);
+                DrawTextW(mem, key.c_str(), -1, &ir, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+            }
+        }
+        if (n > rows) {   // proportional scroll thumb on the list's right edge
+            int th = max(rowH, rows * rows * rowH / n);
+            int ty = ly + (rows * rowH - th) * g_palTop / max(1, n - rows);
+            RECT tr{ px + pw - 7, ty, px + pw - 4, ty + th };
+            HBRUSH tb = CreateSolidBrush(g_th.dim);
+            FillRect(mem, &tr, tb); DeleteObject(tb);
         }
     }
 
@@ -2158,7 +2294,6 @@ static void pasteClipboard() {
     CloseClipboard();
 }
 
-static void runPaletteItem(int id);   // fwd
 
 static void sendUtf8(wchar_t wc) {
     // User interrupt: Esc / Ctrl+C typed into the terminal clears a "working" agent status — an
@@ -2231,21 +2366,8 @@ static void scrollFocused(int deltaRows) {
 
 static void togglePalette() {
     g_palette = !g_palette;
-    g_paletteSel = 0;
-    InvalidateRect(g_hwnd, nullptr, FALSE);
-}
-
-static void runPaletteItem(int id) {
-    g_palette = false;
-    switch (id) {
-        case 1: { int c, r; paneGridSize(g_focus, &c, &r); Session* s = newSession(c, r); if (s) g_pane[g_focus] = (int)g_sessions.size() - 1; break; }
-        case 2: closeFocused(); break;
-        case 3: toggleSplit(); break;   // independent new shell for the second pane
-        case 4: cycleSession(1); break;    // next session
-        case 5: copySelection(); break;
-        case 6: pasteClipboard(); break;
-        case 7: cycleSession(-1); break;   // previous session
-    }
+    g_palQuery.clear();
+    palFilter();
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
@@ -2254,6 +2376,33 @@ static void toggleFlag(Session* s);              // fwd (flagged sessions, defin
 static void toggleFlagView();                    // fwd
 static void nextBlocked();                       // fwd (attention bell)
 static void toggleFocusWs(int w);                // fwd (workspace focus)
+static void runKbAction(int a);                  // fwd (palExec dispatches keyboard-only actions)
+
+// Run a palette entry through the same path the menu / key binding would take. Menu commands are
+// POSTED (never run from inside the key handler — several open dialogs), so the palette closes
+// and repaints first and re-entrancy can't bite.
+static void palExec(int idx) {
+    const PalAction& a = kPalActions[idx];
+    g_palette = false;
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+    if (a.theme >= 0) {
+        g_themeMode = a.theme;
+        saveColors();
+        applyTheme();
+    } else if (a.idm) {
+        PostMessageW(g_hwnd, WM_COMMAND, a.idm, 0);
+    } else if (a.kb >= 0) {
+        runKbAction(a.kb);
+    }
+}
+
+static void palChar(wchar_t wc) {   // printable input -> query (both frame + popup char handlers)
+    if (wc < 0x20) return;          // Enter/Esc/Backspace are handled at keydown
+    g_palQuery += wc;
+    palFilter();
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+
 static void runKbAction(int a) {
     switch (a) {
         case KB_NEW: { int c, r; paneGridSize(g_focus, &c, &r); Session* s = newSession(c, r); if (s) { g_pane[g_focus] = (int)g_sessions.size() - 1; InvalidateRect(g_hwnd, nullptr, FALSE); } break; }
@@ -2282,13 +2431,31 @@ static void runKbAction(int a) {
     }
 }
 static bool handleKeyDown(WPARAM vk) {
-    if (g_palette) {   // palette captures navigation while open
-        int n = (int)(sizeof kPalette / sizeof kPalette[0]);
-        if (vk == VK_ESCAPE) { g_palette = false; InvalidateRect(g_hwnd, nullptr, FALSE); return true; }
-        if (vk == VK_UP) { g_paletteSel = (g_paletteSel + n - 1) % n; InvalidateRect(g_hwnd, nullptr, FALSE); return true; }
-        if (vk == VK_DOWN) { g_paletteSel = (g_paletteSel + 1) % n; InvalidateRect(g_hwnd, nullptr, FALSE); return true; }
-        if (vk == VK_RETURN) { runPaletteItem(kPalette[g_paletteSel].id); return true; }
-        return true;
+    if (g_palette) {   // palette captures navigation while open; plain chars flow to WM_CHAR -> query
+        int n = (int)g_palHits.size();
+        auto move = [&](int d) {
+            if (!n) return;
+            g_paletteSel = (g_paletteSel + d % n + n) % n;
+            if (g_paletteSel < g_palTop) g_palTop = g_paletteSel;
+            if (g_paletteSel >= g_palTop + kPalMaxRows) g_palTop = g_paletteSel - kPalMaxRows + 1;
+            InvalidateRect(g_hwnd, nullptr, FALSE);
+        };
+        switch (vk) {
+            case VK_ESCAPE: togglePalette(); return true;
+            case VK_UP:     move(-1); return true;
+            case VK_DOWN:   move(+1); return true;
+            case VK_PRIOR:  move(-(kPalMaxRows - 1)); return true;
+            case VK_NEXT:   move(+(kPalMaxRows - 1)); return true;
+            case VK_HOME:   if (g_palQuery.empty()) { g_paletteSel = 0; g_palTop = 0; InvalidateRect(g_hwnd, nullptr, FALSE); return true; } return false;
+            case VK_RETURN: if (n) palExec(g_palHits[g_paletteSel]); return true;
+            case VK_BACK:
+                if (!g_palQuery.empty()) { g_palQuery.pop_back(); palFilter(); InvalidateRect(g_hwnd, nullptr, FALSE); }
+                return true;
+        }
+        // the palette's own binding toggles it closed again
+        BYTE mods = (BYTE)((shiftDown() ? HOTKEYF_SHIFT : 0) | (ctrlDown() ? HOTKEYF_CONTROL : 0) | (altDown() ? HOTKEYF_ALT : 0));
+        if (mods && g_keys[KB_PALETTE] == MAKEWORD((BYTE)vk, mods)) { togglePalette(); return true; }
+        return false;   // anything else: let WM_CHAR through for the query (OnChar routes it)
     }
     // Configurable key bindings (all unbound by default, so every combo otherwise reaches the shell).
     // Match the pressed vk + modifiers against the user's bindings; the same actions are always on the
@@ -2552,6 +2719,7 @@ static HMENU buildMenuBar() {
     AppendMenuW(view, MF_STRING, IDM_NEXT, L"&Next Session");
     AppendMenuW(view, MF_STRING, IDM_PREV, L"&Previous Session");
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(view, MF_STRING, IDM_PALETTE, L"Co&mmand Palette");
     AppendMenuW(view, MF_STRING, IDM_QUICK, L"&Quick Terminal");
     AppendMenuW(view, MF_STRING, IDM_SCRATCH, L"Sc&ratch Terminal");
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
@@ -3253,6 +3421,7 @@ static LRESULT CALLBACK popupProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             break;
         case WM_CHAR: {
             g_focusOverride = s;
+            if (g_palette) { if (g_swallowChar) g_swallowChar = false; else palChar((wchar_t)w); return 0; }
             if (g_swallowChar) { g_swallowChar = false; return 0; }
             wchar_t wc = (wchar_t)w;
             if (s) s->scrollOff = 0;
@@ -3598,7 +3767,7 @@ public:
 
     // ---- keyboard ----
     void OnChar(TCHAR chr, UINT, UINT) {
-        if (g_palette) return;
+        if (g_palette) { if (g_swallowChar) g_swallowChar = false; else palChar((wchar_t)chr); return; }
         if (g_swallowChar) { g_swallowChar = false; return; }   // belongs to a keydown a binding consumed
         if (Session* s = focusedSession()) s->scrollOff = 0;
         if (chr == L'\r') { sendBytes("\r", 1); return; }
@@ -3615,6 +3784,15 @@ public:
 
     // ---- mouse ----
     BOOL OnMouseWheel(UINT nFlags, short zDelta, CPoint pt) {
+        if (g_palette) {   // scroll the palette list
+            int n = (int)g_palHits.size(), rows = min(n, kPalMaxRows);
+            if (n > rows) {
+                g_palTop = max(0, min(n - rows, g_palTop + (zDelta > 0 ? -3 : 3)));
+                g_paletteSel = max(g_palTop, min(g_palTop + rows - 1, g_paletteSel));
+                Invalidate(FALSE);
+            }
+            return TRUE;
+        }
         if (nFlags & MK_CONTROL) { fontZoom(zDelta > 0 ? +1 : -1); return TRUE; }   // Ctrl+wheel = font zoom
         ScreenToClient(&pt);                                                        // wheel coords are screen-relative
         bool up = zDelta > 0;
@@ -3624,7 +3802,14 @@ public:
     }
     void OnLButtonDown(UINT, CPoint pt) {
         if (inSplitter(pt.x, pt.y)) { g_splitDrag = true; SetCapture(); return; }   // grab the sidebar splitter
-        if (g_palette) { g_palette = false; Invalidate(FALSE); SetFocus(); return; }
+        if (g_palette) {   // click an item to run it; click anywhere else to dismiss
+            if (PtInRect(&g_palList, POINT{ pt.x, pt.y })) {
+                int i = g_palTop + (pt.y - g_palList.top) / (g_ch + 8);
+                if (i >= 0 && i < (int)g_palHits.size()) { palExec(g_palHits[i]); return; }
+            }
+            if (!PtInRect(&g_palBox, POINT{ pt.x, pt.y })) { g_palette = false; Invalidate(FALSE); SetFocus(); }
+            return;
+        }
         // The sidebar is the native tree child, so clicks here are always in the terminal area.
         int pane, absRow, col;
         if (hitTest(pt.x, pt.y, &pane, &absRow, &col)) {
@@ -3918,6 +4103,7 @@ public:
             }
             case IDM_PROPERTIES: showPropertiesDialog(); break;
             case IDM_KEYBOARD: showKeyboardDialog(); break;
+            case IDM_PALETTE: togglePalette(); break;
             case IDM_QUICK: togglePopupTerminal(false); break;
             case IDM_SCRATCH: togglePopupTerminal(true); break;
             case IDM_REOPEN: reopenClosed(); break;
@@ -3940,7 +4126,11 @@ public:
                             L"About", MB_OK | MB_ICONINFORMATION);
                 break;
             default:   // menu-bar / tray: close / split / next / copy / paste / previous
-                if (id >= IDM_CLOSE && id <= IDM_PREV) { runPaletteItem(id); Invalidate(FALSE); SetFocus(); }
+                if (id >= IDM_CLOSE && id <= IDM_PREV) {
+                    static const int kb[] = { KB_CLOSE, KB_SPLIT, KB_NEXT, KB_COPY, KB_PASTE, KB_PREV };
+                    runKbAction(kb[id - IDM_CLOSE]);
+                    Invalidate(FALSE); SetFocus();
+                }
                 break;
         }
         return 0;
