@@ -104,8 +104,8 @@ public class AgbfPackTests
         foreach (var r in p.Recs)
         {
             Assert.True(r.CellW is 1 or 2, $"U+{r.Cp:X4}: cellWidth {r.CellW}");
-            var stride = (r.Flags & 2) != 0 ? (r.W + 7) / 8 : r.W;
-            Assert.True(r.Off + (long)stride * r.H <= p.AtlasLen, $"U+{r.Cp:X4}: atlas overrun");
+            long stride = (r.Flags & 16) != 0 ? r.W * 4 : (r.Flags & 2) != 0 ? (r.W + 7) / 8 : r.W;
+            Assert.True(r.Off + stride * r.H <= p.AtlasLen, $"U+{r.Cp:X4}: atlas overrun");
         }
     }
 
@@ -135,6 +135,13 @@ public class AgbfPackTests
             Assert.Equal(wide, r.CellW);
             Assert.Equal(2, r.Flags & 2);
             Assert.Equal(4, r.Flags & 4);
+        }
+        // Emoji: color records (BGRA, flag 16) spanning two cells, exactly the emulator's wide range.
+        foreach (var cp in new uint[] { 0x1F600, 0x1F680, 0x1F4A9 })
+        {
+            Assert.True(byCp.TryGetValue(cp, out var r), $"missing emoji glyph U+{cp:X4}");
+            Assert.Equal(16, r.Flags & 16);
+            Assert.Equal(2, r.CellW);
         }
         Assert.True(p.Recs.Length > 60000, $"complete pack holds the BMP, got {p.Recs.Length} glyphs");
     }

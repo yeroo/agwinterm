@@ -1582,7 +1582,8 @@ static HFONT styleFont(uint32_t attrs) {
 // ---- AGWin Bitmap (.agbf) — pre-rasterized font packs, no vector fonts at runtime -------------
 // Format v1 (fonts/generate.py): 172-byte header, sorted glyph records, 8-bit alpha atlas.
 // Record flags: 1 = synthesized, 2 = 1-bit glyph (rows bit-packed MSB-first, byte-padded —
-// the Complete family's GNU Unifont fallback), 4 = fallback source. Wide glyphs (cellW 2)
+// the Complete family's GNU Unifont fallback), 4 = fallback source, 8 = hand-corrected
+// override, 16 = color glyph (BGRA rows, straight alpha — Noto emoji). Wide glyphs (cellW 2)
 // just render across two cells; the emulator's cell.width drives layout, not the record.
 #pragma pack(push, 1)
 struct AgbfHeader {
@@ -1696,8 +1697,9 @@ static void agbfPaintGrid(HDC mem, RECT pr, const FfiCell* view, const FfiEmuInf
                 const AgbfRec* rec = agbfFind(cell.rune);
                 if (rec && rec->w) {
                     bool onebit = (rec->flags & 2) != 0;        // Unifont fallback: bit-packed rows
-                    size_t stride = onebit ? ((size_t)rec->w + 7) / 8 : rec->w;
-                    int passes = (attrs & kAttrBold) ? 2 : 1;   // synthetic bold: 1px overstrike
+                    bool color = (rec->flags & 16) != 0;        // emoji: BGRA rows, own colors
+                    size_t stride = color ? (size_t)rec->w * 4 : onebit ? ((size_t)rec->w + 7) / 8 : rec->w;
+                    int passes = (attrs & kAttrBold) && !color ? 2 : 1;   // synthetic bold: 1px overstrike
                     for (int p = 0; p < passes; p++)
                         for (int gy = 0; gy < rec->h; gy++) {
                             int py = y0 + rec->by + gy;
@@ -1706,11 +1708,15 @@ static void agbfPaintGrid(HDC mem, RECT pr, const FfiCell* view, const FfiEmuInf
                             for (int gx = 0; gx < rec->w; gx++) {
                                 int px = x0 + rec->bx + gx + p;
                                 if (px < x0 || px >= x0 + cellPx) continue;
-                                uint32_t a = onebit ? ((src[gx >> 3] & (0x80u >> (gx & 7))) ? 255u : 0u) : src[gx];
+                                uint32_t a = color ? src[gx * 4 + 3]
+                                           : onebit ? ((src[gx >> 3] & (0x80u >> (gx & 7))) ? 255u : 0u)
+                                           : src[gx];
                                 if (!a) continue;
                                 uint32_t* dst = &fb[(size_t)py * W + px];
                                 uint32_t dr = (*dst >> 16) & 0xFF, dg = (*dst >> 8) & 0xFF, db = *dst & 0xFF;
-                                uint32_t sr = (fg >> 16) & 0xFF, sg = (fg >> 8) & 0xFF, sb = fg & 0xFF;
+                                uint32_t sr, sg, sb;
+                                if (color) { sr = src[gx * 4 + 2]; sg = src[gx * 4 + 1]; sb = src[gx * 4]; }
+                                else       { sr = (fg >> 16) & 0xFF; sg = (fg >> 8) & 0xFF; sb = fg & 0xFF; }
                                 *dst = (((sr * a + dr * (255 - a)) / 255) << 16) |
                                        (((sg * a + dg * (255 - a)) / 255) << 8) |
                                         ((sb * a + db * (255 - a)) / 255);
