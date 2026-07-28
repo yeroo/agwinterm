@@ -144,13 +144,53 @@ def synth_box(cp, w, h):
          0x2574: (0, 0, lt, 0), 0x2575: (lt, 0, 0, 0), 0x2576: (0, 0, 0, lt), 0x2577: (0, lt, 0, 0)}
     if C in t:
         seg(*t[C]); return img
-    if C in (0x2550,):  # double horizontal
-        hline(0, w, lt, cy - lt - 1); hline(0, w, lt, cy + lt + 1); return img
-    if C in (0x2551,):
-        vline(0, h, lt, cx - lt - 1); vline(0, h, lt, cx + lt + 1); return img
-    if 0x2552 <= C <= 0x256C:  # double corners/tees: approximate with doubled strokes
-        hline(0, w, lt, cy - lt - 1); hline(0, w, lt, cy + lt + 1)
-        vline(0, h, lt, cx - lt - 1); vline(0, h, lt, cx + lt + 1); return img
+    if 0x2550 <= C <= 0x256C:
+        # Double box set, each glyph as explicit stroke geometry (corners are CORNERS, not
+        # crossings — Far Manager's frame is the acceptance test). d = half-gap between the pair.
+        dd = max(2, h // 8)
+        yO, yI, xO, xI = cy - dd, cy + dd, cx - dd, cx + dd   # outer/inner double coordinates
+        def H(y, x0, x1): hline(max(0, x0), min(w, x1 + 1), lt, y)
+        def V(x, y0, y1): vline(max(0, y0), min(h, y1 + 1), lt, x)
+        T = {
+            0x2550: [("H", yO, 0, w), ("H", yI, 0, w)],                                   # ═
+            0x2551: [("V", xO, 0, h), ("V", xI, 0, h)],                                   # ║
+            0x2552: [("H", yO, cx, w), ("H", yI, cx, w), ("V", cx, yO, h)],               # ╒
+            0x2553: [("H", cy, xO, w), ("V", xO, cy, h), ("V", xI, cy, h)],               # ╓
+            0x2554: [("H", yO, xO, w), ("H", yI, xI, w), ("V", xO, yO, h), ("V", xI, yI, h)],  # ╔
+            0x2555: [("H", yO, 0, cx), ("H", yI, 0, cx), ("V", cx, yO, h)],               # ╕
+            0x2556: [("H", cy, 0, xI), ("V", xO, cy, h), ("V", xI, cy, h)],               # ╖
+            0x2557: [("H", yO, 0, xI), ("H", yI, 0, xO), ("V", xI, yO, h), ("V", xO, yI, h)],  # ╗
+            0x2558: [("H", yO, cx, w), ("H", yI, cx, w), ("V", cx, 0, yI)],               # ╘
+            0x2559: [("H", cy, xO, w), ("V", xO, 0, cy), ("V", xI, 0, cy)],               # ╙
+            0x255A: [("H", yI, xO, w), ("H", yO, xI, w), ("V", xO, 0, yI), ("V", xI, 0, yO)],  # ╚
+            0x255B: [("H", yO, 0, cx), ("H", yI, 0, cx), ("V", cx, 0, yI)],               # ╛
+            0x255C: [("H", cy, 0, xI), ("V", xO, 0, cy), ("V", xI, 0, cy)],               # ╜
+            0x255D: [("H", yI, 0, xI), ("H", yO, 0, xO), ("V", xI, 0, yI), ("V", xO, 0, yO)],  # ╝
+            0x255E: [("V", cx, 0, h), ("H", yO, cx, w), ("H", yI, cx, w)],                # ╞
+            0x255F: [("V", xO, 0, h), ("V", xI, 0, h), ("H", cy, xI, w)],                 # ╟
+            0x2560: [("V", xO, 0, h), ("V", xI, 0, yO), ("V", xI, yI, h),
+                     ("H", yO, xI, w), ("H", yI, xI, w)],                                 # ╠
+            0x2561: [("V", cx, 0, h), ("H", yO, 0, cx), ("H", yI, 0, cx)],                # ╡
+            0x2562: [("V", xO, 0, h), ("V", xI, 0, h), ("H", cy, 0, xO)],                 # ╢
+            0x2563: [("V", xI, 0, h), ("V", xO, 0, yO), ("V", xO, yI, h),
+                     ("H", yO, 0, xO), ("H", yI, 0, xO)],                                 # ╣
+            0x2564: [("H", yO, 0, w), ("H", yI, 0, w), ("V", cx, yI, h)],                 # ╤
+            0x2565: [("H", cy, 0, w), ("V", xO, cy, h), ("V", xI, cy, h)],                # ╥
+            0x2566: [("H", yO, 0, w), ("H", yI, 0, xO), ("H", yI, xI, w),
+                     ("V", xO, yI, h), ("V", xI, yI, h)],                                 # ╦
+            0x2567: [("H", yI, 0, w), ("H", yO, 0, w), ("V", cx, 0, yO)],                 # ╧
+            0x2568: [("H", cy, 0, w), ("V", xO, 0, cy), ("V", xI, 0, cy)],                # ╨
+            0x2569: [("H", yI, 0, w), ("H", yO, 0, xO), ("H", yO, xI, w),
+                     ("V", xO, 0, yO), ("V", xI, 0, yO)],                                 # ╩
+            0x256A: [("V", cx, 0, h), ("H", yO, 0, w), ("H", yI, 0, w)],                  # ╪
+            0x256B: [("H", cy, 0, w), ("V", xO, 0, h), ("V", xI, 0, h)],                  # ╫
+            0x256C: [("V", xO, 0, yO), ("V", xI, 0, yO), ("V", xO, yI, h), ("V", xI, yI, h),
+                     ("H", yO, 0, xO), ("H", yI, 0, xO), ("H", yO, xI, w), ("H", yI, xI, w)],  # ╬
+        }
+        for op in T.get(C, []):
+            if op[0] == "H": H(op[1], op[2], op[3])
+            else: V(op[1], op[2], op[3])
+        return img
     if 0x256D <= C <= 0x2570:  # rounded corners: quarter arcs
         r = min(cx, cy)
         arcbox = {0x256D: [cx, cy, cx + 2 * r, cy + 2 * r], 0x256E: [cx - 2 * r, cy, cx, cy + 2 * r],
