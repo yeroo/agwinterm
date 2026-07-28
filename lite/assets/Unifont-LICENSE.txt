@@ -1,0 +1,11 @@
+GNU Unifont 16.0.04 — the full-Unicode-BMP 8x16/16x16 bitmap font.
+https://unifoundry.com/unifont/
+
+License (dual, per unifoundry.com): SIL Open Font License 1.1, OR
+GNU GPL version 2 or later with the GNU font embedding exception
+("As a special exception, if you create a document which uses this font, and
+embed this font or unaltered portions of this font into the document, this font
+does not by itself cause the resulting document to be covered by the GNU GPL.").
+agwinterm-lite redistributes the unmodified official OTF build (Unifont.otf)
+under the SIL OFL 1.1 option.
+Copyright (C) Roman Czyborra, Paul Hardy, et al.

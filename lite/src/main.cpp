@@ -231,11 +231,13 @@ static std::wstring g_ttFace;   // the bundled TrueType face (Meslo Nerd, or Con
 // kind: 0 = scalable TrueType (antialiased), 1 = raster .fon (OEM charset, crisp), 2 = bitmap-embedded
 // TrueType (crisp, exact strike). Size {h,w}: raster/bitmap use positive px (w 0 = auto); scalable uses
 // negative h (point-ish) with w 0.
-struct FontSize { const wchar_t* label; int h, w; };
+// face: per-size family override for fonts that ship one family PER strike (Spleen 8x16 / unscii-8...).
+struct FontSize { const wchar_t* label; int h, w; const wchar_t* face = nullptr; };
 struct FontEntry { const wchar_t* label; const wchar_t* face; int kind; bool avail; std::vector<FontSize> sizes; };
 static std::vector<FontEntry> g_catalog;
 static int g_faceIdx = 0, g_sizeIdx = 0;   // current selection into g_catalog
 static bool g_haveCozette = false, g_haveTamzen = false;   // bundled bitmap fonts actually loaded
+static bool g_haveTerminus = false, g_haveSpleen = false, g_haveUnscii = false, g_haveUnifont = false;
 static HFONT g_uiFont;          // shell UI font (Segoe UI) for the toolbar buttons
 static bool g_customColors = false;   // Properties->Colors: override the terminal's default fg/bg
 static uint32_t g_defFg = 0xC0C0C0;   // packed 0xRRGGBB, legacy cmd.exe light gray on...
@@ -1153,7 +1155,8 @@ static HFONT createFontSpec(const FontEntry& e, const FontSize& s, bool bold, bo
     int precis  = (e.kind == 1) ? OUT_RASTER_PRECIS : (e.kind == 2 ? OUT_DEFAULT_PRECIS : OUT_TT_PRECIS);
     int quality = (e.kind == 0) ? CLEARTYPE_QUALITY : NONANTIALIASED_QUALITY;
     return CreateFontW(s.h, s.w, 0, 0, bold ? FW_BOLD : FW_NORMAL, italic, FALSE, FALSE,
-                       charset, precis, CLIP_DEFAULT_PRECIS, quality, FIXED_PITCH | FF_MODERN, e.face);
+                       charset, precis, CLIP_DEFAULT_PRECIS, quality, FIXED_PITCH | FF_MODERN,
+                       s.face ? s.face : e.face);
 }
 // (Re)create the four terminal fonts from the current catalog selection, recompute the character cell
 // (g_cw/g_ch) from the regular font's metrics, and relayout every session.
@@ -1168,7 +1171,12 @@ static void applyFont() {
     HDC dc = GetDC(nullptr);
     HGDIOBJ old = SelectObject(dc, nf[0]);
     TEXTMETRICW tm; GetTextMetricsW(dc, &tm);
-    g_cw = tm.tmAveCharWidth; g_ch = tm.tmHeight;
+    // Cell width from 'X', not tmAveCharWidth: identical for pure-mono fonts, but dual-width fonts
+    // (GNU Unifont: 8px Latin + 16px CJK) report the WIDE advance as the average, which would give
+    // every ASCII char a double cell. CJK still draws 16px wide and the emulator gives it 2 cells.
+    int xw = 0;
+    GetCharWidth32W(dc, L'X', L'X', &xw);
+    g_cw = xw > 0 ? xw : tm.tmAveCharWidth; g_ch = tm.tmHeight;
     SelectObject(dc, old);
     ReleaseDC(nullptr, dc);
     for (int i = 0; i < 4; i++) { if (g_fonts[i]) DeleteObject(g_fonts[i]); g_fonts[i] = nf[i]; }
@@ -1197,6 +1205,22 @@ static void buildFontCatalog() {
     if (g_haveTamzen)
         g_catalog.push_back({ L"Tamzen", L"TamzenForPowerline", 2, true,
             { {L"7×14",14,0},{L"8×16",16,0},{L"10×20",20,0} } });
+    // The classic console bitmap families (bundled as crisp TTF/OTF conversions; NONANTIALIASED at
+    // their native strikes so they render pixel-exact). Labels = original bitmap cell sizes.
+    if (g_haveTerminus)
+        g_catalog.push_back({ L"Terminus", L"Terminus (TTF)", 2, true,
+            { {L"6×12",12,0},{L"8×14",14,0},{L"8×16",16,0},{L"10×18",18,0},{L"10×20",20,0},
+              {L"11×22",22,0},{L"12×24",24,0},{L"14×28",28,0},{L"16×32",32,0} } });
+    if (g_haveSpleen)   // one family PER strike upstream -> per-size face overrides
+        g_catalog.push_back({ L"Spleen", L"Spleen 8x16", 2, true,
+            { {L"6×12",12,0,L"Spleen 6x12"},{L"8×16",16,0,L"Spleen 8x16"},{L"12×24",24,0,L"Spleen 12x24"},
+              {L"16×32",32,0,L"Spleen 16x32"},{L"32×64",64,0,L"Spleen 32x64"} } });
+    if (g_haveUnscii)   // negative h = em height; the probed values that yield the true 8px advance
+        g_catalog.push_back({ L"UNSCII", L"unscii", 2, true,
+            { {L"8×8",-7,0,L"unscii-8"},{L"8×16",-13,0,L"unscii"} } });
+    if (g_haveUnifont)
+        g_catalog.push_back({ L"GNU Unifont", L"Unifont", 2, true,
+            { {L"8×16",16,0},{L"16×32",32,0} } });
 }
 static int catFace(const wchar_t* label) {
     for (int i = 0; i < (int)g_catalog.size(); i++) if (wcscmp(g_catalog[i].label, label) == 0) return i;
@@ -4191,6 +4215,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
                               L"TamzenForPowerline10x20r.ttf", L"TamzenForPowerline10x20b.ttf" })
         tam += AddFontResourceExW((dir + L"\\" + f).c_str(), FR_PRIVATE, 0);
     g_haveTamzen = tam > 0;
+    g_haveTerminus = AddFontResourceExW((dir + L"\\TerminusTTF.ttf").c_str(), FR_PRIVATE, 0) > 0;
+    AddFontResourceExW((dir + L"\\TerminusTTF-Bold.ttf").c_str(), FR_PRIVATE, 0);
+    int spl = 0;
+    for (const wchar_t* f : { L"Spleen-6x12.otf", L"Spleen-8x16.otf", L"Spleen-12x24.otf",
+                              L"Spleen-16x32.otf", L"Spleen-32x64.otf" })
+        spl += AddFontResourceExW((dir + L"\\" + f).c_str(), FR_PRIVATE, 0);
+    g_haveSpleen = spl > 0;
+    g_haveUnscii = AddFontResourceExW((dir + L"\\unscii-16.ttf").c_str(), FR_PRIVATE, 0) > 0;
+    AddFontResourceExW((dir + L"\\unscii-8.ttf").c_str(), FR_PRIVATE, 0);
+    g_haveUnifont = AddFontResourceExW((dir + L"\\Unifont.otf").c_str(), FR_PRIVATE, 0) > 0;
     buildFontCatalog();
     loadColors();      // Properties->Colors overrides, remembered across restarts
     loadKeys();        // configurable key bindings (unbound by default)
