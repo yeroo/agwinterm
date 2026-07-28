@@ -12,7 +12,7 @@ in `lite/assets/` (and inside the installers).
 | Terminus (TTF) | 4.49.3 | https://files.ax86.net/terminus-ttf/ | SIL OFL 1.1 | `TerminusTTF*.ttf` — lite catalog | no |
 | Spleen | 2.1.0 | https://github.com/fcambus/spleen | BSD 2-Clause, © Frederic Cambus | `Spleen-*.otf` — lite catalog | no |
 | unscii | 2.1 | http://viznut.fi/unscii/ | Public Domain | `unscii-16.ttf`, `unscii-8.ttf` — lite catalog | unscii-8: name table renamed to "unscii-8" (family collision); glyphs untouched |
-| GNU Unifont | 16.0.04 | https://unifoundry.com/unifont/ | dual SIL OFL 1.1 / GPLv2+ with font embedding exception (redistributed under OFL) | `Unifont.otf` — lite catalog | no |
+| GNU Unifont | 16.0.04, sha256 `0e3981ab…af4d` (unifont-16.0.04.otf) | https://unifoundry.com/unifont/ | dual SIL OFL 1.1 / GPLv2+ with font embedding exception (redistributed under OFL) | `Unifont.otf` — lite catalog; also **rasterized** (1-bit) into `agwin-bitmap-complete-*.agbf` as the BMP fallback | rasterized to 1-bit bitmaps in the Complete packs; the bundled OTF is untouched |
 | JetBrainsMono Nerd Font Mono | Nerd Fonts v3.4.0 (JetBrains Mono 2.304), sha256 `ef552a3e…c1582` (JetBrainsMono.tar.xz) | https://github.com/ryanoasis/nerd-fonts | SIL OFL 1.1 (JetBrains Mono © 2020 JetBrains); NF-patched icon sets carry their own licenses (see the NF release's LICENSE files) | **rasterized** into `fonts/generated/agwin-bitmap-*.agbf` (AGWin Bitmap) | rasterized to bitmaps; box/block/Powerline glyphs replaced by cell-geometry synthesis |
 
 Notes:

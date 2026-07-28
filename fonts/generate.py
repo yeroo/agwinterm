@@ -25,10 +25,18 @@ packed in code-point order). Run: python fonts/generate.py [--sizes 14,16,18,20]
   108 64s    source id (font + version, utf-8, zero-padded)
   172 ...    records[glyphCount] (sorted by codepoint, binary-searchable), then atlas
   record (20 bytes): u32 codepoint, u32 atlasOff, i16 bearingX, i16 bearingY,
-                     u16 w, u16 h, u8 cellWidth, u8 flags(1=synthesized), u16 pad
-  atlas: 8-bit alpha, each glyph w*h bytes row-major at its atlasOff
+                     u16 w, u16 h, u8 cellWidth (1 or 2 cells), u8 flags, u16 pad
+  flags: 1 = synthesized (cell geometry), 2 = 1-bit glyph (rows bit-packed MSB-first,
+         padded to whole bytes), 4 = Unicode-fallback source (GNU Unifont)
+  atlas: at each glyph's atlasOff, h rows of w bytes (8-bit alpha) — or, when flags&2,
+         h rows of ceil(w/8) bytes (1-bit mask; on = full-alpha foreground)
+
+The "complete" family backfills every BMP code point the Nerd Font lacks (surrogates
+and PUA excluded) from pinned GNU Unifont as 1-bit glyphs: Unifont is natively 1-bit,
+and 8-bit alpha for ~56k extra glyphs would cost ~20 MB per strike instead of ~3.5 MB.
+East-Asian Wide/Fullwidth code points get cellWidth 2 and render across two cells.
 """
-import argparse, hashlib, io, struct, sys, zlib
+import argparse, hashlib, io, struct, sys, unicodedata, zlib
 from pathlib import Path
 
 from fontTools.ttLib import TTFont
@@ -41,6 +49,9 @@ GENERATED = ROOT / "generated"
 SRC_TTF = "JetBrainsMonoNerdFontMono-Regular.ttf"
 SRC_ID = "JetBrainsMono Nerd Font Mono v3.4.0 (JetBrains Mono 2.304)"
 SRC_SHA256 = "ef552a3e638f25125c6ad4c51176a6adcdce295ab1d2ffacf0db060caf8c1582"  # JetBrainsMono.tar.xz
+UNI_OTF = "Unifont.otf"
+UNI_ID = "GNU Unifont 16.0.04"
+UNI_SHA256 = "0e3981ab552231b5a2a870f2b61741903a4bf25c23ef5aeb05fdced1b3c7af4d"  # the .otf itself
 FAMILY = "AGWin Bitmap"
 
 BOX = range(0x2500, 0x2580)
@@ -215,13 +226,35 @@ def synth_box(cp, w, h):
     return img
 
 
-def rasterize(cps, ttf_path, nominal):
+def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None):
     em, cellw, asc, desc, upos, uth = cell_geometry(ttf_path, nominal)
     cellh = asc + desc
     pil = ImageFont.truetype(str(ttf_path), em)
     cmap = TTFont(ttf_path).getBestCmap()
+    fb_cps = fb_cps or set()
+    if fb_cps:
+        # Fallback em: the largest size whose ascent AND descent both fit inside the pack's,
+        # so Unifont shares the baseline with the main face and never clips at the cell edge.
+        u = TTFont(fb_path)
+        u_upm, u_asc, u_desc = u["head"].unitsPerEm, u["hhea"].ascent, -u["hhea"].descent
+        u_em = min(asc * u_upm // u_asc, desc * u_upm // u_desc if u_desc > 0 else 1 << 30)
+        u_pil = ImageFont.truetype(str(fb_path), u_em)
     records, atlas = [], bytearray()
-    for cp in sorted(cps):
+    for cp in sorted(cps | fb_cps):
+        if cp in fb_cps:  # GNU Unifont fallback: 1-bit mask, wide chars span two cells
+            ch = chr(cp)
+            wide = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+            img8 = Image.new("L", (cellw * 4, cellh * 3), 0)
+            ImageDraw.Draw(img8).text((cellw, asc), ch, font=u_pil, fill=255, anchor="ls")
+            bw = img8.point(lambda v: 255 if v > 127 else 0)
+            bbox = bw.getbbox()
+            if bbox is None:
+                records.append((cp, len(atlas), 0, 0, 0, 0, wide, 6))
+                continue
+            img1 = bw.crop(bbox).convert("1", dither=Image.NONE)
+            records.append((cp, len(atlas), bbox[0] - cellw, bbox[1], img1.width, img1.height, wide, 6))
+            atlas.extend(img1.tobytes())    # rows bit-packed MSB-first, byte-padded
+            continue
         synth = cp in BOX or cp in BLOCKS or cp in PL_SOLID or cp in PL_ROUND or cp == 0xE0A0
         if not synth and cp not in cmap:
             continue
@@ -265,17 +298,27 @@ def preview(path, records, atlas, geo, nominal):
                  "Съешь ещё этих мягких французских булок, да выпей чаю.",
                  "┌────────────┬──────────┐ ╭───────╮ ░░▒▒▓▓████ ▀▄▌▐",
                  "│ AGWin OK   │ main   │ ╰───────╯      "]
+    text_rows.append("中文漢字 日本語かなカナ 한국어 עברית ελληνικά ∮∇∂ ɐɕʤ")  # Unifont fallback (complete)
     idx = {r[0]: r for r in records}
     W, H = geo["cellw"] * 80, geo["cellh"] * (len(text_rows) + 1)
     img = Image.new("L", (W, H), 0)
     for row, line in enumerate(text_rows):
-        for col, ch in enumerate(line[:79]):
+        col = 0
+        for ch in line:
             r = idx.get(ord(ch))
-            if not r or r[4] == 0:
+            if col >= 79:
+                break
+            if not r:
+                col += 1
                 continue
             cp, off, bx, by, w, h, cw, fl = r
-            g = Image.frombytes("L", (w, h), atlas[off:off + w * h])
-            img.paste(g, (col * geo["cellw"] + bx, row * geo["cellh"] + by), g)
+            if w:
+                if fl & 2:   # 1-bit fallback glyph: unpack MSB-first byte-padded rows
+                    g = Image.frombytes("1", (w, h), atlas[off:off + (w + 7) // 8 * h]).convert("L")
+                else:
+                    g = Image.frombytes("L", (w, h), atlas[off:off + w * h])
+                img.paste(g, (col * geo["cellw"] + bx, row * geo["cellh"] + by), g)
+            col += cw
     img.save(path)
 
 
@@ -289,28 +332,48 @@ def main():
     if not src.exists():
         raise SystemExit(f"source font missing: {src}\n(download JetBrainsMono.tar.xz v3.4.0, "
                          f"sha256 {SRC_SHA256}, extract {SRC_TTF} into fonts/sources/)")
-    global FAMILY
+    global FAMILY, SRC_ID
+    fb_cps, fb_path = set(), None
     if args.family == "complete":
         # Complete: the FULL glyph repertoire of the source Nerd Font (every cmap entry) plus the
-        # synthesized cell-geometry sets. Unicode fallback (Unifont) + emoji land in later phases.
+        # synthesized cell-geometry sets, plus GNU Unifont for every remaining BMP code point
+        # (fallback order per spec: Nerd Font -> synthesized -> Unifont -> missing-glyph cell).
         FAMILY = "AGWin Bitmap Complete"
+        SRC_ID = "JetBrainsMono NFM v3.4.0 + GNU Unifont 16.0.04"
         cps = set(TTFont(src).getBestCmap().keys()) | set(BOX) | set(BLOCKS) | PL_SOLID | PL_ROUND | {0xE0A0, 0xFFFD}
         cps = {c for c in cps if c >= 0x20 and not (0xD800 <= c <= 0xDFFF)}
+        fb_path = SOURCES / UNI_OTF
+        if not fb_path.exists():
+            raise SystemExit(f"fallback font missing: {fb_path}\n(download unifont-16.0.04.otf, "
+                             f"sha256 {UNI_SHA256}, save as fonts/sources/{UNI_OTF})")
+        got = hashlib.sha256(fb_path.read_bytes()).hexdigest()
+        if got != UNI_SHA256:
+            raise SystemExit(f"{fb_path}: sha256 {got}, expected {UNI_SHA256}")
+        fb_cps = {c for c in TTFont(fb_path).getBestCmap()
+                  if 0x20 <= c <= 0xFFFF and not (0xD800 <= c <= 0xDFFF)
+                  and not (0xE000 <= c <= 0xF8FF)} - cps      # PUA stays the Nerd Font's turf
     else:
         cps = parse_manifest(ROOT / "manifests" / "agwin-bitmap.txt")
     stem = "agwin-bitmap" if args.family == "bitmap" else "agwin-bitmap-complete"
     GENERATED.mkdir(exist_ok=True)
     for nominal in (int(s) for s in args.sizes.split(",")):
-        records, atlas, geo = rasterize(cps, src, nominal)
+        records, atlas, geo = rasterize(cps, src, nominal, fb_cps, fb_path)
         out = GENERATED / f"{stem}-{nominal}.agbf"
         crc = write_pack(out, nominal, records, atlas, geo)
         preview(GENERATED / f"{stem}-{nominal}-preview.png", records, atlas, geo, nominal)
-        # validation: sorted unique index, box+powerline+cyrillic coverage, mono cell widths
+        # validation: sorted unique index, box+powerline+cyrillic coverage, cell widths
         cps_out = [r[0] for r in records]
         assert cps_out == sorted(set(cps_out)), "index not sorted/unique"
         for need in (0x2500, 0x2502, 0x253C, 0x2588, 0x2591, 0xE0B0, 0x0410, 0x044F, 0xFFFD):
             assert need in set(cps_out), f"missing required glyph U+{need:04X}"
-        assert all(r[6] == 1 for r in records), "non-single-cell glyph in v1"
+        assert all(r[6] in (1, 2) for r in records), "bad cellWidth"
+        if fb_cps:
+            byCp = {r[0]: r for r in records}
+            for need, wide in ((0x4E2D, 2), (0x05D0, 1), (0x0250, 1), (0x3042, 2), (0xAC00, 2)):
+                r = byCp.get(need)
+                assert r and r[7] & 2 and r[6] == wide, f"fallback glyph U+{need:04X} wrong: {r}"
+        else:
+            assert all(r[6] == 1 for r in records), "non-single-cell glyph in curated family"
         print(f"{stem}-{nominal}.agbf: {len(records)} glyphs, cell {geo['cellw']}x{geo['cellh']} "
               f"(em {geo['em']}), atlas {len(atlas)//1024} KiB, crc {crc:08x}, "
               f"file {out.stat().st_size//1024} KiB")
