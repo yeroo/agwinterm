@@ -214,7 +214,8 @@ status bar — in the classic Windows look.
   sessions** with a flagged-only view, **unread badges** (commands finished while a session was
   off-screen), workspace focus, sidebar **drag & drop**.
 - **Terminals**: workspaces + sessions with restore, a 2-pane split, quick / scratch / overlay
-  popup terminals, font catalog (incl. bundled Cozette & Tamzen bitmap fonts) with live zoom,
+  popup terminals, font catalog (incl. bundled Cozette, Tamzen, Terminus, Spleen, UNSCII &
+  GNU Unifont bitmap fonts) with live zoom,
   MS-DOS/EGA palette, cmd.exe-style Properties dialog, fully rebindable keys (all unbound by
   default — keystrokes belong to your shell).
 - **Scriptable**: the same newline-JSON control pipe, speaking the `agwintermctl` dialect —
