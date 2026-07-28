@@ -1245,10 +1245,12 @@ static void buildFontCatalog() {
     if (g_haveUnifont)
         g_catalog.push_back({ L"GNU Unifont", L"Unifont", 2, true,
             { {L"8×16",16,0},{L"16×32",32,0} } });
-    // AGWin Bitmap: pre-rasterized .agbf packs (kind 3) — labels are pixel strikes, not points.
+    // AGWin Bitmap: pre-rasterized .agbf packs (kind 3). Labeled by CELL like the other bitmap
+    // families — a bare number would read as an em size and compare wrong against the TT faces
+    // (Nerd Font "14" = em 14 = an ~18px cell, i.e. the same size as the 8×18 strike here).
     if (g_haveAgbf)
         g_catalog.push_back({ L"AGWin Bitmap", L"AGWin Bitmap", 3, true,
-            { {L"14",14,0},{L"16",16,0},{L"18",18,0},{L"20",20,0} } });
+            { {L"7×14",14,0},{L"7×16",16,0},{L"8×18",18,0},{L"9×20",20,0} } });
 }
 static int catFace(const wchar_t* label) {
     for (int i = 0; i < (int)g_catalog.size(); i++) if (wcscmp(g_catalog[i].label, label) == 0) return i;
