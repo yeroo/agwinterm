@@ -613,7 +613,13 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 FtcsDispatch(text);
                 break;
             case 9: // OSC 9 ; <message> — body-only desktop notification; OSC 9;4 = ConEmu/WT progress
-                if (text.StartsWith("4;", StringComparison.Ordinal))
+                if (text.StartsWith("9;", StringComparison.Ordinal))
+                {
+                    // OSC 9;9 — ConEmu "set working directory": the cwd form ConPTY passes through
+                    // (it swallows OSC 7), so under a pty-host this is how the live cwd arrives.
+                    Cwd = text[2..].Trim('"');
+                }
+                else if (text.StartsWith("4;", StringComparison.Ordinal))
                 {
                     // 9;4;<state>;<value> — state: 0 clear, 1 normal (value 0-100), 2 error,
                     // 3 indeterminate, 4 paused. Progress, not a notification.
