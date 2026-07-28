@@ -31,15 +31,16 @@ fonts/
 
 ## Strikes and geometry
 
-Nominal size = terminal **cell height**. The generator picks the largest em whose
-ascent+descent fits the cell; cell width = the font's mono advance at that em.
+Nominal size = **em size**, matching how lite numbers its TrueType faces — "AGWin
+Bitmap 16" is the same visual size as "Nerd Font 16". The cell is ascent+descent
+at that em; cell width = the font's mono advance.
 
-| pack | cell | em | glyphs | size |
+| pack | em | cell | glyphs | size |
 |---|---|---|---|---|
-| agwin-bitmap-14.agbf | 7×14 | 11 | 3840 | 272 KiB |
-| agwin-bitmap-16.agbf | 7×16 | 12 | 3840 | 311 KiB |
-| agwin-bitmap-18.agbf | 8×18 | 14 | 3840 | 386 KiB |
-| agwin-bitmap-20.agbf | 9×20 | 15 | 3840 | 415 KiB |
+| agwin-bitmap-14.agbf | 14 | 8×18 | 3840 | 386 KiB |
+| agwin-bitmap-16.agbf | 16 | 10×21 | 3840 | 470 KiB |
+| agwin-bitmap-18.agbf | 18 | 11×23 | 3840 | 550 KiB |
+| agwin-bitmap-20.agbf | 20 | 12×26 | 3840 | 656 KiB |
 
 Box drawing (U+2500–257F), block elements (U+2580–259F) and the solid/round
 Powerline separators are **synthesized from the exact cell geometry** — strokes
