@@ -30,7 +30,7 @@ fonts/
   sources/        pinned source fonts (downloaded, gitignored; checksums above)
   manifests/
     agwin-bitmap.txt        glyph subset for the normal family (ranges + NF sets)
-  overrides/      per-strike hand-corrected glyph bitmaps (14/ 16/ 18/ 20/) — TODO
+  overrides/      per-strike hand-corrected glyph PNGs (14/ 16/ 18/ 20/, see its README)
   generated/      output packs + preview sheets (gitignored; `python fonts/generate.py`)
   generate.py     the deterministic generator
 ```
@@ -63,8 +63,8 @@ no subpixel placement).
 `AGWin Bitmap Complete` starts from the **full cmap of the source Nerd Font**
 (11,755 glyphs) and backfills **every remaining BMP code point** from pinned GNU
 Unifont (55,725 more; surrogates and PUA excluded — the PUA stays the Nerd Font's
-icon territory). Fallback order per the spec: Nerd Font → synthesized cell
-geometry → Unifont → hex missing-glyph cell.
+icon territory). Fallback order per the spec: hand-corrected override → Nerd Font
+→ synthesized cell geometry → Unifont → hex missing-glyph cell.
 
 Unifont glyphs are stored as **1-bit masks** (record flag 2) — Unifont is natively
 1-bit, and 8-bit alpha for ~56k extra glyphs would cost ~20 MB per strike instead
@@ -95,6 +95,9 @@ python fonts/generate.py --sizes 16            # subset of strikes
 Validation runs inside the generator: sorted/unique index, required coverage
 (box, blocks, Powerline, Cyrillic, U+FFFD), cell-width metadata, and for the
 Complete family spot checks that CJK/kana/hangul are wide 1-bit fallback glyphs.
+The **committed** packs are additionally validated on every CI run
+(`tests/Agwinterm.Core.Tests/AgbfPackTests.cs`: header sanity, CRC-32, sorted
+index, atlas bounds, per-family coverage) — a corrupted regeneration can't ship.
 
 ## Runtime (agwinterm-lite)
 
@@ -108,6 +111,6 @@ digits) instead of empty boxes.
 
 ## Status / TODO (tracked for the Complete family)
 
-- per-strike override bitmaps (double-line box set + rounded corners need hand
-  polish; the synthesis covers the single/heavy sets well)
 - emoji atlas (color records) + grapheme-cluster resolution; italic strikes
+- (the override *system* is live; no hand-drawn overrides are committed yet —
+  the explicit double-box stroke tables covered the known rough spots)
