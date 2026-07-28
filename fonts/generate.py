@@ -28,7 +28,8 @@ packed in code-point order). Run: python fonts/generate.py [--sizes 14,16,18,20]
                      u16 w, u16 h, u8 cellWidth (1 or 2 cells), u8 flags, u16 pad
   flags: 1 = synthesized (cell geometry), 2 = 1-bit glyph (rows bit-packed MSB-first,
          padded to whole bytes), 4 = Unicode-fallback source (GNU Unifont),
-         8 = corrected (hand-drawn override bitmap from fonts/overrides/<px>/)
+         8 = corrected (hand-drawn override bitmap from fonts/overrides/<px>/),
+         16 = color glyph (atlas rows are w*4 bytes BGRA, straight alpha — Noto emoji)
   atlas: at each glyph's atlasOff, h rows of w bytes (8-bit alpha) — or, when flags&2,
          h rows of ceil(w/8) bytes (1-bit mask; on = full-alpha foreground)
 
@@ -53,6 +54,10 @@ SRC_SHA256 = "ef552a3e638f25125c6ad4c51176a6adcdce295ab1d2ffacf0db060caf8c1582" 
 UNI_OTF = "Unifont.otf"
 UNI_ID = "GNU Unifont 16.0.04"
 UNI_SHA256 = "0e3981ab552231b5a2a870f2b61741903a4bf25c23ef5aeb05fdced1b3c7af4d"  # the .otf itself
+EMOJI_TTF = "NotoColorEmoji.ttf"
+EMOJI_ID = "Noto Color Emoji v2.048"
+EMOJI_SHA256 = "3ed77810c203e1a67735dc19d395f32c23f2d7c0c3696690f4f78e15e57ab816"  # the .ttf itself
+EMOJI_RANGE = range(0x1F300, 0x1FB00)   # exactly the range both emulators treat as wide (wcwidth)
 FAMILY = "AGWin Bitmap"
 
 BOX = range(0x2500, 0x2580)
@@ -246,13 +251,26 @@ def load_overrides(nominal, cellw, cellh):
     return out
 
 
-def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None):
+def load_emoji(path):
+    """Noto Color Emoji CBDT strike -> {cp: png bytes} for single-cp emoji in EMOJI_RANGE."""
+    f = TTFont(path)
+    cmap, strike = f.getBestCmap(), f["CBDT"].strikeData[0]
+    out = {}
+    for cp in EMOJI_RANGE:
+        g = cmap.get(cp)
+        if g and g in strike:
+            out[cp] = strike[g].imageData
+    return out
+
+
+def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None, emoji=None):
     em, cellw, asc, desc, upos, uth = cell_geometry(ttf_path, nominal)
     cellh = asc + desc
     pil = ImageFont.truetype(str(ttf_path), em)
     cmap = TTFont(ttf_path).getBestCmap()
     ovr = load_overrides(nominal, cellw, cellh)
     fb_cps = fb_cps or set()
+    emoji = emoji or {}
     if fb_cps:
         # Fallback em: the largest size whose ascent AND descent both fit inside the pack's,
         # so Unifont shares the baseline with the main face and never clips at the cell edge.
@@ -261,7 +279,7 @@ def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None):
         u_em = min(asc * u_upm // u_asc, desc * u_upm // u_desc if u_desc > 0 else 1 << 30)
         u_pil = ImageFont.truetype(str(fb_path), u_em)
     records, atlas = [], bytearray()
-    for cp in sorted(cps | fb_cps | set(ovr)):
+    for cp in sorted(cps | fb_cps | set(ovr) | set(emoji)):
         if cp in ovr:     # corrected: hand-drawn bitmap wins over every other source
             img8, wide = ovr[cp]
             bbox = img8.getbbox()
@@ -271,6 +289,16 @@ def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None):
             img = img8.crop(bbox)
             records.append((cp, len(atlas), bbox[0], bbox[1], img.width, img.height, wide, 8))
             atlas.extend(img.tobytes())
+            continue
+        if cp in emoji:   # color emoji: PNG strike scaled into the 2-cell box, BGRA straight alpha
+            box_w, box_h = 2 * cellw, cellh
+            img = Image.open(io.BytesIO(emoji[cp])).convert("RGBA")
+            s = min(box_w / img.width, box_h / img.height)
+            img = img.resize((max(1, round(img.width * s)), max(1, round(img.height * s))),
+                             Image.LANCZOS)
+            bx, by = (box_w - img.width) // 2, (box_h - img.height) // 2
+            records.append((cp, len(atlas), bx, by, img.width, img.height, 2, 16))
+            atlas.extend(img.tobytes("raw", "BGRA"))
             continue
         if cp in fb_cps:  # GNU Unifont fallback: 1-bit mask, wide chars span two cells
             ch = chr(cp)
@@ -330,9 +358,10 @@ def preview(path, records, atlas, geo, nominal):
                  "┌────────────┬──────────┐ ╭───────╮ ░░▒▒▓▓████ ▀▄▌▐",
                  "│ AGWin OK   │ main   │ ╰───────╯      "]
     text_rows.append("中文漢字 日本語かなカナ 한국어 עברית ελληνικά ∮∇∂ ɐɕʤ")  # Unifont fallback (complete)
+    text_rows.append("😀🚀🐍🔥🎉❄🌍🍕🎸🐉")                                     # Noto emoji (complete)
     idx = {r[0]: r for r in records}
     W, H = geo["cellw"] * 80, geo["cellh"] * (len(text_rows) + 1)
-    img = Image.new("L", (W, H), 0)
+    img = Image.new("RGB", (W, H), 0)
     for row, line in enumerate(text_rows):
         col = 0
         for ch in line:
@@ -344,11 +373,16 @@ def preview(path, records, atlas, geo, nominal):
                 continue
             cp, off, bx, by, w, h, cw, fl = r
             if w:
-                if fl & 2:   # 1-bit fallback glyph: unpack MSB-first byte-padded rows
-                    g = Image.frombytes("1", (w, h), atlas[off:off + (w + 7) // 8 * h]).convert("L")
+                if fl & 16:  # color emoji: BGRA straight alpha
+                    g = Image.frombytes("RGBA", (w, h), atlas[off:off + w * h * 4], "raw", "BGRA")
+                    img.paste(g, (col * geo["cellw"] + bx, row * geo["cellh"] + by), g)
                 else:
-                    g = Image.frombytes("L", (w, h), atlas[off:off + w * h])
-                img.paste(g, (col * geo["cellw"] + bx, row * geo["cellh"] + by), g)
+                    if fl & 2:   # 1-bit fallback glyph: unpack MSB-first byte-padded rows
+                        g = Image.frombytes("1", (w, h), atlas[off:off + (w + 7) // 8 * h]).convert("L")
+                    else:
+                        g = Image.frombytes("L", (w, h), atlas[off:off + w * h])
+                    img.paste(Image.merge("RGB", (g, g, g)),
+                              (col * geo["cellw"] + bx, row * geo["cellh"] + by), g)
             col += cw
     img.save(path)
 
@@ -364,13 +398,13 @@ def main():
         raise SystemExit(f"source font missing: {src}\n(download JetBrainsMono.tar.xz v3.4.0, "
                          f"sha256 {SRC_SHA256}, extract {SRC_TTF} into fonts/sources/)")
     global FAMILY, SRC_ID
-    fb_cps, fb_path = set(), None
+    fb_cps, fb_path, emoji = set(), None, {}
     if args.family == "complete":
         # Complete: the FULL glyph repertoire of the source Nerd Font (every cmap entry) plus the
         # synthesized cell-geometry sets, plus GNU Unifont for every remaining BMP code point
         # (fallback order per spec: Nerd Font -> synthesized -> Unifont -> missing-glyph cell).
         FAMILY = "AGWin Bitmap Complete"
-        SRC_ID = "JetBrainsMono NFM v3.4.0 + GNU Unifont 16.0.04"
+        SRC_ID = "JBM NFM 3.4.0 + Unifont 16.0.04 + Noto Emoji 2.048"
         cps = set(TTFont(src).getBestCmap().keys()) | set(BOX) | set(BLOCKS) | PL_SOLID | PL_ROUND | {0xE0A0, 0xFFFD}
         cps = {c for c in cps if c >= 0x20 and not (0xD800 <= c <= 0xDFFF)}
         fb_path = SOURCES / UNI_OTF
@@ -383,12 +417,20 @@ def main():
         fb_cps = {c for c in TTFont(fb_path).getBestCmap()
                   if 0x20 <= c <= 0xFFFF and not (0xD800 <= c <= 0xDFFF)
                   and not (0xE000 <= c <= 0xF8FF)} - cps      # PUA stays the Nerd Font's turf
+        em_path = SOURCES / EMOJI_TTF
+        if not em_path.exists():
+            raise SystemExit(f"emoji font missing: {em_path}\n(download noto-emoji v2.048 "
+                             f"fonts/NotoColorEmoji.ttf, sha256 {EMOJI_SHA256}, into fonts/sources/)")
+        got = hashlib.sha256(em_path.read_bytes()).hexdigest()
+        if got != EMOJI_SHA256:
+            raise SystemExit(f"{em_path}: sha256 {got}, expected {EMOJI_SHA256}")
+        emoji = {c: png for c, png in load_emoji(em_path).items() if c not in cps}
     else:
         cps = parse_manifest(ROOT / "manifests" / "agwin-bitmap.txt")
     stem = "agwin-bitmap" if args.family == "bitmap" else "agwin-bitmap-complete"
     GENERATED.mkdir(exist_ok=True)
     for nominal in (int(s) for s in args.sizes.split(",")):
-        records, atlas, geo = rasterize(cps, src, nominal, fb_cps, fb_path)
+        records, atlas, geo = rasterize(cps, src, nominal, fb_cps, fb_path, emoji)
         out = GENERATED / f"{stem}-{nominal}.agbf"
         crc = write_pack(out, nominal, records, atlas, geo)
         preview(GENERATED / f"{stem}-{nominal}-preview.png", records, atlas, geo, nominal)
@@ -403,6 +445,9 @@ def main():
             for need, wide in ((0x4E2D, 2), (0x05D0, 1), (0x0250, 1), (0x3042, 2), (0xAC00, 2)):
                 r = byCp.get(need)
                 assert r and r[7] & 2 and r[6] == wide, f"fallback glyph U+{need:04X} wrong: {r}"
+            for need in (0x1F600, 0x1F680, 0x1F4A9):    # emoji: color records spanning 2 cells
+                r = byCp.get(need)
+                assert r and r[7] & 16 and r[6] == 2, f"emoji glyph U+{need:04X} wrong: {r}"
         else:
             assert all(r[6] == 1 for r in records), "non-single-cell glyph in curated family"
         print(f"{stem}-{nominal}.agbf: {len(records)} glyphs, cell {geo['cellw']}x{geo['cellh']} "
