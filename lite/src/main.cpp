@@ -1580,6 +1580,9 @@ static HFONT styleFont(uint32_t attrs) {
 // e.g. popup windows); `showCursor` draws the cursor (the focused main pane, or a popup terminal).
 // ---- AGWin Bitmap (.agbf) — pre-rasterized font packs, no vector fonts at runtime -------------
 // Format v1 (fonts/generate.py): 172-byte header, sorted glyph records, 8-bit alpha atlas.
+// Record flags: 1 = synthesized, 2 = 1-bit glyph (rows bit-packed MSB-first, byte-padded —
+// the Complete family's GNU Unifont fallback), 4 = fallback source. Wide glyphs (cellW 2)
+// just render across two cells; the emulator's cell.width drives layout, not the record.
 #pragma pack(push, 1)
 struct AgbfHeader {
     char magic[4]; uint32_t version, strike;
@@ -1691,16 +1694,18 @@ static void agbfPaintGrid(HDC mem, RECT pr, const FfiCell* view, const FfiEmuInf
             if (cell.rune && cell.rune != ' ') {
                 const AgbfRec* rec = agbfFind(cell.rune);
                 if (rec && rec->w) {
+                    bool onebit = (rec->flags & 2) != 0;        // Unifont fallback: bit-packed rows
+                    size_t stride = onebit ? ((size_t)rec->w + 7) / 8 : rec->w;
                     int passes = (attrs & kAttrBold) ? 2 : 1;   // synthetic bold: 1px overstrike
                     for (int p = 0; p < passes; p++)
                         for (int gy = 0; gy < rec->h; gy++) {
                             int py = y0 + rec->by + gy;
                             if (py < y0 || py >= y0 + ch) continue;
-                            const uint8_t* src = g_agbfPack.atlas + rec->off + (size_t)gy * rec->w;
+                            const uint8_t* src = g_agbfPack.atlas + rec->off + (size_t)gy * stride;
                             for (int gx = 0; gx < rec->w; gx++) {
                                 int px = x0 + rec->bx + gx + p;
                                 if (px < x0 || px >= x0 + cellPx) continue;
-                                uint32_t a = src[gx];
+                                uint32_t a = onebit ? ((src[gx >> 3] & (0x80u >> (gx & 7))) ? 255u : 0u) : src[gx];
                                 if (!a) continue;
                                 uint32_t* dst = &fb[(size_t)py * W + px];
                                 uint32_t dr = (*dst >> 16) & 0xFF, dg = (*dst >> 8) & 0xFF, db = *dst & 0xFF;
