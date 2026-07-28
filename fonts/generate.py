@@ -27,7 +27,8 @@ packed in code-point order). Run: python fonts/generate.py [--sizes 14,16,18,20]
   record (20 bytes): u32 codepoint, u32 atlasOff, i16 bearingX, i16 bearingY,
                      u16 w, u16 h, u8 cellWidth (1 or 2 cells), u8 flags, u16 pad
   flags: 1 = synthesized (cell geometry), 2 = 1-bit glyph (rows bit-packed MSB-first,
-         padded to whole bytes), 4 = Unicode-fallback source (GNU Unifont)
+         padded to whole bytes), 4 = Unicode-fallback source (GNU Unifont),
+         8 = corrected (hand-drawn override bitmap from fonts/overrides/<px>/)
   atlas: at each glyph's atlasOff, h rows of w bytes (8-bit alpha) — or, when flags&2,
          h rows of ceil(w/8) bytes (1-bit mask; on = full-alpha foreground)
 
@@ -226,11 +227,31 @@ def synth_box(cp, w, h):
     return img
 
 
+def load_overrides(nominal, cellw, cellh):
+    """fonts/overrides/<px>/<hex>.png — hand-corrected glyphs, highest precedence.
+    Grayscale PNG, exactly cellw x cellh (or 2*cellw x cellh for a wide glyph);
+    pixel value = alpha. An all-black PNG deliberately blanks the glyph."""
+    out = {}
+    d = ROOT / "overrides" / str(nominal)
+    if not d.is_dir():
+        return out
+    for p in sorted(d.glob("*.png")):
+        cp = int(p.stem, 16)
+        img = Image.open(p).convert("L")
+        k = max(1, img.width // cellw)
+        if img.size not in ((cellw, cellh), (2 * cellw, cellh)):
+            raise SystemExit(f"{p}: size {img.size[0]}x{img.size[1]}, "
+                             f"want {cellw}x{cellh} or {2 * cellw}x{cellh}")
+        out[cp] = (img, k)
+    return out
+
+
 def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None):
     em, cellw, asc, desc, upos, uth = cell_geometry(ttf_path, nominal)
     cellh = asc + desc
     pil = ImageFont.truetype(str(ttf_path), em)
     cmap = TTFont(ttf_path).getBestCmap()
+    ovr = load_overrides(nominal, cellw, cellh)
     fb_cps = fb_cps or set()
     if fb_cps:
         # Fallback em: the largest size whose ascent AND descent both fit inside the pack's,
@@ -240,7 +261,17 @@ def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None):
         u_em = min(asc * u_upm // u_asc, desc * u_upm // u_desc if u_desc > 0 else 1 << 30)
         u_pil = ImageFont.truetype(str(fb_path), u_em)
     records, atlas = [], bytearray()
-    for cp in sorted(cps | fb_cps):
+    for cp in sorted(cps | fb_cps | set(ovr)):
+        if cp in ovr:     # corrected: hand-drawn bitmap wins over every other source
+            img8, wide = ovr[cp]
+            bbox = img8.getbbox()
+            if bbox is None:
+                records.append((cp, len(atlas), 0, 0, 0, 0, wide, 8))
+                continue
+            img = img8.crop(bbox)
+            records.append((cp, len(atlas), bbox[0], bbox[1], img.width, img.height, wide, 8))
+            atlas.extend(img.tobytes())
+            continue
         if cp in fb_cps:  # GNU Unifont fallback: 1-bit mask, wide chars span two cells
             ch = chr(cp)
             wide = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
