@@ -19,6 +19,14 @@
 #include <shlobj.h>     // SHBrowseForFolder (New Session in Folder…)
 #include <dwmapi.h>     // dark title bar (DWMWA_USE_IMMERSIVE_DARK_MODE)
 #include <uxtheme.h>    // SetWindowTheme — dark scrollbars on the tree
+#include <winhttp.h>    // self-update HTTP
+#include <bcrypt.h>     // self-update SHA-256
+
+// Stamped by build.ps1 from installer/agwinterm-lite.iss so exe and setup can never disagree;
+// an unstamped ("dev") build never triggers a self-update.
+#ifndef AGWL_VERSION_STR
+#define AGWL_VERSION_STR "dev"
+#endif
 #include <algorithm>    // std::stable_sort (command-palette ranking)
 #include <string>
 #include <vector>
@@ -46,6 +54,8 @@ CAppModule _Module;
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "advapi32.lib")   // registry (persisted font choice)
+#pragma comment(lib, "winhttp.lib")    // self-update: GitHub releases over HTTPS
+#pragma comment(lib, "bcrypt.lib")     // self-update: SHA-256 digest verification
 
 #include "proto/ptyhost.pb.h"
 #include "proto/pb_encode.h"
@@ -677,7 +687,8 @@ enum { IDM_NEW = 1, IDM_CLOSE = 2, IDM_SPLIT = 3, IDM_NEXT = 4, IDM_COPY = 5, ID
        IDM_DUP = 105, IDM_RENAME = 106, IDM_DELWS = 107, IDM_PROPERTIES = 108, IDM_KEYBOARD = 109,
        IDM_QUICK = 120, IDM_SCRATCH = 121, IDM_REOPEN = 122,
        IDM_TG_SIDEBAR = 123, IDM_TG_TOOLBAR = 124, IDM_TG_STATUS = 125,
-       IDM_FLAG = 126, IDM_FLAGVIEW = 127, IDM_ATTENTION = 128, IDM_FOCUSWS = 129, IDM_PALETTE = 130 };
+       IDM_FLAG = 126, IDM_FLAGVIEW = 127, IDM_ATTENTION = 128, IDM_FOCUSWS = 129, IDM_PALETTE = 130,
+       IDM_UPDATE = 131 };
 #define IDM_MOVE_BASE 300   // "Move to workspace <w>" = IDM_MOVE_BASE + w
 enum { ID_TREE = 200, ID_TRAY = 201, ID_TOOLBAR = 202, ID_STATUS = 203 };
 
@@ -705,6 +716,7 @@ static int tbImageOf(int cmdId) {
 #define WM_APP_REFRESHTREE (WM_APP + 3)   // posted from worker threads to rebuild the tree on the UI thread
 #define WM_APP_TRAY        (WM_APP + 4)   // system-tray icon notifications
 #define WM_APP_OVERLAY     (WM_APP + 5)   // control thread -> UI thread: open an overlay (creates a window)
+#define WM_APP_UPDATE      (WM_APP + 6)   // self-update worker -> UI thread (balloon / message / apply)
 static std::string g_pendingOverlayCmd; static int g_pendingOverlaySize;
 static HICON g_appIcon;         // big (taskbar / alt-tab)
 static HICON g_appIconSm;       // small (title bar / tray)
@@ -778,6 +790,7 @@ static const PalAction kPalActions[] = {
     { L"Theme: Classic",           0,              -1,           TH_CLASSIC },
     { L"Keyboard…",           IDM_KEYBOARD,   -1,           -1 },
     { L"Properties…",         IDM_PROPERTIES, -1,           -1 },
+    { L"Check for Updates",        IDM_UPDATE,     -1,           -1 },
     { L"Restart Everything",       IDM_RESTART,    -1,           -1 },
     { L"About agwinterm lite",     IDM_ABOUT,      -1,           -1 },
     { L"Exit",                     IDM_EXIT,       -1,           -1 },
@@ -2364,6 +2377,249 @@ static void scrollFocused(int deltaRows) {
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
+// ---- self-update (parity with the full app's app-update): GitHub releases/latest -> pick the
+// lite setup asset -> SHA-256-verified download (the release API's per-asset digest is the
+// integrity gate; we have no Authenticode cert) -> detached helper waits for exit, runs the
+// setup silently, relaunches. FAIL-CLOSED at every step: no digest / bad digest / parse mismatch
+// -> abort, nothing applied. Only the INSTALLED copy (%LOCALAPPDATA%\Programs\agwinterm-lite)
+// self-updates; dev/portable copies get pointed at GitHub instead.
+enum { UPD_BALLOON = 1, UPD_MSG = 2, UPD_APPLY = 3 };   // WM_APP_UPDATE wParam
+struct UpdApply { std::wstring ver, payload, helper; };
+static bool g_updBusy = false;   // UI thread only: one interactive flow at a time
+
+static std::wstring updVersion() {
+    wchar_t v[64];
+    if (GetEnvironmentVariableW(L"AGWINTERM_VERSION_OVERRIDE", v, 64) > 0) return v;   // test seam
+    std::wstring s;
+    for (const char* p = AGWL_VERSION_STR; *p; p++) s += (wchar_t)*p;
+    return s;
+}
+static bool updParses(const std::wstring& v) { int a, b, c; return swscanf_s(v.c_str(), L"%d.%d.%d", &a, &b, &c) == 3; }
+static int updCmpVer(const std::wstring& a, const std::wstring& b) {   // >0 = a newer than b
+    int av[3]{}, bv[3]{};
+    swscanf_s(a.c_str(), L"%d.%d.%d", &av[0], &av[1], &av[2]);
+    swscanf_s(b.c_str(), L"%d.%d.%d", &bv[0], &bv[1], &bv[2]);
+    for (int i = 0; i < 3; i++) if (av[i] != bv[i]) return av[i] < bv[i] ? -1 : 1;
+    return 0;
+}
+static bool updChannelInstalled() {
+    wchar_t env[16];
+    if (GetEnvironmentVariableW(L"AGWINTERM_LITE_UPDATE_CHANNEL", env, 16) > 0)        // test seam
+        return wcscmp(env, L"installed") == 0;
+    wchar_t base[MAX_PATH], exe[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) || !GetModuleFileNameW(nullptr, exe, MAX_PATH)) return false;
+    std::wstring dir = std::wstring(base) + L"\\Programs\\agwinterm-lite\\";
+    return _wcsnicmp(exe, dir.c_str(), dir.size()) == 0;
+}
+static std::wstring updDir() {   // downloads + helper live here; cleaned on startup
+    wchar_t base[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return {};
+    std::wstring d = std::wstring(base) + L"\\agwinterm-lite";
+    CreateDirectoryW(d.c_str(), nullptr);
+    d += L"\\updates";
+    CreateDirectoryW(d.c_str(), nullptr);
+    return d;
+}
+static void updCleanup() {   // best-effort: drop payloads/logs a previous update left behind
+    std::wstring d = updDir();
+    if (d.empty()) return;
+    WIN32_FIND_DATAW fd;
+    HANDLE f = FindFirstFileW((d + L"\\*").c_str(), &fd);
+    if (f == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) DeleteFileW((d + L"\\" + fd.cFileName).c_str());
+    } while (FindNextFileW(f, &fd));
+    FindClose(f);
+}
+
+static bool updHttpGet(const std::wstring& url, std::vector<uint8_t>& out) {
+    URL_COMPONENTS uc{ sizeof uc };
+    wchar_t host[256], path[2048];
+    uc.lpszHostName = host; uc.dwHostNameLength = 256;
+    uc.lpszUrlPath = path; uc.dwUrlPathLength = 2048;
+    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) return false;
+    HINTERNET ses = WinHttpOpen(L"agwinterm-lite", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!ses) return false;
+    HINTERNET con = WinHttpConnect(ses, host, uc.nPort, 0);
+    HINTERNET req = con ? WinHttpOpenRequest(con, L"GET", path, nullptr, WINHTTP_NO_REFERER,
+                                             WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                             uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
+                        : nullptr;
+    bool ok = false;
+    if (req && WinHttpSendRequest(req, L"Accept: application/vnd.github+json\r\n", (DWORD)-1, nullptr, 0, 0, 0)
+            && WinHttpReceiveResponse(req, nullptr)) {
+        DWORD status = 0, sz = sizeof status;
+        WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX);
+        if (status == 200) {
+            for (;;) {
+                DWORD avail = 0;
+                if (!WinHttpQueryDataAvailable(req, &avail) || !avail) break;
+                size_t off = out.size(); out.resize(off + avail);
+                DWORD rd = 0;
+                if (!WinHttpReadData(req, out.data() + off, avail, &rd) || !rd) { out.resize(off); break; }
+                out.resize(off + rd);
+            }
+            ok = !out.empty();
+        }
+    }
+    if (req) WinHttpCloseHandle(req);
+    if (con) WinHttpCloseHandle(con);
+    if (ses) WinHttpCloseHandle(ses);
+    return ok;
+}
+static bool updFetch(const std::wstring& src, std::vector<uint8_t>& out) {   // local paths = test seam
+    DWORD at = GetFileAttributesW(src.c_str());
+    if (at != INVALID_FILE_ATTRIBUTES && !(at & FILE_ATTRIBUTE_DIRECTORY)) {
+        HANDLE f = CreateFileW(src.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (f == INVALID_HANDLE_VALUE) return false;
+        DWORD sz = GetFileSize(f, nullptr), rd = 0;
+        out.resize(sz);
+        bool ok = ReadFile(f, out.data(), sz, &rd, nullptr) && rd == sz;
+        CloseHandle(f);
+        return ok && !out.empty();
+    }
+    return updHttpGet(src, out);
+}
+
+static std::wstring updSha256(const std::vector<uint8_t>& data) {
+    BCRYPT_ALG_HANDLE alg = nullptr; BCRYPT_HASH_HANDLE h = nullptr;
+    UCHAR digest[32]; std::wstring hex;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) return {};
+    if (BCryptCreateHash(alg, &h, nullptr, 0, nullptr, 0, 0) == 0) {
+        if (BCryptHashData(h, (PUCHAR)data.data(), (ULONG)data.size(), 0) == 0 &&
+            BCryptFinishHash(h, digest, 32, 0) == 0)
+            for (UCHAR b : digest) { wchar_t x[3]; swprintf_s(x, L"%02x", b); hex += x; }
+        BCryptDestroyHash(h);
+    }
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return hex;
+}
+
+// Scan the /releases/latest JSON for tag_name + the lite-setup asset's url and digest. The window
+// [asset name .. next "name":] keeps the digest/url reads inside that asset's object (GitHub user
+// objects inside assets carry "login", never "name", so the next "name" is the next asset).
+static std::string updJsonStr(const std::string& j, size_t from, size_t to, const char* key) {
+    std::string k = std::string("\"") + key + "\":\"";
+    size_t i = j.find(k, from);
+    if (i == std::string::npos || i >= to) return {};
+    i += k.size();
+    size_t e = j.find('"', i);
+    if (e == std::string::npos || e > to) return {};
+    return j.substr(i, e - i);
+}
+struct UpdRelease { std::wstring ver; std::string url, sha256; bool ok = false; };
+static UpdRelease updParse(const std::string& j) {
+    UpdRelease r;
+    std::string tag = updJsonStr(j, 0, j.size(), "tag_name");
+    if (!tag.empty() && (tag[0] == 'v' || tag[0] == 'V')) tag.erase(0, 1);
+    if (tag.empty()) return r;
+    for (char c : tag) r.ver += (wchar_t)c;
+    size_t a = j.find("\"name\":\"agwinterm-lite-setup-");
+    if (a == std::string::npos) return r;
+    size_t end = j.find("\"name\":\"", a + 8);
+    if (end == std::string::npos) end = j.size();
+    r.url = updJsonStr(j, a, end, "browser_download_url");
+    std::string dig = updJsonStr(j, a, end, "digest");   // "sha256:<hex>"
+    if (dig.rfind("sha256:", 0) == 0) r.sha256 = dig.substr(7);
+    r.ok = !r.url.empty();
+    return r;
+}
+
+static const char kUpdHelper[] =
+    "param([int]$ProcId, [string]$Payload, [string]$Exe, [string]$RelArgs)\n"
+    "function Log([string]$m) { try { Add-Content -Path ($Payload + '.log') -Value (\"{0:HH:mm:ss.fff} {1}\" -f (Get-Date), $m) } catch { } }\n"
+    "Log \"wait pid=$ProcId\"\n"
+    "try { Wait-Process -Id $ProcId -Timeout 120 -ErrorAction SilentlyContinue } catch { }\n"
+    "if (Get-Process -Id $ProcId -ErrorAction SilentlyContinue) { Log 'ABORT: app never exited'; exit 1 }\n"
+    "Start-Sleep -Milliseconds 500\n"
+    "Log 'applying'\n"
+    "Start-Process $Payload -ArgumentList '/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES' -Wait\n"
+    "Log 'setup finished'\n"
+    "if ($RelArgs) { Start-Process $Exe -ArgumentList $RelArgs } else { Start-Process $Exe }\n"
+    "Log 'relaunched'\n";
+
+static std::wstring* updHeapStr(const std::wstring& s) { return new std::wstring(s); }   // freed by the UI handler
+
+static DWORD WINAPI updWorker(LPVOID p) {
+    bool interactive = p != nullptr;
+    auto post = [](WPARAM code, void* data) { PostMessageW(g_hwnd, WM_APP_UPDATE, code, (LPARAM)data); };
+    if (!interactive) Sleep(8000);   // background check: stay out of startup's way
+    std::wstring cur = updVersion();
+    wchar_t apiw[512];
+    std::wstring api = GetEnvironmentVariableW(L"AGWINTERM_UPDATE_API", apiw, 512) > 0
+                     ? apiw : L"https://api.github.com/repos/yeroo/agwinterm/releases/latest";
+    std::vector<uint8_t> buf;
+    if (!updFetch(api, buf)) {
+        if (interactive) post(UPD_MSG, updHeapStr(L"update check failed (offline or rate-limited) — try again later"));
+        return 0;
+    }
+    UpdRelease rel = updParse(std::string((const char*)buf.data(), buf.size()));
+    if (!rel.ok || !updParses(rel.ver)) {
+        if (interactive) post(UPD_MSG, updHeapStr(L"could not read the release feed"));
+        return 0;
+    }
+    if (updCmpVer(rel.ver, cur) <= 0) {
+        if (interactive) post(UPD_MSG, updHeapStr(L"agwinterm lite " + cur + L" is already the latest"));
+        return 0;
+    }
+    if (!interactive) { post(UPD_BALLOON, updHeapStr(rel.ver)); return 0; }
+    if (rel.sha256.empty()) {
+        post(UPD_MSG, updHeapStr(L"release asset carries no SHA-256 digest — refusing an unverifiable update"));
+        return 0;
+    }
+    std::wstring urlw;
+    for (char c : rel.url) urlw += (wchar_t)c;
+    std::vector<uint8_t> payload;
+    if (!updFetch(urlw, payload)) { post(UPD_MSG, updHeapStr(L"download failed — update aborted")); return 0; }
+    std::wstring want;
+    for (char c : rel.sha256) want += (wchar_t)towlower(c);
+    if (updSha256(payload) != want) {
+        post(UPD_MSG, updHeapStr(L"download failed SHA-256 verification — update aborted"));
+        return 0;
+    }
+    std::wstring dir = updDir();
+    if (dir.empty()) { post(UPD_MSG, updHeapStr(L"cannot resolve %LOCALAPPDATA% — update aborted")); return 0; }
+    auto writeAll = [](const std::wstring& path, const void* data, DWORD len) {
+        HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        if (f == INVALID_HANDLE_VALUE) return false;
+        DWORD wr = 0;
+        bool ok = WriteFile(f, data, len, &wr, nullptr) && wr == len;
+        CloseHandle(f);
+        return ok;
+    };
+    UpdApply* a = new UpdApply;
+    a->ver = rel.ver;
+    a->payload = dir + L"\\agwinterm-lite-setup-" + rel.ver + L".exe";
+    a->helper = dir + L"\\apply-update.ps1";
+    if (!writeAll(a->payload, payload.data(), (DWORD)payload.size()) ||
+        !writeAll(a->helper, kUpdHelper, (DWORD)(sizeof kUpdHelper - 1))) {
+        delete a;
+        post(UPD_MSG, updHeapStr(L"could not write the update files — update aborted"));
+        return 0;
+    }
+    post(UPD_APPLY, a);
+    return 0;
+}
+
+static void updCheck(bool interactive) {
+    if (interactive) {
+        if (g_updBusy) return;
+        if (!updChannelInstalled()) {
+            MessageBoxW(g_hwnd,
+                L"This copy of agwinterm lite is not the installed one, so it does not self-update.\n"
+                L"Get releases at github.com/yeroo/agwinterm/releases.",
+                L"agwinterm lite update", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        g_updBusy = true;
+    } else if (!updChannelInstalled() || !updParses(updVersion())) return;   // dev builds stay silent
+    HANDLE t = CreateThread(nullptr, 0, updWorker, interactive ? (LPVOID)1 : nullptr, 0, nullptr);
+    if (t) CloseHandle(t);
+    else g_updBusy = false;
+}
+
 static void togglePalette() {
     g_palette = !g_palette;
     g_palQuery.clear();
@@ -2733,6 +2989,7 @@ static HMENU buildMenuBar() {
     AppendMenuW(view, MF_STRING | (g_showStatus ? MF_CHECKED : 0), IDM_TG_STATUS, L"Status &Bar");
     // Font selection lives in File -> Properties now (no separate View -> Font submenu).
     HMENU help = CreatePopupMenu();
+    AppendMenuW(help, MF_STRING, IDM_UPDATE, L"Check for &Updates…");
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agwinterm lite");
     HMENU bar = CreateMenu();
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)file, L"&File");
@@ -3702,6 +3959,7 @@ public:
         MESSAGE_HANDLER(WM_APP_REFRESHTREE, OnRefreshTree)
         MESSAGE_HANDLER(WM_APP_TRAY, OnTray)
         MESSAGE_HANDLER(WM_APP_OVERLAY, OnOverlay)
+        MESSAGE_HANDLER(WM_APP_UPDATE, OnAppUpdate)
         MESSAGE_HANDLER(WM_NOTIFY, OnNotify)
         MESSAGE_HANDLER(WM_COMMAND, OnCommand)
         MESSAGE_HANDLER(WM_UAHDRAWMENU, OnUahDrawMenu)
@@ -3921,6 +4179,55 @@ public:
         openOverlay(cmd, sz);
         return 0;
     }
+    LRESULT OnAppUpdate(UINT, WPARAM wp, LPARAM lp, BOOL&) {   // self-update worker -> UI thread
+        if (wp == UPD_BALLOON) {   // background check: one tray balloon, no interruption
+            std::wstring* v = (std::wstring*)lp;
+            g_nid.uFlags |= NIF_INFO;
+            wcscpy_s(g_nid.szInfoTitle, L"agwinterm lite");
+            swprintf_s(g_nid.szInfo, L"%s is out (you have %s) — Help → Check for Updates",
+                       v->c_str(), updVersion().c_str());
+            g_nid.dwInfoFlags = NIIF_INFO;
+            Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+            g_nid.uFlags &= ~NIF_INFO;
+            delete v;
+        } else if (wp == UPD_MSG) {
+            std::wstring* m = (std::wstring*)lp;
+            g_updBusy = false;
+            MessageBoxW(m->c_str(), L"agwinterm lite update", MB_OK | MB_ICONINFORMATION);
+            delete m;
+        } else if (wp == UPD_APPLY) {   // verified payload on disk; confirm, hand off, exit
+            UpdApply* a = (UpdApply*)lp;
+            if (listInstances().size() > 1) {
+                g_updBusy = false;
+                MessageBoxW(L"Close the other agwinterm lite windows first — the installer can't "
+                            L"replace a running exe.", L"agwinterm lite update", MB_OK | MB_ICONWARNING);
+            } else {
+                std::wstring msg = L"agwinterm lite " + updVersion() + L" → " + a->ver +
+                                   L"\n\nDownload verified (SHA-256). Update and restart now?\n"
+                                   L"Sessions are saved and restored.";
+                if (MessageBoxW(msg.c_str(), L"agwinterm lite update", MB_OKCANCEL | MB_ICONQUESTION) == IDOK) {
+                    wchar_t exe[MAX_PATH];
+                    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+                    std::wstring cmd = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden"
+                                       L" -File \"" + a->helper + L"\" -ProcId " + std::to_wstring(GetCurrentProcessId()) +
+                                       L" -Payload \"" + a->payload + L"\" -Exe \"" + exe + L"\"";
+                    if (!g_isDefaultInstance)   // named instances come back under their own pipe
+                        cmd += L" -RelArgs \"--pipe " + g_instance + L"\"";
+                    STARTUPINFOW si{ sizeof si }; PROCESS_INFORMATION pi{};
+                    if (CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                                       nullptr, nullptr, &si, &pi)) {
+                        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+                        DestroyWindow();        // graceful: saves sessions, drops tray, quits
+                    } else {
+                        g_updBusy = false;
+                        MessageBoxW(L"Failed to start the update helper.", L"agwinterm lite update", MB_OK | MB_ICONERROR);
+                    }
+                } else g_updBusy = false;
+            }
+            delete a;
+        }
+        return 0;
+    }
 
     // ---- notifications ----
     LRESULT OnNotify(UINT, WPARAM, LPARAM lp, BOOL&) {
@@ -4121,10 +4428,13 @@ public:
             case IDM_RESTART: restartApp(); break;
             case IDM_SHOW: showMainWindow(); break;
             case IDM_EXIT: DestroyWindow(); break;
-            case IDM_ABOUT:
-                MessageBoxW(L"agwinterm lite\nA lightweight native terminal over the Rust pty-host.",
-                            L"About", MB_OK | MB_ICONINFORMATION);
+            case IDM_UPDATE: updCheck(true); break;
+            case IDM_ABOUT: {
+                std::wstring about = L"agwinterm lite " + updVersion() +
+                                     L"\nA lightweight native terminal over the Rust pty-host.";
+                MessageBoxW(about.c_str(), L"About", MB_OK | MB_ICONINFORMATION);
                 break;
+            }
             default:   // menu-bar / tray: close / split / next / copy / paste / previous
                 if (id >= IDM_CLOSE && id <= IDM_PREV) {
                     static const int kb[] = { KB_CLOSE, KB_SPLIT, KB_NEXT, KB_COPY, KB_PASTE, KB_PREV };
@@ -4832,6 +5142,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_nid.hIcon = g_appIconSm;
     wcscpy_s(g_nid.szTip, L"agwinterm lite");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
+
+    updCleanup();       // drop payloads a previous update left behind
+    updCheck(false);    // background "a new lite is out" balloon (installed copies only)
 
     applyTheme();   // now that the controls exist, colour them (and the title bar) for real
 
