@@ -22,7 +22,16 @@ $src = Join-Path $PSScriptRoot 'src\main.cpp'
 $pb = Join-Path $PSScriptRoot 'src\proto'
 $wtl = Join-Path $PSScriptRoot 'third_party\wtl'
 $rc = Join-Path $PSScriptRoot 'src\lite.rc'
-$cmd = "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && rc /nologo /fo `"$bin\lite.res`" `"$rc`" && cl /nologo /O2 /W3 /EHsc /utf-8 /DUNICODE /D_UNICODE /DPB_FIELD_32BIT /I `"$pb`" /I `"$wtl`" `"$src`" `"$pb\ptyhost.pb.c`" `"$pb\pb_encode.c`" `"$pb\pb_decode.c`" `"$pb\pb_common.c`" /Fe:`"$bin\agwinterm-lite.exe`" /Fo:`"$bin\\`" user32.lib gdi32.lib `"$bin\lite.res`""
+# Version comes from the lite installer script, so exe and setup can never disagree — the
+# self-update compares this against GitHub releases. Missing iss (odd checkout) -> "dev",
+# which never triggers an update.
+$ver = 'dev'
+$iss = Join-Path $root 'installer\agwinterm-lite.iss'
+if (Test-Path $iss) {
+  $m = Select-String -Path $iss -Pattern '#define AppVersion "([^"]+)"'
+  if ($m) { $ver = $m.Matches[0].Groups[1].Value }
+}
+$cmd = "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && rc /nologo /fo `"$bin\lite.res`" `"$rc`" && cl /nologo /O2 /W3 /EHsc /utf-8 /DUNICODE /D_UNICODE /DPB_FIELD_32BIT /DAGWL_VERSION_STR=`"\`"$ver\`"`" /I `"$pb`" /I `"$wtl`" `"$src`" `"$pb\ptyhost.pb.c`" `"$pb\pb_encode.c`" `"$pb\pb_decode.c`" `"$pb\pb_common.c`" /Fe:`"$bin\agwinterm-lite.exe`" /Fo:`"$bin\\`" user32.lib gdi32.lib `"$bin\lite.res`""
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { throw 'cl.exe failed' }
 
