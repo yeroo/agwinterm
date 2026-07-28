@@ -283,25 +283,35 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sizes", default="14,16,18,20")
     ap.add_argument("--src", default=str(SOURCES / SRC_TTF))
+    ap.add_argument("--family", default="bitmap", choices=["bitmap", "complete"])
     args = ap.parse_args()
     src = Path(args.src)
     if not src.exists():
         raise SystemExit(f"source font missing: {src}\n(download JetBrainsMono.tar.xz v3.4.0, "
                          f"sha256 {SRC_SHA256}, extract {SRC_TTF} into fonts/sources/)")
-    cps = parse_manifest(ROOT / "manifests" / "agwin-bitmap.txt")
+    global FAMILY
+    if args.family == "complete":
+        # Complete: the FULL glyph repertoire of the source Nerd Font (every cmap entry) plus the
+        # synthesized cell-geometry sets. Unicode fallback (Unifont) + emoji land in later phases.
+        FAMILY = "AGWin Bitmap Complete"
+        cps = set(TTFont(src).getBestCmap().keys()) | set(BOX) | set(BLOCKS) | PL_SOLID | PL_ROUND | {0xE0A0, 0xFFFD}
+        cps = {c for c in cps if c >= 0x20 and not (0xD800 <= c <= 0xDFFF)}
+    else:
+        cps = parse_manifest(ROOT / "manifests" / "agwin-bitmap.txt")
+    stem = "agwin-bitmap" if args.family == "bitmap" else "agwin-bitmap-complete"
     GENERATED.mkdir(exist_ok=True)
     for nominal in (int(s) for s in args.sizes.split(",")):
         records, atlas, geo = rasterize(cps, src, nominal)
-        out = GENERATED / f"agwin-bitmap-{nominal}.agbf"
+        out = GENERATED / f"{stem}-{nominal}.agbf"
         crc = write_pack(out, nominal, records, atlas, geo)
-        preview(GENERATED / f"agwin-bitmap-{nominal}-preview.png", records, atlas, geo, nominal)
+        preview(GENERATED / f"{stem}-{nominal}-preview.png", records, atlas, geo, nominal)
         # validation: sorted unique index, box+powerline+cyrillic coverage, mono cell widths
         cps_out = [r[0] for r in records]
         assert cps_out == sorted(set(cps_out)), "index not sorted/unique"
         for need in (0x2500, 0x2502, 0x253C, 0x2588, 0x2591, 0xE0B0, 0x0410, 0x044F, 0xFFFD):
             assert need in set(cps_out), f"missing required glyph U+{need:04X}"
         assert all(r[6] == 1 for r in records), "non-single-cell glyph in v1"
-        print(f"agwin-bitmap-{nominal}.agbf: {len(records)} glyphs, cell {geo['cellw']}x{geo['cellh']} "
+        print(f"{stem}-{nominal}.agbf: {len(records)} glyphs, cell {geo['cellw']}x{geo['cellh']} "
               f"(em {geo['em']}), atlas {len(atlas)//1024} KiB, crc {crc:08x}, "
               f"file {out.stat().st_size//1024} KiB")
 

@@ -242,6 +242,7 @@ static int g_faceIdx = 0, g_sizeIdx = 0;   // current selection into g_catalog
 static bool g_haveCozette = false, g_haveTamzen = false;   // bundled bitmap fonts actually loaded
 static bool g_haveTerminus = false, g_haveSpleen = false, g_haveUnscii = false, g_haveUnifont = false;
 static bool g_haveAgbf = false;     // agwin-bitmap-16.agbf found next to the exe
+static bool g_haveAgbfC = false;    // agwin-bitmap-complete-16.agbf found next to the exe
 static HFONT g_uiFont;          // shell UI font (Segoe UI) for the toolbar buttons
 static bool g_customColors = false;   // Properties->Colors: override the terminal's default fg/bg
 static uint32_t g_defFg = 0xC0C0C0;   // packed 0xRRGGBB, legacy cmd.exe light gray on...
@@ -1172,7 +1173,7 @@ static HFONT createFontSpec(const FontEntry& e, const FontSize& s, bool bold, bo
 }
 // (Re)create the four terminal fonts from the current catalog selection, recompute the character cell
 // (g_cw/g_ch) from the regular font's metrics, and relayout every session.
-static bool agbfLoad(int strike);            // fwd (AGWin Bitmap pack module, defined pre-painter)
+static bool agbfLoad(int strike, bool complete);   // fwd (AGWin Bitmap pack module, defined pre-painter)
 static bool g_agbf;                          // active: render from the pack, not GDI text
 struct AgbfCell { uint16_t w, h; };
 static AgbfCell agbfCell(int strike);        // cell geometry of the loaded pack
@@ -1186,7 +1187,7 @@ static void applyFont() {
     // AGWin Bitmap (kind 3): cell metrics come from the pack header, no GDI font is measured. The
     // GDI fonts below are still (re)built as a fallback for non-pack UI paths (dialog preview etc).
     g_agbf = false;
-    if (e.kind == 3 && agbfLoad(s.h)) {
+    if (e.kind == 3 && agbfLoad(s.h, wcscmp(e.face, L"AGWin Bitmap Complete") == 0)) {
         AgbfCell cc = agbfCell(s.h);
         g_agbf = true; g_cw = cc.w; g_ch = cc.h;
     }
@@ -1250,6 +1251,9 @@ static void buildFontCatalog() {
     // header carries the actual cell (e.g. em 16 -> a 10×21 cell for JetBrainsMono).
     if (g_haveAgbf)
         g_catalog.push_back({ L"AGWin Bitmap", L"AGWin Bitmap", 3, true,
+            { {L"14",14,0},{L"16",16,0},{L"18",18,0},{L"20",20,0} } });
+    if (g_haveAgbfC)   // the full-repertoire family (every glyph of the source Nerd Font)
+        g_catalog.push_back({ L"AGWin Bitmap Complete", L"AGWin Bitmap Complete", 3, true,
             { {L"14",14,0},{L"16",16,0},{L"18",18,0},{L"20",20,0} } });
 }
 static int catFace(const wchar_t* label) {
@@ -1590,14 +1594,15 @@ static_assert(sizeof(AgbfHeader) == 172 && sizeof(AgbfRec) == 20, "agbf layout")
 static struct {
     std::vector<uint8_t> bytes;
     const AgbfHeader* h = nullptr; const AgbfRec* recs = nullptr; const uint8_t* atlas = nullptr;
-    int strike = 0; bool ok = false;
+    int strike = 0; bool complete = false; bool ok = false;
 } g_agbfPack;
 
 static AgbfCell agbfCell(int) { return { g_agbfPack.h->cellW, g_agbfPack.h->cellH }; }
 
-static bool agbfLoad(int strike) {
-    if (g_agbfPack.ok && g_agbfPack.strike == strike) return true;
-    wchar_t name[64]; wsprintfW(name, L"\\agwin-bitmap-%d.agbf", strike);
+static bool agbfLoad(int strike, bool complete) {
+    if (g_agbfPack.ok && g_agbfPack.strike == strike && g_agbfPack.complete == complete) return true;
+    wchar_t name[64];
+    wsprintfW(name, complete ? L"\\agwin-bitmap-complete-%d.agbf" : L"\\agwin-bitmap-%d.agbf", strike);
     HANDLE f = CreateFileW((exeDir() + name).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
@@ -1616,7 +1621,7 @@ static bool agbfLoad(int strike) {
     g_agbfPack.h = (const AgbfHeader*)g_agbfPack.bytes.data();
     g_agbfPack.recs = (const AgbfRec*)(g_agbfPack.bytes.data() + g_agbfPack.h->recordsOff);
     g_agbfPack.atlas = g_agbfPack.bytes.data() + g_agbfPack.h->atlasOff;
-    g_agbfPack.strike = strike; g_agbfPack.ok = true;
+    g_agbfPack.strike = strike; g_agbfPack.complete = complete; g_agbfPack.ok = true;
     return true;
 }
 
@@ -4471,6 +4476,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     AddFontResourceExW((dir + L"\\unscii-8.ttf").c_str(), FR_PRIVATE, 0);
     g_haveUnifont = AddFontResourceExW((dir + L"\\Unifont.otf").c_str(), FR_PRIVATE, 0) > 0;
     g_haveAgbf = GetFileAttributesW((dir + L"\\agwin-bitmap-16.agbf").c_str()) != INVALID_FILE_ATTRIBUTES;
+    g_haveAgbfC = GetFileAttributesW((dir + L"\\agwin-bitmap-complete-16.agbf").c_str()) != INVALID_FILE_ATTRIBUTES;
     buildFontCatalog();
     loadColors();      // Properties->Colors overrides, remembered across restarts
     loadKeys();        // configurable key bindings (unbound by default)
