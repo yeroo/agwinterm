@@ -241,6 +241,7 @@ static std::vector<FontEntry> g_catalog;
 static int g_faceIdx = 0, g_sizeIdx = 0;   // current selection into g_catalog
 static bool g_haveCozette = false, g_haveTamzen = false;   // bundled bitmap fonts actually loaded
 static bool g_haveTerminus = false, g_haveSpleen = false, g_haveUnscii = false, g_haveUnifont = false;
+static bool g_haveAgbf = false;     // agwin-bitmap-16.agbf found next to the exe
 static HFONT g_uiFont;          // shell UI font (Segoe UI) for the toolbar buttons
 static bool g_customColors = false;   // Properties->Colors: override the terminal's default fg/bg
 static uint32_t g_defFg = 0xC0C0C0;   // packed 0xRRGGBB, legacy cmd.exe light gray on...
@@ -1171,12 +1172,24 @@ static HFONT createFontSpec(const FontEntry& e, const FontSize& s, bool bold, bo
 }
 // (Re)create the four terminal fonts from the current catalog selection, recompute the character cell
 // (g_cw/g_ch) from the regular font's metrics, and relayout every session.
+static bool agbfLoad(int strike);            // fwd (AGWin Bitmap pack module, defined pre-painter)
+static bool g_agbf;                          // active: render from the pack, not GDI text
+struct AgbfCell { uint16_t w, h; };
+static AgbfCell agbfCell(int strike);        // cell geometry of the loaded pack
+
 static void applyFont() {
     if (g_catalog.empty()) return;
     if (g_faceIdx < 0 || g_faceIdx >= (int)g_catalog.size()) g_faceIdx = 0;
     FontEntry& e = g_catalog[g_faceIdx];
     if (g_sizeIdx < 0 || g_sizeIdx >= (int)e.sizes.size()) g_sizeIdx = 0;
     FontSize& s = e.sizes[g_sizeIdx];
+    // AGWin Bitmap (kind 3): cell metrics come from the pack header, no GDI font is measured. The
+    // GDI fonts below are still (re)built as a fallback for non-pack UI paths (dialog preview etc).
+    g_agbf = false;
+    if (e.kind == 3 && agbfLoad(s.h)) {
+        AgbfCell cc = agbfCell(s.h);
+        g_agbf = true; g_cw = cc.w; g_ch = cc.h;
+    }
     HFONT nf[4];
     for (int i = 0; i < 4; i++) nf[i] = createFontSpec(e, s, i & 1, (i & 2) != 0);
     HDC dc = GetDC(nullptr);
@@ -1187,7 +1200,7 @@ static void applyFont() {
     // every ASCII char a double cell. CJK still draws 16px wide and the emulator gives it 2 cells.
     int xw = 0;
     GetCharWidth32W(dc, L'X', L'X', &xw);
-    g_cw = xw > 0 ? xw : tm.tmAveCharWidth; g_ch = tm.tmHeight;
+    if (!g_agbf) { g_cw = xw > 0 ? xw : tm.tmAveCharWidth; g_ch = tm.tmHeight; }   // pack owns the cell
     SelectObject(dc, old);
     ReleaseDC(nullptr, dc);
     for (int i = 0; i < 4; i++) { if (g_fonts[i]) DeleteObject(g_fonts[i]); g_fonts[i] = nf[i]; }
@@ -1232,6 +1245,10 @@ static void buildFontCatalog() {
     if (g_haveUnifont)
         g_catalog.push_back({ L"GNU Unifont", L"Unifont", 2, true,
             { {L"8×16",16,0},{L"16×32",32,0} } });
+    // AGWin Bitmap: pre-rasterized .agbf packs (kind 3) — labels are pixel strikes, not points.
+    if (g_haveAgbf)
+        g_catalog.push_back({ L"AGWin Bitmap", L"AGWin Bitmap", 3, true,
+            { {L"14",14,0},{L"16",16,0},{L"18",18,0},{L"20",20,0} } });
 }
 static int catFace(const wchar_t* label) {
     for (int i = 0; i < (int)g_catalog.size(); i++) if (wcscmp(g_catalog[i].label, label) == 0) return i;
@@ -1555,6 +1572,156 @@ static HFONT styleFont(uint32_t attrs) {
 
 // Render one session's viewport into rect pr. `pane` selects the selection-highlight span (-1 = none,
 // e.g. popup windows); `showCursor` draws the cursor (the focused main pane, or a popup terminal).
+// ---- AGWin Bitmap (.agbf) — pre-rasterized font packs, no vector fonts at runtime -------------
+// Format v1 (fonts/generate.py): 172-byte header, sorted glyph records, 8-bit alpha atlas.
+#pragma pack(push, 1)
+struct AgbfHeader {
+    char magic[4]; uint32_t version, strike;
+    uint16_t cellW, cellH, baseline, ulPos, ulTh, stPos;
+    uint32_t glyphCount, recordsOff, atlasOff, atlasLen, crc;
+    char family[64], source[64];
+};
+struct AgbfRec { uint32_t cp, off; int16_t bx, by; uint16_t w, h; uint8_t cellW, flags; uint16_t pad; };
+#pragma pack(pop)
+static_assert(sizeof(AgbfHeader) == 172 && sizeof(AgbfRec) == 20, "agbf layout");
+
+static struct {
+    std::vector<uint8_t> bytes;
+    const AgbfHeader* h = nullptr; const AgbfRec* recs = nullptr; const uint8_t* atlas = nullptr;
+    int strike = 0; bool ok = false;
+} g_agbfPack;
+
+static AgbfCell agbfCell(int) { return { g_agbfPack.h->cellW, g_agbfPack.h->cellH }; }
+
+static bool agbfLoad(int strike) {
+    if (g_agbfPack.ok && g_agbfPack.strike == strike) return true;
+    wchar_t name[64]; wsprintfW(name, L"\\agwin-bitmap-%d.agbf", strike);
+    HANDLE f = CreateFileW((exeDir() + name).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD sz = GetFileSize(f, nullptr), rd = 0;
+    std::vector<uint8_t> bytes(sz);
+    bool read = sz > sizeof(AgbfHeader) && ReadFile(f, bytes.data(), sz, &rd, nullptr) && rd == sz;
+    CloseHandle(f);
+    if (!read) return false;
+    auto* h = (const AgbfHeader*)bytes.data();
+    if (memcmp(h->magic, "AGBF", 4) != 0 || h->version != 1) return false;
+    if (h->recordsOff + (uint64_t)h->glyphCount * sizeof(AgbfRec) > sz || (uint64_t)h->atlasOff + h->atlasLen > sz) return false;
+    typedef DWORD(WINAPI* fnCrc)(DWORD, const void*, ULONG);   // corrupted-pack rejection
+    static fnCrc crc32 = (fnCrc)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlComputeCrc32");
+    if (crc32 && crc32(0, bytes.data() + h->recordsOff, (ULONG)(sz - h->recordsOff)) != h->crc) return false;
+    g_agbfPack.bytes = std::move(bytes);
+    g_agbfPack.h = (const AgbfHeader*)g_agbfPack.bytes.data();
+    g_agbfPack.recs = (const AgbfRec*)(g_agbfPack.bytes.data() + g_agbfPack.h->recordsOff);
+    g_agbfPack.atlas = g_agbfPack.bytes.data() + g_agbfPack.h->atlasOff;
+    g_agbfPack.strike = strike; g_agbfPack.ok = true;
+    return true;
+}
+
+static const AgbfRec* agbfFind(uint32_t cp) {          // records are cp-sorted -> binary search
+    const AgbfRec* lo = g_agbfPack.recs; const AgbfRec* hi = lo + g_agbfPack.h->glyphCount;
+    while (lo < hi) {
+        const AgbfRec* mid = lo + (hi - lo) / 2;
+        if (mid->cp == cp) return mid;
+        if (mid->cp < cp) lo = mid + 1; else hi = mid;
+    }
+    return nullptr;
+}
+
+static uint32_t agbfDim(uint32_t rgb, bool dim) {
+    if (!dim) return rgb;
+    return ((((rgb >> 16) & 0xFF) * 6 / 10) << 16) | ((((rgb >> 8) & 0xFF) * 6 / 10) << 8) | ((rgb & 0xFF) * 6 / 10);
+}
+
+// Missing glyph: a bordered cell carrying the code point in hex (3x5 digit micro-font), so an
+// uncovered character is identifiable instead of an empty box (spec: readable missing-glyph cells).
+static const uint16_t kHex35[16] = { 0x7B6F,0x2492,0x73E7,0x73CF,0x5BC9,0x79CF,0x79EF,0x7249,0x7BEF,0x7BC9,
+                                     0x7BED,0x6BAE,0x7927,0x6B6E,0x79E7,0x79E4 };
+static void agbfMissing(uint32_t* fb, int fbw, int x0, int y0, int cw, int ch, uint32_t cp, uint32_t fg) {
+    for (int x = 0; x < cw; x++) { fb[y0 * fbw + x0 + x] = fg; fb[(y0 + ch - 1) * fbw + x0 + x] = fg; }
+    for (int y = 0; y < ch; y++) { fb[(y0 + y) * fbw + x0] = fg; fb[(y0 + y) * fbw + x0 + cw - 1] = fg; }
+    char hex[7]; int n = 0;
+    for (uint32_t v = cp; v && n < 6; v >>= 4) hex[n++] = "0123456789ABCDEF"[v & 15];
+    int perRow = (cw - 2) / 4, rows = (ch - 2) / 6;
+    if (perRow < 1 || rows < 1) return;
+    for (int i = 0; i < n; i++) {                       // digits stored low->high; draw high first
+        int d = n - 1 - i, row = i / perRow, col = i % perRow;
+        if (row >= rows) break;
+        int dx = x0 + 2 + col * 4, dy = y0 + 2 + row * 6;
+        uint16_t bits = kHex35[(uint8_t)(hex[d] <= '9' ? hex[d] - '0' : hex[d] - 'A' + 10)];
+        for (int py = 0; py < 5; py++)
+            for (int px = 0; px < 3; px++)
+                if (bits & (1 << (14 - (py * 3 + px)))) fb[(dy + py) * fbw + dx + px] = fg;
+    }
+}
+
+// Paint the whole grid from the pack into a 32bpp DIB and blit once — no GDI text at all.
+static void agbfPaintGrid(HDC mem, RECT pr, const FfiCell* view, const FfiEmuInfo& info) {
+    int cw = g_cw, ch = g_ch;
+    int W = min((int)info.cols * cw, (int)(pr.right - pr.left));
+    int H = min((int)info.rows * ch, (int)(pr.bottom - pr.top));
+    if (W <= 0 || H <= 0) return;
+    static std::vector<uint32_t> fb;
+    fb.assign((size_t)W * H, 0);
+    for (uint32_t r = 0; r < info.rows; r++) {
+        int y0 = (int)r * ch;
+        if (y0 + ch > H) break;
+        for (uint32_t c = 0; c < info.cols; ) {
+            const FfiCell& cell = view[r * info.cols + c];
+            uint32_t w = cell.width ? cell.width : 1;
+            int x0 = (int)c * cw, cellPx = (int)w * cw;
+            if (x0 + cellPx > W) break;
+            uint32_t fg = cell.fg, bg = cell.bg, attrs = cell.attrs;
+            if (g_customColors) { if (cell.fgKind == 0) fg = g_defFg; if (cell.bgKind == 0) bg = g_defBg; }
+            if (g_dosPalette) {
+                if (cell.fgKind == 1) { int ix = cell.fgIndex & 15; if (ix < 8 && (attrs & kAttrBold)) ix += 8; fg = kEgaPalette[ix]; }
+                if (cell.bgKind == 1) bg = kEgaPalette[cell.bgIndex & 15];
+            }
+            if (attrs & kAttrInverse) { uint32_t t = fg; fg = bg; bg = t; }
+            fg = agbfDim(fg, (attrs & kAttrDim) != 0);
+            for (int y = 0; y < ch; y++)                 // background fill
+                for (int x = 0; x < cellPx; x++) fb[(size_t)(y0 + y) * W + x0 + x] = bg;
+            if (cell.rune && cell.rune != ' ') {
+                const AgbfRec* rec = agbfFind(cell.rune);
+                if (rec && rec->w) {
+                    int passes = (attrs & kAttrBold) ? 2 : 1;   // synthetic bold: 1px overstrike
+                    for (int p = 0; p < passes; p++)
+                        for (int gy = 0; gy < rec->h; gy++) {
+                            int py = y0 + rec->by + gy;
+                            if (py < y0 || py >= y0 + ch) continue;
+                            const uint8_t* src = g_agbfPack.atlas + rec->off + (size_t)gy * rec->w;
+                            for (int gx = 0; gx < rec->w; gx++) {
+                                int px = x0 + rec->bx + gx + p;
+                                if (px < x0 || px >= x0 + cellPx) continue;
+                                uint32_t a = src[gx];
+                                if (!a) continue;
+                                uint32_t* dst = &fb[(size_t)py * W + px];
+                                uint32_t dr = (*dst >> 16) & 0xFF, dg = (*dst >> 8) & 0xFF, db = *dst & 0xFF;
+                                uint32_t sr = (fg >> 16) & 0xFF, sg = (fg >> 8) & 0xFF, sb = fg & 0xFF;
+                                *dst = (((sr * a + dr * (255 - a)) / 255) << 16) |
+                                       (((sg * a + dg * (255 - a)) / 255) << 8) |
+                                        ((sb * a + db * (255 - a)) / 255);
+                            }
+                        }
+                } else if (!rec) {
+                    agbfMissing(fb.data(), W, x0, y0, cellPx, ch, cell.rune, fg);
+                }
+            }
+            if (attrs & kAttrUnderline) {
+                int uy = min(ch - 1, (int)g_agbfPack.h->ulPos);
+                for (int t = 0; t < (int)g_agbfPack.h->ulTh && uy + t < ch; t++)
+                    for (int x = 0; x < cellPx; x++) fb[(size_t)(y0 + uy + t) * W + x0 + x] = fg;
+            }
+            if (attrs & kAttrStrike)
+                for (int x = 0; x < cellPx; x++) fb[(size_t)(y0 + ch / 2) * W + x0 + x] = fg;
+            c += w;
+        }
+    }
+    BITMAPINFO bi{};
+    bi.bmiHeader = { sizeof(BITMAPINFOHEADER), W, -H, 1, 32, BI_RGB };
+    SetDIBitsToDevice(mem, pr.left, pr.top, W, H, 0, 0, 0, H, fb.data(), &bi, DIB_RGB_COLORS);
+}
+
 static void paintPane(HDC mem, RECT pr, Session* s, int pane, bool showCursor) {
     if (!s) return;
     FfiEmuInfo info{};
@@ -1583,6 +1750,10 @@ static void paintPane(HDC mem, RECT pr, Session* s, int pane, bool showCursor) {
 
     std::vector<wchar_t> text;
     std::vector<INT> dx;
+    if (g_agbf && g_agbfPack.ok) {   // AGWin Bitmap: every pixel from the pack atlas, no GDI text
+        agbfPaintGrid(mem, pr, view.data(), info);
+        goto afterGridPaint;
+    }
     for (uint32_t r = 0; r < info.rows; r++) {
         int y = pr.top + (int)r * g_ch;
         if (y + g_ch > pr.bottom) break;
@@ -1658,6 +1829,7 @@ static void paintPane(HDC mem, RECT pr, Session* s, int pane, bool showCursor) {
             }
         }
     }
+afterGridPaint:;
 
     // Selection highlight (invert the selected span, buffer-absolute rows mapped into the view).
     if (g_sel.has() && g_sel.pane == pane) {
@@ -4296,6 +4468,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_haveUnscii = AddFontResourceExW((dir + L"\\unscii-16.ttf").c_str(), FR_PRIVATE, 0) > 0;
     AddFontResourceExW((dir + L"\\unscii-8.ttf").c_str(), FR_PRIVATE, 0);
     g_haveUnifont = AddFontResourceExW((dir + L"\\Unifont.otf").c_str(), FR_PRIVATE, 0) > 0;
+    g_haveAgbf = GetFileAttributesW((dir + L"\\agwin-bitmap-16.agbf").c_str()) != INVALID_FILE_ATTRIBUTES;
     buildFontCatalog();
     loadColors();      // Properties->Colors overrides, remembered across restarts
     loadKeys();        // configurable key bindings (unbound by default)

@@ -63,10 +63,19 @@ python fonts/generate.py --sizes 16 # subset of strikes
 Validation runs inside the generator: sorted/unique index, required coverage
 (box, blocks, Powerline, Cyrillic, U+FFFD), single-cell metadata.
 
+## Runtime (agwinterm-lite)
+
+The four packs are committed to `lite/assets/` (regenerate + re-copy deliberately)
+and ship next to the exe. Selecting **AGWin Bitmap 14/16/18/20** in Properties
+renders every cell from the pack atlas — a single 32bpp DIB composed per pane, no
+GDI text, no vector fonts. CRC-validated load (corrupted packs are rejected),
+binary-search glyph lookup, synthetic bold (1px overstrike), underline/strike from
+pack metrics, and uncovered code points render as bordered hex cells (3x5 micro
+digits) instead of empty boxes.
+
 ## Status / TODO (tracked for the Complete family)
 
 - per-strike override bitmaps (double-line box set + rounded corners need hand
   polish; the synthesis covers the single/heavy sets well)
 - `AGWin Bitmap Complete`: full NF repertoire + GNU Unifont fallback + emoji atlas,
-  grapheme-cluster resolution
-- lite runtime loader (memory-mapped) + font UI entries
+  grapheme-cluster resolution; italic strikes
