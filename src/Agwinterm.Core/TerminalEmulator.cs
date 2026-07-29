@@ -204,10 +204,16 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
 
     public void Feed(ReadOnlySpan<byte> bytes) => _parser.Feed(bytes);
 
-    /// <summary>Resize both screen buffers, reset the scroll region, and clamp the cursor.</summary>
+    /// <summary>Resize both screen buffers, reset the scroll region, and clamp the cursor.
+    /// A resize to the geometry already in effect is a no-op (see the guard).</summary>
     public void Resize(int cols, int rows)
     {
         if (cols <= 0 || rows <= 0) return;
+        // A "resize" to the SAME geometry is not a resize: bail before the margin reset below.
+        // Hosts call this on events that need not have changed the size (lite re-syncs both panes
+        // on every session switch), and clearing DECSTBM under a full-screen TUI that still thinks
+        // its margins are set scrambles the display — with no SIGWINCH to make it redraw.
+        if (cols == _main.Cols && rows == _main.Rows) return;
         _main.Resize(cols, rows);
         _alt.Resize(cols, rows);
         _scrollTop = 0;

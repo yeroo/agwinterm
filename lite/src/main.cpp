@@ -190,6 +190,7 @@ struct Session {
     void* emu = nullptr;
     HANDLE data = INVALID_HANDLE_VALUE;
     HANDLE reader = nullptr;
+    int cols = 0, rows = 0;     // geometry last pushed to the host (0 = never sized yet)
     int scrollOff = 0;          // rows scrolled up into history (0 = live)
     bool exited = false;
     std::vector<FfiCell> grid;  // paint snapshot buffer
@@ -990,6 +991,13 @@ static HWND windowForSession(Session* s) {
 }
 
 static void hostResize(Session* s, int cols, int rows) {
+    // syncPaneSizes() runs on every session switch / select / split change, so most calls here ask
+    // for the geometry the session already has. Forwarding those is not free: ConPTY reflows and
+    // re-emits its screen on ANY resize, which garbles a full-screen TUI (the app was never told
+    // anything changed, so it never redraws). Only a real change goes to the host.
+    if (s->cols == cols && s->rows == rows) return;
+    s->cols = cols;
+    s->rows = rows;
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_resize_tag;
