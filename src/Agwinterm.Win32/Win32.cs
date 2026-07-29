@@ -354,7 +354,11 @@ internal static class Win32
     public static extern bool GetKeyboardState(byte[] lpKeyState);
     [DllImport("user32.dll")]
     public static extern IntPtr GetKeyboardLayout(uint idThread);
-    [DllImport("user32.dll")]
+    // CharSet.Unicode is REQUIRED: the default (Ansi) marshals pwszBuff as one byte per element, so
+    // user32 gets a cchBuff-BYTE buffer while being told it has cchBuff WCHARs — it writes UTF-16 off
+    // the end of the block and smashes the heap (0xC0000374 at the next free). It also never returned
+    // a usable char, so win32-input-mode's Uc field was always 0.
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int ToUnicodeEx(uint wVirtKey, uint wScanCode, byte[] lpKeyState,
         [Out] char[] pwszBuff, int cchBuff, uint wFlags, IntPtr dwhkl);
 
@@ -376,7 +380,7 @@ internal static class Win32
     [DllImport("user32.dll")]
     public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
-    [DllImport("kernel32.dll")]
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]   // W entry point: the name must marshal as UTF-16
     public static extern IntPtr GetModuleHandleW(string? lpModuleName);
 
     [DllImport("user32.dll")]
