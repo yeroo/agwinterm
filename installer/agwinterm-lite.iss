@@ -3,7 +3,7 @@
 ; Built via installer\build.ps1 (stages to stage-lite\ then runs ISCC on this file).
 
 #define AppName    "agwinterm lite"
-#define AppVersion "0.17.0"
+#define AppVersion "0.17.1"
 #define AppExe     "agwinterm-lite.exe"
 #define AppPublisher "Boris Kudriashov"
 
