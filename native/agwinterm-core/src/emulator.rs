@@ -314,6 +314,13 @@ impl Emulator {
         if cols == 0 || rows == 0 {
             return;
         }
+        // A "resize" to the SAME geometry is not a resize: bail before the margin reset below.
+        // Hosts call this on events that need not have changed the size (lite re-syncs both panes
+        // on every session switch), and clearing DECSTBM under a full-screen TUI that still thinks
+        // its margins are set scrambles the display — with no SIGWINCH to make it redraw.
+        if cols == self.main.cols() && rows == self.main.rows() {
+            return;
+        }
         self.main.resize(cols, rows);
         self.alt.resize(cols, rows);
         self.scroll_top = 0;
@@ -1392,5 +1399,26 @@ mod tests {
         assert_eq!(t.emu.cwd, "file://h/c");
         assert_eq!(t.emu.marks().len(), 1);
         assert_eq!(t.emu.marks()[0].exit_code, Some(3));
+    }
+
+    #[test]
+    fn resize_to_same_geometry_keeps_scroll_region() {
+        // lite re-syncs both panes on every session switch, so most resize calls ask for the
+        // geometry already in effect. Those must not clear DECSTBM: a full-screen TUI still
+        // believes its margins are set and gets no SIGWINCH telling it to redraw.
+        let mut t = Terminal::new(20, 10);
+        t.feed(b"[3;8r");
+        assert_eq!((t.emu.scroll_top(), t.emu.scroll_bottom()), (2, 7));
+
+        t.emu.resize(20, 10);
+        assert_eq!(
+            (t.emu.scroll_top(), t.emu.scroll_bottom()),
+            (2, 7),
+            "a same-size resize must not reset the scroll region"
+        );
+
+        // A REAL size change still resets the margins (xterm behaviour).
+        t.emu.resize(20, 12);
+        assert_eq!((t.emu.scroll_top(), t.emu.scroll_bottom()), (0, 11));
     }
 }
