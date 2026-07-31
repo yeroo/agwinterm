@@ -17,7 +17,9 @@ $dir   = "$env:LOCALAPPDATA\agwinterm-lite"
 $log   = "$dir\lite-$pipe.log"
 $state = "$dir\sessions-$pipe.tsv"
 $ctl   = "$env:LOCALAPPDATA\Programs\agwinterm\agwintermctl.exe"
-Remove-Item $log, "$log.old", $state -ErrorAction SilentlyContinue
+# The .bak and .tmp go too: since the save keeps a previous generation, leaving one behind means
+# run 1 is NOT a first run — it falls back to the last suite run's sessions and every count is off.
+Remove-Item $log, "$log.old", $state, "$state.bak", "$state.tmp" -ErrorAction SilentlyContinue
 
 "== log-restore =="
 
@@ -46,9 +48,14 @@ if ($save.Success) {
 $p2 = Start-Process $Exe -ArgumentList @('--pipe', $pipe) -PassThru
 Start-Sleep -Seconds 8
 $text2 = Get-Content $log -Raw
-$spec = [regex]::Match($text2, 'restore: (\d+) spec\(s\) from')
+# The log accumulates across runs, so read the LAST restore — the first one belongs to run 1.
+function LastMatch([string]$text, [string]$pattern) {
+    $m = [regex]::Matches($text, $pattern)
+    if ($m.Count) { $m[$m.Count - 1] } else { [regex]::Match('', 'x') }
+}
+$spec = LastMatch $text2 'restore: (\d+) spec\(s\) from'
 Check 'restore reports the spec count' $spec.Success
-$built = [regex]::Match($text2, 'restore: (\d+) of (\d+) session\(s\) built')
+$built = LastMatch $text2 'restore: (\d+) of (\d+) session\(s\) built'
 Check 'restore reports how many were built' $built.Success
 if ($built.Success -and $save.Success) {
     Check 'built count matches what was saved' ($built.Groups[1].Value -eq $save.Groups[1].Value) `

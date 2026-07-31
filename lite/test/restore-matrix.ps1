@@ -191,13 +191,62 @@ Seeded -Name 'app-spec' -Tsv "V1`nW`tws-a`nS`t0`tprofile-session`tpowershell.exe
 }
 
 # A spec whose app does not exist on this machine — the shape of "a profile that doesn't resolve
-# on the laptop". Pins current behaviour so Task 5 can change it deliberately.
+# on the laptop". It must stay VISIBLE (a dead session, not a hole) and the log must name it.
 Seeded -Name 'bogus-app' -Tsv "V1`nW`tws-b`nS`t0`tdead-session`tno-such-program-xyz.exe`t$cwd`nA`t0`n" -Assert {
     param($a, $i)
-    $log = Restore-Verdict $i
-    # Either it comes back (host tolerates the bad app) or the log names the failure. Silence is the
-    # only unacceptable outcome, because that is what made this unreportable in the field.
-    ($a -match 'dead-session') -or ($log -match 'FAILED to start' -or $log -match 'no session could be started')
+    # Silence is the one unacceptable outcome — that is what made this unreportable in the field.
+    ($a -match 'dead-session') -and (Log-Has $i "session 'dead-session' FAILED to start")
+}
+
+# The session object the control API reports for a given name ('' when there is none). Session
+# objects carry no nested braces, so one flat match per session is exact.
+function Session-Obj($json, $name) {
+    foreach ($m in [regex]::Matches($json, '\{"id":[^}]*\}')) {
+        if ($m.Value -match ('"name"\s*:\s*"' + [regex]::Escape($name) + '"')) { return $m.Value }
+    }
+    ''
+}
+
+# The full round trip for a spec that cannot start here: it must come back as a DEAD session rather
+# than a hole, keep its name/workspace, be saved again (so it is recoverable on a machine where the
+# app exists), and it must not disturb the good spec beside it.
+if (-not $Only -or $Only -eq 'failed-spec') {
+    $inst = 'rm-failed-spec'
+    Reset-Cell $inst
+    Set-Content -Path (State $inst) -NoNewline -Encoding utf8 -Value `
+        "V1`nW`tws-f`nS`t0`tghost-session`tno-such-program-xyz.exe`t$cwd`nS`t0`tlive-session`tpowershell.exe`t$cwd`nA`t0`n"
+    $err = ''; $ghost = ''; $live = ''; $named = $false; $resaved = $false; $after = ''
+    try {
+        $p = Start-Lite $inst
+        Start-Sleep -Seconds 3
+        $j = (& $ctl tree --json --pipe $inst 2>&1) -join ''
+        $ghost = Session-Obj $j 'ghost-session'
+        $live  = Session-Obj $j 'live-session'
+        $named = Log-Has $inst "session 'ghost-session' FAILED to start"
+        Stop-Lite $p
+        # Kept in the state file: the entry survives, so it can start on a machine that has the app.
+        $resaved = (Get-Content (State $inst) -Raw) -match 'ghost-session'
+        $p2 = Start-Lite $inst
+        Start-Sleep -Seconds 3
+        $after = Signature $inst
+        Stop-Lite $p2
+    } catch { $err = $_.Exception.Message }
+
+    $ghostOk = $ghost -match '"failed"\s*:\s*true'
+    $liveOk  = $live -match '"failed"\s*:\s*false' -and $live -match '"exited"\s*:\s*false'
+    if (-not $err -and $ghostOk -and $liveOk -and $named -and $resaved -and
+        $after -match 'ghost-session' -and $after -match 'live-session') {
+        "  PASS  {0,-22} [{1}]" -f 'failed-spec', $after
+    } else {
+        $script:failed += 'failed-spec'
+        "  FAIL  failed-spec"
+        if ($err) { "        error:  $err" }
+        "        ghost:  [$ghost] (dead entry kept: $ghostOk)"
+        "        live:   [$live] (good spec unaffected: $liveOk)"
+        "        log named it: $named ; re-saved: $resaved"
+        "        after:  [$after]"
+        "        log:    $(Restore-Verdict $inst)"
+    }
 }
 
 # Forced kill: no OnDestroy, so restore depends entirely on the refreshTree() save. If a laptop

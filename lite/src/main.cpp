@@ -194,6 +194,10 @@ struct Session {
     int cols = 0, rows = 0;     // geometry last pushed to the host (0 = never sized yet)
     int scrollOff = 0;          // rows scrolled up into history (0 = live)
     bool exited = false;
+    // Restore placeholder: this spec's app would not start on THIS machine, so there is no shell
+    // behind it. The entry is kept anyway (empty id, exited) so the name/workspace/cwd/args survive
+    // instead of vanishing — a failed spec used to be dropped, and the user was never told.
+    bool failed = false;
     std::vector<FfiCell> grid;  // paint snapshot buffer
     std::vector<FfiCell> hrow;
 };
@@ -1110,13 +1114,15 @@ static void hostResize(Session* s, int cols, int rows) {
     if (s->cols == cols && s->rows == rows) return;
     s->cols = cols;
     s->rows = rows;
-    agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
-    agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
-    req.which_cmd = agwinterm_ptyhost_Request_resize_tag;
-    strcpy_s(req.cmd.resize.id, s->id.c_str());
-    req.cmd.resize.cols = (uint32_t)cols;
-    req.cmd.resize.rows = (uint32_t)rows;
-    request(req, &rep);
+    if (!s->id.empty()) {   // a restore placeholder has no host session — only its emulator resizes
+        agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
+        agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
+        req.which_cmd = agwinterm_ptyhost_Request_resize_tag;
+        strcpy_s(req.cmd.resize.id, s->id.c_str());
+        req.cmd.resize.cols = (uint32_t)cols;
+        req.cmd.resize.rows = (uint32_t)rows;
+        request(req, &rep);
+    }
     EnterCriticalSection(&g_lock);
     emu_resize(s->emu, cols, rows);
     LeaveCriticalSection(&g_lock);
@@ -1328,6 +1334,7 @@ static std::vector<std::string> hostSessionIds() {
 
 static void killSession(Session* s) {
     if (g_sel.sess == s) g_sel.clear();   // the selection is keyed by session: don't outlive it
+    if (s->id.empty()) return;            // restore placeholder: nothing on the host to kill
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_kill_tag;
@@ -3206,7 +3213,8 @@ static void refreshTree() {
             // while it's busy (italic applied in the tree's NM_CUSTOMDRAW). Others show plain.
             int cls = s->exited ? AGST_NONE : statusClass(s->status);
             std::wstring label = s->name.empty() ? (L"session " + std::to_wstring(vis)) : s->name;
-            if (s->exited) label += L"  (exited)";
+            if (s->failed) label += L"  (failed to start)";   // restored spec whose app won't run here
+            else if (s->exited) label += L"  (exited)";
             else if (cls == AGST_WORKING) label += L"  (working…)";
             TVINSERTSTRUCTW tis{};
             tis.hParent = wh;
@@ -4984,6 +4992,9 @@ static std::string ctlDispatch(const std::string& line) {
                         "\",\"active\":" + (g_pane[g_focus] == i2 ? "true" : "false") +
                         ",\"status\":\"" + jsonEscape(s->status) + "\"" +
                         ",\"flagged\":" + (s->flagged ? "true" : "false") +
+                        ",\"exited\":" + (s->exited ? "true" : "false") +
+                        // a spec that could not be relaunched on this machine: kept, not dropped
+                        ",\"failed\":" + (s->failed ? "true" : "false") +
                         ",\"unread\":" + std::to_string(s->unread) + "}";
             }
             wss += "{\"id\":\"" + std::to_string(w) + "\",\"name\":\"" + jsonEscape(narrow(g_workspaces[w])) +
@@ -5420,6 +5431,36 @@ static ParsedState parseStateFile(const std::wstring& path) {
     return ps;
 }
 
+// A spec that would not start on THIS machine (a profile whose exe only exists on the other one, a
+// cwd on a drive that isn't mounted). Dropping it silently loses the name, workspace, cwd and args —
+// which is precisely why "restore doesn't work" was unreportable in the field. Keep a dead session
+// instead: no shell behind it, marked "(failed to start)" the way an exited one is marked, and still
+// persisted by the next save so the entry can be retried where the app does exist.
+static Session* failedSpecSession(const RestoreSpec& sp, int cols, int rows) {
+    Session* s = new Session();
+    s->name = widen(sp.name);
+    s->flagged = sp.flagged;
+    s->app = sp.app;
+    s->args = sp.args;
+    s->cwd = sp.cwd;
+    s->ws = (g_activeWs >= 0 && g_activeWs < (int)g_workspaces.size()) ? g_activeWs : 0;
+    s->exited = true;
+    s->failed = true;
+    s->cols = cols; s->rows = rows;
+    s->emu = emu_new(cols, rows);
+    // Say it in the pane as well as the tree: the terminal is where the user looks first, and "why
+    // is this session dead?" has to be answerable without opening the log.
+    std::string msg = "\r\n  [agwinterm-lite] this session could not be restored on this machine.\r\n"
+                      "  app: " + (sp.app.empty() ? std::string("(default shell)") : sp.app) + "\r\n";
+    if (!sp.cwd.empty()) msg += "  cwd: " + sp.cwd + "\r\n";
+    msg += "  The entry is kept so its name and settings are not lost.\r\n";
+    EnterCriticalSection(&g_lock);
+    if (s->emu) emu_feed(s->emu, (const uint8_t*)msg.data(), (uint32_t)msg.size());
+    g_sessions.push_back(s);
+    LeaveCriticalSection(&g_lock);
+    return s;
+}
+
 // Rebuild the saved workspaces + sessions on launch. Returns false (caller opens a default session) if
 // there's nothing to restore. Sessions relaunch with their remembered profile + creation cwd.
 static bool restoreSessions() {
@@ -5453,7 +5494,7 @@ static bool restoreSessions() {
     g_restoring = true;
     if (!wss.empty()) g_workspaces = wss;
     int cols, rows; paneGridSize(0, &cols, &rows);
-    int firstIdx = -1, built = 0, adopted = 0;
+    int firstIdx = -1, built = 0, adopted = 0, dead = 0;
 
     // Sessions the host still holds. lite was killed rather than closed if this is non-empty: the
     // pty-host outlives the UI by design, so those shells are STILL RUNNING. Adopt them instead of
@@ -5495,17 +5536,23 @@ static bool restoreSessions() {
             if (firstIdx < 0) firstIdx = (int)g_sessions.size() - 1;
             built++;
         } else {
-            // A spec that won't start is invisible otherwise — the session simply doesn't come back.
-            // Name it, so a shell that no longer exists on that machine is obvious from the log.
-            logWarn("restore: session '%s' FAILED to start (app='%s' cwd='%s')",
+            // A spec that won't start used to be invisible AND gone: the session didn't come back and
+            // the next save rewrote the file without it. Keep it as a dead entry and name it in the log.
+            logWarn("restore: session '%s' FAILED to start (app='%s' cwd='%s') — kept as a dead session",
                     sp.name.c_str(), sp.app.c_str(), sp.cwd.c_str());
+            failedSpecSession(sp, cols, rows);
+            dead++;
         }
     }
     g_restoring = false;
-    logInfo("restore: %d of %zu session(s) built (%d adopted live from the pty-host)",
-            built, specs.size(), adopted);
+    logInfo("restore: %d of %zu session(s) built (%d adopted live from the pty-host, %d kept as dead)",
+            built, specs.size(), adopted, dead);
     if (firstIdx < 0) {   // exit 4 of 4: specs parsed but nothing could be started
-        logWarn("restore: no session could be started from %zu spec(s) — starting fresh", specs.size());
+        // The dead entries stay in the tree; the caller opens a working session beside them, so the
+        // window is usable and the specs are still there to look at (and still saved).
+        logWarn("restore: no session could be started from %zu spec(s) — starting fresh (%d dead entr%s kept)",
+                specs.size(), dead, dead == 1 ? "y" : "ies");
+        if (dead) refreshTree();
         return false;
     }
     g_pane[0] = firstIdx; g_pane[1] = -1; g_focus = 0;

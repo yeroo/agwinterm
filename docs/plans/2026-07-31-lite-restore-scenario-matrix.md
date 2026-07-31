@@ -186,13 +186,30 @@ noted here because the cell has to work around it; the save it exercises is the 
 primary.
 
 ### Task 5: Make a failed spec visible and recoverable
-- [ ] when a spec fails to start, keep it in the tree as a dead session (or re-add it to the state)
+- [x] when a spec fails to start, keep it in the tree as a dead session (or re-add it to the state)
       rather than dropping it, so a machine-specific launch failure loses the NAME but not the entry
-- [ ] surface it in the UI the way an exited session already is, so the user can see what happened
-- [ ] add the matrix cell: a spec with a deliberately bogus app, asserting the session is visible and
+- [x] surface it in the UI the way an exited session already is, so the user can see what happened
+- [x] add the matrix cell: a spec with a deliberately bogus app, asserting the session is visible and
       the log names it
-- [ ] add the success case: a spec with a valid app still restores normally
-- [ ] run the matrix - must pass before task 6
+- [x] add the success case: a spec with a valid app still restores normally
+- [x] run the matrix - must pass before task 6
+
+➕ `failedSpecSession()` builds the dead entry: a `Session` with an EMPTY id (there is no host session
+behind it), `exited` + a new `failed` flag, its own emulator, and the spec's name/ws/cwd/app/args. The
+empty id is the seam — `killSession()` and the host half of `hostResize()` return early on it, so a
+placeholder is inert, while the emulator still resizes and paints. Its pane carries a short "this
+session could not be restored on this machine" note with the app and cwd, because the terminal is
+where the user looks before the log. The tree marks it `(failed to start)` rather than `(exited)`, and
+`ctl tree --json` gained `exited`/`failed` booleans (additive) so the matrix can assert it.
+
+➕ Because the entry is a normal session, the next save persists it — so a spec that only fails on THIS
+machine survives to start on the machine that has the app. When every spec fails, restore still
+returns false (the caller opens a working session) but the dead entries stay in the tree beside it.
+
+⚠️ `lite/test/log-restore.ps1` was order-dependent after Task 4: it deleted the state file but not the
+`.bak`, so run 1 fell back to the previous suite run's sessions and "built count matches what was
+saved" compared run 1's restore with run 1's last save. Fixed in the harness — the reset removes
+`.bak`/`.tmp`, and the run-2 assertions read the LAST restore line, not the first.
 
 ### Task 6: Verify acceptance criteria
 - [ ] verify every scenario in the matrix passes, and that each fix is tied to the cell that failed
