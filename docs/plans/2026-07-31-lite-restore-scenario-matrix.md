@@ -231,7 +231,7 @@ saved" compared run 1's restore with run 1's last save. Fixed in the harness —
 | session ids in the `D` line, adopt live host sessions on restore (Task 3) | `killed` (asserts the log says `adopted live session`), `stale-ids`, `short-id-line` |
 | `SessionInfo.title` is *skipped* on decode so `list` can never overflow (Task 3, revised in review) | `killed` (via the health probe) |
 | `restartCommandLine()` preserves `--pipe` (Task 3b) | `restart-named`, `restart-cmdline` |
-| atomic temp-file write, published with `ReplaceFileW` (Task 4) | `interrupted-write`, `bak-rotation` |
+| atomic temp-file write, published with `ReplaceFileW` (Task 4) | `bak-rotation`, `publish-blocked`, `interrupted-write` |
 | protocol fields are fixed-size and `strcpy_s` *terminates* rather than truncates (review pass 2) | `oversize-fields` |
 | a session name cannot forge a state-file line (review pass 2) | `name-injection` |
 | refuse a zero-session save over a populated file (Task 4) | `zero-guard` |
@@ -243,8 +243,14 @@ saved" compared run 1's restore with run 1's last save. Fixed in the harness —
 ⚠️ `interrupted-write` is a weaker anchor than it reads as: nothing in lite ever *reads* `sessions.tsv.tmp`,
 so seeding a stray one only proves a good primary still restores beside it. `bak-rotation` is what
 actually pins the publish (lite writes the `.bak` itself, and the primary holds the newer generation),
-which is why it is listed above too. A cell that forces a *failed* publish — holding the primary open
-with a deny-write share — is still not written.
+which is why it is listed first.
+
+➕ `publish-blocked` (review pass 3) closes the gap this note used to describe: it holds the primary
+open with `FileShare.None`, so `ReplaceFileW` *and* the `MoveFileExW` fallback are both denied, and
+asserts the log names the failed publish while the saved state stays readable and still restores. The
+same pass gave the save an in-place fallback for the other half — a directory that allows writing the
+existing `sessions.tsv` but not creating `sessions.tsv.tmp` beside it, where the atomic write would
+otherwise have saved *nothing* on a machine where the old build saved fine.
 
 ➕ Task 2 had checked off a multi-window cell that was never actually written — every cell used a
 single instance. Caught by this task's audit and added: `two-windows` runs two instances at once and

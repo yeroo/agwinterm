@@ -125,6 +125,7 @@ static HWND g_hwnd;   // main frame (declared early: the instance registry compa
 // lets any number of lite windows coexist. Instances see each other through a registry of
 // name -> {pid, hwnd} entries under HKCU, which the window.* control verbs act on.
 static std::wstring g_instance = L"agwinterm-lite";   // resolved in parseLaunchArgs
+static std::wstring g_instanceRaw;                    // --pipe as TYPED, when sanitizing changed it
 static std::string  g_idPrefix = "lite";              // session-id prefix ("<prefix>-N")
 static bool g_isDefaultInstance = true;
 static const wchar_t* kInstKey = L"Software\\agwinterm-lite\\Instances";
@@ -133,7 +134,9 @@ static const wchar_t* kInstKey = L"Software\\agwinterm-lite\\Instances";
 /// lite-<name>.log) and is interpolated into the "Restart everything" command line, so drop the
 /// characters that make either of those mean something else: path separators (--pipe "..\..\x"
 /// would write outside the state directory), and the quoting/chaining metacharacters cmd.exe acts
-/// on. None of them are legal in a filename anyway, so no name that works today changes.
+/// on. `& ^ %` and anything past 32 characters ARE legal in a filename, so a name already in use
+/// can change here — and a changed name reads its state from a different file, i.e. "my sessions
+/// are gone" with no explanation. g_instanceRaw keeps the requested name so logInit can say so.
 ///
 /// EVERY producer of an instance name must run it through here. `--pipe` does (parseLaunchArgs) and
 /// so does `window.new`: the child sanitizes whatever it is handed, so a caller told it got
@@ -967,6 +970,13 @@ static void logInit(int argc, wchar_t** argv) {
     logInfo("instance=%s exe=%s args=[%s]",
             narrow(g_isDefaultInstance ? L"(default)" : g_instance).c_str(),
             narrow(exe).c_str(), narrow(cmd).c_str());
+    // The instance name IS the state-file name, so a sanitized name reads a different file and the
+    // window comes up empty. Silently that is indistinguishable from "restore is broken".
+    if (!g_instanceRaw.empty())
+        logWarn("instance name '%s' is not usable as a filename — running as '%s' instead; state is in "
+                "sessions-%s.tsv, not sessions-%s.tsv",
+                narrow(g_instanceRaw).c_str(), narrow(g_instance).c_str(),
+                narrow(g_instance).c_str(), narrow(g_instanceRaw).c_str());
 }
 
 // ---- control pipe: protobuf frames (4-byte LE length prefix) ----
@@ -982,13 +992,21 @@ static bool request(const agwinterm_ptyhost_Request& req, agwinterm_ptyhost_Repl
     *outcome = ReqOutcome::NoReply;
     EnterCriticalSection(&g_reqLock);
     struct Unlock { ~Unlock() { LeaveCriticalSection(&g_reqLock); } } unlock;
-    uint8_t buf[4096];
-    pb_ostream_t os = pb_ostream_from_buffer(buf + 4, sizeof buf - 4);
-    if (!pb_encode(&os, agwinterm_ptyhost_Request_fields, &req)) return false;
+    // Sized from the generated worst case, not a round number: a Create carries 16 args of 2048 bytes
+    // (35572 total), and the old 4 KB buffer meant a spec whose fields each passed fitsField could
+    // still overflow the FRAME — pb_encode failed, request returned false with no log at all, and the
+    // session came back as a nameless "FAILED to start". Restore feeds these straight from the state
+    // file, so it was reachable from a file, which is exactly the silent failure this branch removes.
+    std::vector<uint8_t> buf(agwinterm_ptyhost_Request_size + 4);
+    pb_ostream_t os = pb_ostream_from_buffer(buf.data() + 4, buf.size() - 4);
+    if (!pb_encode(&os, agwinterm_ptyhost_Request_fields, &req)) {
+        logWarn("control: request (cmd %d) did not encode: %s", (int)req.which_cmd, PB_GET_ERROR(&os));
+        return false;
+    }
     uint32_t len = (uint32_t)os.bytes_written;
-    memcpy(buf, &len, 4);
+    memcpy(buf.data(), &len, 4);
     DWORD n = 0;
-    if (!WriteFile(g_control, buf, len + 4, &n, nullptr)) return false;
+    if (!WriteFile(g_control, buf.data(), len + 4, &n, nullptr)) return false;
 
     uint32_t rlen = 0;
     DWORD got = 0, need = 4;
@@ -1445,6 +1463,22 @@ static Session* attachSession(const char* id, int cols, int rows, const char* ap
     // would race the shell's startup.
     req.cmd.attach.repaint = repaint;
     if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_attach_tag) return nullptr;
+    // Adoption decides on g_hostLive, a snapshot taken before the window, the fonts, the toolbar and
+    // the update check — seconds before this call. A shell that exits in between is still "adoptable"
+    // per that snapshot, and attaching to it yields an immediate EOF: the saved session comes back as
+    // a permanently dead pane instead of being relaunched, which is the outcome the exited filter
+    // exists to prevent. The reply carries the answer first-hand, so use it and let the caller create.
+    if (repaint && rep.body.attach.has_exited) {
+        logWarn("session '%s' exited between the startup scan and restore — relaunching it instead of adopting", id);
+        // Reap it while we know first-hand that it is dead: nothing is running behind an exited
+        // session, and the record would otherwise outlive every future launch (see reapExited).
+        agwinterm_ptyhost_Request k = agwinterm_ptyhost_Request_init_default;
+        agwinterm_ptyhost_Reply kr = agwinterm_ptyhost_Reply_init_default;
+        k.which_cmd = agwinterm_ptyhost_Request_kill_tag;
+        strcpy_s(k.cmd.kill.id, id);
+        request(k, &kr);
+        return nullptr;
+    }
 
     Session* s = new Session();
     s->id = id;
@@ -1541,19 +1575,28 @@ static void closeSessionAt(int idx) {
     }
     killSession(g_sessions[idx]);
     EnterCriticalSection(&g_lock);
+    // Taken BEFORE the erase: the split pane's shell is hidden (never persisted, never in the tree)
+    // but it is on screen in this window, so it still counts against "the window is empty". After the
+    // erase the pane fixup below can repoint a pane at ANY surviving session — including a quick
+    // popup's, which lives in its own window — so the pane indices can no longer answer this.
+    const Session* splitShell = (g_pane[1] >= 0 && g_pane[1] < (int)g_sessions.size() && g_pane[1] != idx)
+                                ? g_sessions[g_pane[1]] : nullptr;
     g_sessions.erase(g_sessions.begin() + idx);
     for (int p = 0; p < 2; p++) {
         if (g_pane[p] == idx) g_pane[p] = g_sessions.empty() ? -1 : max(0, idx - 1);
         else if (g_pane[p] > idx) g_pane[p]--;
     }
     if (g_sessions.empty()) g_pane[1] = -1;   // unsplit when the last pane dies
-    // "Emptied" has to mean what the SAVE means by it: saveSessionState counts only sessions it
-    // would write, i.e. non-hidden ones. With a split pane or a quick/scratch popup open, closing
-    // the last VISIBLE session leaves g_sessions non-empty while the save sees zero — keying the
-    // flag off the raw vector would then make the guard refuse that save, and the sessions the user
-    // just closed would be read back from the untouched file on the next launch.
+    // "Emptied" means NOTHING IS LEFT ON SCREEN IN THIS WINDOW, which is neither the raw session
+    // count nor the save's count. The save writes only non-hidden sessions, so a quick/scratch popup
+    // (its own window) keeps g_sessions non-empty while the save sees zero — judged by the raw vector
+    // the guard would refuse that save and the sessions the user just closed would be read straight
+    // back out of the untouched file on the next launch. A split shell is hidden too, but it is
+    // right there in pane 1: the window is not empty, so this is not the one save allowed to write a
+    // zero-session file (and to drop the .bak). Unsplit as well and nothing writes the empty either —
+    // deliberately, because "throw away every saved session" should take an unambiguous gesture.
     bool anyVisible = false;
-    for (const Session* vs : g_sessions) if (!vs->hidden) { anyVisible = true; break; }
+    for (const Session* vs : g_sessions) if (!vs->hidden || vs == splitShell) { anyVisible = true; break; }
     bool allGone = g_sessions.empty();
     LeaveCriticalSection(&g_lock);
     // The user closed the last session, so the window goes with it. This is the ONLY path that may
@@ -2023,14 +2066,40 @@ static void saveSessionState() {
     std::wstring tmp = path + L".tmp", bak = path + L".bak";
     HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) {
-        // The silent return that made "restore doesn't work" unanswerable in the field: if the
-        // state file can't be opened, nothing is saved and nothing says so. Name the STATE file as
-        // well as the temp: the overwhelmingly likely cause is that the directory is not writable
-        // (a policy-locked %LOCALAPPDATA%), and a reader handed only a .tmp path they have never
-        // seen before is one indirection away from the thing they have to go fix.
-        logWarn("save FAILED to open %s (err %lu) — %d session(s) not saved to %s "
-                "(is the state directory writable?)",
-                narrow(tmp).c_str(), GetLastError(), saved, narrow(path).c_str());
+        // Writing through a temp needs a permission the old in-place save did not: creating a NEW
+        // file in the state directory. Somewhere that allows writing the existing sessions.tsv but
+        // not creating beside it (a policy-locked profile, a DLP/AV agent that blocks new files) this
+        // build would save nothing where the previous one saved fine — the atomic write turning into
+        // the very "restore doesn't work" it was added to fix. So fall back to the old route rather
+        // than give up. It is not atomic: an interrupted write leaves a truncated file. That is the
+        // right trade only because the alternative here is no file at all, and it is what every build
+        // before this one did on every save.
+        DWORD terr = GetLastError();
+        HANDLE g = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (g == INVALID_HANDLE_VALUE) {
+            // The silent return that made "restore doesn't work" unanswerable in the field: if the
+            // state file can't be opened, nothing is saved and nothing says so. Name the STATE file as
+            // well as the temp: the overwhelmingly likely cause is that the directory is not writable
+            // (a policy-locked %LOCALAPPDATA%), and a reader handed only a .tmp path they have never
+            // seen before is one indirection away from the thing they have to go fix.
+            logWarn("save FAILED to open %s (err %lu) or %s (err %lu) — %d session(s) not saved "
+                    "(is the state directory writable?)",
+                    narrow(tmp).c_str(), terr, narrow(path).c_str(), GetLastError(), saved);
+            return;
+        }
+        DWORD wr2 = 0;
+        BOOL ok2 = WriteFile(g, out.data(), (DWORD)out.size(), &wr2, nullptr);
+        DWORD werr2 = ok2 ? 0 : GetLastError();
+        if (ok2) FlushFileBuffers(g);
+        CloseHandle(g);
+        if (ok2 && wr2 == out.size())
+            logWarn("save ok (IN PLACE): %d session(s), %zu bytes -> %s — %s could not be created "
+                    "(err %lu), so this save was not atomic",
+                    saved, out.size(), narrow(path).c_str(), narrow(tmp).c_str(), terr);
+        else
+            logWarn("save FAILED in place to %s: wrote %lu of %zu bytes (err %lu) after %s could not "
+                    "be created (err %lu)", narrow(path).c_str(), wr2, out.size(), werr2,
+                    narrow(tmp).c_str(), terr);
         return;
     }
     DWORD wr = 0;
@@ -3159,7 +3228,7 @@ static UpdRelease updParse(const std::string& j) {
 }
 
 static const char kUpdHelper[] =
-    "param([int]$ProcId, [string]$Payload, [string]$Exe, [string]$RelArgs)\n"
+    "param([int]$ProcId, [string]$Payload, [string]$Exe, [string]$Instance)\n"
     "function Log([string]$m) { try { Add-Content -Path ($Payload + '.log') -Value (\"{0:HH:mm:ss.fff} {1}\" -f (Get-Date), $m) } catch { } }\n"
     "Log \"wait pid=$ProcId\"\n"
     "try { Wait-Process -Id $ProcId -Timeout 120 -ErrorAction SilentlyContinue } catch { }\n"
@@ -3168,7 +3237,11 @@ static const char kUpdHelper[] =
     "Log 'applying'\n"
     "Start-Process $Payload -ArgumentList '/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES' -Wait\n"
     "Log 'setup finished'\n"
-    "if ($RelArgs) { Start-Process $Exe -ArgumentList $RelArgs } else { Start-Process $Exe }\n"
+    // The instance name is passed as its OWN element, not baked into one argument string: a name with
+    // a space ("--pipe my win") came back through CommandLineToArgvW as instance "my", which is a
+    // different pipe AND a different state file — the "my sessions are gone" shape, self-inflicted by
+    // the update. Start-Process quotes an element that needs it.
+    "if ($Instance) { Start-Process $Exe -ArgumentList '--pipe', $Instance } else { Start-Process $Exe }\n"
     "Log 'relaunched'\n";
 
 static std::wstring* updHeapStr(const std::wstring& s) { return new std::wstring(s); }   // freed by the UI handler
@@ -4907,7 +4980,7 @@ public:
                                        L" -File \"" + a->helper + L"\" -ProcId " + std::to_wstring(GetCurrentProcessId()) +
                                        L" -Payload \"" + a->payload + L"\" -Exe \"" + exe + L"\"";
                     if (!g_isDefaultInstance)   // named instances come back under their own pipe
-                        cmd += L" -RelArgs \"--pipe " + g_instance + L"\"";
+                        cmd += L" -Instance \"" + g_instance + L"\"";
                     STARTUPINFOW si{ sizeof si }; PROCESS_INFORMATION pi{};
                     if (CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
                                        nullptr, nullptr, &si, &pi)) {
@@ -5293,8 +5366,17 @@ static std::string ctlDispatch(const std::string& line) {
     }
     if (cmd == "session.close") {
         if (!target) return ctlErr("session not found");
+        // Close the session that was ASKED for, by index. The old form pointed the focused pane at it
+        // and called closeFocused(), which with the split pane focused reroutes into toggleSplit() —
+        // so it killed the repointed target through the unsplit path, ORPHANING the hidden split
+        // shell (a live process with no pane, no tree entry and no kill until exit) and skipping
+        // everything closeSessionAt does: the reopen stack, the deliberate-empty mark, the teardown.
         for (int i2 = 0; i2 < (int)g_sessions.size(); i2++)
-            if (g_sessions[i2] == target) { g_pane[g_focus] = i2; closeFocused(); break; }
+            if (g_sessions[i2] == target) {
+                if (g_pane[1] == i2) toggleSplit();   // it IS the split pane's shell: closing it unsplits
+                else closeSessionAt(i2);
+                break;
+            }
         return ctlOkStr("closed");
     }
     if (cmd == "session.overlay") {   // run a command in an overlay popup over the active session
@@ -5791,29 +5873,17 @@ static bool restoreSessions() {
     // an attached session supersedes its current client — a second window on the same instance would
     // silently steal the first one's shells — and attaching to an exited one yields an immediate EOF,
     // i.e. a dead pane where a relaunched shell belongs.
+    // Ids already taken by this restore. g_hostLive is a snapshot and nothing marks it as adoption
+    // proceeds, so without this a D line carrying the same id twice — a hand-edited or damaged file,
+    // which is the case the .bak fallback exists for — adopts one host session into TWO panes: the
+    // second attach supersedes the first, the first goes dead on EOF, and closing either kills the
+    // shell out from under the other.
+    std::vector<std::string> taken;
     auto isAdoptable = [&](const std::string& id) {
         if (id.empty()) return false;
+        for (const auto& t : taken) if (t == id) return false;
         for (const auto& hs : g_hostLive) if (hs.id == id) return hs.adoptable();
         return false;
-    };
-    // A saved id the host still holds but that cannot be adopted because its shell has EXITED is a
-    // dead record only an explicit kill removes — and no other code path ever sends one for it. It
-    // would survive every future launch, and enough of them push `list` past this build's field
-    // storage (ListReply.sessions is max_count:64), at which point the whole reply stops decoding
-    // and adoption — plus the id reservation that goes with it — is off permanently. Reap it here,
-    // where we know we are about to create the replacement. An ATTACHED id is NOT touched: that one
-    // belongs to a live window, and killing it would take down someone else's shell.
-    auto reapExited = [&](const std::string& id) {
-        if (id.empty() || !fitsField(id.c_str(), sizeof agwinterm_ptyhost_SessionRef::id)) return;
-        for (const auto& hs : g_hostLive) {
-            if (hs.id != id || !hs.exited) continue;
-            agwinterm_ptyhost_Request k = agwinterm_ptyhost_Request_init_default;
-            agwinterm_ptyhost_Reply kr = agwinterm_ptyhost_Reply_init_default;
-            k.which_cmd = agwinterm_ptyhost_Request_kill_tag;
-            strcpy_s(k.cmd.kill.id, id.c_str());
-            if (request(k, &kr)) logInfo("restore: reaped exited host session '%s'", id.c_str());
-            return;
-        }
     };
 
     for (size_t si = 0; si < specs.size(); si++) {
@@ -5825,10 +5895,8 @@ static bool restoreSessions() {
             s = attachSession(want.c_str(), cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
                               sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str(),
                               true);   // repaint: the shell already has a screen, ask it to redraw
-            if (s) { adopted++; logInfo("restore: adopted live session '%s' (%s)", want.c_str(), sp.name.c_str()); }
+            if (s) { adopted++; taken.push_back(want); logInfo("restore: adopted live session '%s' (%s)", want.c_str(), sp.name.c_str()); }
             else logWarn("restore: adopt of live session '%s' failed — creating a fresh one", want.c_str());
-        } else {
-            reapExited(want);   // a dead record we are about to replace: don't leave it on the host
         }
         if (!s)
             s = newSession(cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
@@ -5847,6 +5915,28 @@ static bool restoreSessions() {
         }
     }
     g_restoring = false;
+    // Host records whose shell has EXITED are tombstones only an explicit kill removes, and no other
+    // code path ever sends one: nothing here closed them, so nothing here killed them. They survive
+    // every future launch, and enough of them push `list` past this build's field storage
+    // (ListReply.sessions is max_count:64), at which point the whole reply stops decoding and
+    // adoption — plus the id reservation that rides along with it — is off PERMANENTLY. Sweep them
+    // now that adoption is done. Deliberately narrow: only this instance's id prefix (another
+    // window's sessions are not ours to touch), only entries the host reported exited, never one it
+    // reported attached, and never one this run just adopted.
+    for (const auto& hs : g_hostLive) {
+        if (!hs.exited || hs.attached) continue;
+        size_t dash = hs.id.rfind('-');
+        if (dash == std::string::npos || hs.id.compare(0, dash, g_idPrefix) != 0) continue;
+        if (!fitsField(hs.id.c_str(), sizeof agwinterm_ptyhost_SessionRef::id)) continue;
+        bool mine = false;
+        for (const auto& t : taken) if (t == hs.id) { mine = true; break; }
+        if (mine) continue;
+        agwinterm_ptyhost_Request k = agwinterm_ptyhost_Request_init_default;
+        agwinterm_ptyhost_Reply kr = agwinterm_ptyhost_Reply_init_default;
+        k.which_cmd = agwinterm_ptyhost_Request_kill_tag;
+        strcpy_s(k.cmd.kill.id, hs.id.c_str());
+        if (request(k, &kr)) logInfo("restore: reaped exited host session '%s'", hs.id.c_str());
+    }
     logInfo("restore: %d of %zu session(s) built (%d adopted live from the pty-host, %d kept as dead)",
             built, specs.size(), adopted, dead);
     if (firstIdx < 0) {   // exit 4 of 4: specs parsed but nothing could be started
@@ -5890,6 +5980,7 @@ static void parseLaunchArgs() {
     }
     if (!g_argPipe.empty() && g_argPipe != L"agwinterm-lite") {   // named instance
         std::wstring clean = sanitizeInstanceName(g_argPipe);
+        if (clean != g_argPipe) g_instanceRaw = g_argPipe;   // logInit reports it; see sanitizeInstanceName
         g_argPipe = clean;
         g_instance = clean;
         g_isDefaultInstance = false;
@@ -6072,7 +6163,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         Session* s = newSession(cols, rows, haveProf ? argApp.c_str() : nullptr,
                                 (haveProf && !argAppArgs.empty()) ? &argAppArgs : nullptr,
                                 g_argDir.empty() ? nullptr : g_argDir.c_str());
-        if (!s && !restored) fatal(L"could not create the first session");
+        // Only when there is NOTHING to show. restoreSessions() returns false while still having kept
+        // the specs it could not start as dead "(failed to start)" entries — the whole point of
+        // failedSpecSession — and a window listing them, with the log line naming each one, is far
+        // better than a message box that throws them away. Judged by `restored` alone this killed
+        // exactly the launch it was built to explain.
+        if (!s && g_sessions.empty()) fatal(L"could not create the first session");
         if (s) { g_pane[0] = (int)g_sessions.size() - 1; g_focus = 0; syncPaneSizes(); }
         refreshTree();
     }

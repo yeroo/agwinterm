@@ -747,6 +747,56 @@ if (-not $Only -or $Only -eq 'bak-rotation') {
     }
 }
 
+# The publish half of the atomic write, forced to fail. Nothing else in the suite reaches it: every
+# other cell publishes successfully, so the rollback, the "previous state is untouched" message and
+# — the point — the promise that a FAILED save never costs the saved sessions were all untested.
+# Holding the primary open with no sharing is the one deterministic way to deny the rename without
+# touching the state directory (which every other cell writes into at the same time).
+if (-not $Only -or $Only -eq 'publish-blocked') {
+    $inst = 'rm-publish-blocked'
+    Reset-Cell $inst
+    $err = ''; $logged = $false; $intact = $false; $after = ''
+    $p = $null; $p2 = $null; $fs = $null
+    try {
+        $p = Start-Lite $inst
+        $id = LastSessionId $inst
+        & $ctl session rename survives-blocked-publish --target $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3                       # the good save this cell must not lose
+        if ((Get-Content (State $inst) -Raw) -notmatch 'survives-blocked-publish') { throw 'setup save never landed' }
+        # FileShare.None: lite can create and write the .tmp, but neither ReplaceFileW nor MoveFileExW
+        # can touch the primary.
+        $fs = [System.IO.File]::Open((State $inst), 'Open', 'ReadWrite', 'None')
+        & $ctl session rename must-not-land --target $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        $logged = Log-Has $inst 'save FAILED to publish'
+        # Read through the handle that holds the lock — nothing else can open the file right now.
+        $fs.Position = 0
+        $buf = New-Object byte[] $fs.Length
+        [void]$fs.Read($buf, 0, $buf.Length)
+        $held = [System.Text.Encoding]::UTF8.GetString($buf)
+        $intact = ($held -match 'survives-blocked-publish') -and ($held -notmatch 'must-not-land')
+        $fs.Close(); $fs = $null
+        # Hard kill: a graceful stop saves again (with the lock gone) and would overwrite the very
+        # file this cell is asserting survived.
+        Stop-Lite $p -Kill; $p = $null
+        $p2 = Start-Lite $inst
+        Start-Sleep -Seconds 2
+        $after = Signature $inst
+        Stop-Lite $p2 -Kill; $p2 = $null
+    } catch { $err = $_.Exception.Message }
+    finally { if ($fs) { try { $fs.Close() } catch { } }; Stop-Leftover $p; Stop-Leftover $p2 }
+    if (-not $err -and $logged -and $intact -and $after -match 'survives-blocked-publish') {
+        "  PASS  {0,-22} (a failed publish leaves the saved state readable)" -f 'publish-blocked'
+    } else {
+        $script:failed += 'publish-blocked'
+        "  FAIL  publish-blocked"
+        if ($err) { "        error:  $err" }
+        "        log named the failed publish: $logged ; primary still held the old state: $intact"
+        "        after: [$after]"
+        "        log:   $(Restore-Verdict $inst)"
+    }
+}
+
 # Backward compatibility: a plain 0.17.x file — no D line, no .bak anywhere — must still restore.
 Seeded -Name 'compat-0.17' `
     -Tsv "V1`nW`tws-c`nS`t0`told-one`t`t$cwd`nS`t0`told-two`t`t$cwd`nF`t1`nA`t0`n" -Assert {
