@@ -238,6 +238,7 @@ static bool inSplitter(int x, int y) {
 static HIMAGELIST g_tbImages;   // 16x16 toolbar glyphs, drawn per theme (see drawToolbarGlyph)
 static HWND g_tree;             // native SysTreeView32 sidebar (sessions)
 static bool g_treeSyncing;      // suppress TVN_SELCHANGED while we rebuild the tree
+static bool g_treeRenaming;     // an inline rename is starting: let the tree hold the keyboard
 static bool g_restoring;         // true while rebuilding sessions at startup (suppresses state saves)
 static HTREEITEM g_ctxItem;     // right-clicked tree node (for the context menu)
 static LPARAM g_ctxParam;       // its lParam: >=0 session index, <0 = -(workspace+1)
@@ -726,6 +727,7 @@ static int tbImageOf(int cmdId) {
 #define WM_APP_TRAY        (WM_APP + 4)   // system-tray icon notifications
 #define WM_APP_OVERLAY     (WM_APP + 5)   // control thread -> UI thread: open an overlay (creates a window)
 #define WM_APP_UPDATE      (WM_APP + 6)   // self-update worker -> UI thread (balloon / message / apply)
+#define WM_APP_FOCUSTERM   (WM_APP + 7)   // "give the terminal keyboard focus back", posted (see OnNotify)
 static std::string g_pendingOverlayCmd; static int g_pendingOverlaySize;
 static HICON g_appIcon;         // big (taskbar / alt-tab)
 static HICON g_appIconSm;       // small (title bar / tray)
@@ -1384,7 +1386,13 @@ static int catFace(const wchar_t* label) {
     for (int i = 0; i < (int)g_catalog.size(); i++) if (wcscmp(g_catalog[i].label, label) == 0) return i;
     return -1;
 }
-static void setDefaultFont() {   // Terminal 8x12 (Boris's pick) or the first catalog entry
+// First-run font. AGWin Bitmap Complete 16 when its pack shipped alongside the exe: it carries the
+// FULL repertoire of the source Nerd Font (68k glyphs — CJK, powerline, box drawing, emoji), so a
+// prompt engine or a TUI renders correctly out of the box instead of showing tofu until the user
+// finds Properties. Falls back to Terminal 8x12, then the first catalog entry.
+static void setDefaultFont() {
+    int c = catFace(L"AGWin Bitmap Complete");
+    if (c >= 0) { g_faceIdx = c; g_sizeIdx = 1; return; }   // 1 = "16"
     int t = catFace(L"Terminal");
     g_faceIdx = t >= 0 ? t : 0; g_sizeIdx = t >= 0 ? 5 : 0;   // 5 = "8x12" in the Terminal size list
 }
@@ -2975,7 +2983,9 @@ static void showTreeContextMenu() {
             }
             break;
         case IDM_RENAME:
-            if (g_ctxItem) { SetFocus(g_tree); TreeView_EditLabel(g_tree, g_ctxItem); }   // inline edit
+            // g_treeRenaming keeps treeProc's WM_SETFOCUS bounce out of the way until the edit
+            // control exists (after that TreeView_GetEditControl answers for it).
+            if (g_ctxItem) { g_treeRenaming = true; SetFocus(g_tree); TreeView_EditLabel(g_tree, g_ctxItem); g_treeRenaming = false; }
             break;
         case IDM_FLAG:
             if (isSession && si < (int)g_sessions.size()) toggleFlag(g_sessions[si]);
@@ -3876,6 +3886,15 @@ static void endTreeDrag(bool drop, POINT treePt) {   // treePt in TREE-client co
 static LRESULT CALLBACK treeProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
     if (m == WM_NCDESTROY) RemoveWindowSubclass(h, treeProc, id);
     switch (m) {
+        case WM_SETFOCUS:
+            // The sidebar never keeps the keyboard. It is a real SysTreeView32 child (the main app
+            // draws its sidebar, so the question never arises there), which means clicking a row —
+            // or just Alt-Tabbing back, since Windows restores focus to the child that had it —
+            // left the tree focused and the next keystroke went to the sidebar instead of the
+            // shell. Renaming is the one case that legitimately wants the keyboard here.
+            if (!g_treeRenaming && !TreeView_GetEditControl(h))
+                ::PostMessageW(g_hwnd, WM_APP_FOCUSTERM, 0, 0);
+            break;
         case WM_LBUTTONDOWN: {
             g_armIdx = -1;
             TVHITTESTINFO ht{};
@@ -3998,6 +4017,7 @@ public:
         MSG_WM_SIZE(OnSize)
         MSG_WM_EXITSIZEMOVE(OnExitSizeMove)
         MSG_WM_SETTINGCHANGE(OnSettingChange)
+        MSG_WM_ACTIVATE(OnActivateFrame)
         MSG_WM_TIMER(OnTimer)
         MSG_WM_SETFOCUS(OnSetFocusFrame)
         MSG_WM_KILLFOCUS(OnKillFocusFrame)
@@ -4009,6 +4029,7 @@ public:
         MESSAGE_HANDLER(WM_APP_TRAY, OnTray)
         MESSAGE_HANDLER(WM_APP_OVERLAY, OnOverlay)
         MESSAGE_HANDLER(WM_APP_UPDATE, OnAppUpdate)
+        MESSAGE_HANDLER(WM_APP_FOCUSTERM, OnFocusTerm)
         MESSAGE_HANDLER(WM_NOTIFY, OnNotify)
         MESSAGE_HANDLER(WM_COMMAND, OnCommand)
         MESSAGE_HANDLER(WM_UAHDRAWMENU, OnUahDrawMenu)
@@ -4188,6 +4209,12 @@ public:
         g_caretOn = !g_caretOn;
         InvalidateCaret();
     }
+    // Coming back to the window (Alt-Tab, taskbar, clicking the title bar) must land in the shell.
+    // Windows restores focus to whichever child held it last, which after any sidebar interaction
+    // is the tree — so returning to lite left you typing into the sidebar.
+    void OnActivateFrame(UINT state, BOOL, CWindow) {
+        if (state != WA_INACTIVE) ::PostMessageW(m_hWnd, WM_APP_FOCUSTERM, 0, 0);
+    }
     void OnSetFocusFrame(CWindow) { g_winFocused = true;  g_caretOn = true; InvalidateCaret(); }
     void OnKillFocusFrame(CWindow) { g_winFocused = false; g_caretOn = true; InvalidateCaret(); }
 
@@ -4240,6 +4267,14 @@ public:
     }
 
     // ---- app messages ----
+    /// Restore keyboard focus to the terminal after the sidebar finished handling a click. Skipped
+    /// while a tree label is being edited (rename) — that edit box legitimately owns the keyboard.
+    LRESULT OnFocusTerm(UINT, WPARAM, LPARAM, BOOL&) {
+        if (g_tree && TreeView_GetEditControl(g_tree)) return 0;
+        SetFocus();
+        return 0;
+    }
+
     LRESULT OnRefreshTree(UINT, WPARAM, LPARAM, BOOL&) {
         refreshTree();
         if (g_toolbar) ::InvalidateRect(g_toolbar, nullptr, FALSE);   // bell re-reads anyBlocked()
@@ -4425,8 +4460,17 @@ public:
                 int w = (int)(-p - 1);
                 if (w >= 0 && w < (int)g_workspaces.size()) g_activeWs = w;
             }
-            SetFocus();   // keep typing going to the terminal, not the tree
+            // Keep typing going to the terminal, not the tree — but NOT with a direct SetFocus():
+            // TVN_SELCHANGED arrives while the tree is still handling WM_LBUTTONDOWN, and the tree
+            // takes focus back when that returns, so the click left the sidebar focused and the
+            // next keystroke went nowhere useful. Post it and restore focus once the tree is done.
+            ::PostMessageW(m_hWnd, WM_APP_FOCUSTERM, 0, 0);
         }
+        // A click on the ALREADY-selected row sends no TVN_SELCHANGED at all, so it needs the same
+        // treatment or clicking the current session (the obvious "put me back in the terminal"
+        // gesture) leaves focus in the tree.
+        if (nm->idFrom == ID_TREE && (nm->code == NM_CLICK || nm->code == NM_DBLCLK))
+            ::PostMessageW(m_hWnd, WM_APP_FOCUSTERM, 0, 0);
         if (nm->idFrom == ID_TREE && nm->code == NM_RCLICK) {   // right-click a node -> context menu
             POINT cp; GetCursorPos(&cp); ::ScreenToClient(g_tree, &cp);
             TVHITTESTINFO ht{}; ht.pt = cp;
