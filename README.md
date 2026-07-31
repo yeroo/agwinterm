@@ -235,12 +235,52 @@ status bar — in the classic Windows look.
 Grab **`agwinterm-lite-setup-<version>.exe`** from Releases (per-user, no admin), or build it
 (needs the VC++ ATL component): `./lite/build.ps1` (dev build) / `./installer/build-lite.ps1` (setup).
 
+### Session restore & the state file
+
+Lite saves its workspaces and sessions whenever the tree changes and on exit, and rebuilds them on
+the next launch (`--no-restore` starts empty instead). Everything about that is on disk and readable:
+
+- **One state file per instance.** `%LOCALAPPDATA%\agwinterm-lite\sessions.tsv` for the default
+  instance, `sessions-<instance>.tsv` for a named one. **Because every lite window is its own
+  process, each window restores only its own sessions** — sessions you created in
+  `--pipe work` come back in `--pipe work`, never in the default window. That is the mundane
+  reading of "my sessions are gone": right sessions, wrong window.
+- **Format**: tab-separated UTF-8 text, `V1` header, one record per line — `W` workspace, `S` session
+  (workspace index, name, app, cwd, then args), `F` flagged indices, `D` host session ids, `A` active
+  workspace. The format grows by *adding* line types, so a file written by an older build still
+  restores, a line type this build doesn't write is still honoured when it finds one (`O`, focused
+  workspace), and a file from a **newer** build is read for the lines this one knows rather than
+  thrown away.
+- **What is saved**: the visible sessions, each with its *live* working directory (read from the
+  shell process, so it follows you as you `cd`). Split-pane shells are hidden and deliberately not
+  persisted — the split comes back as a single pane.
+- **Writes are atomic, and keep one generation.** The save writes `sessions.tsv.tmp`, rotates the
+  current file to **`sessions.tsv.bak`**, then renames the temp over the target — a crash or a full
+  disk mid-write can no longer leave a truncated file where a good one was. A zero-session save is
+  *refused* over a populated file (and says so in the log); the one legitimate empty is you closing
+  the last session, which also deletes the `.bak` so what you just closed doesn't come back.
+- **Restore order**: `sessions.tsv` → `.bak` if the primary is missing, empty, or parses to zero
+  sessions → a fresh window. If the pty-host still holds the shells — lite was killed or the machine
+  was shut down rather than closed — those shells are **still running** and get adopted live instead
+  of relaunched.
+- **"Restart everything"** (*File → Restart everything*) relaunches the **same** instance — it carries
+  this window's `--pipe <name>` over, so it comes back reading the same state file. `--diagnose`
+  prints the exact command line it would use.
+- **A spec that won't start on this machine** (a profile whose exe only exists on your other PC, a
+  cwd on an unmounted drive) stays in the tree as a `(failed to start)` entry with a note in its
+  pane, rather than silently vanishing. Its name, workspace, cwd and args are kept and re-saved, so
+  it starts normally again on the machine that has the app.
+
+Every one of those branches names itself in `lite.log`, and `lite/test/restore-matrix.ps1` drives the
+whole matrix — kill vs. graceful close, two windows at once, interrupted writes, `.bak` fallback,
+bogus apps, old and future file formats — as regression cover.
+
 ### Reporting a lite problem
 
 Run `agwinterm-lite --diagnose` and attach its output plus `lite.log`. The report is read-only and
 safe to run while lite is open; it prints the state file's path, whether that directory is genuinely
 writable (a real write probe, which is what catches a redirected or policy-locked profile), the state
-file's contents, the resolved font, and the bundled pack inventory:
+file's contents and its `.bak` generation, the resolved font, and the bundled pack inventory:
 
 ```
 > agwinterm-lite --diagnose
@@ -251,7 +291,12 @@ state
   dir writable: yes
   session file: ...\sessions.tsv
     size: 59 bytes
+    modified: 2026-07-31 20:14:02
+  backup file: ...\sessions.tsv.bak (59 bytes)
 ```
+
+Use `--pipe <instance> --diagnose` to ask about a named instance — it reports *that* instance's
+state file, which is the one its window restores from.
 
 ## Keyboard essentials
 

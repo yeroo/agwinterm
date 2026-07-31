@@ -248,10 +248,28 @@ harness self-check. .NET: `Agwinterm.Core.Tests` 200/200, `Agwinterm.Pty.Tests` 
 `Ptyhost.cs`) differ by line endings alone — no content moved outside lite.
 
 ### Task 7: [Final] Update documentation
-- [ ] document the state file, its `.bak` generation, and the restore rules in the README lite section
-- [ ] note the multi-window/per-instance state rule, since "my sessions are gone" has that mundane
+- [x] document the state file, its `.bak` generation, and the restore rules in the README lite section
+- [x] note the multi-window/per-instance state rule, since "my sessions are gone" has that mundane
       reading
-- [ ] record whatever the matrix caught in the build-and-test gotchas memory
+- [x] record whatever the matrix caught in the build-and-test gotchas memory
+
+➕ The README's new **Session restore & the state file** section is written for the person reading it
+*because* sessions went missing, so it leads with the per-instance rule ("right sessions, wrong
+window" is the mundane reading) before the format, the atomic write, the `.bak`, and the restore
+order — every branch of which names itself in `lite.log`. "Restart everything" is documented as
+keeping the instance, since that was a real defect and is now a promise.
+
+⚠️ Documenting the format caught a small inaccuracy in the draft: `O` (focused workspace) is **parsed
+but never written** by this build. The README now says so rather than listing it as a record lite
+emits — the point of the bullet is that a line type this build doesn't write is still honoured, which
+is the same forward-compatibility rule as `V2`.
+
+➕ Memory (`agwinterm-build-and-test-gotchas`) gained the traps from Tasks 3b–5 beside the Task 2–3
+ones already recorded: a guard needs its legitimate-case escape hatch (and the `.bak` delete that goes
+with it), the transient-empty save is drivable via a split, and relaunch paths silently drop `--pipe`.
+
+**Docs validation (2026-07-31)**: `lite/build.ps1` clean, `lite/test/run-all.ps1` all checks pass —
+24/24 matrix cells plus the harness self-check. No code changed in this task.
 
 ## Technical Details
 
