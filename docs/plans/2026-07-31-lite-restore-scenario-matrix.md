@@ -231,12 +231,20 @@ saved" compared run 1's restore with run 1's last save. Fixed in the harness —
 | session ids in the `D` line, adopt live host sessions on restore (Task 3) | `killed` (asserts the log says `adopted live session`), `stale-ids`, `short-id-line` |
 | `SessionInfo.title` is *skipped* on decode so `list` can never overflow (Task 3, revised in review) | `killed` (via the health probe) |
 | `restartCommandLine()` preserves `--pipe` (Task 3b) | `restart-named`, `restart-cmdline` |
-| atomic temp-file + `MoveFileExW` write (Task 4) | `interrupted-write` |
+| atomic temp-file write, published with `ReplaceFileW` (Task 4) | `interrupted-write`, `bak-rotation` |
+| protocol fields are fixed-size and `strcpy_s` *terminates* rather than truncates (review pass 2) | `oversize-fields` |
+| a session name cannot forge a state-file line (review pass 2) | `name-injection` |
 | refuse a zero-session save over a populated file (Task 4) | `zero-guard` |
 | a deliberate empty also deletes the `.bak` (Task 4) | `closed-last` |
 | `.bak` fallback when the primary yields zero specs (Task 4) | `bak-fallback`, `compat-0.17` |
 | `failedSpecSession()` keeps an unstartable spec as a dead entry (Task 5) | `failed-spec`, `bogus-app` |
 | tolerate an unknown `V` header instead of silently swallowing it (Task 6) | `future-v2` |
+
+⚠️ `interrupted-write` is a weaker anchor than it reads as: nothing in lite ever *reads* `sessions.tsv.tmp`,
+so seeding a stray one only proves a good primary still restores beside it. `bak-rotation` is what
+actually pins the publish (lite writes the `.bak` itself, and the primary holds the newer generation),
+which is why it is listed above too. A cell that forces a *failed* publish — holding the primary open
+with a deny-write share — is still not written.
 
 ➕ Task 2 had checked off a multi-window cell that was never actually written — every cell used a
 single instance. Caught by this task's audit and added: `two-windows` runs two instances at once and

@@ -262,8 +262,9 @@ the next launch (`--no-restore` starts empty instead). Everything about that is 
 - **Restore order**: `sessions.tsv` → `.bak` if the primary is missing, empty, or parses to zero
   sessions → a fresh window. If the pty-host still holds the shells — lite was killed or the machine
   was shut down rather than closed — those shells are **still running** and get adopted live instead
-  of relaunched. An adopted shell keeps everything it was running, but its **screen starts empty**:
-  lite re-attaches to the live process, it does not replay the history the old window had. A shell
+  of relaunched. An adopted shell keeps everything it was running, and lite asks it to redraw, so the
+  **screen comes back** — but the **scrollback does not**: lite re-attaches to the live process with a
+  fresh emulator, so only what is on screen is repainted, not the history the old window had. A shell
   that has already exited, or one another window is currently driving, is not adopted — it is
   relaunched (or left to its owner) instead.
 - **Recovering by hand.** `--no-restore` starts empty, and the next save publishes *that* over

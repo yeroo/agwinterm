@@ -1303,6 +1303,15 @@ static Session* attachSession(const char* id, int cols, int rows, const char* ap
                               const std::vector<std::string>* pargs, const char* cwd,
                               bool repaint = false);   // fwd
 
+// The protocol's string fields are FIXED-SIZE arrays, and MSVC's strcpy_s does not truncate on an
+// oversize source — it invokes the CRT invalid-parameter handler, whose default terminates the
+// process outright: no window, no message box, no log line. Every value copied below can come from
+// the state file, and saveSessionState persists sessionLiveCwd(), which reads the shell's cwd out of
+// its PEB — a UNICODE_STRING with no MAX_PATH limit. So a session sitting in a deep directory could
+// be saved perfectly and then hard-kill the NEXT launch, which is exactly the unexplainable "lite
+// won't start" shape this branch exists to remove. Check before every copy.
+static bool fitsField(const char* s, size_t cap) { return s && strlen(s) < cap; }
+
 static Session* newSession(int cols, int rows, const char* app = nullptr,
                            const std::vector<std::string>* pargs = nullptr, const char* cwd = nullptr) {
     char idbuf[64];
@@ -1316,13 +1325,40 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
     req.cmd.create.cols = (uint32_t)cols;
     req.cmd.create.rows = (uint32_t)rows;
     const char* useApp = app ? app : "powershell.exe";
+    if (!fitsField(useApp, sizeof agwinterm_ptyhost_Create::app)) {
+        // Nothing could launch this anyway. Returning nullptr lets restore keep it as a named dead
+        // session (failedSpecSession) instead of losing the entry — or killing the process.
+        logWarn("session create refused: app is %zu bytes, the protocol field holds %zu",
+                strlen(useApp), sizeof agwinterm_ptyhost_Create::app - 1);
+        return nullptr;
+    }
     strcpy_s(req.cmd.create.app, useApp);
-    if (cwd && *cwd) strcpy_s(req.cmd.create.cwd, cwd);
+    if (cwd && *cwd) {
+        // An over-long cwd is not worth failing the session over — start in the inherited directory
+        // and say why, which beats both a dead pane and a terminated process.
+        if (fitsField(cwd, sizeof agwinterm_ptyhost_Create::cwd)) strcpy_s(req.cmd.create.cwd, cwd);
+        else logWarn("session create: cwd is %zu bytes and does not fit the protocol field (%zu) — "
+                     "starting in the default directory instead", strlen(cwd), sizeof agwinterm_ptyhost_Create::cwd - 1);
+    }
     std::string enc;
     if (pargs && !pargs->empty()) {                     // explicit profile args -> run app + args as-is
-        int n = (int)pargs->size(); if (n > 4) n = 4;
+        // The wire holds 16 args (proto/ptyhost.options). The old cap of 4 silently rewrote the
+        // command line of any profile with more than four — saved in full, relaunched truncated.
+        const int kMaxArgs = (int)(sizeof agwinterm_ptyhost_Create::args / sizeof agwinterm_ptyhost_Create::args[0]);
+        int n = (int)pargs->size();
+        if (n > kMaxArgs) {
+            logWarn("session create: %d args, the protocol carries %d — dropping the rest", n, kMaxArgs);
+            n = kMaxArgs;
+        }
         req.cmd.create.args_count = n;
-        for (int i = 0; i < n; i++) strcpy_s(req.cmd.create.args[i], (*pargs)[i].c_str());
+        for (int i = 0; i < n; i++) {
+            if (!fitsField((*pargs)[i].c_str(), sizeof agwinterm_ptyhost_Create::args[0])) {
+                logWarn("session create refused: arg %d is %zu bytes, the protocol field holds %zu",
+                        i, (*pargs)[i].size(), sizeof agwinterm_ptyhost_Create::args[0] - 1);
+                return nullptr;                         // a truncated arg is a DIFFERENT command
+            }
+            strcpy_s(req.cmd.create.args[i], (*pargs)[i].c_str());
+        }
     } else if (isPwshApp(useApp)) {                     // PowerShell: keep the interactive prompt wrap
         // -NoExit keeps the shell interactive after the wrap runs; -EncodedCommand runs AFTER the
         // profile so it chains (not replaces) the user's prompt.
@@ -1390,6 +1426,13 @@ static Session* attachSession(const char* id, int cols, int rows, const char* ap
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_attach_tag;
+    // Adoption feeds this straight from the state file's D line, so the id is as untrusted as the
+    // rest of the file. See fitsField: an over-long one would terminate the process, not truncate.
+    if (!fitsField(id, sizeof agwinterm_ptyhost_Attach::id)) {
+        logWarn("attach refused: session id is %zu bytes, the protocol field holds %zu",
+                strlen(id ? id : ""), sizeof agwinterm_ptyhost_Attach::id - 1);
+        return nullptr;
+    }
     strcpy_s(req.cmd.attach.id, id);
     // ADOPTION only: the shell has been running without a client and has already painted its screen,
     // but the adopting side gets a brand-new empty emulator and the host forwards only NEW output.
@@ -1889,11 +1932,13 @@ static bool readWholeFile(const std::wstring& path, std::string& out, DWORD* err
     if (err) *err = 0;
     return true;
 }
-// How many session lines a state file on disk holds; -1 when it can't be read at all. Cheap enough
-// to ask before every save, and it is what "would this write throw sessions away?" actually means.
-static int stateFileSessionCount(const std::wstring& path) {
+// How many session lines a state file on disk holds; -1 when it can't be read at all. `err` tells
+// the two -1s apart: a file that ISN'T THERE has nothing to lose (every first run), while a file
+// that exists and won't open is the locked-profile case a save must not steamroll. Cheap enough to
+// ask before every save, and it is what "would this write throw sessions away?" actually means.
+static int stateFileSessionCount(const std::wstring& path, DWORD* err = nullptr) {
     std::string d;
-    if (!readWholeFile(path, d)) return -1;
+    if (!readWholeFile(path, d, err)) return -1;
     int n = 0;
     for (size_t i = 0; i < d.size();) {
         size_t e = d.find('\n', i);
@@ -1904,18 +1949,30 @@ static int stateFileSessionCount(const std::wstring& path) {
     return n;
 }
 
+// A field written into a tab-separated, newline-delimited record must not CONTAIN a tab or a
+// newline. Names reach here from the control API — session.rename takes a JSON string, and
+// jsonParseString decodes \t, \n and \uXXXX — so an unescaped name could shift every field after it
+// on its own line, or append a whole synthetic `S` line that the NEXT launch would faithfully start
+// as a real session. It also breaks the S/D pairing guard, which then disables adoption for the
+// entire file. One choke point on the way out covers every ingest path, present and future.
+static std::string tsvField(const std::string& s) {
+    std::string o = s;
+    for (char& c : o) if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+    return o;
+}
+
 // session line is: S <ws> <name> <app> <cwd> <arg0> <arg1>...  Split-shells (hidden) aren't persisted.
 //
 // The write is atomic and keeps one previous generation: build the buffer, write it to
-// sessions.tsv.tmp, rotate the current file to sessions.tsv.bak, then MoveFileExW the temp over the
-// target. A crash, a full disk or a killed process can therefore never leave a truncated file where
-// a good one was — the old CREATE_ALWAYS wrote in place, so the only copy was destroyed the instant
-// the write began.
+// sessions.tsv.tmp, then publish it with ReplaceFileW, which rotates the current file to
+// sessions.tsv.bak and swaps the temp in as ONE operation. A crash, a full disk or a killed process
+// can therefore never leave a truncated file where a good one was — the old CREATE_ALWAYS wrote in
+// place, so the only copy was destroyed the instant the write began.
 static void saveSessionState() {
     std::wstring path = stateFilePath();
     if (path.empty()) return;
     std::string out = "V1\n";
-    for (const auto& w : g_workspaces) out += "W\t" + narrow(w) + "\n";
+    for (const auto& w : g_workspaces) out += "W\t" + tsvField(narrow(w)) + "\n";
     EnterCriticalSection(&g_lock);
     std::string flagLine;   // "F\t<i>..." = indices (in S-line order) of flagged sessions; old builds skip it
     // "D\t<id>..." = the host session ids, in S-line order — same in-order idiom as the F line, and
@@ -1925,8 +1982,13 @@ static void saveSessionState() {
     for (const Session* s : g_sessions) {
         if (s->hidden) continue;
         std::string cw = sessionLiveCwd(s);              // live dir (OSC 7) wins over the creation dir
-        out += "S\t" + std::to_string(s->ws) + "\t" + narrow(s->name) + "\t" + s->app + "\t" + (cw.empty() ? s->cwd : cw);
-        for (const auto& a : s->args) out += "\t" + a;
+        // Never persist a cwd the next launch cannot use: Create.cwd is a fixed 260-byte wire field,
+        // while the PEB path sessionLiveCwd() reads has no such limit. Falling back to the creation
+        // dir loses a little accuracy; writing it would lose the session (see fitsField).
+        if (cw.size() >= sizeof agwinterm_ptyhost_Create::cwd) cw.clear();
+        out += "S\t" + std::to_string(s->ws) + "\t" + tsvField(narrow(s->name)) + "\t" + tsvField(s->app)
+             + "\t" + tsvField(cw.empty() ? s->cwd : cw);
+        for (const auto& a : s->args) out += "\t" + tsvField(a);
         out += "\n";
         if (s->flagged) flagLine += "\t" + std::to_string(saved);
         idLine += "\t" + s->id;
@@ -1941,8 +2003,12 @@ static void saveSessionState() {
     // file with zero S lines — a good file replaced by a useless one, with nothing to fall back to.
     // The one legitimate zero-session save is the user closing the last session (g_userEmptied).
     if (saved == 0 && !g_userEmptied) {
-        int had = stateFileSessionCount(path);
-        DWORD hadErr = GetLastError();   // only meaningful for had == -1 (CreateFileW is the last call made)
+        DWORD hadErr = 0;
+        int had = stateFileSessionCount(path, &hadErr);
+        // No file yet is not a file that "could not be read" — that is every first run, and saying
+        // so in the log the field reports are read from sends the reader after a fault that isn't
+        // there. Nothing on disk means nothing to lose, so treat it as the empty case.
+        if (had < 0 && (hadErr == ERROR_FILE_NOT_FOUND || hadErr == ERROR_PATH_NOT_FOUND)) had = 0;
         if (had != 0) {   // -1 = the file exists but could not be read: unknown is NOT permission to overwrite
             if (had > 0)
                 logWarn("save SKIPPED: refusing to replace %s (%d saved session(s)) with a zero-session save",
@@ -1978,20 +2044,36 @@ static void saveSessionState() {
         DeleteFileW(tmp.c_str());
         return;
     }
-    if (saved == 0 && g_userEmptied) {
-        // The user emptied the window ON PURPOSE. Keeping a .bak would resurrect on the next launch
-        // exactly what they just closed. Every other zero-session save keeps its generation: the
-        // guard above lets one through only when the primary holds nothing worth keeping either, and
-        // a .bak is then the last copy of anything at all.
-        DeleteFileW(bak.c_str());
-    } else if (stateFileSessionCount(path) > 0 && !MoveFileExW(path.c_str(), bak.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        // Keep exactly one previous generation. Only rotate a file that actually held sessions, so a
-        // good .bak is never overwritten by an empty or absent primary.
-        logWarn("save: could not rotate %s to .bak (err %lu)", narrow(path).c_str(), GetLastError());
+    // Keep exactly one previous generation, but only rotate a file that actually held sessions, so a
+    // good .bak is never overwritten by an empty or absent primary. The user emptying the window ON
+    // PURPOSE is the one case that drops the .bak: keeping it would resurrect on the next launch
+    // exactly what they just closed.
+    bool rotate = !(saved == 0 && g_userEmptied) && stateFileSessionCount(path) > 0;
+    if (saved == 0 && g_userEmptied) DeleteFileW(bak.c_str());
+    // ReplaceFileW does the rotation and the publish as ONE operation, and never unlinks the target
+    // in between. Doing it as two renames leaves a window in which no primary exists at all — and a
+    // shutdown landing in that window (the OnDestroy save is exactly when Windows is killing things)
+    // costs a whole generation, which is "some of my sessions are gone" with a log line claiming the
+    // save worked. It needs an existing target, so the two-rename path stays for the first save.
+    if (rotate && ReplaceFileW(path.c_str(), tmp.c_str(), bak.c_str(),
+                               REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)) {
+        logInfo("save ok: %d session(s), %zu bytes -> %s", saved, out.size(), narrow(path).c_str());
+        return;
     }
+    bool rotated = rotate && MoveFileExW(path.c_str(), bak.c_str(), MOVEFILE_REPLACE_EXISTING);
+    if (rotate && !rotated)
+        logWarn("save: could not rotate %s to .bak (err %lu)", narrow(path).c_str(), GetLastError());
     if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        logWarn("save FAILED to publish %s (err %lu) — %d session(s) not saved; .bak holds the previous state",
-                narrow(path).c_str(), GetLastError(), saved);
+        DWORD perr = GetLastError();
+        // Put the primary back. Without this a failed publish leaves NO primary at all — the state
+        // lives only in a .bak nothing but the fallback path reads, and --diagnose (the first thing
+        // a reader runs) reports the session file as missing.
+        bool restored = rotated && MoveFileExW(bak.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+        logWarn("save FAILED to publish %s (err %lu) — %d session(s) not saved; %s",
+                narrow(path).c_str(), perr, saved,
+                restored  ? "the previous state was put back"
+                : rotated ? "the previous state is in the .bak"
+                          : "the previous state is untouched");
         DeleteFileW(tmp.c_str());
         return;
     }
@@ -5276,7 +5358,7 @@ static std::string ctlDispatch(const std::string& line) {
         if (!target) return ctlErr("session not found");
         std::string nm = req.get("args.name");
         if (nm.empty()) return ctlErr("rename needs a name");
-        target->name = widen(nm);
+        target->name = widen(tsvField(nm));   // JSON carries \t and \n; a name is one line (see tsvField)
         PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
         return ctlOkStr("renamed");
     }
@@ -5386,7 +5468,7 @@ static std::string ctlDispatch(const std::string& line) {
         std::string nm = req.get("args.name");
         if (w < 0) return ctlErr("workspace not found");
         if (nm.empty()) return ctlErr("rename needs a name");
-        g_workspaces[w] = widen(nm);
+        g_workspaces[w] = widen(tsvField(nm));
         PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);
         return ctlOkStr("renamed");
     }
@@ -5714,6 +5796,25 @@ static bool restoreSessions() {
         for (const auto& hs : g_hostLive) if (hs.id == id) return hs.adoptable();
         return false;
     };
+    // A saved id the host still holds but that cannot be adopted because its shell has EXITED is a
+    // dead record only an explicit kill removes — and no other code path ever sends one for it. It
+    // would survive every future launch, and enough of them push `list` past this build's field
+    // storage (ListReply.sessions is max_count:64), at which point the whole reply stops decoding
+    // and adoption — plus the id reservation that goes with it — is off permanently. Reap it here,
+    // where we know we are about to create the replacement. An ATTACHED id is NOT touched: that one
+    // belongs to a live window, and killing it would take down someone else's shell.
+    auto reapExited = [&](const std::string& id) {
+        if (id.empty() || !fitsField(id.c_str(), sizeof agwinterm_ptyhost_SessionRef::id)) return;
+        for (const auto& hs : g_hostLive) {
+            if (hs.id != id || !hs.exited) continue;
+            agwinterm_ptyhost_Request k = agwinterm_ptyhost_Request_init_default;
+            agwinterm_ptyhost_Reply kr = agwinterm_ptyhost_Reply_init_default;
+            k.which_cmd = agwinterm_ptyhost_Request_kill_tag;
+            strcpy_s(k.cmd.kill.id, id.c_str());
+            if (request(k, &kr)) logInfo("restore: reaped exited host session '%s'", id.c_str());
+            return;
+        }
+    };
 
     for (size_t si = 0; si < specs.size(); si++) {
         const auto& sp = specs[si];
@@ -5726,6 +5827,8 @@ static bool restoreSessions() {
                               true);   // repaint: the shell already has a screen, ask it to redraw
             if (s) { adopted++; logInfo("restore: adopted live session '%s' (%s)", want.c_str(), sp.name.c_str()); }
             else logWarn("restore: adopt of live session '%s' failed — creating a fresh one", want.c_str());
+        } else {
+            reapExited(want);   // a dead record we are about to replace: don't leave it on the host
         }
         if (!s)
             s = newSession(cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),

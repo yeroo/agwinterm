@@ -10,3 +10,7 @@ installer/Output/
 
 # ralphex progress logs
 .ralphex/progress/
+
+# throwaway UI mock-ups: vendored FLTK, cmake/ninja trees and their build output (~1 GB),
+# none of which belongs in the repo — one `git add -A` away from being committed.
+lite/design-mocks/

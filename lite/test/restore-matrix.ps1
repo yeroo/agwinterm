@@ -238,8 +238,17 @@ function Seeded {
 }
 
 $cwd = (Resolve-Path "$PSScriptRoot\..").Path
-Seeded -Name 'app-spec' -Tsv "V1`nW`tws-a`nS`t0`tprofile-session`tpowershell.exe`t$cwd`nA`t0`n" -Assert {
-    param($a) $a -match 'profile-session'
+# The name coming back is only half of it: a build that dropped app/args from the S line on re-save,
+# or restored the spec as a plain default shell, would pass a name-only assertion. Check the re-saved
+# S line still carries the app AND its args — that is the shape a shell profile actually produces.
+Seeded -Name 'app-spec' `
+    -Tsv "V1`nW`tws-a`nS`t0`tprofile-session`tpowershell.exe`t$cwd`t-NoLogo`t-NoExit`nA`t0`n" -Assert {
+    param($a, $i)
+    if ($a -notmatch 'profile-session') { return $false }
+    $line = @(Get-Content (State $i) | Where-Object { $_ -match 'profile-session' })[0]
+    $f = $line -split "`t"
+    # S <ws> <name> <app> <cwd> <arg0> <arg1>
+    ($f[3] -eq 'powershell.exe') -and ($f[5] -eq '-NoLogo') -and ($f[6] -eq '-NoExit')
 }
 
 # A spec whose app does not exist on this machine — the shape of "a profile that doesn't resolve
@@ -418,6 +427,22 @@ function Find-Lite($inst) {
         ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
 }
 
+# Every agwinterm-lite.exe alive right now, by pid. Snapshotted before the restart so anything the
+# restart itself produces can be told apart from the user's own running lite.
+function Lite-Pids { @(Get-CimInstance Win32_Process -Filter "Name='agwinterm-lite.exe'" | ForEach-Object { $_.ProcessId }) }
+
+# The regression this cell exists to catch is also the regression that makes it dangerous: if
+# restartCommandLine() ever drops the --pipe, "Restart everything" relaunches as the DEFAULT
+# instance, which owns the user's REAL sessions.tsv and would overwrite it on its next save. The
+# cell's own $p2 lookup finds nothing in that case and throws, so nothing else would ever stop it.
+function Stop-Stray-Lite($known) {
+    Get-CimInstance Win32_Process -Filter "Name='agwinterm-lite.exe'" |
+        Where-Object { $known -notcontains $_.ProcessId } | ForEach-Object {
+            "        (stopping stray lite pid $($_.ProcessId): $($_.CommandLine))"
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+}
+
 function Restart-Cell {
     param([string]$Name)
     if ($Only -and $Only -ne $Name) { return }
@@ -425,8 +450,10 @@ function Restart-Cell {
     Reset-Cell $inst
     $before = ''; $after = ''; $err = ''
     $p = $null; $p2 = $null
+    $known = Lite-Pids                        # includes the user's own lite, which must NOT be touched
     try {
         $p = Start-Lite $inst
+        $known += $p.Id
         & $ctl session new --pipe $inst 2>&1 | Out-Null
         Start-Sleep -Seconds 2
         $before = Signature $inst
@@ -448,12 +475,13 @@ function Restart-Cell {
             if ($r -match '"ok":true') { $p2 = @(Find-Lite $inst | Where-Object { $_.Id -ne $oldId })[0]; break }
         }
         if (-not $p2) { throw 'the restarted instance never answered its control pipe' }
+        $known += $p2.Id
         Start-Sleep -Seconds 2
         $after = Signature $inst
         Stop-Lite $p2; $p2 = $null
         $p = $null   # already exited: that is what this cell just asserted
     } catch { $err = $_.Exception.Message }
-    finally { Stop-Leftover $p; Stop-Leftover $p2 }
+    finally { Stop-Leftover $p; Stop-Leftover $p2; Stop-Stray-Lite $known }
 
     if (-not $err -and $after -eq $before -and (SessionCount $before) -ge 2) {
         "  PASS  {0,-22} [{1}]" -f $Name, $after
@@ -784,6 +812,65 @@ Seeded -Name 'no-workspaces' `
 Seeded -Name 'stray-ws-index' `
     -Tsv "V1`nW`tonly-ws`nS`t7`tstray-session`t`t$cwd`nS`t0`thome-session`t`t$cwd`nF`t9`nA`t9`n" -Assert {
     param($a, $i) ($a -match 'stray-session') -and ($a -match 'home-session') -and ($a -match 'only-ws')
+}
+
+# Fields longer than the protocol's fixed-size wire storage. This is NOT a hand-edit-only case: the
+# save persists the shell's live cwd read straight out of its PEB, which has no MAX_PATH limit, so a
+# session sitting in a deep directory (long paths enabled, nested node_modules) writes a cwd lite
+# then has to read back. strcpy_s does not truncate on overflow — it terminates the process — so
+# before the fix this file killed lite at launch with no window and no log line. Both sessions must
+# come back: the long cwd is dropped (the session starts in the default dir), the long ARG cannot be
+# truncated without changing the command, so that spec is kept as a dead entry instead.
+$longCwd = 'C:\' + ('deep-directory-name\' * 25)
+$longArg = '-x' + ('y' * 3000)
+Seeded -Name 'oversize-fields' `
+    -Tsv "V1`nW`tws-o`nS`t0`tlong-cwd-session`t`t$longCwd`nS`t0`tlong-arg-session`tpowershell.exe`t$cwd`t$longArg`nA`t0`n" -Assert {
+    param($a, $i)
+    ($a -match 'long-cwd-session') -and ($a -match 'long-arg-session') -and
+    (Log-Has $i 'does not fit the protocol field') -and (Log-Has $i 'arg 0 is')
+}
+
+# A session NAME carrying the state file's own delimiters. session.rename takes a JSON string, and
+# jsonParseString decodes \t and \n, so the name arrives with real control characters in it — and the
+# file is tab-separated and newline-delimited. Unescaped, the name below appends a whole second `S`
+# line, which the next launch starts as a real session running whatever app it names. (It also puts
+# the S count out of step with the D line, which switches adoption off for the entire file.) The
+# state file must come back with exactly ONE session line and no trace of the injected one.
+if (-not $Only -or $Only -eq 'name-injection') {
+    $inst = 'rm-name-injection'
+    Reset-Cell $inst
+    $err = ''; $lines = 0; $after = ''; $renamed = ''; $count = 0; $forged = 0
+    $p = $null; $p2 = $null
+    try {
+        $p = Start-Lite $inst
+        $id = LastSessionId $inst
+        $evil = 'pwn' + [char]10 + 'S' + [char]9 + '0' + [char]9 + 'injected' + [char]9 + 'notepad.exe' + [char]9
+        $renamed = (& $ctl session rename $evil --target $id --pipe $inst 2>&1) -join ''
+        Start-Sleep -Seconds 2
+        Stop-Lite $p; $p = $null
+        $lines = @(Get-Content (State $inst) | Where-Object { $_ -match "^S`t" }).Count
+        $p2 = Start-Lite $inst
+        Start-Sleep -Seconds 3
+        # Count sessions, don't grep the signature: the payload survives as ordinary TEXT inside the
+        # one session's name (that is the fix working), so 'injected' appearing there is expected.
+        $count = @(SessionsOf $inst).Count
+        $forged = @(SessionsOf $inst | Where-Object { $_.name -eq 'injected' }).Count
+        $after = Signature $inst
+        Stop-Lite $p2; $p2 = $null
+    } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $p; Stop-Leftover $p2 }
+    if (-not $err -and $renamed -match 'renamed' -and $lines -eq 1 -and $count -eq 1 -and $forged -eq 0) {
+        "  PASS  {0,-22} (a name cannot forge a session line)" -f 'name-injection'
+    } else {
+        $script:failed += 'name-injection'
+        "  FAIL  name-injection"
+        if ($err) { "        error:  $err" }
+        "        rename said: $renamed"
+        "        S lines in the saved file: $lines (expected 1)"
+        "        sessions restored: $count (expected 1), forged 'injected' session(s): $forged"
+        "        after:  [$after]"
+        "        log:    $(Restore-Verdict $inst)"
+    }
 }
 
 # --- harness self-check: a deliberately corrupted state file MUST fail a cell -------------------
