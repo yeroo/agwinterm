@@ -24,7 +24,14 @@ function State($inst) { "$dir\sessions-$inst.tsv" }
 function Log($inst)   { "$dir\lite-$inst.log" }
 
 function Reset-Cell($inst) {
-    Remove-Item (State $inst), (Log $inst), "$(Log $inst).old", "$(State $inst).bak" -ErrorAction SilentlyContinue
+    Remove-Item (State $inst), (Log $inst), "$(Log $inst).old", "$(State $inst).bak", "$(State $inst).tmp" `
+        -ErrorAction SilentlyContinue
+}
+
+# The newest real session id in the tree (workspace rows carry numeric ids).
+function LastSessionId($inst) {
+    @(([regex]::Matches(((& $ctl tree --json --pipe $inst 2>&1) -join ''), '"id"\s*:\s*"([^"]+)"') |
+       ForEach-Object { $_.Groups[1].Value }) | Where-Object { $_ -notmatch '^\d+$' })[-1]
 }
 
 function Start-Lite($inst) {
@@ -50,6 +57,13 @@ function Signature($inst) {
     $j = (& $ctl tree --json --pipe $inst 2>&1) -join ''
     $names = [regex]::Matches($j, '"name"\s*:\s*"([^"]*)"') | ForEach-Object { $_.Groups[1].Value }
     ($names -join '|')
+}
+
+# Does the whole log say this? (Restore-Verdict only shows the last few lines, so a decision made
+# early in a run — like the .bak fallback — is not visible there.)
+function Log-Has($inst, [string]$pattern) {
+    $l = Log $inst
+    (Test-Path $l) -and ((Get-Content $l -Raw) -match $pattern)
 }
 
 function Restore-Verdict($inst) {
@@ -145,11 +159,13 @@ Cell -Name 'flagged' -Setup {
 # makes a DEFAULT session, so the state file is seeded directly: that is also the exact shape
 # restoreSessions() has to cope with, and it keeps the cell deterministic.
 function Seeded {
-    param([string]$Name, [string]$Tsv, [scriptblock]$Assert)
+    param([string]$Name, [string]$Tsv, [string]$Bak, [string]$Tmp, [scriptblock]$Assert)
     if ($Only -and $Only -ne $Name) { return }
     $inst = "rm-$Name"
     Reset-Cell $inst
-    Set-Content -Path (State $inst) -Value $Tsv -NoNewline -Encoding utf8
+    if ($null -ne $Tsv) { Set-Content -Path (State $inst) -Value $Tsv -NoNewline -Encoding utf8 }
+    if ($Bak) { Set-Content -Path "$(State $inst).bak" -Value $Bak -NoNewline -Encoding utf8 }
+    if ($Tmp) { Set-Content -Path "$(State $inst).tmp" -Value $Tmp -NoNewline -Encoding utf8 }
     $after = ''; $err = ''
     try {
         $p = Start-Lite $inst
@@ -285,6 +301,108 @@ if (-not $Only -or $Only -eq 'restart-cmdline') {
     }
 }
 
+# --- a good state file must never be replaced by an empty or truncated one ----------------------
+# The save is atomic (tmp + rename) and keeps one .bak generation; restore falls back to the .bak.
+
+# The transient-empty save, driven for real. Split shells are hidden and deliberately not persisted,
+# so with a split open, closing the only VISIBLE session leaves lite running with zero persistable
+# sessions. That save used to write a 0-session file over a good one — and with CREATE_ALWAYS there
+# was nothing left to fall back to.
+if (-not $Only -or $Only -eq 'zero-guard') {
+    $inst = 'rm-zero-guard'
+    Reset-Cell $inst
+    $err = ''; $kept = $false; $skipped = $false; $after = ''
+    try {
+        $p = Start-Lite $inst
+        $id = LastSessionId $inst
+        & $ctl session rename keep-me --target $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        & $ctl session split on --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        & $ctl session close $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        $kept = (Get-Content (State $inst) -Raw) -match 'keep-me'
+        $skipped = (Get-Content (Log $inst) -Raw) -match 'save SKIPPED'
+        Stop-Lite $p
+        $p2 = Start-Lite $inst
+        Start-Sleep -Seconds 2
+        $after = Signature $inst
+        Stop-Lite $p2
+    } catch { $err = $_.Exception.Message }
+    if (-not $err -and $kept -and $skipped -and $after -match 'keep-me') {
+        "  PASS  {0,-22} [{1}]" -f 'zero-guard', $after
+    } else {
+        $script:failed += 'zero-guard'
+        "  FAIL  zero-guard"
+        if ($err) { "        error:  $err" }
+        "        state kept the session: $kept ; log said SKIPPED: $skipped"
+        "        after:  [$after]"
+        "        log:    $(Restore-Verdict $inst)"
+    }
+}
+
+# The other side of that guard: closing the LAST session is a deliberate empty, so it must be
+# written (and must not be undone by the .bak on the next launch). A guard that over-refuses would
+# resurrect sessions the user closed on purpose.
+if (-not $Only -or $Only -eq 'closed-last') {
+    $inst = 'rm-closed-last'
+    Reset-Cell $inst
+    $err = ''; $tsv = 'x'; $after = ''; $bak = $true
+    try {
+        $p = Start-Lite $inst
+        $id = LastSessionId $inst
+        & $ctl session rename gone-for-good --target $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        # Closing the last session empties the window. (Driven over the control pipe it does not tear
+        # the window down — DestroyWindow only works from the UI thread — but the save is the same
+        # one, and the save is what this cell is about.)
+        & $ctl session close $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        $tsv = if (Test-Path (State $inst)) { (Get-Content (State $inst) -Raw) } else { '' }
+        $bak = Test-Path "$(State $inst).bak"
+        if (-not (Log-Has $inst 'save ok: 0 session')) { throw 'the deliberate empty save never happened' }
+        Stop-Lite $p
+        $p2 = Start-Lite $inst
+        Start-Sleep -Seconds 2
+        $after = Signature $inst
+        Stop-Lite $p2
+    } catch { $err = $_.Exception.Message }
+    if (-not $err -and $tsv -notmatch 'gone-for-good' -and -not $bak -and $after -notmatch 'gone-for-good') {
+        "  PASS  {0,-22} (deliberate empty is honoured)" -f 'closed-last'
+    } else {
+        $script:failed += 'closed-last'
+        "  FAIL  closed-last"
+        if ($err) { "        error:  $err" }
+        "        state: [$($tsv -replace "`r?`n", '\n')] ; .bak left behind: $bak"
+        "        after: [$after]"
+    }
+}
+
+# An interrupted write can only ever leave a stray .tmp: the previous file is replaced by a rename,
+# which either happened or didn't. Seed the wreckage of a half-finished save and assert both
+# sessions still come back.
+Seeded -Name 'interrupted-write' `
+    -Tsv "V1`nW`tws-i`nS`t0`tsurvivor-one`t`t$cwd`nS`t0`tsurvivor-two`t`t$cwd`nA`t0`n" `
+    -Tmp "V1`nW`tws-i`nS`t0`tsurviv" -Assert {
+    param($a, $i)
+    ($a -match 'survivor-one') -and ($a -match 'survivor-two')
+}
+
+# The second chance restore never had: a primary that parses to nothing, with a good previous
+# generation beside it.
+Seeded -Name 'bak-fallback' -Tsv '' `
+    -Bak "V1`nW`tws-k`nS`t0`tfrom-the-bak`t`t$cwd`nA`t0`n" -Assert {
+    param($a, $i)
+    ($a -match 'from-the-bak') -and (Log-Has $i 'falling back')
+}
+
+# Backward compatibility: a plain 0.17.x file — no D line, no .bak anywhere — must still restore.
+Seeded -Name 'compat-0.17' `
+    -Tsv "V1`nW`tws-c`nS`t0`told-one`t`t$cwd`nS`t0`told-two`t`t$cwd`nF`t1`nA`t0`n" -Assert {
+    param($a, $i)
+    ($a -match 'old-one') -and ($a -match 'old-two')
+}
+
 # --- harness self-check: a deliberately corrupted state file MUST fail a cell -------------------
 # Without this, a harness that silently passes everything would be indistinguishable from a
 # working restore — which is exactly the trap this whole exercise exists to avoid.
@@ -296,6 +414,7 @@ Start-Sleep -Seconds 2
 $sigBefore = Signature $selfInst
 Stop-Lite $sp
 Set-Content -Path (State $selfInst) -Value '' -NoNewline      # wipe it: restore must not match
+Remove-Item "$(State $selfInst).bak" -ErrorAction SilentlyContinue   # ...and the generation it would fall back to
 $sp2 = Start-Lite $selfInst
 Start-Sleep -Seconds 2
 $sigAfter = Signature $selfInst

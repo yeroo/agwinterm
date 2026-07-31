@@ -241,6 +241,7 @@ static HWND g_tree;             // native SysTreeView32 sidebar (sessions)
 static bool g_treeSyncing;      // suppress TVN_SELCHANGED while we rebuild the tree
 static bool g_treeRenaming;     // an inline rename is starting: let the tree hold the keyboard
 static bool g_restoring;         // true while rebuilding sessions at startup (suppresses state saves)
+static bool g_userEmptied;      // the user closed the LAST session: the one legitimate zero-session save
 static HTREEITEM g_ctxItem;     // right-clicked tree node (for the context menu)
 static LPARAM g_ctxParam;       // its lParam: >=0 session index, <0 = -(workspace+1)
 static HFONT g_fonts[4];        // [bold][italic]
@@ -1353,7 +1354,10 @@ static void closeSessionAt(int idx) {
     }
     if (g_sessions.empty()) g_pane[1] = -1;   // unsplit when the last pane dies
     LeaveCriticalSection(&g_lock);
-    if (g_sessions.empty()) { DestroyWindow(g_hwnd); return; }
+    // The user closed the last session, so the window goes with it. This is the ONLY path that may
+    // legitimately write a zero-session state file; every other empty list is transient and the save
+    // refuses it (see saveSessionState).
+    if (g_sessions.empty()) { g_userEmptied = true; DestroyWindow(g_hwnd); return; }
     syncPaneSizes();
     InvalidateRect(g_hwnd, nullptr, FALSE);
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // drop the session from the tree
@@ -1712,7 +1716,39 @@ static std::string sessionLiveCwd(const Session* s) {
     return (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) ? path : "";
 }
 
+// Read a whole file into memory. false = could not be opened at all (missing, locked, no profile).
+static bool readWholeFile(const std::wstring& path, std::string& out, DWORD* err = nullptr) {
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) { if (err) *err = GetLastError(); return false; }
+    out.clear(); char buf[4096]; DWORD rd;
+    while (ReadFile(f, buf, sizeof buf, &rd, nullptr) && rd) out.append(buf, rd);
+    CloseHandle(f);
+    if (err) *err = 0;
+    return true;
+}
+// How many session lines a state file on disk holds; -1 when it can't be read at all. Cheap enough
+// to ask before every save, and it is what "would this write throw sessions away?" actually means.
+static int stateFileSessionCount(const std::wstring& path) {
+    std::string d;
+    if (!readWholeFile(path, d)) return -1;
+    int n = 0;
+    for (size_t i = 0; i < d.size();) {
+        size_t e = d.find('\n', i);
+        if (d.compare(i, 2, "S\t") == 0) n++;
+        if (e == std::string::npos) break;
+        i = e + 1;
+    }
+    return n;
+}
+
 // session line is: S <ws> <name> <app> <cwd> <arg0> <arg1>...  Split-shells (hidden) aren't persisted.
+//
+// The write is atomic and keeps one previous generation: build the buffer, write it to
+// sessions.tsv.tmp, rotate the current file to sessions.tsv.bak, then MoveFileExW the temp over the
+// target. A crash, a full disk or a killed process can therefore never leave a truncated file where
+// a good one was — the old CREATE_ALWAYS wrote in place, so the only copy was destroyed the instant
+// the write began.
 static void saveSessionState() {
     std::wstring path = stateFilePath();
     if (path.empty()) return;
@@ -1738,22 +1774,55 @@ static void saveSessionState() {
     if (!flagLine.empty()) out += "F" + flagLine + "\n";
     if (!idLine.empty()) out += "D" + idLine + "\n";
     out += "A\t" + std::to_string(g_activeWs) + "\n";
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+    // Anything that rebuilds the tree while the session list is momentarily empty used to rewrite the
+    // file with zero S lines — a good file replaced by a useless one, with nothing to fall back to.
+    // The one legitimate zero-session save is the user closing the last session (g_userEmptied).
+    if (saved == 0 && !g_userEmptied) {
+        int had = stateFileSessionCount(path);
+        if (had > 0) {
+            logWarn("save SKIPPED: refusing to replace %s (%d saved session(s)) with a zero-session save",
+                    narrow(path).c_str(), had);
+            return;
+        }
+    }
+
+    std::wstring tmp = path + L".tmp", bak = path + L".bak";
+    HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) {
         // The silent return that made "restore doesn't work" unanswerable in the field: if the
         // state file can't be opened, nothing is saved and nothing says so.
         logWarn("save FAILED to open %s (err %lu) — %d session(s) not saved",
-                narrow(path).c_str(), GetLastError(), saved);
+                narrow(tmp).c_str(), GetLastError(), saved);
         return;
     }
     DWORD wr = 0;
     BOOL ok = WriteFile(f, out.data(), (DWORD)out.size(), &wr, nullptr);
     DWORD werr = ok ? 0 : GetLastError();
+    if (ok) FlushFileBuffers(f);       // the rename below must publish bytes that actually reached disk
     CloseHandle(f);
-    if (!ok || wr != out.size())
-        logWarn("save PARTIAL to %s: wrote %lu of %zu bytes (err %lu)", narrow(path).c_str(), wr, out.size(), werr);
-    else
-        logInfo("save ok: %d session(s), %zu bytes -> %s", saved, out.size(), narrow(path).c_str());
+    if (!ok || wr != out.size()) {
+        logWarn("save PARTIAL to %s: wrote %lu of %zu bytes (err %lu) — previous state left intact",
+                narrow(tmp).c_str(), wr, out.size(), werr);
+        DeleteFileW(tmp.c_str());
+        return;
+    }
+    if (saved == 0) {
+        // The user emptied the window on purpose (this is the only way a zero-session save gets
+        // here). Keeping a .bak would resurrect on the next launch exactly what they just closed.
+        DeleteFileW(bak.c_str());
+    } else if (stateFileSessionCount(path) > 0 && !MoveFileExW(path.c_str(), bak.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        // Keep exactly one previous generation. Only rotate a file that actually held sessions, so a
+        // good .bak is never overwritten by an empty or absent primary.
+        logWarn("save: could not rotate %s to .bak (err %lu)", narrow(path).c_str(), GetLastError());
+    }
+    if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        logWarn("save FAILED to publish %s (err %lu) — %d session(s) not saved; .bak holds the previous state",
+                narrow(path).c_str(), GetLastError(), saved);
+        DeleteFileW(tmp.c_str());
+        return;
+    }
+    logInfo("save ok: %d session(s), %zu bytes -> %s", saved, out.size(), narrow(path).c_str());
 }
 
 // Select a face+size, apply it, and persist the choice (used by the Properties dialog).
@@ -2096,6 +2165,12 @@ static int liteDiagnose() {
     } else {
         line("session file", narrow(state) + "  <-- DOES NOT EXIST (nothing to restore)");
     }
+    // The previous generation kept by every save; restore falls back to it when the primary is
+    // missing, empty, or parses to zero sessions.
+    WIN32_FILE_ATTRIBUTE_DATA ba{};
+    line("backup file", GetFileAttributesExW((state + L".bak").c_str(), GetFileExInfoStandard, &ba)
+                            ? narrow(state) + ".bak (" + std::to_string(ba.nFileSizeLow) + " bytes)"
+                            : narrow(state) + ".bak  (none yet)");
 
     say("\r\nlog\r\n");
     line("path", narrow(log));
@@ -5295,27 +5370,25 @@ static DWORD WINAPI ctlServerThread(void*) {
     }
 }
 
-// Rebuild the saved workspaces + sessions on launch. Returns false (caller opens a default session) if
-// there's nothing to restore. Sessions relaunch with their remembered profile + creation cwd.
-static bool restoreSessions() {
-    std::wstring path = stateFilePath();
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) {
-        // Exit 1 of 4. "No state file" and "state file I refused to use" look identical from
-        // outside, so each exit says which one it was.
-        logInfo("restore: no state file at %s (err %lu) — starting fresh", narrow(path).c_str(), GetLastError());
-        return false;
-    }
-    std::string data; char buf[4096]; DWORD rd;
-    while (ReadFile(f, buf, sizeof buf, &rd, nullptr) && rd) data.append(buf, rd);
-    CloseHandle(f);
-    if (data.empty()) { logWarn("restore: state file is EMPTY: %s", narrow(path).c_str()); return false; }   // exit 2 of 4
-
+// One parsed state file. `opened` separates "no file" from "a file that says nothing useful" — the
+// two used to look identical from outside, which is half of why the field report was unanswerable.
+struct RestoreSpec { int ws; std::string name, app, cwd; std::vector<std::string> args; bool flagged = false; };
+struct ParsedState {
     std::vector<std::wstring> wss;
-    struct Spec { int ws; std::string name, app, cwd; std::vector<std::string> args; bool flagged = false; };
-    std::vector<Spec> specs;
+    std::vector<RestoreSpec> specs;
     std::vector<std::string> savedIds;   // from the D line; empty for a pre-0.17.3 file
     int activeWs = 0, focusWs = -1;
+    size_t bytes = 0;
+    DWORD err = 0;
+    bool opened = false;
+};
+
+static ParsedState parseStateFile(const std::wstring& path) {
+    ParsedState ps;
+    std::string data;
+    ps.opened = readWholeFile(path, data, &ps.err);
+    if (!ps.opened) return ps;
+    ps.bytes = data.size();
     size_t i = 0;
     auto split = [](const std::string& l) {
         std::vector<std::string> ff; size_t p = 0;
@@ -5329,27 +5402,53 @@ static bool restoreSessions() {
         if (!l.empty() && l.back() == '\r') l.pop_back();
         if (l.empty()) continue;
         auto ff = split(l);
-        if (ff[0] == "W" && ff.size() >= 2) wss.push_back(widen(ff[1]));
+        if (ff[0] == "W" && ff.size() >= 2) ps.wss.push_back(widen(ff[1]));
         else if (ff[0] == "S" && ff.size() >= 5) {
-            Spec sp; sp.ws = atoi(ff[1].c_str()); sp.name = ff[2]; sp.app = ff[3]; sp.cwd = ff[4];
+            RestoreSpec sp; sp.ws = atoi(ff[1].c_str()); sp.name = ff[2]; sp.app = ff[3]; sp.cwd = ff[4];
             for (size_t k = 5; k < ff.size(); k++) sp.args.push_back(ff[k]);
-            specs.push_back(sp);
+            ps.specs.push_back(sp);
         } else if (ff[0] == "F") {   // flagged indices, in S-line order
             for (size_t k = 1; k < ff.size(); k++) {
                 int fi = atoi(ff[k].c_str());
-                if (fi >= 0 && fi < (int)specs.size()) specs[fi].flagged = true;
+                if (fi >= 0 && fi < (int)ps.specs.size()) ps.specs[fi].flagged = true;
             }
         } else if (ff[0] == "D") {   // host session ids, in S-line order (absent in 0.17.x files)
-            for (size_t k = 1; k < ff.size(); k++) savedIds.push_back(ff[k]);
-        } else if (ff[0] == "O" && ff.size() >= 2) focusWs = atoi(ff[1].c_str());
-        else if (ff[0] == "A" && ff.size() >= 2) activeWs = atoi(ff[1].c_str());
+            for (size_t k = 1; k < ff.size(); k++) ps.savedIds.push_back(ff[k]);
+        } else if (ff[0] == "O" && ff.size() >= 2) ps.focusWs = atoi(ff[1].c_str());
+        else if (ff[0] == "A" && ff.size() >= 2) ps.activeWs = atoi(ff[1].c_str());
     }
-    if (specs.empty()) {   // exit 3 of 4: the file exists and has content, but no S lines parsed
-        logWarn("restore: %s parsed to 0 session specs (%zu bytes, %zu workspace lines)",
-                narrow(path).c_str(), data.size(), wss.size());
-        return false;
+    return ps;
+}
+
+// Rebuild the saved workspaces + sessions on launch. Returns false (caller opens a default session) if
+// there's nothing to restore. Sessions relaunch with their remembered profile + creation cwd.
+static bool restoreSessions() {
+    std::wstring path = stateFilePath(), bakPath = path + L".bak", usedPath = path;
+    ParsedState ps = parseStateFile(path);
+    if (ps.specs.empty()) {
+        // Exits 1-3 of 4. "No state file", "empty state file" and "a file I could not make sense of"
+        // look identical from outside, so each one says which it was.
+        if (!ps.opened)          logInfo("restore: no state file at %s (err %lu)", narrow(path).c_str(), ps.err);
+        else if (ps.bytes == 0)  logWarn("restore: state file is EMPTY: %s", narrow(path).c_str());
+        else                     logWarn("restore: %s parsed to 0 session specs (%zu bytes, %zu workspace lines)",
+                                         narrow(path).c_str(), ps.bytes, ps.wss.size());
+        // Second chance: the previous generation kept by the save. Restore had none before, so a
+        // single bad write was permanent.
+        ParsedState bak = parseStateFile(bakPath);
+        if (bak.specs.empty()) {
+            logInfo("restore: no usable %s either — starting fresh", narrow(bakPath).c_str());
+            return false;
+        }
+        logWarn("restore: falling back to %s (%zu spec(s), %zu bytes)",
+                narrow(bakPath).c_str(), bak.specs.size(), bak.bytes);
+        ps = bak;
+        usedPath = bakPath;
     }
-    logInfo("restore: %zu spec(s) from %s (%zu bytes)", specs.size(), narrow(path).c_str(), data.size());
+    const std::vector<RestoreSpec>& specs = ps.specs;
+    const std::vector<std::string>& savedIds = ps.savedIds;
+    const std::vector<std::wstring>& wss = ps.wss;
+    int activeWs = ps.activeWs, focusWs = ps.focusWs;
+    logInfo("restore: %zu spec(s) from %s (%zu bytes)", specs.size(), narrow(usedPath).c_str(), ps.bytes);
 
     g_restoring = true;
     if (!wss.empty()) g_workspaces = wss;

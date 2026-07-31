@@ -159,16 +159,31 @@ the string instead. `--pipe` is the only arg that identifies the instance; `-d`/
 are first-launch session args that restore supersedes, so they are deliberately not carried over.
 
 ### Task 4: Never let a good state file be replaced by an empty one
-- [ ] write the state file atomically: temp file + `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)`, so a
+- [x] write the state file atomically: temp file + `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)`, so a
       crash or a full disk mid-write cannot leave a truncated file where a good one was
-- [ ] refuse to overwrite a non-empty state file with a zero-session save unless the session list is
+- [x] refuse to overwrite a non-empty state file with a zero-session save unless the session list is
       genuinely empty by user action (closing the last session), and log loudly when that is skipped
-- [ ] keep one previous generation (`sessions.tsv.bak`) and fall back to it when the primary parses to
+- [x] keep one previous generation (`sessions.tsv.bak`) and fall back to it when the primary parses to
       zero specs — restore currently has no second chance
-- [ ] add matrix cells: interrupted write leaves the previous state intact; a zero-session save does
+- [x] add matrix cells: interrupted write leaves the previous state intact; a zero-session save does
       not clobber a populated file; the `.bak` fallback actually restores
-- [ ] verify backward compatibility: a plain 0.17.x `sessions.tsv` with no `.bak` still restores
-- [ ] run the matrix - must pass before task 5
+- [x] verify backward compatibility: a plain 0.17.x `sessions.tsv` with no `.bak` still restores
+- [x] run the matrix - must pass before task 5
+
+➕ The transient-empty save turned out to be **drivable end to end**, so `zero-guard` is a real
+reproduction rather than an assertion about an internal branch: split shells are hidden and
+deliberately not persisted, so with a split open, closing the only *visible* session leaves lite
+running with zero persistable sessions. That save used to write a 0-session file over a good one.
+
+➕ A deliberate empty (`g_userEmptied`, set only when closing the last session) must also **delete the
+`.bak`** — otherwise the next launch falls back to it and resurrects exactly what the user just
+closed. `closed-last` is the cell that pins it, and it is the guard's real regression risk: refusing
+too much is as bad as refusing too little. Driven over the control pipe, closing the last session
+does not tear the window down (`DestroyWindow` only works from the UI thread) — a pre-existing quirk,
+noted here because the cell has to work around it; the save it exercises is the same one.
+
+➕ Restore now logs which file it used, and `--diagnose` reports the `.bak` generation beside the
+primary.
 
 ### Task 5: Make a failed spec visible and recoverable
 - [ ] when a spec fails to start, keep it in the tree as a dead session (or re-add it to the state)
