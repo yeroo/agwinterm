@@ -10,12 +10,20 @@
 #
 # House rules: sandbox instances only (never the default, which owns real user state), no global
 # input injection, and every cell gets its own instance name so cells cannot contaminate each other.
+#
+# One shared resource remains: the pty-host control pipe is keyed on the APP id, not the instance, so
+# every cell (and any lite window already open) talks to the same agwinterm-ptyhost.exe. Don't run
+# the suite with a real lite window open — the last instance out shuts the host down.
 param(
     [string]$Exe = "$PSScriptRoot\..\bin\agwinterm-lite.exe",
     [string]$Only = ''          # run a single cell by name
 )
 
 $ErrorActionPreference = 'Stop'
+# agwintermctl exits nonzero while a pipe is still coming up, and Start-Lite polls it on purpose.
+# Pinned rather than assumed: with the native-command mapping on, that poll throws on its first
+# iteration and every cell fails for a reason that has nothing to do with restore.
+$PSNativeCommandUseErrorActionPreference = $false
 $ctl = "$env:LOCALAPPDATA\Programs\agwinterm\agwintermctl.exe"
 $dir = "$env:LOCALAPPDATA\agwinterm-lite"
 $script:failed = @()
@@ -28,11 +36,25 @@ function Reset-Cell($inst) {
         -ErrorAction SilentlyContinue
 }
 
-# The newest real session id in the tree (workspace rows carry numeric ids).
-function LastSessionId($inst) {
-    @(([regex]::Matches(((& $ctl tree --json --pipe $inst 2>&1) -join ''), '"id"\s*:\s*"([^"]+)"') |
-       ForEach-Object { $_.Groups[1].Value }) | Where-Object { $_ -notmatch '^\d+$' })[-1]
+# The tree as objects. Regexing this JSON is what let a workspace object and the first session
+# inside it be read as one blob, so every reader below goes through here.
+function Tree($inst) {
+    $raw = (& $ctl tree --json --pipe $inst 2>&1) -join ''
+    try { $j = $raw | ConvertFrom-Json } catch { return $null }
+    if ($j.PSObject.Properties.Name -contains 'result') { $j = $j.result }
+    if ($j -and ($j.PSObject.Properties.Name -contains 'workspaces')) { return @($j.workspaces) }
+    $null
 }
+
+# Every session in the window, in tree order (workspace rows are not sessions).
+function SessionsOf($inst) {
+    $ws = Tree $inst
+    if ($null -eq $ws) { return @() }
+    @($ws | ForEach-Object { $_.sessions })
+}
+
+# The newest real session id in the tree.
+function LastSessionId($inst) { @(SessionsOf $inst | ForEach-Object { $_.id })[-1] }
 
 function Start-Lite($inst) {
     $p = Start-Process $Exe -ArgumentList @('--pipe', $inst) -PassThru
@@ -52,12 +74,30 @@ function Stop-Lite($p, [switch]$Kill) {
     Start-Sleep -Seconds 1
 }
 
-# A cell's fingerprint: the session names in tree order. Names are what the user actually notices.
-function Signature($inst) {
-    $j = (& $ctl tree --json --pipe $inst 2>&1) -join ''
-    $names = [regex]::Matches($j, '"name"\s*:\s*"([^"]*)"') | ForEach-Object { $_.Groups[1].Value }
-    ($names -join '|')
+# Best-effort teardown for a cell that threw part-way. A leaked instance keeps the pipe name, so the
+# NEXT run of that cell would connect to the stale process and test nothing.
+function Stop-Leftover($p) {
+    if (-not $p) { return }
+    try { $p.Refresh(); if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 1 } } catch { }
 }
+
+# A cell's fingerprint: workspace names (prefixed '#') and the session names inside them, in tree
+# order. Names are what the user actually notices; the prefix keeps a workspace row from being
+# counted as a session (which let a "restored 2 sessions" assertion pass on one session + one
+# workspace, i.e. on a setup that had silently failed).
+function Signature($inst) {
+    $ws = Tree $inst
+    if ($null -eq $ws) { return '' }
+    $parts = @()
+    foreach ($w in $ws) {
+        $parts += "#$($w.name)"
+        foreach ($s in @($w.sessions)) { $parts += $s.name }
+    }
+    ($parts -join '|')
+}
+
+# How many real sessions a signature holds.
+function SessionCount($sig) { @($sig -split '\|' | Where-Object { $_ -and $_ -notlike '#*' }).Count }
 
 # Does the whole log say this? (Restore-Verdict only shows the last few lines, so a decision made
 # early in a run — like the .bak fallback — is not visible there.)
@@ -84,22 +124,26 @@ function Cell {
     if ($Only -and $Only -ne $Name) { return }
     $inst = "rm-$Name"
     Reset-Cell $inst
-    $before = ''; $after = ''; $err = ''
+    $before = ''; $after = ''; $err = ''; $ok = $false
+    $p = $null; $p2 = $null
     try {
         $p = Start-Lite $inst
         & $Setup $inst
         Start-Sleep -Seconds 2
         $before = Signature $inst
-        Stop-Lite $p -Kill:$Kill
+        Stop-Lite $p -Kill:$Kill; $p = $null
 
         $p2 = Start-Lite $inst
         Start-Sleep -Seconds 2
         $after = Signature $inst
-        Stop-Lite $p2
-    } catch { $err = $_.Exception.Message }
+        Stop-Lite $p2; $p2 = $null
+        # The assert runs INSIDE the try. $ErrorActionPreference is Stop, and several asserts read
+        # files that a genuine regression would have removed — outside, one such cell terminated the
+        # whole suite (skipping every cell after it, and the exit code with them).
+        $ok = [bool](& $Assert $before $after $inst)
+    } catch { $err = $_.Exception.Message; $ok = $false }
+    finally { Stop-Leftover $p; Stop-Leftover $p2 }
 
-    $ok = $false
-    if (-not $err) { $ok = & $Assert $before $after $inst }
     if ($ok) {
         "  PASS  {0,-22} [{1}]" -f $Name, $after
     } else {
@@ -124,12 +168,11 @@ Cell -Name 'several' -Setup {
     param($i)
     & $ctl session new --pipe $i 2>&1 | Out-Null; Start-Sleep -Seconds 2
     & $ctl session new --pipe $i 2>&1 | Out-Null; Start-Sleep -Seconds 2
-} -Assert { param($b, $a) $a -eq $b -and ($b -split '\|').Count -ge 3 }
+} -Assert { param($b, $a) $a -eq $b -and (SessionCount $b) -ge 3 }
 
 Cell -Name 'renamed' -Setup {
     param($i)
-    $id = @(([regex]::Matches(((& $ctl tree --json --pipe $i 2>&1) -join ''), '"id"\s*:\s*"([^"]+)"') |
-             ForEach-Object { $_.Groups[1].Value }) | Where-Object { $_ -notmatch '^\d+$' })[-1]
+    $id = LastSessionId $i
     & $ctl session rename my-renamed-session --target $id --pipe $i 2>&1 | Out-Null
     Start-Sleep -Seconds 2
 } -Assert { param($b, $a) $a -eq $b -and $a -match 'my-renamed-session' }
@@ -142,14 +185,13 @@ Cell -Name 'workspaces' -Setup {
 
 Cell -Name 'flagged' -Setup {
     param($i)
-    $id = @(([regex]::Matches(((& $ctl tree --json --pipe $i 2>&1) -join ''), '"id"\s*:\s*"([^"]+)"') |
-             ForEach-Object { $_.Groups[1].Value }) | Where-Object { $_ -notmatch '^\d+$' })[-1]
+    $id = LastSessionId $i
     & $ctl session flag on --target $id --pipe $i 2>&1 | Out-Null
     Start-Sleep -Seconds 2
 } -Assert {
     param($b, $a, $i)
     if ($a -ne $b) { return $false }
-    (Get-Content (State $i) -Raw) -match '(?m)^F\t'      # the flagged line survived the round trip
+    (Test-Path (State $i)) -and ((Get-Content (State $i) -Raw) -match '(?m)^F\t')   # the F line survived
 }
 
 # --- cells that differ from a clean dev run ----------------------------------------------------
@@ -166,15 +208,16 @@ function Seeded {
     if ($null -ne $Tsv) { Set-Content -Path (State $inst) -Value $Tsv -NoNewline -Encoding utf8 }
     if ($Bak) { Set-Content -Path "$(State $inst).bak" -Value $Bak -NoNewline -Encoding utf8 }
     if ($Tmp) { Set-Content -Path "$(State $inst).tmp" -Value $Tmp -NoNewline -Encoding utf8 }
-    $after = ''; $err = ''
+    $after = ''; $err = ''; $ok = $false
+    $p = $null
     try {
         $p = Start-Lite $inst
         Start-Sleep -Seconds 3
         $after = Signature $inst
-        Stop-Lite $p
-    } catch { $err = $_.Exception.Message }
-    $ok = $false
-    if (-not $err) { $ok = & $Assert $after $inst }
+        Stop-Lite $p; $p = $null
+        $ok = [bool](& $Assert $after $inst)   # inside the try — see Cell
+    } catch { $err = $_.Exception.Message; $ok = $false }
+    finally { Stop-Leftover $p }
     if ($ok) { "  PASS  {0,-22} [{1}]" -f $Name, $after }
     else {
         $script:failed += $Name
@@ -186,7 +229,7 @@ function Seeded {
 }
 
 $cwd = (Resolve-Path "$PSScriptRoot\..").Path
-Seeded -Name 'app-spec' -Tsv "V1`nW`tws-a`nS`t0`tprofile-session`tpowershell.exe`t$cwd`n A`t0`n".Replace(' A', 'A') -Assert {
+Seeded -Name 'app-spec' -Tsv "V1`nW`tws-a`nS`t0`tprofile-session`tpowershell.exe`t$cwd`nA`t0`n" -Assert {
     param($a) $a -match 'profile-session'
 }
 
@@ -198,14 +241,8 @@ Seeded -Name 'bogus-app' -Tsv "V1`nW`tws-b`nS`t0`tdead-session`tno-such-program-
     ($a -match 'dead-session') -and (Log-Has $i "session 'dead-session' FAILED to start")
 }
 
-# The session object the control API reports for a given name ('' when there is none). Session
-# objects carry no nested braces, so one flat match per session is exact.
-function Session-Obj($json, $name) {
-    foreach ($m in [regex]::Matches($json, '\{"id":[^}]*\}')) {
-        if ($m.Value -match ('"name"\s*:\s*"' + [regex]::Escape($name) + '"')) { return $m.Value }
-    }
-    ''
-}
+# The session the control API reports for a given name ($null when there is none).
+function Session-Named($inst, $name) { @(SessionsOf $inst | Where-Object { $_.name -eq $name })[0] }
 
 # The full round trip for a spec that cannot start here: it must come back as a DEAD session rather
 # than a hole, keep its name/workspace, be saved again (so it is recoverable on a machine where the
@@ -215,25 +252,27 @@ if (-not $Only -or $Only -eq 'failed-spec') {
     Reset-Cell $inst
     Set-Content -Path (State $inst) -NoNewline -Encoding utf8 -Value `
         "V1`nW`tws-f`nS`t0`tghost-session`tno-such-program-xyz.exe`t$cwd`nS`t0`tlive-session`tpowershell.exe`t$cwd`nA`t0`n"
-    $err = ''; $ghost = ''; $live = ''; $named = $false; $resaved = $false; $after = ''
+    $err = ''; $ghost = $null; $live = $null; $named = $false; $resaved = $false; $after = ''
+    $ghostOk = $false; $liveOk = $false
+    $p = $null; $p2 = $null
     try {
         $p = Start-Lite $inst
         Start-Sleep -Seconds 3
-        $j = (& $ctl tree --json --pipe $inst 2>&1) -join ''
-        $ghost = Session-Obj $j 'ghost-session'
-        $live  = Session-Obj $j 'live-session'
+        $ghost = Session-Named $inst 'ghost-session'
+        $live  = Session-Named $inst 'live-session'
+        $ghostOk = [bool]($ghost -and $ghost.failed -and $ghost.exited)
+        $liveOk  = [bool]($live -and -not $live.failed -and -not $live.exited)
         $named = Log-Has $inst "session 'ghost-session' FAILED to start"
-        Stop-Lite $p
+        Stop-Lite $p; $p = $null
         # Kept in the state file: the entry survives, so it can start on a machine that has the app.
-        $resaved = (Get-Content (State $inst) -Raw) -match 'ghost-session'
+        $resaved = (Test-Path (State $inst)) -and ((Get-Content (State $inst) -Raw) -match 'ghost-session')
         $p2 = Start-Lite $inst
         Start-Sleep -Seconds 3
         $after = Signature $inst
-        Stop-Lite $p2
+        Stop-Lite $p2; $p2 = $null
     } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $p; Stop-Leftover $p2 }
 
-    $ghostOk = $ghost -match '"failed"\s*:\s*true'
-    $liveOk  = $live -match '"failed"\s*:\s*false' -and $live -match '"exited"\s*:\s*false'
     if (-not $err -and $ghostOk -and $liveOk -and $named -and $resaved -and
         $after -match 'ghost-session' -and $after -match 'live-session') {
         "  PASS  {0,-22} [{1}]" -f 'failed-spec', $after
@@ -241,8 +280,8 @@ if (-not $Only -or $Only -eq 'failed-spec') {
         $script:failed += 'failed-spec'
         "  FAIL  failed-spec"
         if ($err) { "        error:  $err" }
-        "        ghost:  [$ghost] (dead entry kept: $ghostOk)"
-        "        live:   [$live] (good spec unaffected: $liveOk)"
+        "        ghost:  [$($ghost | ConvertTo-Json -Compress)] (dead entry kept: $ghostOk)"
+        "        live:   [$($live | ConvertTo-Json -Compress)] (good spec unaffected: $liveOk)"
         "        log named it: $named ; re-saved: $resaved"
         "        after:  [$after]"
         "        log:    $(Restore-Verdict $inst)"
@@ -251,20 +290,31 @@ if (-not $Only -or $Only -eq 'failed-spec') {
 
 # Forced kill: no OnDestroy, so restore depends entirely on the refreshTree() save. If a laptop
 # shutdown or crash explains the report, this is the cell that shows it.
+# Also the ONLY cell where adoption can fire: the pty-host outlives a killed UI, so its shells are
+# still running and must be picked back up rather than re-created. The log assertion is what tells
+# those two apart — the names come back identically either way, so without it this cell passes just
+# as happily when adoption is broken (which is how it shipped unverified).
 Cell -Name 'killed' -Setup {
     param($i)
     & $ctl session new --pipe $i 2>&1 | Out-Null; Start-Sleep -Seconds 2
-} -Kill -Assert { param($b, $a) $a -eq $b -and ($b -split '\|').Count -ge 2 }
+} -Kill -Assert {
+    param($b, $a, $i)
+    $a -eq $b -and (SessionCount $b) -ge 2 -and (Log-Has $i 'adopted live session')
+}
 
 # A session whose shell has already exited: its spec must still be saved and relaunched, otherwise
 # a day's worth of sessions quietly evaporates the moment their shells end.
 Cell -Name 'shell-exited' -Setup {
     param($i)
-    $id = @(([regex]::Matches(((& $ctl tree --json --pipe $i 2>&1) -join ''), '"id"\s*:\s*"([^"]+)"') |
-             ForEach-Object { $_.Groups[1].Value }) | Where-Object { $_ -notmatch '^\d+$' })[-1]
+    $id = LastSessionId $i
     & $ctl session new --pipe $i 2>&1 | Out-Null; Start-Sleep -Seconds 2
     & $ctl session type "exit`n" --target $id --pipe $i 2>&1 | Out-Null
     Start-Sleep -Seconds 3
+    # Prove the premise. Without this the cell is a duplicate of 'several': a `type` that silently
+    # failed, or a shell that ignored `exit`, would leave it asserting nothing at all.
+    $s = @(SessionsOf $i | Where-Object { $_.id -eq $id })[0]
+    if (-not $s) { throw "session $id vanished instead of exiting" }
+    if (-not $s.exited) { throw "the shell in $id never exited, so this cell would prove nothing" }
 } -Assert { param($b, $a) $a -eq $b }
 
 # Two windows open at once. Multi-window lite is one PROCESS per window, each with its own
@@ -274,19 +324,23 @@ if (-not $Only -or $Only -eq 'two-windows') {
     $ia = 'rm-two-windows-a'; $ib = 'rm-two-windows-b'
     Reset-Cell $ia; Reset-Cell $ib
     $afterA = ''; $afterB = ''; $err = ''
+    $pa = $null; $pb = $null; $pa2 = $null; $pb2 = $null
     try {
         $pa = Start-Lite $ia
         $pb = Start-Lite $ib
         & $ctl session rename win-a-session --target (LastSessionId $ia) --pipe $ia 2>&1 | Out-Null
         & $ctl session rename win-b-session --target (LastSessionId $ib) --pipe $ib 2>&1 | Out-Null
         Start-Sleep -Seconds 2
-        Stop-Lite $pa; Stop-Lite $pb
+        Stop-Lite $pa; $pa = $null
+        Stop-Lite $pb; $pb = $null
 
         $pa2 = Start-Lite $ia; $pb2 = Start-Lite $ib
         Start-Sleep -Seconds 2
         $afterA = Signature $ia; $afterB = Signature $ib
-        Stop-Lite $pa2; Stop-Lite $pb2
+        Stop-Lite $pa2; $pa2 = $null
+        Stop-Lite $pb2; $pb2 = $null
     } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $pa; Stop-Leftover $pb; Stop-Leftover $pa2; Stop-Leftover $pb2 }
     $ok = (-not $err) -and ($afterA -match 'win-a-session') -and ($afterA -notmatch 'win-b-session') `
                        -and ($afterB -match 'win-b-session') -and ($afterB -notmatch 'win-a-session')
     if ($ok) { "  PASS  {0,-22} (each window restores only its own)" -f 'two-windows' }
@@ -315,6 +369,7 @@ function Restart-Cell {
     $inst = "rm-$Name"
     Reset-Cell $inst
     $before = ''; $after = ''; $err = ''
+    $p = $null; $p2 = $null
     try {
         $p = Start-Lite $inst
         & $ctl session new --pipe $inst 2>&1 | Out-Null
@@ -340,10 +395,12 @@ function Restart-Cell {
         if (-not $p2) { throw 'the restarted instance never answered its control pipe' }
         Start-Sleep -Seconds 2
         $after = Signature $inst
-        Stop-Lite $p2
+        Stop-Lite $p2; $p2 = $null
+        $p = $null   # already exited: that is what this cell just asserted
     } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $p; Stop-Leftover $p2 }
 
-    if (-not $err -and $after -eq $before -and ($before -split '\|').Count -ge 2) {
+    if (-not $err -and $after -eq $before -and (SessionCount $before) -ge 2) {
         "  PASS  {0,-22} [{1}]" -f $Name, $after
     } else {
         $script:failed += $Name
@@ -393,6 +450,7 @@ if (-not $Only -or $Only -eq 'zero-guard') {
     $inst = 'rm-zero-guard'
     Reset-Cell $inst
     $err = ''; $kept = $false; $skipped = $false; $after = ''
+    $p = $null; $p2 = $null
     try {
         $p = Start-Lite $inst
         $id = LastSessionId $inst
@@ -402,14 +460,15 @@ if (-not $Only -or $Only -eq 'zero-guard') {
         Start-Sleep -Seconds 2
         & $ctl session close $id --pipe $inst 2>&1 | Out-Null
         Start-Sleep -Seconds 3
-        $kept = (Get-Content (State $inst) -Raw) -match 'keep-me'
-        $skipped = (Get-Content (Log $inst) -Raw) -match 'save SKIPPED'
-        Stop-Lite $p
+        $kept = (Test-Path (State $inst)) -and ((Get-Content (State $inst) -Raw) -match 'keep-me')
+        $skipped = Log-Has $inst 'save SKIPPED'
+        Stop-Lite $p; $p = $null
         $p2 = Start-Lite $inst
         Start-Sleep -Seconds 2
         $after = Signature $inst
-        Stop-Lite $p2
+        Stop-Lite $p2; $p2 = $null
     } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $p; Stop-Leftover $p2 }
     if (-not $err -and $kept -and $skipped -and $after -match 'keep-me') {
         "  PASS  {0,-22} [{1}]" -f 'zero-guard', $after
     } else {
@@ -429,6 +488,7 @@ if (-not $Only -or $Only -eq 'closed-last') {
     $inst = 'rm-closed-last'
     Reset-Cell $inst
     $err = ''; $tsv = 'x'; $after = ''; $bak = $true
+    $p = $null; $p2 = $null
     try {
         $p = Start-Lite $inst
         $id = LastSessionId $inst
@@ -442,12 +502,13 @@ if (-not $Only -or $Only -eq 'closed-last') {
         $tsv = if (Test-Path (State $inst)) { (Get-Content (State $inst) -Raw) } else { '' }
         $bak = Test-Path "$(State $inst).bak"
         if (-not (Log-Has $inst 'save ok: 0 session')) { throw 'the deliberate empty save never happened' }
-        Stop-Lite $p
+        Stop-Lite $p; $p = $null
         $p2 = Start-Lite $inst
         Start-Sleep -Seconds 2
         $after = Signature $inst
-        Stop-Lite $p2
+        Stop-Lite $p2; $p2 = $null
     } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $p; Stop-Leftover $p2 }
     if (-not $err -and $tsv -notmatch 'gone-for-good' -and -not $bak -and $after -notmatch 'gone-for-good') {
         "  PASS  {0,-22} (deliberate empty is honoured)" -f 'closed-last'
     } else {
@@ -456,6 +517,52 @@ if (-not $Only -or $Only -eq 'closed-last') {
         if ($err) { "        error:  $err" }
         "        state: [$($tsv -replace "`r?`n", '\n')] ; .bak left behind: $bak"
         "        after: [$after]"
+    }
+}
+
+# The guard must survive being used. Closing the last session marks the empty as DELIBERATE, and
+# driven over the control pipe the window does not actually go away (DestroyWindow is a no-op off the
+# UI thread) — so a window keeps running with that mark set. If it is a one-way latch rather than a
+# statement about one save, every later transient empty is waved straight through and the good file
+# is overwritten with a zero-session one, which is exactly what 'zero-guard' exists to prevent.
+if (-not $Only -or $Only -eq 'guard-after-empty') {
+    $inst = 'rm-guard-after-empty'
+    Reset-Cell $inst
+    $err = ''; $kept = $false; $skipped = $false; $after = ''
+    $p = $null; $p2 = $null
+    try {
+        $p = Start-Lite $inst
+        & $ctl session close (LastSessionId $inst) --pipe $inst 2>&1 | Out-Null   # window is now empty
+        Start-Sleep -Seconds 3
+        if (-not (Log-Has $inst 'save ok: 0 session')) { throw 'the window never reached the deliberate-empty save' }
+        # Re-fill it, then drive a TRANSIENT empty exactly as zero-guard does.
+        & $ctl session new --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        $id = LastSessionId $inst
+        & $ctl session rename kept-after-empty --target $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        & $ctl session split on --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        & $ctl session close $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        $kept = (Test-Path (State $inst)) -and ((Get-Content (State $inst) -Raw) -match 'kept-after-empty')
+        $skipped = Log-Has $inst 'save SKIPPED'
+        Stop-Lite $p; $p = $null
+        $p2 = Start-Lite $inst
+        Start-Sleep -Seconds 2
+        $after = Signature $inst
+        Stop-Lite $p2; $p2 = $null
+    } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $p; Stop-Leftover $p2 }
+    if (-not $err -and $kept -and $skipped -and $after -match 'kept-after-empty') {
+        "  PASS  {0,-22} [{1}]" -f 'guard-after-empty', $after
+    } else {
+        $script:failed += 'guard-after-empty'
+        "  FAIL  guard-after-empty"
+        if ($err) { "        error:  $err" }
+        "        state kept the session: $kept ; log said SKIPPED: $skipped"
+        "        after: [$after]"
+        "        log:   $(Restore-Verdict $inst)"
     }
 }
 
@@ -482,6 +589,23 @@ Seeded -Name 'compat-0.17' `
     -Tsv "V1`nW`tws-c`nS`t0`told-one`t`t$cwd`nS`t0`told-two`t`t$cwd`nF`t1`nA`t0`n" -Assert {
     param($a, $i)
     ($a -match 'old-one') -and ($a -match 'old-two')
+}
+
+# The D line's ordinary case, which only 'killed' covers non-deterministically: ids the host does
+# NOT have. That is every graceful restart (the host kills those sessions on the way out), so the
+# specs must be created fresh — an id that isn't live must never make a spec vanish.
+Seeded -Name 'stale-ids' `
+    -Tsv "V1`nW`tws-s`nS`t0`tstale-one`t`t$cwd`nS`t0`tstale-two`t`t$cwd`nD`tnobody-1`tnobody-2`nA`t0`n" -Assert {
+    param($a, $i)
+    ($a -match 'stale-one') -and ($a -match 'stale-two') -and -not (Log-Has $i 'adopted live session')
+}
+
+# A D line SHORTER than the S list (hand-edited, or written while a session had no host id yet).
+# The pairing is by index, so the specs past the end of the D line must still restore rather than
+# read off the end of it.
+Seeded -Name 'short-id-line' `
+    -Tsv "V1`nW`tws-d`nS`t0`tpaired-one`t`t$cwd`nS`t0`tunpaired-two`t`t$cwd`nD`tnobody-1`nA`t0`n" -Assert {
+    param($a, $i) ($a -match 'paired-one') -and ($a -match 'unpaired-two')
 }
 
 # --- malformed / future state files: degrade, never crash and never take the window down -------
@@ -530,24 +654,34 @@ Seeded -Name 'stray-ws-index' `
 # --- harness self-check: a deliberately corrupted state file MUST fail a cell -------------------
 # Without this, a harness that silently passes everything would be indistinguishable from a
 # working restore — which is exactly the trap this whole exercise exists to avoid.
-$selfInst = 'rm-selfcheck'
-Reset-Cell $selfInst
-$sp = Start-Lite $selfInst
-& $ctl session new --pipe $selfInst 2>&1 | Out-Null
-Start-Sleep -Seconds 2
-$sigBefore = Signature $selfInst
-Stop-Lite $sp
-Set-Content -Path (State $selfInst) -Value '' -NoNewline      # wipe it: restore must not match
-Remove-Item "$(State $selfInst).bak" -ErrorAction SilentlyContinue   # ...and the generation it would fall back to
-$sp2 = Start-Lite $selfInst
-Start-Sleep -Seconds 2
-$sigAfter = Signature $selfInst
-Stop-Lite $sp2
-if ($sigAfter -ne $sigBefore) {
-    "  PASS  {0,-22} (corrupted state correctly fails to restore)" -f 'harness-selfcheck'
-} else {
-    $script:failed += 'harness-selfcheck'
-    "  FAIL  harness-selfcheck    — a wiped state file still 'restored'; the harness proves nothing"
+if (-not $Only -or $Only -eq 'harness-selfcheck') {
+    $selfInst = 'rm-selfcheck'
+    Reset-Cell $selfInst
+    $sigBefore = ''; $sigAfter = ''; $err = ''
+    $sp = $null; $sp2 = $null
+    try {
+        $sp = Start-Lite $selfInst
+        & $ctl session new --pipe $selfInst 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        $sigBefore = Signature $selfInst
+        Stop-Lite $sp; $sp = $null
+        Set-Content -Path (State $selfInst) -Value '' -NoNewline      # wipe it: restore must not match
+        Remove-Item "$(State $selfInst).bak" -ErrorAction SilentlyContinue   # ...and the generation it would fall back to
+        $sp2 = Start-Lite $selfInst
+        Start-Sleep -Seconds 2
+        $sigAfter = Signature $selfInst
+        Stop-Lite $sp2; $sp2 = $null
+    } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $sp; Stop-Leftover $sp2 }
+    if (-not $err -and $sigBefore -ne '' -and $sigAfter -ne $sigBefore) {
+        "  PASS  {0,-22} (corrupted state correctly fails to restore)" -f 'harness-selfcheck'
+    } else {
+        $script:failed += 'harness-selfcheck'
+        "  FAIL  harness-selfcheck    — a wiped state file still 'restored'; the harness proves nothing"
+        if ($err) { "        error:  $err" }
+        "        before: [$sigBefore]"
+        "        after:  [$sigAfter]"
+    }
 }
 
 ""

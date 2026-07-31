@@ -67,12 +67,18 @@ if (-not $p2.HasExited) { Stop-Process -Id $p2.Id -Force }
 Start-Sleep -Seconds 1
 
 # --- error case: a zero-byte state file must be NAMED, not silently ignored --------------------
-Remove-Item $log -ErrorAction SilentlyContinue
+# The .bak goes too. Run 2's save left one behind, and with it there restore takes the FALLBACK path
+# instead of the empty-file one — the check would still pass while testing something else entirely.
+Remove-Item $log, "$state.bak" -ErrorAction SilentlyContinue
 Set-Content -Path $state -Value '' -NoNewline
 $p3 = Start-Process $Exe -ArgumentList @('--pipe', $pipe) -PassThru
 Start-Sleep -Seconds 8
 $text3 = Get-Content $log -Raw
 Check 'empty state file is reported as EMPTY' ($text3 -match 'restore: state file is EMPTY')
+Check 'with no .bak either, it starts fresh' ($text3 -match 'starting fresh')
+# ...and the window is actually usable: a log line proves nothing if lite died right after writing it.
+$alive = ((& $ctl tree --json --pipe $pipe 2>&1) -join '') -match '"ok":true'
+Check 'lite still answers after an empty state file' $alive
 $p3.CloseMainWindow() | Out-Null
 Start-Sleep -Seconds 4
 if (-not $p3.HasExited) { Stop-Process -Id $p3.Id -Force }

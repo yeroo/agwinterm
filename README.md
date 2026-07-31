@@ -262,18 +262,31 @@ the next launch (`--no-restore` starts empty instead). Everything about that is 
 - **Restore order**: `sessions.tsv` → `.bak` if the primary is missing, empty, or parses to zero
   sessions → a fresh window. If the pty-host still holds the shells — lite was killed or the machine
   was shut down rather than closed — those shells are **still running** and get adopted live instead
-  of relaunched.
+  of relaunched. An adopted shell keeps everything it was running, but its **screen starts empty**:
+  lite re-attaches to the live process, it does not replay the history the old window had. A shell
+  that has already exited, or one another window is currently driving, is not adopted — it is
+  relaunched (or left to its owner) instead.
+- **Recovering by hand.** `--no-restore` starts empty, and the next save publishes *that* over
+  `sessions.tsv` — but the generation you wanted survives as `sessions.tsv.bak`. With lite closed,
+  copy the `.bak` over the primary and relaunch. `--diagnose` prints both files with their sizes (and
+  the primary's contents), so you can tell which one holds your sessions before you copy anything.
 - **"Restart everything"** (*File → Restart everything*) relaunches the **same** instance — it carries
   this window's `--pipe <name>` over, so it comes back reading the same state file. `--diagnose`
   prints the exact command line it would use.
 - **A spec that won't start on this machine** (a profile whose exe only exists on your other PC, a
   cwd on an unmounted drive) stays in the tree as a `(failed to start)` entry with a note in its
   pane, rather than silently vanishing. Its name, workspace, cwd and args are kept and re-saved, so
-  it starts normally again on the machine that has the app.
+  it starts normally again on the machine that has the app. Scripts can spot one without reading the
+  log: `agwintermctl tree --json` reports `"failed"` and `"exited"` per session.
 
 Every one of those branches names itself in `lite.log`, and `lite/test/restore-matrix.ps1` drives the
 whole matrix — kill vs. graceful close, two windows at once, interrupted writes, `.bak` fallback,
 bogus apps, old and future file formats — as regression cover.
+
+If lite exits at startup with **"pty-host did not become usable"**, a previous `agwinterm-ptyhost.exe`
+is wedged: end it in Task Manager and relaunch. `lite.log` records the connection attempt by attempt,
+including the case it is really there for — a host left dying by a killed window, which answers a
+handshake for a moment while refusing every real command.
 
 ### Reporting a lite problem
 
@@ -286,6 +299,7 @@ file's contents and its `.bak` generation, the resolved font, and the bundled pa
 > agwinterm-lite --diagnose
   version: 0.17.2
   instance: (default)
+  restart cmdline: "C:\Users\you\AppData\Local\Programs\agwinterm\agwinterm-lite.exe"
 state
   dir: C:\Users\you\AppData\Local\agwinterm-lite
   dir writable: yes

@@ -103,7 +103,7 @@ typedef struct _agwinterm_ptyhost_SessionInfo {
     uint32_t child_pid;
     bool has_exited;
     int32_t exit_code;
-    char title[256];
+    pb_callback_t title;
     bool attached;
 } agwinterm_ptyhost_SessionInfo;
 
@@ -143,7 +143,7 @@ extern "C" {
 #define agwinterm_ptyhost_HelloReply_init_default {0, 0}
 #define agwinterm_ptyhost_CreateReply_init_default {""}
 #define agwinterm_ptyhost_AttachReply_init_default {"", 0, 0, 0, 0, 0, "", {{NULL}, NULL}, {{NULL}, NULL}}
-#define agwinterm_ptyhost_SessionInfo_init_default {"", 0, 0, 0, 0, 0, "", 0}
+#define agwinterm_ptyhost_SessionInfo_init_default {"", 0, 0, 0, 0, 0, {{NULL}, NULL}, 0}
 #define agwinterm_ptyhost_ListReply_init_default {0, {agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default, agwinterm_ptyhost_SessionInfo_init_default}}
 #define agwinterm_ptyhost_Request_init_zero      {0, {agwinterm_ptyhost_Hello_init_zero}}
 #define agwinterm_ptyhost_Hello_init_zero        {0}
@@ -158,7 +158,7 @@ extern "C" {
 #define agwinterm_ptyhost_HelloReply_init_zero   {0, 0}
 #define agwinterm_ptyhost_CreateReply_init_zero  {""}
 #define agwinterm_ptyhost_AttachReply_init_zero  {"", 0, 0, 0, 0, 0, "", {{NULL}, NULL}, {{NULL}, NULL}}
-#define agwinterm_ptyhost_SessionInfo_init_zero  {"", 0, 0, 0, 0, 0, "", 0}
+#define agwinterm_ptyhost_SessionInfo_init_zero  {"", 0, 0, 0, 0, 0, {{NULL}, NULL}, 0}
 #define agwinterm_ptyhost_ListReply_init_zero    {0, {agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero, agwinterm_ptyhost_SessionInfo_init_zero}}
 
 /* Field tags (for use in manual encoding/decoding) */
@@ -337,9 +337,9 @@ X(a, STATIC,   SINGULAR, UINT32,   rows,              3) \
 X(a, STATIC,   SINGULAR, UINT32,   child_pid,         4) \
 X(a, STATIC,   SINGULAR, BOOL,     has_exited,        5) \
 X(a, STATIC,   SINGULAR, INT32,    exit_code,         6) \
-X(a, STATIC,   SINGULAR, STRING,   title,             7) \
+X(a, CALLBACK, SINGULAR, STRING,   title,             7) \
 X(a, STATIC,   SINGULAR, BOOL,     attached,          8)
-#define agwinterm_ptyhost_SessionInfo_CALLBACK NULL
+#define agwinterm_ptyhost_SessionInfo_CALLBACK pb_default_field_callback
 #define agwinterm_ptyhost_SessionInfo_DEFAULT NULL
 
 #define agwinterm_ptyhost_ListReply_FIELDLIST(X, a) \
@@ -384,6 +384,8 @@ extern const pb_msgdesc_t agwinterm_ptyhost_ListReply_msg;
 /* Maximum encoded size of messages (where known) */
 /* agwinterm_ptyhost_Reply_size depends on runtime parameters */
 /* agwinterm_ptyhost_AttachReply_size depends on runtime parameters */
+/* agwinterm_ptyhost_SessionInfo_size depends on runtime parameters */
+/* agwinterm_ptyhost_ListReply_size depends on runtime parameters */
 #define AGWINTERM_PTYHOST_PTYHOST_PB_H_MAX_SIZE  agwinterm_ptyhost_Request_size
 #define agwinterm_ptyhost_Attach_size            132
 #define agwinterm_ptyhost_CreateReply_size       130
@@ -391,11 +393,9 @@ extern const pb_msgdesc_t agwinterm_ptyhost_ListReply_msg;
 #define agwinterm_ptyhost_Create_size            35568
 #define agwinterm_ptyhost_HelloReply_size        12
 #define agwinterm_ptyhost_Hello_size             6
-#define agwinterm_ptyhost_ListReply_size         27136
 #define agwinterm_ptyhost_List_size              0
 #define agwinterm_ptyhost_Request_size           35572
 #define agwinterm_ptyhost_Resize_size            142
-#define agwinterm_ptyhost_SessionInfo_size       421
 #define agwinterm_ptyhost_SessionRef_size        130
 #define agwinterm_ptyhost_Shutdown_size          0
 

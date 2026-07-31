@@ -14,13 +14,15 @@ agwinterm.ptyhost.CreateReply.id       max_size:128
 agwinterm.ptyhost.AttachReply.pipe     max_size:128
 agwinterm.ptyhost.AttachReply.modes    max_size:1024
 # list: lite reads the host's live session ids at startup to ADOPT sessions that outlived a killed
-# UI (the pty-host survives the UI by design). Only `id` needs storage; the rest stay callbacks and
-# are skipped on decode. 64 is far past any realistic window's session count.
+# UI (the pty-host survives the UI by design). 64 is far past any realistic window's session count.
 agwinterm.ptyhost.ListReply.sessions   max_count:64
+# Only id/has_exited/attached get storage — the three fields adoption decides on. `title` must NOT:
+# nanopb fails the WHOLE ListReply decode on string overflow, and a title is whatever OSC 0/2 the
+# shell emitted (a prompt with a long path, an ssh banner), so any fixed size is a size a real title
+# can exceed. As a callback with no decoder it is skipped instead, which cannot overflow. This
+# matters far beyond adoption: `list` is also the startup liveness probe, so a title nobody reads
+# used to be able to stop lite from launching at all.
 agwinterm.ptyhost.SessionInfo.id       max_size:128
-# title must hold a REAL title: nanopb fails the whole ListReply decode on string overflow, so
-# truncating this silently broke `list` for any host that had a titled session.
-agwinterm.ptyhost.SessionInfo.title    max_size:256
 agwinterm.ptyhost.Create.env           max_count:8
 agwinterm.ptyhost.Create.EnvEntry.key    max_size:64
 agwinterm.ptyhost.Create.EnvEntry.value  max_size:192

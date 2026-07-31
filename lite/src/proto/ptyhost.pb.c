@@ -45,7 +45,7 @@ PB_BIND(agwinterm_ptyhost_CreateReply, agwinterm_ptyhost_CreateReply, AUTO)
 PB_BIND(agwinterm_ptyhost_AttachReply, agwinterm_ptyhost_AttachReply, 2)
 
 
-PB_BIND(agwinterm_ptyhost_SessionInfo, agwinterm_ptyhost_SessionInfo, 2)
+PB_BIND(agwinterm_ptyhost_SessionInfo, agwinterm_ptyhost_SessionInfo, AUTO)
 
 
 PB_BIND(agwinterm_ptyhost_ListReply, agwinterm_ptyhost_ListReply, 4)

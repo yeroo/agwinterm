@@ -105,7 +105,11 @@ fixes both:
       crash or a shutdown-without-close explains the report
 - [x] add a **multi-window** cell: sessions created in a second instance, asserting each instance
       restores its own and documenting that cross-instance is not expected
-- [x] add an **unwritable profile** cell: assert restore degrades cleanly and the log names the cause
+- [ ] add an **unwritable profile** cell: assert restore degrades cleanly and the log names the cause
+      ⚠️ never written — same false check-off the audit caught for `two-windows`. The unwritable
+      profile is covered *outside* the matrix (`diagnose.ps1`'s write probe, `log-basics.ps1`'s
+      "lite still starts"), but no cell drives restore against a read-only `%LOCALAPPDATA%` or
+      asserts that `save FAILED to open` names the cause. Carried forward.
 - [x] run the matrix - record which cells fail (⚠️ them in this plan before fixing)
 
 
@@ -224,8 +228,8 @@ saved" compared run 1's restore with run 1's last save. Fixed in the harness —
 | Fix | Cell |
 | --- | --- |
 | `controlHandshake()` probes with `list`; `connectControl()` retries a fresh host (Task 3) | `killed` |
-| session ids in the `D` line, adopt live host sessions on restore (Task 3) | `killed`, `two-windows` |
-| `SessionInfo.title` gets real storage so `list` decodes (Task 3) | `killed` (via the health probe) |
+| session ids in the `D` line, adopt live host sessions on restore (Task 3) | `killed` (asserts the log says `adopted live session`), `stale-ids`, `short-id-line` |
+| `SessionInfo.title` is *skipped* on decode so `list` can never overflow (Task 3, revised in review) | `killed` (via the health probe) |
 | `restartCommandLine()` preserves `--pipe` (Task 3b) | `restart-named`, `restart-cmdline` |
 | atomic temp-file + `MoveFileExW` write (Task 4) | `interrupted-write` |
 | refuse a zero-session save over a populated file (Task 4) | `zero-guard` |
@@ -242,10 +246,60 @@ asserts each restores only its own sessions, which is the mundane reading of "my
 refusing it would lose the sessions *and* then overwrite the newer file with a V1 one. `parseStateFile()`
 records the version so the log can say which it did.
 
-**Results (2026-07-31)**: `lite/test/run-all.ps1` — all checks pass, including 24 matrix cells and the
+**Results (2026-07-31)**: `lite/test/run-all.ps1` — all checks pass, including the matrix cells and the
 harness self-check. .NET: `Agwinterm.Core.Tests` 200/200, `Agwinterm.Pty.Tests` 116/116. Rust workspace:
 27/27. `lite/build.ps1` builds clean. The only non-lite files touched on this branch (`persist.rs`,
 `Ptyhost.cs`) differ by line endings alone — no content moved outside lite.
+
+### Code review (2026-07-31) — what it changed
+
+⚠️ **The `list` probe could stop lite from launching at all.** Task 3 gave `SessionInfo.title` fixed
+storage because a too-small buffer failed the decode; but a title is whatever OSC 0/2 the shell wrote,
+so *any* fixed size is one a real title can exceed — and `list` had just become the startup gate, so
+one long title anywhere on the shared host meant four failed attempts and `fatal()`. `title` is now a
+**skipped callback** (lite reads only `id`), and the probe asks whether the host *answered* rather
+than whether the reply decoded. A fix that traded "restore doesn't work" for "lite doesn't start".
+
+⚠️ **The zero-session guard failed open, and took the `.bak` with it.** `stateFileSessionCount()`
+returns `-1` for "exists but unreadable", which `had > 0` waved through — and the `.bak` delete was
+keyed on `saved == 0` rather than on the deliberate-empty flag, so one transient empty against a
+locked primary destroyed both generations. That is the corporate-agent/locked-profile environment
+this plan named as its leading hypothesis. Now: refuse unless the primary is provably empty, and
+delete the `.bak` only for a deliberate empty.
+
+⚠️ **`g_userEmptied` was a one-way latch.** Closing the last session over the control pipe leaves the
+window alive (`DestroyWindow` is a no-op off the UI thread), so the flag stayed set for the rest of
+the process and disabled the guard permanently. Cleared whenever a session is added; the new
+`guard-after-empty` cell drives exactly that sequence.
+
+⚠️ **`--no-restore` after a kill was a hard startup failure.** The id-collision fix ran *inside*
+`restoreSessions()`, past its early returns — so with the state file missing or `--no-restore` set
+while the host still held `<prefix>-N`, the first create was rejected and lite died with "could not
+create the first session". The host scan moved to `scanHostSessions()`, which runs on every launch
+(and removes the duplicate `list` round trip).
+
+⚠️ **Adoption ignored `attached` and `has_exited`**, both already on the wire. Adopting an attached
+session supersedes the window currently driving it — two windows on one instance stole each other's
+shells; adopting an exited one produced a dead pane where a relaunched shell belonged.
+
+➕ Also fixed: `window.delete` left the `.bak`/`.tmp` behind (so a deleted window's sessions came
+back), a failed attach after a successful create orphaned a host shell, the retry loop could stack up
+multiple hosts on one pipe name, a `V0` (0.17.x) file drew a scary version warning, and the instance
+name reached both the state path and the `cmd.exe` restart line unsanitised.
+
+➕ **Test cover for the code the branch was actually about.** Adoption had no assertion at all —
+`killed` passed identically whether it adopted or re-created — and no cell seeded a `D` line, so the
+whole new parse/lookup branch was dead under test. `killed` now asserts the log says
+`adopted live session`; `stale-ids` and `short-id-line` pin the deterministic `D`-line cases;
+`shell-exited` proves its own premise instead of duplicating `several`; `guard-after-empty` covers the
+latch. Harness-wise: asserts moved inside the try (one assert on a missing file used to terminate the
+whole suite and skip every cell after it), every cell force-stops its instances in a `finally`, the
+self-check honours `-Only`, `Signature()` no longer counts workspace rows as sessions, and the
+session-object lookup went from a regex that could span a workspace and the first session inside it to
+`ConvertFrom-Json`.
+
+**Post-review results (2026-07-31)**: `lite/build.ps1` clean; `lite/test/run-all.ps1` — all lite checks
+pass, 25 matrix cells plus the harness self-check.
 
 ### Task 7: [Final] Update documentation
 - [x] document the state file, its `.bak` generation, and the restore rules in the README lite section
@@ -269,7 +323,7 @@ ones already recorded: a guard needs its legitimate-case escape hatch (and the `
 with it), the transient-empty save is drivable via a split, and relaunch paths silently drop `--pipe`.
 
 **Docs validation (2026-07-31)**: `lite/build.ps1` clean, `lite/test/run-all.ps1` all checks pass —
-24/24 matrix cells plus the harness self-check. No code changed in this task.
+every matrix cell plus the harness self-check. No code changed in this task.
 
 ## Technical Details
 

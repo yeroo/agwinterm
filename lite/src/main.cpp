@@ -950,7 +950,15 @@ static void logInit(int argc, wchar_t** argv) {
 
 // ---- control pipe: protobuf frames (4-byte LE length prefix) ----
 static CRITICAL_SECTION g_reqLock;   // the control pipe is shared by the UI thread and the ctl server thread
-static bool request(const agwinterm_ptyhost_Request& req, agwinterm_ptyhost_Reply* reply) {
+// Why a request failed, for the one caller that has to tell the reasons apart. "The host sent a
+// frame lite could not decode" and "the host refused the command" look identical through the bool,
+// and the startup liveness probe needs them separated — see controlHandshake().
+enum class ReqOutcome { NoReply, Undecodable, Refused, Ok };
+static bool request(const agwinterm_ptyhost_Request& req, agwinterm_ptyhost_Reply* reply,
+                    ReqOutcome* outcome = nullptr) {
+    ReqOutcome sink;
+    if (!outcome) outcome = &sink;
+    *outcome = ReqOutcome::NoReply;
     EnterCriticalSection(&g_reqLock);
     struct Unlock { ~Unlock() { LeaveCriticalSection(&g_reqLock); } } unlock;
     uint8_t buf[4096];
@@ -971,7 +979,10 @@ static bool request(const agwinterm_ptyhost_Request& req, agwinterm_ptyhost_Repl
     if (need) return false;
     pb_istream_t is = pb_istream_from_buffer(payload.data(), rlen);
     *reply = agwinterm_ptyhost_Reply_init_default;
-    return pb_decode(&is, agwinterm_ptyhost_Reply_fields, reply) && reply->ok;
+    if (!pb_decode(&is, agwinterm_ptyhost_Reply_fields, reply)) { *outcome = ReqOutcome::Undecodable; return false; }
+    if (!reply->ok) { *outcome = ReqOutcome::Refused; return false; }
+    *outcome = ReqOutcome::Ok;
+    return true;
 }
 
 static HANDLE openPipe(const std::wstring& name, int timeoutMs, bool overlapped) {
@@ -1031,6 +1042,11 @@ static void loadCore() {
 /// real command. Believing that host is what made restore fail wholesale after lite was killed —
 /// every create came back false in the same millisecond and the sessions were simply gone. `list`
 /// is the cheapest request that actually touches the session table, so it is the real probe.
+///
+/// The probe asks whether the host ANSWERED, not whether the answer decoded: a reply lite's own
+/// field storage can't hold is still proof the host is alive and serving, and refusing to launch
+/// over one is far worse than the fault it was guarding against (lite has to start; adoption is a
+/// bonus). Decode failures are logged where they matter — in hostSessions().
 static bool controlHandshake() {
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
@@ -1040,15 +1056,28 @@ static bool controlHandshake() {
     req = agwinterm_ptyhost_Request_init_default;
     rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_list_tag;
-    return request(req, &rep) && rep.which_body == agwinterm_ptyhost_Reply_list_tag;
+    ReqOutcome out = ReqOutcome::NoReply;
+    if (request(req, &rep, &out)) return rep.which_body == agwinterm_ptyhost_Reply_list_tag;
+    if (out == ReqOutcome::Undecodable) {
+        logWarn("pty-host: list replied with something this build cannot decode — the host is alive, "
+                "so lite starts; adoption of live sessions is unavailable this run");
+        return true;
+    }
+    return false;
 }
 
 static void connectControl() {
     std::wstring control = std::wstring(kAppId) + L"-ptyhost";
     std::wstring cmd = L"\"" + exeDir() + L"\\agwinterm-ptyhost.exe\" --pipe " + kAppId;
+    // At most ONE host is started per launch. The host serves its pipe with PIPE_UNLIMITED_INSTANCES,
+    // so a second one can bind the same name and clients get split between them — sessions created
+    // against host A are invisible to a client that lands on host B. Retrying is for waiting out a
+    // dying host, not for stacking up replacements.
+    bool spawned = false;
     for (int attempt = 0; attempt < 4; attempt++) {
         g_control = openPipe(control, 0, false);
-        if (g_control == INVALID_HANDLE_VALUE) {   // no host yet: start one
+        if (g_control == INVALID_HANDLE_VALUE && !spawned) {   // no host yet: start one
+            spawned = true;
             STARTUPINFOW si{ sizeof(si) };
             PROCESS_INFORMATION pi{};
             std::vector<wchar_t> buf(cmd.begin(), cmd.end());
@@ -1064,8 +1093,9 @@ static void connectControl() {
             return;
         }
         // Either nothing answered, or what answered is on its way out. Drop it and give the dying
-        // host time to release the pipe name so the next attempt can spawn a fresh one.
-        logWarn("pty-host: connection unusable (attempt %d) — retrying with a fresh host", attempt + 1);
+        // host time to release the pipe name; the next attempt starts a fresh one if it hasn't yet.
+        logWarn("pty-host: connection unusable (attempt %d) — retrying%s", attempt + 1,
+                spawned ? "" : " with a fresh host");
         if (g_control != INVALID_HANDLE_VALUE) { CloseHandle(g_control); g_control = INVALID_HANDLE_VALUE; }
         Sleep(400);
     }
@@ -1282,7 +1312,19 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
     setEnv(4, "AGWINTERM_PANE_ID", idbuf);
     setEnv(5, "TERM_PROGRAM", "agwinterm-lite");
     if (!request(req, &rep)) return nullptr;
-    return attachSession(idbuf, cols, rows, app, pargs, cwd);
+    Session* s = attachSession(idbuf, cols, rows, app, pargs, cwd);
+    if (!s) {
+        // The create SUCCEEDED and only the attach failed, so the host is now holding a shell
+        // nothing drives. Leaving it there leaks a process per attempt — and restore retries the
+        // same spec on every launch, so the leak compounds. Take it back.
+        logWarn("session '%s' was created but could not be attached — killing it rather than leaking it", idbuf);
+        agwinterm_ptyhost_Request k = agwinterm_ptyhost_Request_init_default;
+        agwinterm_ptyhost_Reply kr = agwinterm_ptyhost_Reply_init_default;
+        k.which_cmd = agwinterm_ptyhost_Request_kill_tag;
+        strcpy_s(k.cmd.kill.id, idbuf);
+        request(k, &kr);
+    }
+    return s;
 }
 
 /// Attach to a session the host already has and wire it into the UI. Used for both halves of a
@@ -1313,23 +1355,60 @@ static Session* attachSession(const char* id, int cols, int rows, const char* ap
     s->reader = CreateThread(nullptr, 0, readerThread, s, 0, nullptr);
     EnterCriticalSection(&g_lock);
     g_sessions.push_back(s);
+    g_userEmptied = false;   // the window has sessions again: a later empty list is transient, not deliberate
     LeaveCriticalSection(&g_lock);
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // add the session to the tree (UI thread)
     return s;
 }
 
-/// Ids of the sessions the host currently holds. On a normal start this is empty; after lite was
-/// killed it still lists the shells from the previous run, which is what makes adoption possible
-/// (and what made every restore create collide with `session '<id>' already exists`).
-static std::vector<std::string> hostSessionIds() {
-    std::vector<std::string> ids;
+/// The sessions the host currently holds. On a normal start this is empty; after lite was killed it
+/// still lists the shells from the previous run, which is what makes adoption possible (and what
+/// made every restore create collide with `session '<id>' already exists`).
+struct HostSession {
+    std::string id;
+    bool exited = false;     // the shell behind it is gone: the host keeps the entry, attaching gets an EOF
+    bool attached = false;   // another window is driving it right now — attaching would STEAL it
+    bool adoptable() const { return !exited && !attached; }
+};
+static std::vector<HostSession> hostSessions() {
+    std::vector<HostSession> out;
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_list_tag;
-    if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_list_tag) return ids;
-    for (pb_size_t i = 0; i < rep.body.list.sessions_count; i++)
-        ids.push_back(rep.body.list.sessions[i].id);
-    return ids;
+    ReqOutcome oc = ReqOutcome::NoReply;
+    if (!request(req, &rep, &oc) || rep.which_body != agwinterm_ptyhost_Reply_list_tag) {
+        // Say it: an empty list here is indistinguishable from "the host holds nothing", and the
+        // difference decides whether restore adopts or re-creates.
+        if (oc != ReqOutcome::Ok)
+            logWarn("pty-host: could not read the live session list (%s) — restore will create fresh sessions",
+                    oc == ReqOutcome::Undecodable ? "reply did not decode"
+                                                  : oc == ReqOutcome::Refused ? "host refused" : "no reply");
+        return out;
+    }
+    for (pb_size_t i = 0; i < rep.body.list.sessions_count; i++) {
+        const auto& si = rep.body.list.sessions[i];
+        out.push_back({ si.id, si.has_exited, si.attached });
+    }
+    return out;
+}
+
+// What the host held when this lite connected, read ONCE at startup (the list is also the handshake
+// probe, so asking twice was a wasted round trip). Filled by scanHostSessions().
+static std::vector<HostSession> g_hostLive;
+
+/// Read the host's sessions and make sure this window can never mint an id the host already has.
+/// Must run for EVERY launch, not just a restoring one: with --no-restore (or a state file that
+/// parsed to nothing) after a kill, the host still holds `<prefix>-1`, and a create it rejects used
+/// to take the whole launch down with "could not create the first session".
+static void scanHostSessions() {
+    g_hostLive = hostSessions();
+    for (const auto& hs : g_hostLive) {
+        size_t dash = hs.id.rfind('-');
+        if (dash != std::string::npos && hs.id.compare(0, dash, g_idPrefix) == 0) {
+            int n = atoi(hs.id.c_str() + dash + 1);
+            if (n >= g_seq) g_seq = n + 1;
+        }
+    }
 }
 
 static void killSession(Session* s) {
@@ -1363,7 +1442,9 @@ static void closeSessionAt(int idx) {
     LeaveCriticalSection(&g_lock);
     // The user closed the last session, so the window goes with it. This is the ONLY path that may
     // legitimately write a zero-session state file; every other empty list is transient and the save
-    // refuses it (see saveSessionState).
+    // refuses it (see saveSessionState). The flag describes THIS empty, not the process: driven over
+    // the control pipe the DestroyWindow below is a no-op (wrong thread) and the window lives on, so
+    // adding a session clears it again — otherwise the guard would stay off for good.
     if (g_sessions.empty()) { g_userEmptied = true; DestroyWindow(g_hwnd); return; }
     syncPaneSizes();
     InvalidateRect(g_hwnd, nullptr, FALSE);
@@ -1787,9 +1868,14 @@ static void saveSessionState() {
     // The one legitimate zero-session save is the user closing the last session (g_userEmptied).
     if (saved == 0 && !g_userEmptied) {
         int had = stateFileSessionCount(path);
-        if (had > 0) {
-            logWarn("save SKIPPED: refusing to replace %s (%d saved session(s)) with a zero-session save",
-                    narrow(path).c_str(), had);
+        DWORD hadErr = GetLastError();   // only meaningful for had == -1 (CreateFileW is the last call made)
+        if (had != 0) {   // -1 = the file exists but could not be read: unknown is NOT permission to overwrite
+            if (had > 0)
+                logWarn("save SKIPPED: refusing to replace %s (%d saved session(s)) with a zero-session save",
+                        narrow(path).c_str(), had);
+            else
+                logWarn("save SKIPPED: %s could not be read (err %lu), so a zero-session save might be "
+                        "throwing sessions away — refusing", narrow(path).c_str(), hadErr);
             return;
         }
     }
@@ -1814,9 +1900,11 @@ static void saveSessionState() {
         DeleteFileW(tmp.c_str());
         return;
     }
-    if (saved == 0) {
-        // The user emptied the window on purpose (this is the only way a zero-session save gets
-        // here). Keeping a .bak would resurrect on the next launch exactly what they just closed.
+    if (saved == 0 && g_userEmptied) {
+        // The user emptied the window ON PURPOSE. Keeping a .bak would resurrect on the next launch
+        // exactly what they just closed. Every other zero-session save keeps its generation: the
+        // guard above lets one through only when the primary holds nothing worth keeping either, and
+        // a .bak is then the last copy of anything at all.
         DeleteFileW(bak.c_str());
     } else if (stateFileSessionCount(path) > 0 && !MoveFileExW(path.c_str(), bak.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         // Keep exactly one previous generation. Only rotate a file that actually held sessions, so a
@@ -5308,7 +5396,11 @@ static std::string ctlDispatch(const std::string& line) {
                 wchar_t base[MAX_PATH];
                 if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) {
                     std::wstring f = std::wstring(base) + L"\\agwinterm-lite\\sessions-" + nm + L".tsv";
+                    // The .bak too, or restore's fallback brings the deleted window's sessions
+                    // straight back on the next --pipe <name>; the .tmp so no wreckage is left.
                     DeleteFileW(f.c_str());
+                    DeleteFileW((f + L".bak").c_str());
+                    DeleteFileW((f + L".tmp").c_str());
                 }
             }
             return ctlOkStr(cmd == "window.delete" ? "deleted" : "closed");
@@ -5463,6 +5555,7 @@ static Session* failedSpecSession(const RestoreSpec& sp, int cols, int rows) {
     EnterCriticalSection(&g_lock);
     if (s->emu) emu_feed(s->emu, (const uint8_t*)msg.data(), (uint32_t)msg.size());
     g_sessions.push_back(s);
+    g_userEmptied = false;   // see attachSession: the deliberate-empty flag is per-empty, not per-process
     LeaveCriticalSection(&g_lock);
     return s;
 }
@@ -5496,7 +5589,10 @@ static bool restoreSessions() {
     const std::vector<std::wstring>& wss = ps.wss;
     int activeWs = ps.activeWs, focusWs = ps.focusWs;
     logInfo("restore: %zu spec(s) from %s (%zu bytes)", specs.size(), narrow(usedPath).c_str(), ps.bytes);
-    if (ps.version != 1)
+    // Only a NEWER format is worth a warning. Version 0 just means "no V header", which is every
+    // 0.17.x file and every hand-edited one — the documented backward-compatible case, not a fault,
+    // and crying about it in the log the field reports are read from helps nobody.
+    if (ps.version > 1)
         logWarn("restore: %s is format V%d, this build writes V1 — reading the line types it recognises",
                 narrow(usedPath).c_str(), ps.version);
 
@@ -5505,33 +5601,31 @@ static bool restoreSessions() {
     int cols, rows; paneGridSize(0, &cols, &rows);
     int firstIdx = -1, built = 0, adopted = 0, dead = 0;
 
-    // Sessions the host still holds. lite was killed rather than closed if this is non-empty: the
-    // pty-host outlives the UI by design, so those shells are STILL RUNNING. Adopt them instead of
-    // creating new ones — which also fixes the wholesale restore failure, because a create against
-    // an id the host already has is rejected ("session '<id>' already exists") and used to sink
-    // every single spec.
-    std::vector<std::string> live = hostSessionIds();
-    logInfo("restore: %zu saved id(s) in the file, host holds %zu live session(s)%s%s",
-            savedIds.size(), live.size(), live.empty() ? "" : ": ",
-            live.empty() ? "" : live[0].c_str());
-    auto isLive = [&](const std::string& id) {
-        return !id.empty() && std::find(live.begin(), live.end(), id) != live.end();
+    // Sessions the host still holds (read at startup by scanHostSessions, which also reserved their
+    // ids). lite was killed rather than closed if this is non-empty: the pty-host outlives the UI by
+    // design, so those shells are STILL RUNNING. Adopt them instead of creating new ones — which
+    // also fixes the wholesale restore failure, because a create against an id the host already has
+    // is rejected ("session '<id>' already exists") and used to sink every single spec.
+    size_t adoptable = 0;
+    for (const auto& hs : g_hostLive) if (hs.adoptable()) adoptable++;
+    logInfo("restore: %zu saved id(s) in the file, host holds %zu session(s), %zu adoptable",
+            savedIds.size(), g_hostLive.size(), adoptable);
+    // Only sessions that are neither exited nor already being driven by another window. Attaching to
+    // an attached session supersedes its current client — a second window on the same instance would
+    // silently steal the first one's shells — and attaching to an exited one yields an immediate EOF,
+    // i.e. a dead pane where a relaunched shell belongs.
+    auto isAdoptable = [&](const std::string& id) {
+        if (id.empty()) return false;
+        for (const auto& hs : g_hostLive) if (hs.id == id) return hs.adoptable();
+        return false;
     };
-    // Never hand out an id the host is already using, for the sessions we do have to create.
-    for (const auto& id : live) {
-        size_t dash = id.rfind('-');
-        if (dash != std::string::npos && id.compare(0, dash, g_idPrefix) == 0) {
-            int n = atoi(id.c_str() + dash + 1);
-            if (n >= g_seq) g_seq = n + 1;
-        }
-    }
 
     for (size_t si = 0; si < specs.size(); si++) {
         const auto& sp = specs[si];
         g_activeWs = (sp.ws >= 0 && sp.ws < (int)g_workspaces.size()) ? sp.ws : 0;
         std::string want = si < savedIds.size() ? savedIds[si] : std::string();
         Session* s = nullptr;
-        if (isLive(want)) {
+        if (isAdoptable(want)) {
             s = attachSession(want.c_str(), cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
                               sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str());
             if (s) { adopted++; logInfo("restore: adopted live session '%s' (%s)", want.c_str(), sp.name.c_str()); }
@@ -5596,7 +5690,18 @@ static void parseLaunchArgs() {
         if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) g_argDir.clear();
     }
     if (!g_argPipe.empty() && g_argPipe != L"agwinterm-lite") {   // named instance
-        g_instance = g_argPipe;
+        // The instance name becomes a FILENAME (sessions-<name>.tsv, lite-<name>.log) and is
+        // interpolated into the "Restart everything" command line, so drop the characters that make
+        // either of those mean something else: path separators (--pipe "..\..\x" would write outside
+        // the state directory), and the quoting/chaining metacharacters cmd.exe acts on. None of
+        // them are legal in a filename anyway, so no name that works today changes.
+        std::wstring clean;
+        for (wchar_t c : g_argPipe)
+            if (c >= 32 && !wcschr(L"\\/:*?\"<>|&^%", c)) clean += c;
+        while (!clean.empty() && (clean.back() == L' ' || clean.back() == L'.')) clean.pop_back();
+        if (clean.empty()) clean = L"lite";
+        g_argPipe = clean;
+        g_instance = clean;
         g_isDefaultInstance = false;
         std::string p;   // sanitized session-id prefix (alnum/dash only)
         for (wchar_t c : g_argPipe)
@@ -5671,6 +5776,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
                 g_haveAgbf ? 1 : 0, g_haveAgbfC ? 1 : 0);
 
     connectControl();
+    scanHostSessions();   // what the host already holds — reserves their ids and feeds adoption
 
     INITCOMMONCONTROLSEX icc{ sizeof icc, ICC_TREEVIEW_CLASSES | ICC_BAR_CLASSES | ICC_HOTKEY_CLASS };
     InitCommonControlsEx(&icc);
