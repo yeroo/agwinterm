@@ -2,7 +2,7 @@
 ; Build via installer\build.ps1 (publishes to stage\ then runs ISCC on this file).
 
 #define AppName    "agwinterm"
-#define AppVersion "0.17.1"
+#define AppVersion "0.17.2"
 #define AppExe     "Agwinterm.Win32.exe"
 #define AppPublisher "Boris Kudriashov"
 ; The main app defaults new sessions to the Rust pty-host as a first-run seed only (it never
