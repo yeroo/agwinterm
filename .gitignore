@@ -7,3 +7,6 @@ installer/stage/
 installer/stage-lite/
 installer/stage-portable/
 installer/Output/
+
+# ralphex progress logs
+.ralphex/progress/

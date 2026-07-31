@@ -267,6 +267,38 @@ Cell -Name 'shell-exited' -Setup {
     Start-Sleep -Seconds 3
 } -Assert { param($b, $a) $a -eq $b }
 
+# Two windows open at once. Multi-window lite is one PROCESS per window, each with its own
+# sessions-<instance>.tsv, so each window restores ITS OWN sessions and never the other's. Pinned
+# because "my sessions are gone" has this mundane reading: they came back in the other window.
+if (-not $Only -or $Only -eq 'two-windows') {
+    $ia = 'rm-two-windows-a'; $ib = 'rm-two-windows-b'
+    Reset-Cell $ia; Reset-Cell $ib
+    $afterA = ''; $afterB = ''; $err = ''
+    try {
+        $pa = Start-Lite $ia
+        $pb = Start-Lite $ib
+        & $ctl session rename win-a-session --target (LastSessionId $ia) --pipe $ia 2>&1 | Out-Null
+        & $ctl session rename win-b-session --target (LastSessionId $ib) --pipe $ib 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        Stop-Lite $pa; Stop-Lite $pb
+
+        $pa2 = Start-Lite $ia; $pb2 = Start-Lite $ib
+        Start-Sleep -Seconds 2
+        $afterA = Signature $ia; $afterB = Signature $ib
+        Stop-Lite $pa2; Stop-Lite $pb2
+    } catch { $err = $_.Exception.Message }
+    $ok = (-not $err) -and ($afterA -match 'win-a-session') -and ($afterA -notmatch 'win-b-session') `
+                       -and ($afterB -match 'win-b-session') -and ($afterB -notmatch 'win-a-session')
+    if ($ok) { "  PASS  {0,-22} (each window restores only its own)" -f 'two-windows' }
+    else {
+        $script:failed += 'two-windows'
+        "  FAIL  two-windows"
+        if ($err) { "        error:  $err" }
+        "        window A: [$afterA]"
+        "        window B: [$afterB]"
+    }
+}
+
 # --- "Restart everything" must come back as the SAME instance ----------------------------------
 # restartApp() used to relaunch the bare exe, so a named window restarted as the DEFAULT instance
 # and read a different sessions file. Nothing crashed; the sessions were simply someone else's.
@@ -450,6 +482,49 @@ Seeded -Name 'compat-0.17' `
     -Tsv "V1`nW`tws-c`nS`t0`told-one`t`t$cwd`nS`t0`told-two`t`t$cwd`nF`t1`nA`t0`n" -Assert {
     param($a, $i)
     ($a -match 'old-one') -and ($a -match 'old-two')
+}
+
+# --- malformed / future state files: degrade, never crash and never take the window down -------
+# Every one of these is a file the user can genuinely end up with: a save that never got any bytes,
+# a disk that filled mid-write, a downgrade after running a newer build, a hand-edited file.
+
+# An empty primary with NO generation to fall back to: lite must start fresh, with a usable window,
+# and the log must say which of the two empties it was (no file vs. a file with nothing in it).
+Seeded -Name 'empty-file' -Tsv '' -Assert {
+    param($a, $i)
+    ($a -ne '') -and (Log-Has $i 'state file is EMPTY') -and (Log-Has $i 'starting fresh')
+}
+
+# Cut mid-record, the shape a full disk used to leave behind. The complete specs above the cut must
+# restore; the partial one is dropped rather than restored as a spec with empty fields.
+Seeded -Name 'truncated' `
+    -Tsv "V1`nW`tws-t`nS`t0`twhole-one`t`t$cwd`nS`t0`twhole-two`t`t$cwd`nS`t0`tcut-o" -Assert {
+    param($a, $i)
+    ($a -match 'whole-one') -and ($a -match 'whole-two') -and ($a -notmatch 'cut-o')
+}
+
+# A file written by a FUTURE build (downgrade, or a roaming profile shared between versions). The
+# format grows by adding line types, so the right answer is to read what this build understands and
+# say so — refusing would lose the sessions and then overwrite the newer file with a V1 one.
+Seeded -Name 'future-v2' `
+    -Tsv "V2`nW`tws-v`nS`t0`tfrom-the-future`t`t$cwd`nZ`tsomething-new`t42`nA`t0`n" -Assert {
+    param($a, $i)
+    ($a -match 'from-the-future') -and (Log-Has $i 'is format V2')
+}
+
+# S lines with no W lines at all: the workspace list stays whatever the build defaults to, and every
+# spec lands in it rather than vanishing with its workspace.
+Seeded -Name 'no-workspaces' `
+    -Tsv "V1`nS`t0`tno-ws-session`t`t$cwd`nA`t0`n" -Assert {
+    param($a, $i) $a -match 'no-ws-session'
+}
+
+# A spec pointing at a workspace that no longer exists (workspace deleted by an older build, or the
+# file hand-edited), plus an out-of-range active workspace: both clamp to 0, so the session is
+# visible instead of being filed under a workspace nobody can reach.
+Seeded -Name 'stray-ws-index' `
+    -Tsv "V1`nW`tonly-ws`nS`t7`tstray-session`t`t$cwd`nS`t0`thome-session`t`t$cwd`nF`t9`nA`t9`n" -Assert {
+    param($a, $i) ($a -match 'stray-session') -and ($a -match 'home-session') -and ($a -match 'only-ws')
 }
 
 # --- harness self-check: a deliberately corrupted state file MUST fail a cell -------------------

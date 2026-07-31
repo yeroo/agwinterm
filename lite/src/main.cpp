@@ -5389,6 +5389,7 @@ struct ParsedState {
     std::vector<RestoreSpec> specs;
     std::vector<std::string> savedIds;   // from the D line; empty for a pre-0.17.3 file
     int activeWs = 0, focusWs = -1;
+    int version = 0;                     // from the V header; 0 = there wasn't one
     size_t bytes = 0;
     DWORD err = 0;
     bool opened = false;
@@ -5413,7 +5414,12 @@ static ParsedState parseStateFile(const std::wstring& path) {
         if (!l.empty() && l.back() == '\r') l.pop_back();
         if (l.empty()) continue;
         auto ff = split(l);
-        if (ff[0] == "W" && ff.size() >= 2) ps.wss.push_back(widen(ff[1]));
+        // The format grows by ADDING line types (that is how D arrived), so a file from a newer
+        // build is read for the lines this one recognises rather than thrown away — discarding it
+        // would lose the sessions AND overwrite the newer file on the next save. Recorded so the
+        // log can say so; unknown line types are ignored by the same principle.
+        if (ff[0].size() >= 2 && ff[0][0] == 'V' && isdigit((unsigned char)ff[0][1])) ps.version = atoi(ff[0].c_str() + 1);
+        else if (ff[0] == "W" && ff.size() >= 2) ps.wss.push_back(widen(ff[1]));
         else if (ff[0] == "S" && ff.size() >= 5) {
             RestoreSpec sp; sp.ws = atoi(ff[1].c_str()); sp.name = ff[2]; sp.app = ff[3]; sp.cwd = ff[4];
             for (size_t k = 5; k < ff.size(); k++) sp.args.push_back(ff[k]);
@@ -5490,6 +5496,9 @@ static bool restoreSessions() {
     const std::vector<std::wstring>& wss = ps.wss;
     int activeWs = ps.activeWs, focusWs = ps.focusWs;
     logInfo("restore: %zu spec(s) from %s (%zu bytes)", specs.size(), narrow(usedPath).c_str(), ps.bytes);
+    if (ps.version != 1)
+        logWarn("restore: %s is format V%d, this build writes V1 — reading the line types it recognises",
+                narrow(usedPath).c_str(), ps.version);
 
     g_restoring = true;
     if (!wss.empty()) g_workspaces = wss;

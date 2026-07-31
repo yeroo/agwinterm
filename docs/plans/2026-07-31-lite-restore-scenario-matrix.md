@@ -212,12 +212,40 @@ saved" compared run 1's restore with run 1's last save. Fixed in the harness —
 `.bak`/`.tmp`, and the run-2 assertions read the LAST restore line, not the first.
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify every scenario in the matrix passes, and that each fix is tied to the cell that failed
-- [ ] verify edge cases: empty file, truncated file, unknown future `V2` header, missing `W` lines,
+- [x] verify every scenario in the matrix passes, and that each fix is tied to the cell that failed
+- [x] verify edge cases: empty file, truncated file, unknown future `V2` header, missing `W` lines,
       a spec referencing a workspace index that no longer exists
-- [ ] run the full `lite/test/run-all.ps1` suite
-- [ ] run the .NET and Rust suites to confirm nothing outside lite moved
-- [ ] confirm lite builds clean via `lite/build.ps1`
+- [x] run the full `lite/test/run-all.ps1` suite
+- [x] run the .NET and Rust suites to confirm nothing outside lite moved
+- [x] confirm lite builds clean via `lite/build.ps1`
+
+**Fix → the cell that caught it** (every fix in this plan is anchored to a cell that fails without it):
+
+| Fix | Cell |
+| --- | --- |
+| `controlHandshake()` probes with `list`; `connectControl()` retries a fresh host (Task 3) | `killed` |
+| session ids in the `D` line, adopt live host sessions on restore (Task 3) | `killed`, `two-windows` |
+| `SessionInfo.title` gets real storage so `list` decodes (Task 3) | `killed` (via the health probe) |
+| `restartCommandLine()` preserves `--pipe` (Task 3b) | `restart-named`, `restart-cmdline` |
+| atomic temp-file + `MoveFileExW` write (Task 4) | `interrupted-write` |
+| refuse a zero-session save over a populated file (Task 4) | `zero-guard` |
+| a deliberate empty also deletes the `.bak` (Task 4) | `closed-last` |
+| `.bak` fallback when the primary yields zero specs (Task 4) | `bak-fallback`, `compat-0.17` |
+| `failedSpecSession()` keeps an unstartable spec as a dead entry (Task 5) | `failed-spec`, `bogus-app` |
+| tolerate an unknown `V` header instead of silently swallowing it (Task 6) | `future-v2` |
+
+➕ Task 2 had checked off a multi-window cell that was never actually written — every cell used a
+single instance. Caught by this task's audit and added: `two-windows` runs two instances at once and
+asserts each restores only its own sessions, which is the mundane reading of "my sessions are gone".
+
+➕ A future-build file is now READ for the line types this build recognises rather than discarded —
+refusing it would lose the sessions *and* then overwrite the newer file with a V1 one. `parseStateFile()`
+records the version so the log can say which it did.
+
+**Results (2026-07-31)**: `lite/test/run-all.ps1` — all checks pass, including 24 matrix cells and the
+harness self-check. .NET: `Agwinterm.Core.Tests` 200/200, `Agwinterm.Pty.Tests` 116/116. Rust workspace:
+27/27. `lite/build.ps1` builds clean. The only non-lite files touched on this branch (`persist.rs`,
+`Ptyhost.cs`) differ by line endings alone — no content moved outside lite.
 
 ### Task 7: [Final] Update documentation
 - [ ] document the state file, its `.bak` generation, and the restore rules in the README lite section
