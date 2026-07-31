@@ -114,6 +114,7 @@ static std::string  g_argDir;             // -d/--dir/--startingDirectory <path>
 static bool g_argMaximized = false;       // --maximized
 static bool g_argNoRestore = false;       // --no-restore: don't rebuild the saved sessions
 static bool g_argBenchAgbf = false;       // --bench-agbf: print pack benchmarks to the console, exit
+static bool g_argDiagnose = false;        // --diagnose: print an environment/state report, exit
 static std::wstring g_argPipe;            // --pipe <name>: control-pipe name (default agwinterm-lite)
 
 static HWND g_hwnd;   // main frame (declared early: the instance registry compares against it)
@@ -868,6 +869,80 @@ static void fatal(const wchar_t* msg) {
     ExitProcess(1);
 }
 
+// ---- diagnostics log ------------------------------------------------------------------------
+// Every lite field report so far ("restore doesn't work", "can't type after switching", the render
+// artefacts) arrived from a machine we cannot attach a debugger to, and left nothing behind — so
+// each one cost hours of re-enactment that mostly failed to reproduce. lite now records its own
+// decisions (paths, counts, error codes, focus transitions) to a small rotating file next to its
+// state, so the NEXT report comes with evidence.
+//
+// Deliberately NOT logged: terminal output, pasted text, typed keys, session command lines. The log
+// is about what lite did, so it can be attached to an issue without leaking what you were doing.
+//
+// Rules: never fatal, never blocking, no-op forever if the file can't be opened. Callers span the UI
+// thread, one readerThread per session, the control server + a thread per client, and the update
+// worker, so it carries its own lock (g_lock guards emulator state, not this).
+static CRITICAL_SECTION g_logLock;
+static std::wstring g_logPath;
+static bool g_logReady = false;      // logInit ran and the file opened at least once
+static bool g_logDead = false;       // an open failed: degrade to a no-op rather than retry forever
+static const DWORD kLogRotateBytes = 1024 * 1024;
+
+static void logRotateIfBig() {   // call under g_logLock
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if (!GetFileAttributesExW(g_logPath.c_str(), GetFileExInfoStandard, &fa)) return;
+    if (fa.nFileSizeHigh == 0 && fa.nFileSizeLow < kLogRotateBytes) return;
+    MoveFileExW(g_logPath.c_str(), (g_logPath + L".old").c_str(), MOVEFILE_REPLACE_EXISTING);
+}
+
+static void logWriteV(const char* level, const char* fmt, va_list ap) {
+    if (!g_logReady || g_logDead) return;
+    char body[1024];
+    _vsnprintf_s(body, sizeof body, _TRUNCATE, fmt, ap);
+    SYSTEMTIME t; GetLocalTime(&t);
+    char line[1200];
+    int n = _snprintf_s(line, sizeof line, _TRUNCATE, "%04d-%02d-%02d %02d:%02d:%02d.%03d  %-4s  %s\r\n",
+                        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
+                        level, body);
+    if (n <= 0) return;
+    EnterCriticalSection(&g_logLock);
+    logRotateIfBig();
+    // FILE_SHARE_READ|WRITE so the file can be tailed (and a second instance never blocks) while lite runs.
+    HANDLE f = CreateFileW(g_logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        g_logDead = true;   // unwritable profile: stop trying, lite carries on unchanged
+    } else {
+        DWORD wr; WriteFile(f, line, (DWORD)n, &wr, nullptr);
+        CloseHandle(f);
+    }
+    LeaveCriticalSection(&g_logLock);
+}
+
+static void logInfo(const char* fmt, ...) { va_list ap; va_start(ap, fmt); logWriteV("INFO", fmt, ap); va_end(ap); }
+static void logWarn(const char* fmt, ...) { va_list ap; va_start(ap, fmt); logWriteV("WARN", fmt, ap); va_end(ap); }
+
+/// Resolve the per-instance log path and record the startup line. Per-instance because multi-window
+/// lite is one process per window — a shared file would interleave four writers' lines.
+static void logInit(int argc, wchar_t** argv) {
+    InitializeCriticalSection(&g_logLock);
+    wchar_t base[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) == 0) { g_logDead = true; return; }
+    std::wstring dir = std::wstring(base) + L"\\agwinterm-lite";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    g_logPath = dir + (g_isDefaultInstance ? L"\\lite.log" : (L"\\lite-" + g_instance + L".log"));
+    g_logReady = true;
+
+    wchar_t exe[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring cmd;
+    for (int i = 1; i < argc; i++) { if (i > 1) cmd += L" "; cmd += argv[i]; }
+    logInfo("---- agwinterm-lite %s starting ----", AGWL_VERSION_STR);
+    logInfo("instance=%s exe=%s args=[%s]",
+            narrow(g_isDefaultInstance ? L"(default)" : g_instance).c_str(),
+            narrow(exe).c_str(), narrow(cmd).c_str());
+}
+
 // ---- control pipe: protobuf frames (4-byte LE length prefix) ----
 static CRITICAL_SECTION g_reqLock;   // the control pipe is shared by the UI thread and the ctl server thread
 static bool request(const agwinterm_ptyhost_Request& req, agwinterm_ptyhost_Reply* reply) {
@@ -1405,7 +1480,9 @@ static void saveFontSel() {
     RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontH", REG_DWORD, &h, sizeof(h));
     RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontW", REG_DWORD, &w, sizeof(w));
 }
+static bool g_fontFromReg = false;   // did the remembered selection resolve, or did we fall back?
 static void loadFontSel() {
+    g_fontFromReg = false;
     wchar_t face[64] = L""; DWORD sz = sizeof(face);
     if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontFace", RRF_RT_REG_SZ, nullptr, face, &sz) != ERROR_SUCCESS) { setDefaultFont(); return; }
     DWORD h = 0, w = 0, s = sizeof(DWORD);
@@ -1414,8 +1491,8 @@ static void loadFontSel() {
     for (int fi = 0; fi < (int)g_catalog.size(); fi++) {
         if (wcscmp(g_catalog[fi].face, face) != 0) continue;
         for (int si = 0; si < (int)g_catalog[fi].sizes.size(); si++)
-            if ((DWORD)(int)g_catalog[fi].sizes[si].h == h && (DWORD)(int)g_catalog[fi].sizes[si].w == w) { g_faceIdx = fi; g_sizeIdx = si; return; }
-        g_faceIdx = fi; g_sizeIdx = 0; return;   // face matched, size didn't — keep the face
+            if ((DWORD)(int)g_catalog[fi].sizes[si].h == h && (DWORD)(int)g_catalog[fi].sizes[si].w == w) { g_faceIdx = fi; g_sizeIdx = si; g_fontFromReg = true; return; }
+        g_faceIdx = fi; g_sizeIdx = 0; g_fontFromReg = true; return;   // face matched, size didn't — keep the face
     }
     setDefaultFont();
 }
@@ -1520,7 +1597,10 @@ static std::wstring stateFilePath() {
     wchar_t base[MAX_PATH];
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) == 0) return {};
     std::wstring dir = std::wstring(base) + L"\\agwinterm-lite";
-    CreateDirectoryW(dir.c_str(), nullptr);
+    if (!CreateDirectoryW(dir.c_str(), nullptr)) {
+        DWORD e = GetLastError();
+        if (e != ERROR_ALREADY_EXISTS) logWarn("state dir could not be created: %s (err %lu)", narrow(dir).c_str(), e);
+    }
     // Named instances keep their own session state; the default instance keeps the classic name.
     return dir + (g_isDefaultInstance ? L"\\sessions.tsv" : (L"\\sessions-" + g_instance + L".tsv"));
 }
@@ -1603,9 +1683,21 @@ static void saveSessionState() {
     if (!flagLine.empty()) out += "F" + flagLine + "\n";
     out += "A\t" + std::to_string(g_activeWs) + "\n";
     HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return;
-    DWORD wr; WriteFile(f, out.data(), (DWORD)out.size(), &wr, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        // The silent return that made "restore doesn't work" unanswerable in the field: if the
+        // state file can't be opened, nothing is saved and nothing says so.
+        logWarn("save FAILED to open %s (err %lu) — %d session(s) not saved",
+                narrow(path).c_str(), GetLastError(), saved);
+        return;
+    }
+    DWORD wr = 0;
+    BOOL ok = WriteFile(f, out.data(), (DWORD)out.size(), &wr, nullptr);
+    DWORD werr = ok ? 0 : GetLastError();
     CloseHandle(f);
+    if (!ok || wr != out.size())
+        logWarn("save PARTIAL to %s: wrote %lu of %zu bytes (err %lu)", narrow(path).c_str(), wr, out.size(), werr);
+    else
+        logInfo("save ok: %d session(s), %zu bytes -> %s", saved, out.size(), narrow(path).c_str());
 }
 
 // Select a face+size, apply it, and persist the choice (used by the Properties dialog).
@@ -1877,6 +1969,89 @@ static void agbfPaintGrid(HDC mem, RECT pr, const FfiCell* view, const FfiEmuInf
 
 // --bench-agbf: the spec's benchmark deliverable — load time, glyph lookup, full-grid render and
 // resident size for every committed pack, printed to the launching console. No window, no session.
+// --diagnose: one report you can run on a machine that misbehaves and paste into an issue. Strictly
+// read-only — it never writes state, never opens the control pipe, and is safe while lite is running.
+// It answers the questions that cost this project the most time: where does state live, can lite
+// actually write there, what is in it, and what did the font/pack resolution decide.
+static int liteDiagnose() {
+    AttachConsole(ATTACH_PARENT_PROCESS);
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    auto say = [&](const std::string& s) { DWORD wr; WriteFile(out, s.data(), (DWORD)s.size(), &wr, nullptr); };
+    auto line = [&](const char* k, const std::string& v) { say(std::string("  ") + k + ": " + v + "\r\n"); };
+
+    wchar_t exe[MAX_PATH]{}; GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    wchar_t lad[MAX_PATH]{}; DWORD ladOk = GetEnvironmentVariableW(L"LOCALAPPDATA", lad, MAX_PATH);
+
+    say("\nagwinterm-lite --diagnose\r\n\r\n");
+    line("version", AGWL_VERSION_STR);
+    line("exe", narrow(exe));
+    line("instance", g_isDefaultInstance ? "(default)" : narrow(g_instance));
+    line("LOCALAPPDATA", ladOk ? narrow(lad) : "(not set!)");
+
+    std::wstring dir = std::wstring(ladOk ? lad : L"") + L"\\agwinterm-lite";
+    std::wstring state = dir + (g_isDefaultInstance ? L"\\sessions.tsv" : (L"\\sessions-" + g_instance + L".tsv"));
+    std::wstring log = dir + (g_isDefaultInstance ? L"\\lite.log" : (L"\\lite-" + g_instance + L".log"));
+
+    say("\r\nstate\r\n");
+    line("dir", narrow(dir));
+    line("dir exists", (GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES) ? "yes" : "NO");
+    // A real write probe, not an attribute guess: redirected or policy-locked profiles fail here.
+    std::wstring probe = dir + L"\\.diagnose-probe";
+    HANDLE ph = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (ph == INVALID_HANDLE_VALUE) {
+        line("dir writable", "NO (err " + std::to_string(GetLastError()) + ")  <-- saves cannot work here");
+    } else {
+        CloseHandle(ph); DeleteFileW(probe.c_str());
+        line("dir writable", "yes");
+    }
+
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if (GetFileAttributesExW(state.c_str(), GetFileExInfoStandard, &fa)) {
+        SYSTEMTIME st{}; FILETIME lt{};
+        FileTimeToLocalFileTime(&fa.ftLastWriteTime, &lt); FileTimeToSystemTime(&lt, &st);
+        char when[64];
+        _snprintf_s(when, sizeof when, _TRUNCATE, "%04d-%02d-%02d %02d:%02d:%02d",
+                    st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        line("session file", narrow(state));
+        line("  size", std::to_string(fa.nFileSizeLow) + " bytes");
+        line("  modified", when);
+        HANDLE f = CreateFileW(state.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+            std::string data; char buf[4096]; DWORD rd;
+            while (ReadFile(f, buf, sizeof buf, &rd, nullptr) && rd) data.append(buf, rd);
+            CloseHandle(f);
+            say("\r\nsession file contents\r\n");
+            say(data.empty() ? std::string("  (empty)\r\n") : ("  " + data + "\r\n"));
+        }
+    } else {
+        line("session file", narrow(state) + "  <-- DOES NOT EXIST (nothing to restore)");
+    }
+
+    say("\r\nlog\r\n");
+    line("path", narrow(log));
+    if (GetFileAttributesExW(log.c_str(), GetFileExInfoStandard, &fa))
+        line("size", std::to_string(fa.nFileSizeLow) + " bytes");
+    else
+        line("size", "(no log yet)");
+
+    say("\r\nfonts\r\n");
+    std::wstring ed = exeDir();
+    for (const wchar_t* p : { L"agwin-bitmap-14.agbf", L"agwin-bitmap-16.agbf", L"agwin-bitmap-18.agbf",
+                              L"agwin-bitmap-20.agbf", L"agwin-bitmap-complete-14.agbf",
+                              L"agwin-bitmap-complete-16.agbf", L"agwin-bitmap-complete-18.agbf",
+                              L"agwin-bitmap-complete-20.agbf", L"MesloLGLDZNerdFont-Regular.ttf" }) {
+        std::wstring fp = ed + L"\\" + p;
+        line(narrow(p).c_str(), GetFileAttributesW(fp.c_str()) != INVALID_FILE_ATTRIBUTES ? "present" : "missing");
+    }
+    wchar_t face[64] = L""; DWORD sz = sizeof(face);
+    bool haveReg = RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontFace",
+                                RRF_RT_REG_SZ, nullptr, face, &sz) == ERROR_SUCCESS;
+    line("remembered face", haveReg ? narrow(face) : "(none -> first-run default)");
+    say("\r\n");
+    return 0;
+}
+
 static int agbfBench() {
     AttachConsole(ATTACH_PARENT_PROCESS);
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -3892,8 +4067,12 @@ static LRESULT CALLBACK treeProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id
             // or just Alt-Tabbing back, since Windows restores focus to the child that had it —
             // left the tree focused and the next keystroke went to the sidebar instead of the
             // shell. Renaming is the one case that legitimately wants the keyboard here.
-            if (!g_treeRenaming && !TreeView_GetEditControl(h))
+            if (!g_treeRenaming && !TreeView_GetEditControl(h)) {
+                logInfo("focus: sidebar took focus -> bouncing back to the terminal");
                 ::PostMessageW(g_hwnd, WM_APP_FOCUSTERM, 0, 0);
+            } else {
+                logInfo("focus: sidebar keeps focus (inline rename in progress)");
+            }
             break;
         case WM_LBUTTONDOWN: {
             g_armIdx = -1;
@@ -4213,7 +4392,10 @@ public:
     // Windows restores focus to whichever child held it last, which after any sidebar interaction
     // is the tree — so returning to lite left you typing into the sidebar.
     void OnActivateFrame(UINT state, BOOL, CWindow) {
-        if (state != WA_INACTIVE) ::PostMessageW(m_hWnd, WM_APP_FOCUSTERM, 0, 0);
+        if (state != WA_INACTIVE) {
+            logInfo("focus: window activated -> reclaiming the keyboard for the terminal");
+            ::PostMessageW(m_hWnd, WM_APP_FOCUSTERM, 0, 0);
+        }
     }
     void OnSetFocusFrame(CWindow) { g_winFocused = true;  g_caretOn = true; InvalidateCaret(); }
     void OnKillFocusFrame(CWindow) { g_winFocused = false; g_caretOn = true; InvalidateCaret(); }
@@ -4270,8 +4452,9 @@ public:
     /// Restore keyboard focus to the terminal after the sidebar finished handling a click. Skipped
     /// while a tree label is being edited (rename) — that edit box legitimately owns the keyboard.
     LRESULT OnFocusTerm(UINT, WPARAM, LPARAM, BOOL&) {
-        if (g_tree && TreeView_GetEditControl(g_tree)) return 0;
+        if (g_tree && TreeView_GetEditControl(g_tree)) { logInfo("focus: restore SKIPPED (rename edit owns the keyboard)"); return 0; }
         SetFocus();
+        logInfo("focus: terminal has the keyboard (focus owner now %p)", (void*)::GetFocus());
         return 0;
     }
 
@@ -5048,11 +5231,16 @@ static DWORD WINAPI ctlServerThread(void*) {
 static bool restoreSessions() {
     std::wstring path = stateFilePath();
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return false;
+    if (f == INVALID_HANDLE_VALUE) {
+        // Exit 1 of 4. "No state file" and "state file I refused to use" look identical from
+        // outside, so each exit says which one it was.
+        logInfo("restore: no state file at %s (err %lu) — starting fresh", narrow(path).c_str(), GetLastError());
+        return false;
+    }
     std::string data; char buf[4096]; DWORD rd;
     while (ReadFile(f, buf, sizeof buf, &rd, nullptr) && rd) data.append(buf, rd);
     CloseHandle(f);
-    if (data.empty()) return false;
+    if (data.empty()) { logWarn("restore: state file is EMPTY: %s", narrow(path).c_str()); return false; }   // exit 2 of 4
 
     std::vector<std::wstring> wss;
     struct Spec { int ws; std::string name, app, cwd; std::vector<std::string> args; bool flagged = false; };
@@ -5084,20 +5272,38 @@ static bool restoreSessions() {
         } else if (ff[0] == "O" && ff.size() >= 2) focusWs = atoi(ff[1].c_str());
         else if (ff[0] == "A" && ff.size() >= 2) activeWs = atoi(ff[1].c_str());
     }
-    if (specs.empty()) return false;
+    if (specs.empty()) {   // exit 3 of 4: the file exists and has content, but no S lines parsed
+        logWarn("restore: %s parsed to 0 session specs (%zu bytes, %zu workspace lines)",
+                narrow(path).c_str(), data.size(), wss.size());
+        return false;
+    }
+    logInfo("restore: %zu spec(s) from %s (%zu bytes)", specs.size(), narrow(path).c_str(), data.size());
 
     g_restoring = true;
     if (!wss.empty()) g_workspaces = wss;
     int cols, rows; paneGridSize(0, &cols, &rows);
-    int firstIdx = -1;
+    int firstIdx = -1, built = 0;
     for (const auto& sp : specs) {
         g_activeWs = (sp.ws >= 0 && sp.ws < (int)g_workspaces.size()) ? sp.ws : 0;
         Session* s = newSession(cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
                                 sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str());
-        if (s) { s->name = widen(sp.name); s->flagged = sp.flagged; if (firstIdx < 0) firstIdx = (int)g_sessions.size() - 1; }
+        if (s) {
+            s->name = widen(sp.name); s->flagged = sp.flagged;
+            if (firstIdx < 0) firstIdx = (int)g_sessions.size() - 1;
+            built++;
+        } else {
+            // A spec that won't start is invisible otherwise — the session simply doesn't come back.
+            // Name it, so a shell that no longer exists on that machine is obvious from the log.
+            logWarn("restore: session '%s' FAILED to start (app='%s' cwd='%s')",
+                    sp.name.c_str(), sp.app.c_str(), sp.cwd.c_str());
+        }
     }
     g_restoring = false;
-    if (firstIdx < 0) return false;
+    logInfo("restore: %d of %zu session(s) built", built, specs.size());
+    if (firstIdx < 0) {   // exit 4 of 4: specs parsed but nothing could be started
+        logWarn("restore: no session could be started from %zu spec(s) — starting fresh", specs.size());
+        return false;
+    }
     g_pane[0] = firstIdx; g_pane[1] = -1; g_focus = 0;
     g_activeWs = (activeWs >= 0 && activeWs < (int)g_workspaces.size()) ? activeWs : 0;
     g_focusWs = (focusWs >= 0 && focusWs < (int)g_workspaces.size()) ? focusWs : -1;
@@ -5121,6 +5327,7 @@ static void parseLaunchArgs() {
         else if (a == L"--maximized")  g_argMaximized = true;
         else if (a == L"--no-restore") g_argNoRestore = true;
         else if (a == L"--bench-agbf") g_argBenchAgbf = true;
+        else if (a == L"--diagnose")   g_argDiagnose = true;
         else if (a == L"--pipe" && v)  { g_argPipe = v; i++; }
     }
     LocalFree(argv);
@@ -5155,6 +5362,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     _Module.Init(nullptr, inst);   // ATL/WTL module (window class registration lives here)
     parseLaunchArgs();
     if (g_argBenchAgbf) return agbfBench();   // headless pack benchmark, no window/session
+    if (g_argDiagnose) return liteDiagnose();  // headless state/environment report, no window/session
+    {   // diagnostics log: after parseLaunchArgs so it lands in the right per-instance file
+        int argc = 0;
+        wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        logInit(argc, argv);
+        if (argv) LocalFree(argv);
+    }
     InitializeCriticalSection(&g_lock);
     InitializeCriticalSection(&g_reqLock);
     loadCore();
@@ -5187,8 +5401,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     buildFontCatalog();
     loadColors();      // Properties->Colors overrides, remembered across restarts
     loadKeys();        // configurable key bindings (unbound by default)
-    loadFontSel();     // resolve the remembered face+size (first run -> Terminal 8x12)
+    loadFontSel();     // resolve the remembered face+size (first run -> AGWin Bitmap Complete 16)
     applyFont();       // creates g_fonts + sets g_cw/g_ch (g_hwnd still null, so no relayout yet)
+    if (g_faceIdx >= 0 && g_faceIdx < (int)g_catalog.size())
+        logInfo("font: %s %s (%s) cell=%dx%d | packs: agbf=%d complete=%d",
+                narrow(g_catalog[g_faceIdx].label).c_str(),
+                narrow(g_catalog[g_faceIdx].sizes[g_sizeIdx].label).c_str(),
+                g_fontFromReg ? "remembered" : "first-run default", g_cw, g_ch,
+                g_haveAgbf ? 1 : 0, g_haveAgbfC ? 1 : 0);
 
     connectControl();
 

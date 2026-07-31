@@ -225,10 +225,33 @@ status bar — in the classic Windows look.
 - **Multi-window, the lite way**: every window is its own tiny process (`--pipe <name>`), all
   sharing one pty-host; `agwintermctl window new/list/select/...` drives them.
 - **CLI**: `-p/--profile`, `-d/--dir`, `--maximized`, `--no-restore`, `--pipe` — the full app's
-  flag names.
+  flag names — plus `--diagnose` (see below).
+- **Explains itself**: lite keeps a small always-on log of its own decisions — session saves and
+  restores (with counts, byte totals, and the exact error when a write fails), focus handoffs, and
+  font/pack resolution — at `%LOCALAPPDATA%\agwinterm-lite\lite.log` (`lite-<instance>.log` for named
+  instances), rotating at ~1 MB into `.log.old`. It records what lite *did*, never terminal output,
+  pasted text, or your command lines, so it's safe to attach to an issue.
 
 Grab **`agwinterm-lite-setup-<version>.exe`** from Releases (per-user, no admin), or build it
 (needs the VC++ ATL component): `./lite/build.ps1` (dev build) / `./installer/build-lite.ps1` (setup).
+
+### Reporting a lite problem
+
+Run `agwinterm-lite --diagnose` and attach its output plus `lite.log`. The report is read-only and
+safe to run while lite is open; it prints the state file's path, whether that directory is genuinely
+writable (a real write probe, which is what catches a redirected or policy-locked profile), the state
+file's contents, the resolved font, and the bundled pack inventory:
+
+```
+> agwinterm-lite --diagnose
+  version: 0.17.2
+  instance: (default)
+state
+  dir: C:\Users\you\AppData\Local\agwinterm-lite
+  dir writable: yes
+  session file: ...\sessions.tsv
+    size: 59 bytes
+```
 
 ## Keyboard essentials
 
