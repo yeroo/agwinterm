@@ -656,7 +656,7 @@ static void applyTheme() {
 // HIBYTE = HOTKEYF_* (SHIFT 1 / CONTROL 2 / ALT 4). 0 = unbound.
 enum { KB_NEW, KB_NEWWS, KB_CLOSE, KB_SPLIT, KB_NEXT, KB_PREV, KB_COPY, KB_PASTE,
        KB_PALETTE, KB_FOCUSL, KB_FOCUSR, KB_SCROLLUP, KB_SCROLLDN, KB_QUICK, KB_SCRATCH, KB_REOPEN,
-       KB_ZOOMIN, KB_ZOOMOUT, KB_ZOOMRESET, KB_FLAG, KB_FLAGVIEW, KB_ATTENTION, KB_FOCUSWS, KB_COUNT };
+       KB_FLAG, KB_FLAGVIEW, KB_ATTENTION, KB_FOCUSWS, KB_COUNT };
 struct KbInfo { const wchar_t* label; const wchar_t* reg; };
 static const KbInfo kKbInfo[KB_COUNT] = {
     { L"New Session",      L"Key_New" },     { L"New Workspace",    L"Key_NewWs" },
@@ -667,8 +667,7 @@ static const KbInfo kKbInfo[KB_COUNT] = {
     { L"Focus Right Pane", L"Key_FocusR" },  { L"Scroll Up",        L"Key_ScrollUp" },
     { L"Scroll Down",      L"Key_ScrollDn" }, { L"Quick Terminal",   L"Key_Quick" },
     { L"Scratch Terminal", L"Key_Scratch" },  { L"Reopen Closed",    L"Key_Reopen" },
-    { L"Zoom In",          L"Key_ZoomIn" },   { L"Zoom Out",         L"Key_ZoomOut" },
-    { L"Zoom Reset",       L"Key_ZoomReset" }, { L"Flag / Unflag",   L"Key_Flag" },
+    { L"Flag / Unflag",    L"Key_Flag" },
     { L"Flagged View",     L"Key_FlagView" },  { L"Next Blocked",    L"Key_Attention" },
     { L"Focus Workspace",  L"Key_FocusWs" },
 };
@@ -779,9 +778,6 @@ static const PalAction kPalActions[] = {
     { L"Delete Workspace",         IDM_DELWS,      -1,           -1 },
     { L"Focus Left Pane",          0,              KB_FOCUSL,    -1 },
     { L"Focus Right Pane",         0,              KB_FOCUSR,    -1 },
-    { L"Zoom In",                  0,              KB_ZOOMIN,    -1 },
-    { L"Zoom Out",                 0,              KB_ZOOMOUT,   -1 },
-    { L"Zoom Reset",               0,              KB_ZOOMRESET, -1 },
     { L"Toggle Sidebar",           IDM_TG_SIDEBAR, -1,           -1 },
     { L"Toggle Toolbar",           IDM_TG_TOOLBAR, -1,           -1 },
     { L"Toggle Status Bar",        IDM_TG_STATUS,  -1,           -1 },
@@ -1419,6 +1415,11 @@ static void loadKeys() {   // configurable key bindings; absent = unbound (0)
         DWORD v = 0, sz = sizeof(v);
         if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", kKbInfo[a].reg, RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_keys[a] = (WORD)v;
     }
+    // Font zoom was removed (raster faces only exist at their pack's strike sizes). The Keyboard
+    // dialog wrote every action, so these linger in the registry on any machine that saved keys;
+    // sweep them so an inspected key list matches the actions lite actually has.
+    for (const wchar_t* dead : { L"Key_ZoomIn", L"Key_ZoomOut", L"Key_ZoomReset" })
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", dead);
 }
 static void saveKeys() {
     for (int a = 0; a < KB_COUNT; a++) {
@@ -1587,14 +1588,9 @@ static void pickFont(int faceIdx, int sizeIdx) {
     g_faceIdx = faceIdx; g_sizeIdx = sizeIdx;
     applyFont(); saveFontSel();
 }
-// Step the current face's size: dir>0 bigger, dir<0 smaller, dir==0 reset to the middle size.
-static void fontZoom(int dir) {
-    if (g_catalog.empty() || g_faceIdx < 0 || g_faceIdx >= (int)g_catalog.size()) return;
-    int n = (int)g_catalog[g_faceIdx].sizes.size();
-    int si = dir == 0 ? n / 2 : g_sizeIdx + (dir > 0 ? 1 : -1);
-    si = max(0, min(si, n - 1));
-    if (si != g_sizeIdx) pickFont(g_faceIdx, si);
-}
+// No font zoom, by design: lite renders raster/bitmap faces, which exist only at the strike sizes
+// their pack ships. "Zooming" could only hop between those fixed sizes — a scaling gesture that
+// doesn't scale. The face and its size are picked once in Properties. (Boris, 2026-07-29.)
 
 // ---- Procedural box-drawing ----
 // The raster Terminal/Fixedsys fonts have no Unicode cmap for U+2500.., so GDI draws blanks for the
@@ -2685,9 +2681,6 @@ static void runKbAction(int a) {
         case KB_QUICK: togglePopupTerminal(false); break;
         case KB_SCRATCH: togglePopupTerminal(true); break;
         case KB_REOPEN: reopenClosed(); break;
-        case KB_ZOOMIN: fontZoom(+1); break;
-        case KB_ZOOMOUT: fontZoom(-1); break;
-        case KB_ZOOMRESET: fontZoom(0); break;
         case KB_FLAG: toggleFlag(focusedSession()); break;
         case KB_FLAGVIEW: toggleFlagView(); break;
         case KB_ATTENTION: nextBlocked(); break;
@@ -4059,7 +4052,6 @@ public:
             }
             return TRUE;
         }
-        if (nFlags & MK_CONTROL) { fontZoom(zDelta > 0 ? +1 : -1); return TRUE; }   // Ctrl+wheel = font zoom
         ScreenToClient(&pt);                                                        // wheel coords are screen-relative
         bool up = zDelta > 0;
         if (mouseReport(pt.x, pt.y, up ? 64 : 65, true, false)) return TRUE;        // to the app if it reports mouse
