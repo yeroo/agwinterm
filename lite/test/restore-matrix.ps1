@@ -566,6 +566,47 @@ if (-not $Only -or $Only -eq 'guard-after-empty') {
     }
 }
 
+# The guard's counting has to agree with the save's. The save writes only VISIBLE sessions, but a
+# hidden one (the quick terminal here, or a split shell) keeps the session list non-empty — so
+# closing the last visible session while one is open is still a deliberate empty, and the file must
+# be rewritten. Judged by the raw list instead, the save is refused and the sessions the user just
+# closed are read straight back out of the untouched file on the next launch.
+if (-not $Only -or $Only -eq 'closed-last-with-hidden') {
+    $inst = 'rm-hidden-empty'
+    Reset-Cell $inst
+    $err = ''; $tsv = 'x'; $after = ''; $wrote = $false
+    $p = $null; $p2 = $null
+    try {
+        $p = Start-Lite $inst
+        $id = LastSessionId $inst
+        & $ctl session rename closed-with-quick --target $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        & $ctl quick on --pipe $inst 2>&1 | Out-Null       # a hidden session the save never writes
+        Start-Sleep -Seconds 2
+        & $ctl session close $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        $wrote = Log-Has $inst 'save ok: 0 session'
+        $tsv = if (Test-Path (State $inst)) { (Get-Content (State $inst) -Raw) } else { '' }
+        Stop-Lite $p; $p = $null
+        $p2 = Start-Lite $inst
+        Start-Sleep -Seconds 2
+        $after = Signature $inst
+        Stop-Lite $p2; $p2 = $null
+    } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $p; Stop-Leftover $p2 }
+    if (-not $err -and $wrote -and $tsv -notmatch 'closed-with-quick' -and $after -notmatch 'closed-with-quick') {
+        "  PASS  {0,-22} (hidden shells don't block the deliberate empty)" -f 'closed-last-with-hidden'
+    } else {
+        $script:failed += 'closed-last-with-hidden'
+        "  FAIL  closed-last-with-hidden"
+        if ($err) { "        error:  $err" }
+        "        empty save happened: $wrote"
+        "        state: [$($tsv -replace "`r?`n", '\n')]"
+        "        after: [$after]"
+        "        log:   $(Restore-Verdict $inst)"
+    }
+}
+
 # An interrupted write can only ever leave a stray .tmp: the previous file is replaced by a rename,
 # which either happened or didn't. Seed the wreckage of a half-finished save and assert both
 # sessions still come back.

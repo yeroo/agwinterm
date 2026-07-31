@@ -1047,23 +1047,25 @@ static void loadCore() {
 /// field storage can't hold is still proof the host is alive and serving, and refusing to launch
 /// over one is far worse than the fault it was guarding against (lite has to start; adoption is a
 /// bonus). Decode failures are logged where they matter — in hostSessions().
-static bool controlHandshake() {
+enum class HostHealth { Dead, HelloOnly, Healthy };
+static HostHealth controlHandshake() {
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_hello_tag;
     req.cmd.hello.protocol = kProtocolVersion;
-    if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_hello_tag) return false;
+    if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_hello_tag) return HostHealth::Dead;
     req = agwinterm_ptyhost_Request_init_default;
     rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_list_tag;
     ReqOutcome out = ReqOutcome::NoReply;
-    if (request(req, &rep, &out)) return rep.which_body == agwinterm_ptyhost_Reply_list_tag;
+    if (request(req, &rep, &out))
+        return rep.which_body == agwinterm_ptyhost_Reply_list_tag ? HostHealth::Healthy : HostHealth::HelloOnly;
     if (out == ReqOutcome::Undecodable) {
         logWarn("pty-host: list replied with something this build cannot decode — the host is alive, "
                 "so lite starts; adoption of live sessions is unavailable this run");
-        return true;
+        return HostHealth::Healthy;
     }
-    return false;
+    return HostHealth::HelloOnly;
 }
 
 static void connectControl() {
@@ -1074,7 +1076,8 @@ static void connectControl() {
     // against host A are invisible to a client that lands on host B. Retrying is for waiting out a
     // dying host, not for stacking up replacements.
     bool spawned = false;
-    for (int attempt = 0; attempt < 4; attempt++) {
+    const int kAttempts = 4;
+    for (int attempt = 0; attempt < kAttempts; attempt++) {
         g_control = openPipe(control, 0, false);
         if (g_control == INVALID_HANDLE_VALUE && !spawned) {   // no host yet: start one
             spawned = true;
@@ -1088,8 +1091,19 @@ static void connectControl() {
             CloseHandle(pi.hProcess);
             g_control = openPipe(control, 5000, false);
         }
-        if (g_control != INVALID_HANDLE_VALUE && controlHandshake()) {
+        HostHealth health = g_control != INVALID_HANDLE_VALUE ? controlHandshake() : HostHealth::Dead;
+        if (health == HostHealth::Healthy) {
             if (attempt) logInfo("pty-host: healthy on attempt %d", attempt + 1);
+            return;
+        }
+        // A host that answers hello but refuses `list` is usually on its way out — the retries are
+        // there to wait for it to release the pipe name so a fresh one can take over. But it can
+        // also be a host that is alive and serving other windows and simply cannot answer this one
+        // command. Never refuse to launch over that: a terminal with no adoption beats no terminal
+        // at all, which is the whole reason the probe returns Healthy for an undecodable reply too.
+        if (health == HostHealth::HelloOnly && attempt == kAttempts - 1) {
+            logWarn("pty-host: answers hello but not list after %d attempts — starting anyway; live "
+                    "sessions cannot be adopted this run", attempt + 1);
             return;
         }
         // Either nothing answered, or what answered is on its way out. Drop it and give the dying
@@ -1270,7 +1284,9 @@ static Session* attachSession(const char* id, int cols, int rows, const char* ap
 static Session* newSession(int cols, int rows, const char* app = nullptr,
                            const std::vector<std::string>* pargs = nullptr, const char* cwd = nullptr) {
     char idbuf[64];
-    wsprintfA(idbuf, "%s-%d", g_idPrefix.c_str(), g_seq++);
+    // _snprintf_s, not wsprintfA: wsprintfA does not bound its output to the destination, and the
+    // prefix comes from --pipe (see parseLaunchArgs, which caps it — this is the second lock).
+    _snprintf_s(idbuf, _TRUNCATE, "%s-%d", g_idPrefix.c_str(), g_seq++);
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_create_tag;
@@ -1311,7 +1327,22 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
     setEnv(3, "AGWINTERM_SESSION_ID", idbuf);
     setEnv(4, "AGWINTERM_PANE_ID", idbuf);
     setEnv(5, "TERM_PROGRAM", "agwinterm-lite");
-    if (!request(req, &rep)) return nullptr;
+    // An id the host already holds is REFUSED, and that single rejection is what used to sink every
+    // spec of a restore at once. scanHostSessions() reserves the ids it can see, but it only sees
+    // what `list` returns: a reply this build cannot decode (more sessions than its field storage
+    // holds), a refused or unanswered list, or a host that gained sessions since startup all leave
+    // g_seq pointing at an id already in use. So don't depend on the scan — take the host's "already
+    // exists" at face value and step over it. Any other refusal is a real failure and returns.
+    ReqOutcome oc = ReqOutcome::NoReply;
+    for (int tries = 0; !request(req, &rep, &oc); tries++) {
+        if (oc != ReqOutcome::Refused || !strstr(rep.error, "already exists") || tries >= 64) return nullptr;
+        _snprintf_s(idbuf, _TRUNCATE, "%s-%d", g_idPrefix.c_str(), g_seq++);
+        strcpy_s(req.cmd.create.id, idbuf);
+        strcpy_s(req.cmd.create.env[3].value, idbuf);   // AGWINTERM_SESSION_ID
+        strcpy_s(req.cmd.create.env[4].value, idbuf);   // AGWINTERM_PANE_ID
+        rep = agwinterm_ptyhost_Reply_init_default;
+        logWarn("session create refused (id in use) — retrying as '%s'", idbuf);
+    }
     Session* s = attachSession(idbuf, cols, rows, app, pargs, cwd);
     if (!s) {
         // The create SUCCEEDED and only the attach failed, so the host is now holding a shell
@@ -1439,13 +1470,22 @@ static void closeSessionAt(int idx) {
         else if (g_pane[p] > idx) g_pane[p]--;
     }
     if (g_sessions.empty()) g_pane[1] = -1;   // unsplit when the last pane dies
+    // "Emptied" has to mean what the SAVE means by it: saveSessionState counts only sessions it
+    // would write, i.e. non-hidden ones. With a split pane or a quick/scratch popup open, closing
+    // the last VISIBLE session leaves g_sessions non-empty while the save sees zero — keying the
+    // flag off the raw vector would then make the guard refuse that save, and the sessions the user
+    // just closed would be read back from the untouched file on the next launch.
+    bool anyVisible = false;
+    for (const Session* vs : g_sessions) if (!vs->hidden) { anyVisible = true; break; }
+    bool allGone = g_sessions.empty();
     LeaveCriticalSection(&g_lock);
     // The user closed the last session, so the window goes with it. This is the ONLY path that may
     // legitimately write a zero-session state file; every other empty list is transient and the save
     // refuses it (see saveSessionState). The flag describes THIS empty, not the process: driven over
     // the control pipe the DestroyWindow below is a no-op (wrong thread) and the window lives on, so
     // adding a session clears it again — otherwise the guard would stay off for good.
-    if (g_sessions.empty()) { g_userEmptied = true; DestroyWindow(g_hwnd); return; }
+    if (!anyVisible) g_userEmptied = true;
+    if (allGone) { DestroyWindow(g_hwnd); return; }
     syncPaneSizes();
     InvalidateRect(g_hwnd, nullptr, FALSE);
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // drop the session from the tree
@@ -5373,7 +5413,9 @@ static std::string ctlDispatch(const std::string& line) {
             } else if (findInstance(insts, nm)) return ctlErr("window '" + narrow(nm) + "' already exists");
             wchar_t exe[MAX_PATH];
             GetModuleFileNameW(nullptr, exe, MAX_PATH);
-            std::wstring cl = L"\"" + std::wstring(exe) + L"\" --pipe " + nm;
+            // Quote the name: unquoted, "my win" would reach the child as two args and it would come
+            // up as instance "my" while the caller is told it got "my win".
+            std::wstring cl = L"\"" + std::wstring(exe) + L"\" --pipe \"" + nm + L"\"";
             STARTUPINFOW si{ sizeof si }; PROCESS_INFORMATION pi{};
             std::vector<wchar_t> buf(cl.begin(), cl.end()); buf.push_back(0);
             if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
@@ -5525,6 +5567,17 @@ static ParsedState parseStateFile(const std::wstring& path) {
             for (size_t k = 1; k < ff.size(); k++) ps.savedIds.push_back(ff[k]);
         } else if (ff[0] == "O" && ff.size() >= 2) ps.focusWs = atoi(ff[1].c_str());
         else if (ff[0] == "A" && ff.size() >= 2) ps.activeWs = atoi(ff[1].c_str());
+    }
+    // The D line pairs POSITIONALLY with the S lines: id k belongs to spec k. A malformed S line is
+    // dropped by the >= 5 check above, which slides every later id onto the wrong spec — and restore
+    // would then adopt a live shell belonging to a different session, relabel it with this spec's
+    // name/app/cwd, and save that wrong pairing back. Damaged files are exactly what the .bak
+    // fallback exists to read, so refuse the ids rather than misapply them; the specs still restore,
+    // just as fresh sessions.
+    if (!ps.savedIds.empty() && ps.savedIds.size() != ps.specs.size()) {
+        logWarn("state: %zu saved id(s) for %zu session line(s) — the file is inconsistent, so live "
+                "sessions will not be adopted from it", ps.savedIds.size(), ps.specs.size());
+        ps.savedIds.clear();
     }
     return ps;
 }
@@ -5698,6 +5751,10 @@ static void parseLaunchArgs() {
         std::wstring clean;
         for (wchar_t c : g_argPipe)
             if (c >= 32 && !wcschr(L"\\/:*?\"<>|&^%", c)) clean += c;
+        // Length matters as much as content: the name also becomes the session-id prefix, and ids
+        // are formatted into a fixed 64-byte buffer (newSession). 32 is longer than any name worth
+        // typing and leaves room for "-<n>" many times over.
+        if (clean.size() > 32) clean.resize(32);
         while (!clean.empty() && (clean.back() == L' ' || clean.back() == L'.')) clean.pop_back();
         if (clean.empty()) clean = L"lite";
         g_argPipe = clean;

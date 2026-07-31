@@ -267,9 +267,11 @@ the next launch (`--no-restore` starts empty instead). Everything about that is 
   that has already exited, or one another window is currently driving, is not adopted — it is
   relaunched (or left to its owner) instead.
 - **Recovering by hand.** `--no-restore` starts empty, and the next save publishes *that* over
-  `sessions.tsv` — but the generation you wanted survives as `sessions.tsv.bak`. With lite closed,
-  copy the `.bak` over the primary and relaunch. `--diagnose` prints both files with their sizes (and
-  the primary's contents), so you can tell which one holds your sessions before you copy anything.
+  `sessions.tsv` — but the generation you wanted survives as `sessions.tsv.bak`. **Copy the `.bak`
+  somewhere safe first**: only one generation is kept, so the next save of the window you are looking
+  at overwrites it in turn. Then close lite, copy your saved file over `sessions.tsv`, and relaunch.
+  `--diagnose` prints both files with their sizes (and the primary's contents), so you can tell which
+  one holds your sessions before you copy anything.
 - **"Restart everything"** (*File → Restart everything*) relaunches the **same** instance — it carries
   this window's `--pipe <name>` over, so it comes back reading the same state file. `--diagnose`
   prints the exact command line it would use.

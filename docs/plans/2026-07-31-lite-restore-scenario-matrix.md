@@ -299,7 +299,11 @@ session-object lookup went from a regex that could span a workspace and the firs
 `ConvertFrom-Json`.
 
 **Post-review results (2026-07-31)**: `lite/build.ps1` clean; `lite/test/run-all.ps1` — all lite checks
-pass, 25 matrix cells plus the harness self-check.
+pass, 26 matrix cells plus the harness self-check. The second review pass added
+`closed-last-with-hidden`: the zero-session guard counted the raw session list while the save counts
+only visible sessions, so closing the last visible session with a quick terminal (or a split shell)
+open refused the save and the closed session came back on the next launch. Verified failing before
+the fix.
 
 ### Task 7: [Final] Update documentation
 - [x] document the state file, its `.bak` generation, and the restore rules in the README lite section
