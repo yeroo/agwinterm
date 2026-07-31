@@ -1,0 +1,230 @@
+# lite session restore — scenario matrix.
+#
+# "restore sessions doesn't work at all" (work laptop, 2026-07-31) has never reproduced on the dev
+# machine, so this walks the real-world combinations one cell at a time until one fails. Each cell:
+#
+#     clean state+log -> launch -> set up sessions -> close (or kill) -> relaunch -> compare
+#
+# and reads lite.log for WHICH of restoreSessions()'s four exits ran, so a failing cell explains
+# itself instead of just saying "sessions missing".
+#
+# House rules: sandbox instances only (never the default, which owns real user state), no global
+# input injection, and every cell gets its own instance name so cells cannot contaminate each other.
+param(
+    [string]$Exe = "$PSScriptRoot\..\bin\agwinterm-lite.exe",
+    [string]$Only = ''          # run a single cell by name
+)
+
+$ErrorActionPreference = 'Stop'
+$ctl = "$env:LOCALAPPDATA\Programs\agwinterm\agwintermctl.exe"
+$dir = "$env:LOCALAPPDATA\agwinterm-lite"
+$script:failed = @()
+
+function State($inst) { "$dir\sessions-$inst.tsv" }
+function Log($inst)   { "$dir\lite-$inst.log" }
+
+function Reset-Cell($inst) {
+    Remove-Item (State $inst), (Log $inst), "$(Log $inst).old", "$(State $inst).bak" -ErrorAction SilentlyContinue
+}
+
+function Start-Lite($inst) {
+    $p = Start-Process $Exe -ArgumentList @('--pipe', $inst) -PassThru
+    for ($i = 0; $i -lt 40; $i++) {
+        Start-Sleep -Milliseconds 400
+        $r = (& $ctl tree --json --pipe $inst 2>&1) -join ''
+        if ($r -match '"ok":true') { return $p }
+    }
+    throw "lite ($inst) did not answer its control pipe"
+}
+
+function Stop-Lite($p, [switch]$Kill) {
+    if ($Kill) { Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 2; return }
+    $p.CloseMainWindow() | Out-Null
+    for ($i = 0; $i -lt 25; $i++) { Start-Sleep -Milliseconds 400; $p.Refresh(); if ($p.HasExited) { break } }
+    if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+    Start-Sleep -Seconds 1
+}
+
+# A cell's fingerprint: the session names in tree order. Names are what the user actually notices.
+function Signature($inst) {
+    $j = (& $ctl tree --json --pipe $inst 2>&1) -join ''
+    $names = [regex]::Matches($j, '"name"\s*:\s*"([^"]*)"') | ForEach-Object { $_.Groups[1].Value }
+    ($names -join '|')
+}
+
+function Restore-Verdict($inst) {
+    $l = Log $inst
+    if (-not (Test-Path $l)) { return '(no log)' }
+    $lines = Get-Content $l | Where-Object { $_ -match 'restore:|save ok|save FAILED|save PARTIAL' }
+    if (-not $lines) { return '(no save/restore lines)' }
+    ($lines | Select-Object -Last 4) -join "`n        "
+}
+
+function Cell {
+    param(
+        [string]$Name,
+        [scriptblock]$Setup,          # receives the instance name; creates the state to be restored
+        [switch]$Kill,                # forced kill instead of a graceful close
+        [scriptblock]$Assert          # receives (before, after, instance); returns $true when the cell passes
+    )
+    if ($Only -and $Only -ne $Name) { return }
+    $inst = "rm-$Name"
+    Reset-Cell $inst
+    $before = ''; $after = ''; $err = ''
+    try {
+        $p = Start-Lite $inst
+        & $Setup $inst
+        Start-Sleep -Seconds 2
+        $before = Signature $inst
+        Stop-Lite $p -Kill:$Kill
+
+        $p2 = Start-Lite $inst
+        Start-Sleep -Seconds 2
+        $after = Signature $inst
+        Stop-Lite $p2
+    } catch { $err = $_.Exception.Message }
+
+    $ok = $false
+    if (-not $err) { $ok = & $Assert $before $after $inst }
+    if ($ok) {
+        "  PASS  {0,-22} [{1}]" -f $Name, $after
+    } else {
+        $script:failed += $Name
+        "  FAIL  {0,-22}" -f $Name
+        if ($err) { "        error:  $err" }
+        "        before: [$before]"
+        "        after:  [$after]"
+        "        log:    $(Restore-Verdict $inst)"
+    }
+}
+
+"== restore matrix =="
+
+# --- baseline cells ---------------------------------------------------------------------------
+
+Cell -Name 'single' -Setup {
+    param($i)   # the instance starts with one session already
+} -Assert { param($b, $a) $a -eq $b -and $b -ne '' }
+
+Cell -Name 'several' -Setup {
+    param($i)
+    & $ctl session new --pipe $i 2>&1 | Out-Null; Start-Sleep -Seconds 2
+    & $ctl session new --pipe $i 2>&1 | Out-Null; Start-Sleep -Seconds 2
+} -Assert { param($b, $a) $a -eq $b -and ($b -split '\|').Count -ge 3 }
+
+Cell -Name 'renamed' -Setup {
+    param($i)
+    $id = @(([regex]::Matches(((& $ctl tree --json --pipe $i 2>&1) -join ''), '"id"\s*:\s*"([^"]+)"') |
+             ForEach-Object { $_.Groups[1].Value }) | Where-Object { $_ -notmatch '^\d+$' })[-1]
+    & $ctl session rename my-renamed-session --target $id --pipe $i 2>&1 | Out-Null
+    Start-Sleep -Seconds 2
+} -Assert { param($b, $a) $a -eq $b -and $a -match 'my-renamed-session' }
+
+Cell -Name 'workspaces' -Setup {
+    param($i)
+    & $ctl workspace new second-ws --pipe $i 2>&1 | Out-Null; Start-Sleep -Seconds 2
+    & $ctl session new --pipe $i 2>&1 | Out-Null; Start-Sleep -Seconds 2
+} -Assert { param($b, $a) $a -eq $b -and $a -match 'second-ws' }
+
+Cell -Name 'flagged' -Setup {
+    param($i)
+    $id = @(([regex]::Matches(((& $ctl tree --json --pipe $i 2>&1) -join ''), '"id"\s*:\s*"([^"]+)"') |
+             ForEach-Object { $_.Groups[1].Value }) | Where-Object { $_ -notmatch '^\d+$' })[-1]
+    & $ctl session flag on --target $id --pipe $i 2>&1 | Out-Null
+    Start-Sleep -Seconds 2
+} -Assert {
+    param($b, $a, $i)
+    if ($a -ne $b) { return $false }
+    (Get-Content (State $i) -Raw) -match '(?m)^F\t'      # the flagged line survived the round trip
+}
+
+# --- cells that differ from a clean dev run ----------------------------------------------------
+# These are the ones that could plausibly explain the work-laptop report.
+
+# A spec carrying an explicit app + args — what a shell profile produces. ctl's session.new always
+# makes a DEFAULT session, so the state file is seeded directly: that is also the exact shape
+# restoreSessions() has to cope with, and it keeps the cell deterministic.
+function Seeded {
+    param([string]$Name, [string]$Tsv, [scriptblock]$Assert)
+    if ($Only -and $Only -ne $Name) { return }
+    $inst = "rm-$Name"
+    Reset-Cell $inst
+    Set-Content -Path (State $inst) -Value $Tsv -NoNewline -Encoding utf8
+    $after = ''; $err = ''
+    try {
+        $p = Start-Lite $inst
+        Start-Sleep -Seconds 3
+        $after = Signature $inst
+        Stop-Lite $p
+    } catch { $err = $_.Exception.Message }
+    $ok = $false
+    if (-not $err) { $ok = & $Assert $after $inst }
+    if ($ok) { "  PASS  {0,-22} [{1}]" -f $Name, $after }
+    else {
+        $script:failed += $Name
+        "  FAIL  {0,-22}" -f $Name
+        if ($err) { "        error:  $err" }
+        "        after:  [$after]"
+        "        log:    $(Restore-Verdict $inst)"
+    }
+}
+
+$cwd = (Resolve-Path "$PSScriptRoot\..").Path
+Seeded -Name 'app-spec' -Tsv "V1`nW`tws-a`nS`t0`tprofile-session`tpowershell.exe`t$cwd`n A`t0`n".Replace(' A', 'A') -Assert {
+    param($a) $a -match 'profile-session'
+}
+
+# A spec whose app does not exist on this machine — the shape of "a profile that doesn't resolve
+# on the laptop". Pins current behaviour so Task 5 can change it deliberately.
+Seeded -Name 'bogus-app' -Tsv "V1`nW`tws-b`nS`t0`tdead-session`tno-such-program-xyz.exe`t$cwd`nA`t0`n" -Assert {
+    param($a, $i)
+    $log = Restore-Verdict $i
+    # Either it comes back (host tolerates the bad app) or the log names the failure. Silence is the
+    # only unacceptable outcome, because that is what made this unreportable in the field.
+    ($a -match 'dead-session') -or ($log -match 'FAILED to start' -or $log -match 'no session could be started')
+}
+
+# Forced kill: no OnDestroy, so restore depends entirely on the refreshTree() save. If a laptop
+# shutdown or crash explains the report, this is the cell that shows it.
+Cell -Name 'killed' -Setup {
+    param($i)
+    & $ctl session new --pipe $i 2>&1 | Out-Null; Start-Sleep -Seconds 2
+} -Kill -Assert { param($b, $a) $a -eq $b -and ($b -split '\|').Count -ge 2 }
+
+# A session whose shell has already exited: its spec must still be saved and relaunched, otherwise
+# a day's worth of sessions quietly evaporates the moment their shells end.
+Cell -Name 'shell-exited' -Setup {
+    param($i)
+    $id = @(([regex]::Matches(((& $ctl tree --json --pipe $i 2>&1) -join ''), '"id"\s*:\s*"([^"]+)"') |
+             ForEach-Object { $_.Groups[1].Value }) | Where-Object { $_ -notmatch '^\d+$' })[-1]
+    & $ctl session new --pipe $i 2>&1 | Out-Null; Start-Sleep -Seconds 2
+    & $ctl session type "exit`n" --target $id --pipe $i 2>&1 | Out-Null
+    Start-Sleep -Seconds 3
+} -Assert { param($b, $a) $a -eq $b }
+
+# --- harness self-check: a deliberately corrupted state file MUST fail a cell -------------------
+# Without this, a harness that silently passes everything would be indistinguishable from a
+# working restore — which is exactly the trap this whole exercise exists to avoid.
+$selfInst = 'rm-selfcheck'
+Reset-Cell $selfInst
+$sp = Start-Lite $selfInst
+& $ctl session new --pipe $selfInst 2>&1 | Out-Null
+Start-Sleep -Seconds 2
+$sigBefore = Signature $selfInst
+Stop-Lite $sp
+Set-Content -Path (State $selfInst) -Value '' -NoNewline      # wipe it: restore must not match
+$sp2 = Start-Lite $selfInst
+Start-Sleep -Seconds 2
+$sigAfter = Signature $selfInst
+Stop-Lite $sp2
+if ($sigAfter -ne $sigBefore) {
+    "  PASS  {0,-22} (corrupted state correctly fails to restore)" -f 'harness-selfcheck'
+} else {
+    $script:failed += 'harness-selfcheck'
+    "  FAIL  harness-selfcheck    — a wiped state file still 'restored'; the harness proves nothing"
+}
+
+""
+if ($script:failed.Count) { "restore-matrix: FAILED cells: $($script:failed -join ', ')"; exit 1 }
+"restore-matrix: all cells passed"
+exit 0

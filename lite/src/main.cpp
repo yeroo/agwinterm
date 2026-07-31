@@ -1021,28 +1021,50 @@ static void loadCore() {
     if (core_abi() != kRequiredAbi) fatal(L"agwinterm_core.dll: ABI mismatch (need v15)");
 }
 
-static void connectControl() {
-    std::wstring control = std::wstring(kAppId) + L"-ptyhost";
-    g_control = openPipe(control, 0, false);
-    if (g_control == INVALID_HANDLE_VALUE) {
-        std::wstring cmd = L"\"" + exeDir() + L"\\agwinterm-ptyhost.exe\" --pipe " + kAppId;
-        STARTUPINFOW si{ sizeof(si) };
-        PROCESS_INFORMATION pi{};
-        std::vector<wchar_t> buf(cmd.begin(), cmd.end());
-        buf.push_back(0);
-        if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-            fatal(L"could not start agwinterm-ptyhost.exe");
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        g_control = openPipe(control, 5000, false);
-        if (g_control == INVALID_HANDLE_VALUE) fatal(L"pty-host control pipe never appeared");
-    }
+/// Handshake + liveness probe. `hello` alone is NOT enough: a pty-host whose client was killed is
+/// tearing down but still accepts a connection and answers hello for a moment, while refusing every
+/// real command. Believing that host is what made restore fail wholesale after lite was killed —
+/// every create came back false in the same millisecond and the sessions were simply gone. `list`
+/// is the cheapest request that actually touches the session table, so it is the real probe.
+static bool controlHandshake() {
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_hello_tag;
     req.cmd.hello.protocol = kProtocolVersion;
-    if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_hello_tag)
-        fatal(L"pty-host hello failed (protocol mismatch?)");
+    if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_hello_tag) return false;
+    req = agwinterm_ptyhost_Request_init_default;
+    rep = agwinterm_ptyhost_Reply_init_default;
+    req.which_cmd = agwinterm_ptyhost_Request_list_tag;
+    return request(req, &rep) && rep.which_body == agwinterm_ptyhost_Reply_list_tag;
+}
+
+static void connectControl() {
+    std::wstring control = std::wstring(kAppId) + L"-ptyhost";
+    std::wstring cmd = L"\"" + exeDir() + L"\\agwinterm-ptyhost.exe\" --pipe " + kAppId;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        g_control = openPipe(control, 0, false);
+        if (g_control == INVALID_HANDLE_VALUE) {   // no host yet: start one
+            STARTUPINFOW si{ sizeof(si) };
+            PROCESS_INFORMATION pi{};
+            std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+            buf.push_back(0);
+            if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+                fatal(L"could not start agwinterm-ptyhost.exe");
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            g_control = openPipe(control, 5000, false);
+        }
+        if (g_control != INVALID_HANDLE_VALUE && controlHandshake()) {
+            if (attempt) logInfo("pty-host: healthy on attempt %d", attempt + 1);
+            return;
+        }
+        // Either nothing answered, or what answered is on its way out. Drop it and give the dying
+        // host time to release the pipe name so the next attempt can spawn a fresh one.
+        logWarn("pty-host: connection unusable (attempt %d) — retrying with a fresh host", attempt + 1);
+        if (g_control != INVALID_HANDLE_VALUE) { CloseHandle(g_control); g_control = INVALID_HANDLE_VALUE; }
+        Sleep(400);
+    }
+    fatal(L"pty-host did not become usable (protocol mismatch, or a previous host is stuck)");
 }
 
 // ---- pane geometry ----
@@ -1205,6 +1227,9 @@ static std::vector<Profile> detectProfiles() {
 }
 
 // cols/rows + an optional profile (app/args) and cwd. Default (no app) = PowerShell with the prompt wrap.
+static Session* attachSession(const char* id, int cols, int rows, const char* app,
+                              const std::vector<std::string>* pargs, const char* cwd);   // fwd
+
 static Session* newSession(int cols, int rows, const char* app = nullptr,
                            const std::vector<std::string>* pargs = nullptr, const char* cwd = nullptr) {
     char idbuf[64];
@@ -1250,14 +1275,23 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
     setEnv(4, "AGWINTERM_PANE_ID", idbuf);
     setEnv(5, "TERM_PROGRAM", "agwinterm-lite");
     if (!request(req, &rep)) return nullptr;
+    return attachSession(idbuf, cols, rows, app, pargs, cwd);
+}
 
-    req = agwinterm_ptyhost_Request_init_default;
+/// Attach to a session the host already has and wire it into the UI. Used for both halves of a
+/// normal create (create-then-attach) and for ADOPTING a session that outlived a previous lite:
+/// the pty-host is designed to survive the UI, so after a kill/crash/sign-out its shells are still
+/// running and can simply be picked back up, scrollback and all.
+static Session* attachSession(const char* id, int cols, int rows, const char* app,
+                              const std::vector<std::string>* pargs, const char* cwd) {
+    agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
+    agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_attach_tag;
-    strcpy_s(req.cmd.attach.id, idbuf);
+    strcpy_s(req.cmd.attach.id, id);
     if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_attach_tag) return nullptr;
 
     Session* s = new Session();
-    s->id = idbuf;
+    s->id = id;
     s->app = app ? app : "";        // remember the launch spec for session restore
     if (pargs) s->args = *pargs;
     s->cwd = cwd ? cwd : "";
@@ -1266,12 +1300,29 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
     s->childPid = rep.body.attach.child_pid;
     s->data = openPipe(std::wstring(rep.body.attach.pipe, rep.body.attach.pipe + strlen(rep.body.attach.pipe)), 5000, true);
     if (s->data == INVALID_HANDLE_VALUE) { emu_free(s->emu); delete s; return nullptr; }
+    // NOTE: AttachReply.scrollback stays callback-decoded (unbounded), so an adopted session comes
+    // back live but with an empty screen rather than its history. The shell itself — and anything
+    // running in it — survives, which is the point; seeding history is a separate improvement.
     s->reader = CreateThread(nullptr, 0, readerThread, s, 0, nullptr);
     EnterCriticalSection(&g_lock);
     g_sessions.push_back(s);
     LeaveCriticalSection(&g_lock);
     PostMessageW(g_hwnd, WM_APP_REFRESHTREE, 0, 0);   // add the session to the tree (UI thread)
     return s;
+}
+
+/// Ids of the sessions the host currently holds. On a normal start this is empty; after lite was
+/// killed it still lists the shells from the previous run, which is what makes adoption possible
+/// (and what made every restore create collide with `session '<id>' already exists`).
+static std::vector<std::string> hostSessionIds() {
+    std::vector<std::string> ids;
+    agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
+    agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
+    req.which_cmd = agwinterm_ptyhost_Request_list_tag;
+    if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_list_tag) return ids;
+    for (pb_size_t i = 0; i < rep.body.list.sessions_count; i++)
+        ids.push_back(rep.body.list.sessions[i].id);
+    return ids;
 }
 
 static void killSession(Session* s) {
@@ -1669,6 +1720,9 @@ static void saveSessionState() {
     for (const auto& w : g_workspaces) out += "W\t" + narrow(w) + "\n";
     EnterCriticalSection(&g_lock);
     std::string flagLine;   // "F\t<i>..." = indices (in S-line order) of flagged sessions; old builds skip it
+    // "D\t<id>..." = the host session ids, in S-line order — same in-order idiom as the F line, and
+    // additive so a 0.17.x file (which has no D line) still restores, just without adoption.
+    std::string idLine;
     int saved = 0;
     for (const Session* s : g_sessions) {
         if (s->hidden) continue;
@@ -1677,10 +1731,12 @@ static void saveSessionState() {
         for (const auto& a : s->args) out += "\t" + a;
         out += "\n";
         if (s->flagged) flagLine += "\t" + std::to_string(saved);
+        idLine += "\t" + s->id;
         saved++;
     }
     LeaveCriticalSection(&g_lock);
     if (!flagLine.empty()) out += "F" + flagLine + "\n";
+    if (!idLine.empty()) out += "D" + idLine + "\n";
     out += "A\t" + std::to_string(g_activeWs) + "\n";
     HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) {
@@ -5245,6 +5301,7 @@ static bool restoreSessions() {
     std::vector<std::wstring> wss;
     struct Spec { int ws; std::string name, app, cwd; std::vector<std::string> args; bool flagged = false; };
     std::vector<Spec> specs;
+    std::vector<std::string> savedIds;   // from the D line; empty for a pre-0.17.3 file
     int activeWs = 0, focusWs = -1;
     size_t i = 0;
     auto split = [](const std::string& l) {
@@ -5269,6 +5326,8 @@ static bool restoreSessions() {
                 int fi = atoi(ff[k].c_str());
                 if (fi >= 0 && fi < (int)specs.size()) specs[fi].flagged = true;
             }
+        } else if (ff[0] == "D") {   // host session ids, in S-line order (absent in 0.17.x files)
+            for (size_t k = 1; k < ff.size(); k++) savedIds.push_back(ff[k]);
         } else if (ff[0] == "O" && ff.size() >= 2) focusWs = atoi(ff[1].c_str());
         else if (ff[0] == "A" && ff.size() >= 2) activeWs = atoi(ff[1].c_str());
     }
@@ -5282,11 +5341,43 @@ static bool restoreSessions() {
     g_restoring = true;
     if (!wss.empty()) g_workspaces = wss;
     int cols, rows; paneGridSize(0, &cols, &rows);
-    int firstIdx = -1, built = 0;
-    for (const auto& sp : specs) {
+    int firstIdx = -1, built = 0, adopted = 0;
+
+    // Sessions the host still holds. lite was killed rather than closed if this is non-empty: the
+    // pty-host outlives the UI by design, so those shells are STILL RUNNING. Adopt them instead of
+    // creating new ones — which also fixes the wholesale restore failure, because a create against
+    // an id the host already has is rejected ("session '<id>' already exists") and used to sink
+    // every single spec.
+    std::vector<std::string> live = hostSessionIds();
+    logInfo("restore: %zu saved id(s) in the file, host holds %zu live session(s)%s%s",
+            savedIds.size(), live.size(), live.empty() ? "" : ": ",
+            live.empty() ? "" : live[0].c_str());
+    auto isLive = [&](const std::string& id) {
+        return !id.empty() && std::find(live.begin(), live.end(), id) != live.end();
+    };
+    // Never hand out an id the host is already using, for the sessions we do have to create.
+    for (const auto& id : live) {
+        size_t dash = id.rfind('-');
+        if (dash != std::string::npos && id.compare(0, dash, g_idPrefix) == 0) {
+            int n = atoi(id.c_str() + dash + 1);
+            if (n >= g_seq) g_seq = n + 1;
+        }
+    }
+
+    for (size_t si = 0; si < specs.size(); si++) {
+        const auto& sp = specs[si];
         g_activeWs = (sp.ws >= 0 && sp.ws < (int)g_workspaces.size()) ? sp.ws : 0;
-        Session* s = newSession(cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
-                                sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str());
+        std::string want = si < savedIds.size() ? savedIds[si] : std::string();
+        Session* s = nullptr;
+        if (isLive(want)) {
+            s = attachSession(want.c_str(), cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
+                              sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str());
+            if (s) { adopted++; logInfo("restore: adopted live session '%s' (%s)", want.c_str(), sp.name.c_str()); }
+            else logWarn("restore: adopt of live session '%s' failed — creating a fresh one", want.c_str());
+        }
+        if (!s)
+            s = newSession(cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
+                           sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str());
         if (s) {
             s->name = widen(sp.name); s->flagged = sp.flagged;
             if (firstIdx < 0) firstIdx = (int)g_sessions.size() - 1;
@@ -5299,7 +5390,8 @@ static bool restoreSessions() {
         }
     }
     g_restoring = false;
-    logInfo("restore: %d of %zu session(s) built", built, specs.size());
+    logInfo("restore: %d of %zu session(s) built (%d adopted live from the pty-host)",
+            built, specs.size(), adopted);
     if (firstIdx < 0) {   // exit 4 of 4: specs parsed but nothing could be started
         logWarn("restore: no session could be started from %zu spec(s) — starting fresh", specs.size());
         return false;

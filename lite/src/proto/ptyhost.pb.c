@@ -33,7 +33,7 @@ PB_BIND(agwinterm_ptyhost_List, agwinterm_ptyhost_List, AUTO)
 PB_BIND(agwinterm_ptyhost_Shutdown, agwinterm_ptyhost_Shutdown, AUTO)
 
 
-PB_BIND(agwinterm_ptyhost_Reply, agwinterm_ptyhost_Reply, 2)
+PB_BIND(agwinterm_ptyhost_Reply, agwinterm_ptyhost_Reply, 4)
 
 
 PB_BIND(agwinterm_ptyhost_HelloReply, agwinterm_ptyhost_HelloReply, AUTO)
@@ -45,10 +45,10 @@ PB_BIND(agwinterm_ptyhost_CreateReply, agwinterm_ptyhost_CreateReply, AUTO)
 PB_BIND(agwinterm_ptyhost_AttachReply, agwinterm_ptyhost_AttachReply, 2)
 
 
-PB_BIND(agwinterm_ptyhost_SessionInfo, agwinterm_ptyhost_SessionInfo, AUTO)
+PB_BIND(agwinterm_ptyhost_SessionInfo, agwinterm_ptyhost_SessionInfo, 2)
 
 
-PB_BIND(agwinterm_ptyhost_ListReply, agwinterm_ptyhost_ListReply, AUTO)
+PB_BIND(agwinterm_ptyhost_ListReply, agwinterm_ptyhost_ListReply, 4)
 
 
 
