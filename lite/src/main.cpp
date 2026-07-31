@@ -2023,6 +2023,18 @@ static void agbfPaintGrid(HDC mem, RECT pr, const FfiCell* view, const FfiEmuInf
     SetDIBitsToDevice(mem, pr.left, pr.top, W, H, 0, 0, 0, H, fb.data(), &bi, DIB_RGB_COLORS);
 }
 
+// What "Restart everything" relaunches. Rebuilt from THIS instance, not a bare exe: a named window
+// restarted as the bare exe comes back as the DEFAULT instance and reads a different sessions file,
+// which is indistinguishable from "restore lost everything". --diagnose prints this so the rule is
+// checkable without launching (and clobbering) the default instance.
+static std::wstring restartCommandLine() {
+    wchar_t exe[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring cmd = L"\"" + std::wstring(exe) + L"\"";
+    if (!g_isDefaultInstance) cmd += L" --pipe \"" + g_instance + L"\"";
+    return cmd;
+}
+
 // --bench-agbf: the spec's benchmark deliverable — load time, glyph lookup, full-grid render and
 // resident size for every committed pack, printed to the launching console. No window, no session.
 // --diagnose: one report you can run on a machine that misbehaves and paste into an issue. Strictly
@@ -2042,6 +2054,7 @@ static int liteDiagnose() {
     line("version", AGWL_VERSION_STR);
     line("exe", narrow(exe));
     line("instance", g_isDefaultInstance ? "(default)" : narrow(g_instance));
+    line("restart cmdline", narrow(restartCommandLine()));
     line("LOCALAPPDATA", ladOk ? narrow(lad) : "(not set!)");
 
     std::wstring dir = std::wstring(ladOk ? lad : L"") + L"\\agwinterm-lite";
@@ -3764,10 +3777,10 @@ static void showKeyboardDialog() {
 
 // Restart everything: relaunch a fresh instance AFTER this one (and its pty-host) has fully exited,
 // then quit. The ~1s ping delay avoids the new instance connecting to the dying pty-host.
+// The relaunch carries this instance's --pipe (see restartCommandLine) so it reads the same state.
 static void restartApp() {
-    wchar_t exe[MAX_PATH];
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::wstring cmd = L"cmd.exe /c ping -n 2 127.0.0.1 >nul & start \"\" \"" + std::wstring(exe) + L"\"";
+    std::wstring cmd = L"cmd.exe /c ping -n 2 127.0.0.1 >nul & start \"\" " + restartCommandLine();
+    logInfo("restart: relaunching as %s", narrow(restartCommandLine()).c_str());
     STARTUPINFOW si{ sizeof si };
     PROCESS_INFORMATION pi{};
     if (CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {

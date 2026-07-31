@@ -146,11 +146,17 @@ session. Cost an hour of confusion when the health probe started failing on heal
 - [x] run the matrix - all cells pass
 
 ### Task 3b: Fix `restartApp()` losing the instance
-- [ ] preserve `--pipe <instance>` (and any other launch args that identify the instance) when
+- [x] preserve `--pipe <instance>` (and any other launch args that identify the instance) when
       relaunching, so "Restart everything" comes back as the SAME instance reading the SAME state
-- [ ] add the matrix cell: named instance, Restart everything, assert the sessions return
-- [ ] add the error case: assert the default instance still restarts correctly (no regression)
-- [ ] run the matrix - must pass before task 4
+- [x] add the matrix cell: named instance, Restart everything, assert the sessions return
+- [x] add the error case: assert the default instance still restarts correctly (no regression)
+- [x] run the matrix - must pass before task 4
+
+➕ `restartCommandLine()` is the seam: `restartApp()` launches it and `--diagnose` prints it. That
+matters because the no-regression half — "the default instance still relaunches as the default" —
+cannot be checked by running the default instance, which owns real user state. The matrix asserts
+the string instead. `--pipe` is the only arg that identifies the instance; `-d`/`-p`/`--maximized`
+are first-launch session args that restore supersedes, so they are deliberately not carried over.
 
 ### Task 4: Never let a good state file be replaced by an empty one
 - [ ] write the state file atomically: temp file + `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)`, so a

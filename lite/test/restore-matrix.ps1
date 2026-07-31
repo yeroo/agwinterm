@@ -202,6 +202,89 @@ Cell -Name 'shell-exited' -Setup {
     Start-Sleep -Seconds 3
 } -Assert { param($b, $a) $a -eq $b }
 
+# --- "Restart everything" must come back as the SAME instance ----------------------------------
+# restartApp() used to relaunch the bare exe, so a named window restarted as the DEFAULT instance
+# and read a different sessions file. Nothing crashed; the sessions were simply someone else's.
+
+function Find-Lite($inst) {
+    Get-CimInstance Win32_Process -Filter "Name='agwinterm-lite.exe'" |
+        Where-Object { $_.CommandLine -match [regex]::Escape($inst) } |
+        ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
+}
+
+function Restart-Cell {
+    param([string]$Name)
+    if ($Only -and $Only -ne $Name) { return }
+    $inst = "rm-$Name"
+    Reset-Cell $inst
+    $before = ''; $after = ''; $err = ''
+    try {
+        $p = Start-Lite $inst
+        & $ctl session new --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        $before = Signature $inst
+        $oldId = $p.Id
+
+        # File > Restart everything (IDM_RESTART = 103), posted — never injected globally.
+        $p.Refresh()
+        if (-not $p.MainWindowHandle -or $p.MainWindowHandle -eq 0) { throw "no main window for $inst" }
+        [void][Win32Post]::PostMessageW($p.MainWindowHandle, 0x0111, [IntPtr]103, [IntPtr]::Zero)
+
+        for ($i = 0; $i -lt 25; $i++) { Start-Sleep -Milliseconds 400; $p.Refresh(); if ($p.HasExited) { break } }
+        if (-not $p.HasExited) { throw 'the old instance never exited after Restart everything' }
+
+        # The relaunch is a detached grandchild (cmd /c ping & start), so wait for its pipe.
+        $p2 = $null
+        for ($i = 0; $i -lt 40; $i++) {
+            Start-Sleep -Milliseconds 500
+            $r = (& $ctl tree --json --pipe $inst 2>&1) -join ''
+            if ($r -match '"ok":true') { $p2 = @(Find-Lite $inst | Where-Object { $_.Id -ne $oldId })[0]; break }
+        }
+        if (-not $p2) { throw 'the restarted instance never answered its control pipe' }
+        Start-Sleep -Seconds 2
+        $after = Signature $inst
+        Stop-Lite $p2
+    } catch { $err = $_.Exception.Message }
+
+    if (-not $err -and $after -eq $before -and ($before -split '\|').Count -ge 2) {
+        "  PASS  {0,-22} [{1}]" -f $Name, $after
+    } else {
+        $script:failed += $Name
+        "  FAIL  {0,-22}" -f $Name
+        if ($err) { "        error:  $err" }
+        "        before: [$before]"
+        "        after:  [$after]"
+        "        log:    $(Restore-Verdict $inst)"
+    }
+}
+
+if (-not ('Win32Post' -as [type])) {
+    Add-Type -Namespace '' -Name Win32Post -MemberDefinition @'
+[DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+public static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+'@
+}
+
+Restart-Cell -Name 'restart-named'
+
+# The no-regression half: the DEFAULT instance must still relaunch as the default (no stray --pipe).
+# Checked through --diagnose's "restart cmdline", which is the exact string restartApp() launches —
+# the default instance owns real user state and this suite never starts it.
+if (-not $Only -or $Only -eq 'restart-cmdline') {
+    $named = (& $Exe --pipe rm-restart-cmdline --diagnose 2>&1 | Out-String)
+    $plain = (& $Exe --diagnose 2>&1 | Out-String)
+    $nOk = $named -match '(?m)^\s*restart cmdline: .*agwinterm-lite\.exe" --pipe "rm-restart-cmdline"'
+    $dOk = ($plain -match '(?m)^\s*restart cmdline: .*agwinterm-lite\.exe"\s*$') -and ($plain -notmatch 'restart cmdline: .*--pipe')
+    if ($nOk -and $dOk) {
+        "  PASS  {0,-22} (named keeps --pipe; default stays bare)" -f 'restart-cmdline'
+    } else {
+        $script:failed += 'restart-cmdline'
+        "  FAIL  restart-cmdline"
+        "        named:   $(($named -split "`n" | Where-Object { $_ -match 'restart cmdline' }) -join '')"
+        "        default: $(($plain -split "`n" | Where-Object { $_ -match 'restart cmdline' }) -join '')"
+    }
+}
+
 # --- harness self-check: a deliberately corrupted state file MUST fail a cell -------------------
 # Without this, a harness that silently passes everything would be indistinguishable from a
 # working restore — which is exactly the trap this whole exercise exists to avoid.
