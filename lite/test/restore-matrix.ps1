@@ -31,6 +31,15 @@ $script:failed = @()
 function State($inst) { "$dir\sessions-$inst.tsv" }
 function Log($inst)   { "$dir\lite-$inst.log" }
 
+# Seed a state file with EXACTLY these bytes. Not Set-Content -Encoding utf8: that means "UTF-8 with
+# BOM" on Windows PowerShell 5.1 and "UTF-8 without BOM" on pwsh 7, so under 5.1 every seeded file
+# would start with EF BB BF and the "V1"/"V2" header would never be recognised — cells like
+# future-v2 would fail for a reason that has nothing to do with lite. run-all.ps1 does not pin the
+# host, so the suite has to write the same bytes on either one.
+function Write-State([string]$Path, [string]$Text) {
+    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding $false))
+}
+
 function Reset-Cell($inst) {
     Remove-Item (State $inst), (Log $inst), "$(Log $inst).old", "$(State $inst).bak", "$(State $inst).tmp" `
         -ErrorAction SilentlyContinue
@@ -205,9 +214,9 @@ function Seeded {
     if ($Only -and $Only -ne $Name) { return }
     $inst = "rm-$Name"
     Reset-Cell $inst
-    if ($null -ne $Tsv) { Set-Content -Path (State $inst) -Value $Tsv -NoNewline -Encoding utf8 }
-    if ($Bak) { Set-Content -Path "$(State $inst).bak" -Value $Bak -NoNewline -Encoding utf8 }
-    if ($Tmp) { Set-Content -Path "$(State $inst).tmp" -Value $Tmp -NoNewline -Encoding utf8 }
+    if ($null -ne $Tsv) { Write-State (State $inst) $Tsv }
+    if ($Bak) { Write-State "$(State $inst).bak" $Bak }
+    if ($Tmp) { Write-State "$(State $inst).tmp" $Tmp }
     $after = ''; $err = ''; $ok = $false
     $p = $null
     try {
@@ -250,7 +259,7 @@ function Session-Named($inst, $name) { @(SessionsOf $inst | Where-Object { $_.na
 if (-not $Only -or $Only -eq 'failed-spec') {
     $inst = 'rm-failed-spec'
     Reset-Cell $inst
-    Set-Content -Path (State $inst) -NoNewline -Encoding utf8 -Value `
+    Write-State (State $inst) `
         "V1`nW`tws-f`nS`t0`tghost-session`tno-such-program-xyz.exe`t$cwd`nS`t0`tlive-session`tpowershell.exe`t$cwd`nA`t0`n"
     $err = ''; $ghost = $null; $live = $null; $named = $false; $resaved = $false; $after = ''
     $ghostOk = $false; $liveOk = $false
@@ -300,6 +309,52 @@ Cell -Name 'killed' -Setup {
 } -Kill -Assert {
     param($b, $a, $i)
     $a -eq $b -and (SessionCount $b) -ge 2 -and (Log-Has $i 'adopted live session')
+}
+
+# Adoption's user-visible half, which 'killed' cannot see: it compares NAMES, and a name comes back
+# from the state file whether the pane behind it has any content or not. An adopted session gets a
+# brand-new empty emulator and the host forwards only NEW output, so "the shells are alive" and "the
+# user can see anything" are separate claims. Put a marker on the screen, kill, adopt, demand it back.
+#
+# Honest about what this does and does not pin: it passes both with and without Attach.repaint,
+# because the post-restore resize already makes ConPTY re-emit. It is a guard on the PROPERTY (an
+# adopted pane has its screen), not a discriminator for the mechanism that provides it.
+if (-not $Only -or $Only -eq 'killed-repaint') {
+    $inst = 'rm-killed-repaint'
+    Reset-Cell $inst
+    $err = ''; $seenBefore = $false; $adopted = $false; $seenAfter = $false; $textAfter = ''
+    $p = $null; $p2 = $null
+    try {
+        $p = Start-Lite $inst
+        $id = LastSessionId $inst
+        & $ctl session type "echo ADOPTME-MARKER`n" --target $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        # Prove the premise: without this, a `type` that never landed would make the cell assert
+        # nothing and "fail" for a reason that has nothing to do with repaint.
+        $seenBefore = ((& $ctl session text --target $id --pipe $inst 2>&1) -join "`n") -match 'ADOPTME-MARKER'
+        Stop-Lite $p -Kill; $p = $null
+
+        $p2 = Start-Lite $inst
+        Start-Sleep -Seconds 4                       # the repaint jiggle is async in the host
+        $adopted = Log-Has $inst 'adopted live session'
+        $id2 = LastSessionId $inst
+        $textAfter = (& $ctl session text --target $id2 --pipe $inst 2>&1) -join "`n"
+        $seenAfter = $textAfter -match 'ADOPTME-MARKER'
+        Stop-Lite $p2; $p2 = $null
+    } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $p; Stop-Leftover $p2 }
+    if (-not $err -and $seenBefore -and $adopted -and $seenAfter) {
+        "  PASS  {0,-22} (an adopted pane comes back with its screen)" -f 'killed-repaint'
+    } else {
+        $script:failed += 'killed-repaint'
+        "  FAIL  killed-repaint"
+        if ($err) { "        error:  $err" }
+        "        marker on screen before the kill: $seenBefore"
+        "        session was adopted:              $adopted"
+        "        marker back after adoption:       $seenAfter"
+        "        after: [$(($textAfter -replace '\s+', ' ').Trim())]"
+        "        log:   $(Restore-Verdict $inst)"
+    }
 }
 
 # A session whose shell has already exited: its spec must still be saved and relaunched, otherwise
@@ -625,6 +680,45 @@ Seeded -Name 'bak-fallback' -Tsv '' `
     ($a -match 'from-the-bak') -and (Log-Has $i 'falling back')
 }
 
+# The other half of Task 4, and the half bak-fallback cannot reach: bak-fallback SEEDS a .bak by
+# hand, so it would pass unchanged against a build that never writes one. This asserts lite itself
+# rotates — that after a second save the .bak holds the PREVIOUS generation while the primary holds
+# the current one. On the pre-fix in-place write there is no .bak at all and this fails outright.
+if (-not $Only -or $Only -eq 'bak-rotation') {
+    $inst = 'rm-bak-rotation'
+    Reset-Cell $inst
+    $err = ''; $bakExists = $false; $bakIsPrev = $false; $tsvIsCurrent = $false; $orig = ''
+    $p = $null
+    try {
+        $p = Start-Lite $inst
+        $id = LastSessionId $inst
+        $orig = @(SessionsOf $inst | Where-Object { $_.id -eq $id })[0].name
+        Start-Sleep -Seconds 2                                  # save #1: primary written, nothing to rotate yet
+        & $ctl session rename rotated-generation --target $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3                                  # save #2: primary -> .bak, new primary published
+        # Read both WHILE lite runs: the shutdown save rotates again, which would put the current
+        # name in the .bak too and make the "previous generation" half of this untestable.
+        $bakExists = Test-Path "$(State $inst).bak"
+        if ($bakExists) {
+            $bak = Get-Content "$(State $inst).bak" -Raw
+            $bakIsPrev = ($bak -match [regex]::Escape($orig)) -and ($bak -notmatch 'rotated-generation')
+        }
+        $tsvIsCurrent = (Test-Path (State $inst)) -and ((Get-Content (State $inst) -Raw) -match 'rotated-generation')
+        Stop-Lite $p; $p = $null
+    } catch { $err = $_.Exception.Message }
+    finally { Stop-Leftover $p }
+    if (-not $err -and $bakExists -and $bakIsPrev -and $tsvIsCurrent) {
+        "  PASS  {0,-22} (.bak holds the previous generation)" -f 'bak-rotation'
+    } else {
+        $script:failed += 'bak-rotation'
+        "  FAIL  bak-rotation"
+        if ($err) { "        error:  $err" }
+        "        .bak exists: $bakExists / holds '$orig' and not the new name: $bakIsPrev"
+        "        primary holds the new name: $tsvIsCurrent"
+        "        log:   $(Restore-Verdict $inst)"
+    }
+}
+
 # Backward compatibility: a plain 0.17.x file — no D line, no .bak anywhere — must still restore.
 Seeded -Name 'compat-0.17' `
     -Tsv "V1`nW`tws-c`nS`t0`told-one`t`t$cwd`nS`t0`told-two`t`t$cwd`nF`t1`nA`t0`n" -Assert {
@@ -706,7 +800,7 @@ if (-not $Only -or $Only -eq 'harness-selfcheck') {
         Start-Sleep -Seconds 2
         $sigBefore = Signature $selfInst
         Stop-Lite $sp; $sp = $null
-        Set-Content -Path (State $selfInst) -Value '' -NoNewline      # wipe it: restore must not match
+        Write-State (State $selfInst) ''                              # wipe it: restore must not match
         Remove-Item "$(State $selfInst).bak" -ErrorAction SilentlyContinue   # ...and the generation it would fall back to
         $sp2 = Start-Lite $selfInst
         Start-Sleep -Seconds 2

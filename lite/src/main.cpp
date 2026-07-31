@@ -129,6 +129,27 @@ static std::string  g_idPrefix = "lite";              // session-id prefix ("<pr
 static bool g_isDefaultInstance = true;
 static const wchar_t* kInstKey = L"Software\\agwinterm-lite\\Instances";
 
+/// The instance name as it will actually be used. It becomes a FILENAME (sessions-<name>.tsv,
+/// lite-<name>.log) and is interpolated into the "Restart everything" command line, so drop the
+/// characters that make either of those mean something else: path separators (--pipe "..\..\x"
+/// would write outside the state directory), and the quoting/chaining metacharacters cmd.exe acts
+/// on. None of them are legal in a filename anyway, so no name that works today changes.
+///
+/// EVERY producer of an instance name must run it through here. `--pipe` does (parseLaunchArgs) and
+/// so does `window.new`: the child sanitizes whatever it is handed, so a caller told it got
+/// "build&test" would then find `window select build&test` answering "window not found".
+static std::wstring sanitizeInstanceName(const std::wstring& raw) {
+    std::wstring clean;
+    for (wchar_t c : raw)
+        if (c >= 32 && !wcschr(L"\\/:*?\"<>|&^%", c)) clean += c;
+    // Length matters as much as content: the name also becomes the session-id prefix, and ids are
+    // formatted into a fixed 64-byte buffer (newSession). 32 is longer than any name worth typing
+    // and leaves room for "-<n>" many times over.
+    if (clean.size() > 32) clean.resize(32);
+    while (!clean.empty() && (clean.back() == L' ' || clean.back() == L'.')) clean.pop_back();
+    return clean.empty() ? L"lite" : clean;
+}
+
 static void announceInstance(HWND hwnd) {   // name -> [pid, hwnd] (REG_BINARY, 16 bytes)
     unsigned long long v[2] = { GetCurrentProcessId(), (unsigned long long)(uintptr_t)hwnd };
     RegSetKeyValueW(HKEY_CURRENT_USER, kInstKey, g_instance.c_str(), REG_BINARY, v, sizeof v);
@@ -1279,7 +1300,8 @@ static std::vector<Profile> detectProfiles() {
 
 // cols/rows + an optional profile (app/args) and cwd. Default (no app) = PowerShell with the prompt wrap.
 static Session* attachSession(const char* id, int cols, int rows, const char* app,
-                              const std::vector<std::string>* pargs, const char* cwd);   // fwd
+                              const std::vector<std::string>* pargs, const char* cwd,
+                              bool repaint = false);   // fwd
 
 static Session* newSession(int cols, int rows, const char* app = nullptr,
                            const std::vector<std::string>* pargs = nullptr, const char* cwd = nullptr) {
@@ -1363,11 +1385,22 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
 /// the pty-host is designed to survive the UI, so after a kill/crash/sign-out its shells are still
 /// running and can simply be picked back up, scrollback and all.
 static Session* attachSession(const char* id, int cols, int rows, const char* app,
-                              const std::vector<std::string>* pargs, const char* cwd) {
+                              const std::vector<std::string>* pargs, const char* cwd,
+                              bool repaint) {
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_attach_tag;
     strcpy_s(req.cmd.attach.id, id);
+    // ADOPTION only: the shell has been running without a client and has already painted its screen,
+    // but the adopting side gets a brand-new empty emulator and the host forwards only NEW output.
+    // Today the screen does come back anyway — syncPaneSizes() after restore almost always asks for
+    // a size that differs from the one the restore placeholder was built with, and ConPTY re-emits
+    // on any real resize. That is incidental, not a guarantee: restore at exactly the saved geometry
+    // and there is no resize to piggyback on. `repaint` asks the host for the redraw outright (the
+    // same thing the full app does via JiggleRepaint) so an adopted pane is never blank by luck.
+    // A create-then-attach must NOT ask for it: there is nothing on that screen yet, and the jiggle
+    // would race the shell's startup.
+    req.cmd.attach.repaint = repaint;
     if (!request(req, &rep) || rep.which_body != agwinterm_ptyhost_Reply_attach_tag) return nullptr;
 
     Session* s = new Session();
@@ -1381,8 +1414,9 @@ static Session* attachSession(const char* id, int cols, int rows, const char* ap
     s->data = openPipe(std::wstring(rep.body.attach.pipe, rep.body.attach.pipe + strlen(rep.body.attach.pipe)), 5000, true);
     if (s->data == INVALID_HANDLE_VALUE) { emu_free(s->emu); delete s; return nullptr; }
     // NOTE: AttachReply.scrollback stays callback-decoded (unbounded), so an adopted session comes
-    // back live but with an empty screen rather than its history. The shell itself — and anything
-    // running in it — survives, which is the point; seeding history is a separate improvement.
+    // back without its HISTORY — the repaint above brings back the current screen, which is what
+    // makes the pane look alive. The shell itself, and anything running in it, survives either way;
+    // seeding the scrollback is a separate improvement.
     s->reader = CreateThread(nullptr, 0, readerThread, s, 0, nullptr);
     EnterCriticalSection(&g_lock);
     g_sessions.push_back(s);
@@ -1924,9 +1958,13 @@ static void saveSessionState() {
     HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) {
         // The silent return that made "restore doesn't work" unanswerable in the field: if the
-        // state file can't be opened, nothing is saved and nothing says so.
-        logWarn("save FAILED to open %s (err %lu) — %d session(s) not saved",
-                narrow(tmp).c_str(), GetLastError(), saved);
+        // state file can't be opened, nothing is saved and nothing says so. Name the STATE file as
+        // well as the temp: the overwhelmingly likely cause is that the directory is not writable
+        // (a policy-locked %LOCALAPPDATA%), and a reader handed only a .tmp path they have never
+        // seen before is one indirection away from the thing they have to go fix.
+        logWarn("save FAILED to open %s (err %lu) — %d session(s) not saved to %s "
+                "(is the state directory writable?)",
+                narrow(tmp).c_str(), GetLastError(), saved, narrow(path).c_str());
         return;
     }
     DWORD wr = 0;
@@ -5405,6 +5443,10 @@ static std::string ctlDispatch(const std::string& line) {
         }
         if (cmd == "window.new") {
             std::wstring nm = widen(req.get("args.name"));
+            // Sanitize BEFORE the duplicate check and before building the command line: the child
+            // will do it anyway, so an unsanitized name here would be compared against (and
+            // returned instead of) the name the new window actually registers under.
+            if (!nm.empty()) nm = sanitizeInstanceName(nm);
             if (nm.empty()) {   // pick a free name
                 for (int n = 2;; n++) {
                     nm = L"win-" + std::to_wstring(n);
@@ -5680,7 +5722,8 @@ static bool restoreSessions() {
         Session* s = nullptr;
         if (isAdoptable(want)) {
             s = attachSession(want.c_str(), cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
-                              sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str());
+                              sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str(),
+                              true);   // repaint: the shell already has a screen, ask it to redraw
             if (s) { adopted++; logInfo("restore: adopted live session '%s' (%s)", want.c_str(), sp.name.c_str()); }
             else logWarn("restore: adopt of live session '%s' failed — creating a fresh one", want.c_str());
         }
@@ -5743,26 +5786,17 @@ static void parseLaunchArgs() {
         if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) g_argDir.clear();
     }
     if (!g_argPipe.empty() && g_argPipe != L"agwinterm-lite") {   // named instance
-        // The instance name becomes a FILENAME (sessions-<name>.tsv, lite-<name>.log) and is
-        // interpolated into the "Restart everything" command line, so drop the characters that make
-        // either of those mean something else: path separators (--pipe "..\..\x" would write outside
-        // the state directory), and the quoting/chaining metacharacters cmd.exe acts on. None of
-        // them are legal in a filename anyway, so no name that works today changes.
-        std::wstring clean;
-        for (wchar_t c : g_argPipe)
-            if (c >= 32 && !wcschr(L"\\/:*?\"<>|&^%", c)) clean += c;
-        // Length matters as much as content: the name also becomes the session-id prefix, and ids
-        // are formatted into a fixed 64-byte buffer (newSession). 32 is longer than any name worth
-        // typing and leaves room for "-<n>" many times over.
-        if (clean.size() > 32) clean.resize(32);
-        while (!clean.empty() && (clean.back() == L' ' || clean.back() == L'.')) clean.pop_back();
-        if (clean.empty()) clean = L"lite";
+        std::wstring clean = sanitizeInstanceName(g_argPipe);
         g_argPipe = clean;
         g_instance = clean;
         g_isDefaultInstance = false;
-        std::string p;   // sanitized session-id prefix (alnum/dash only)
+        // Session-id prefix: ASCII alnum/dash only. `(char)towlower(wchar_t)` on anything above
+        // U+007F truncates to a lone high byte, and the id travels as a protobuf STRING — the Rust
+        // host's decode rejects invalid UTF-8, so every create would come back "unknown command"
+        // and the window could never open a session. `--pipe café` was enough to do it.
+        std::string p;
         for (wchar_t c : g_argPipe)
-            if (iswalnum(c) || c == L'-' || c == L'_') p += (char)towlower(c);
+            if (c < 128 && (iswalnum(c) || c == L'-' || c == L'_')) p += (char)towlower(c);
         g_idPrefix = p.empty() ? "lite" : p;
     }
 }
