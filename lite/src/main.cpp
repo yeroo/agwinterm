@@ -262,6 +262,15 @@ static uint32_t g_defFg = 0xC0C0C0;   // packed 0xRRGGBB, legacy cmd.exe light g
 static uint32_t g_defBg = 0x000000;   // ...black
 static bool g_dosPalette = true;      // Properties->Colors: remap ANSI indices to the muted EGA/VGA DOS palette
 
+// Caret state. A terminal cursor has to say two things: "input lands here" (blink) and "this window
+// has focus" (solid vs hollow). lite drew a static invert regardless, so switching sessions or
+// windows gave no cue at all that typing had moved. kCaretBlinkMs matches the main app's default
+// cursor-blink-ms; the caret timer is the only timer lite runs.
+static bool g_winFocused = true;      // frame has keyboard focus (solid caret) vs not (hollow)
+static bool g_caretOn = true;         // blink phase
+static const UINT_PTR kCaretTimer = 1;
+static const UINT kCaretBlinkMs = 530;
+
 // ---- UI theme (Properties -> Appearance) -----------------------------------------------------
 // Four modes. CLASSIC means "hands off": every control keeps whatever the OS draws, which is the
 // look lite shipped with. DARK/LIGHT paint the chrome ourselves (comctl32 will not do it for us).
@@ -736,10 +745,17 @@ static const wchar_t* kAppId = L"agwinterm-lite";
 // ---- selection (buffer-absolute rows; the same viewport composition as paint) ----
 struct Sel {
     int pane = -1;                  // which pane the selection lives in (-1 = none)
+    // The SESSION the selection belongs to. A pane index alone is not identity: switching sessions
+    // reuses the same pane, and the selection then painted over unrelated content AND suppressed
+    // the cursor (see the !has() guard in paintPane) — which read as "the caret is lost when I
+    // switch sessions". Selection state is per-session, so it must be keyed by session.
+    void* sess = nullptr;
     bool active = false;            // a drag is in progress
     int aRow = 0, aCol = 0;         // anchor (buffer-absolute row, column)
     int bRow = 0, bCol = 0;         // current end
-    bool has() const { return pane >= 0 && (aRow != bRow || aCol != bCol); }
+    bool has() const { return pane >= 0 && sess && (aRow != bRow || aCol != bCol); }
+    bool isFor(const void* s) const { return has() && sess == s; }
+    void clear() { *this = Sel{}; }
     void norm(int& r0, int& c0, int& r1, int& c1) const {
         if (aRow < bRow || (aRow == bRow && aCol <= bCol)) { r0 = aRow; c0 = aCol; r1 = bRow; c1 = bCol; }
         else { r0 = bRow; c0 = bCol; r1 = aRow; c1 = aCol; }
@@ -1186,6 +1202,7 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
 }
 
 static void killSession(Session* s) {
+    if (g_sel.sess == s) g_sel.clear();   // the selection is keyed by session: don't outlive it
     agwinterm_ptyhost_Request req = agwinterm_ptyhost_Request_init_default;
     agwinterm_ptyhost_Reply rep = agwinterm_ptyhost_Reply_init_default;
     req.which_cmd = agwinterm_ptyhost_Request_kill_tag;
@@ -2026,7 +2043,7 @@ static void paintPane(HDC mem, RECT pr, Session* s, int pane, bool showCursor) {
 afterGridPaint:;
 
     // Selection highlight (invert the selected span, buffer-absolute rows mapped into the view).
-    if (g_sel.has() && g_sel.pane == pane) {
+    if (g_sel.isFor(s) && g_sel.pane == pane) {
         int r0, c0, r1, c1;
         g_sel.norm(r0, c0, r1, c1);
         int base = (int)info.historyCount - off;   // buffer-absolute row of the top visible line
@@ -2044,11 +2061,22 @@ afterGridPaint:;
         }
     }
 
-    // Cursor (only at live view, only in the focused pane, not while selecting).
-    if (off == 0 && info.cursorVisible && showCursor && info.cursorCol < info.cols && !g_sel.has()) {
+    // Cursor (only at live view, only in the focused pane, not while selecting). Solid and blinking
+    // while the window has focus, a hollow outline when it doesn't — the standard terminal cue for
+    // "typing lands here", and the thing lite was missing: a static block that never blinks and
+    // looks identical focused or not reads as though input focus went somewhere else.
+    if (off == 0 && info.cursorVisible && showCursor && info.cursorCol < info.cols && !g_sel.isFor(s)) {
         RECT cur{ pr.left + (LONG)info.cursorCol * g_cw, pr.top + (LONG)info.cursorRow * g_ch,
                   pr.left + (LONG)(info.cursorCol + 1) * g_cw, pr.top + (LONG)(info.cursorRow + 1) * g_ch };
-        if (cur.right <= pr.right) InvertRect(mem, &cur);
+        if (cur.right <= pr.right) {
+            if (!g_winFocused) {
+                HBRUSH cb = CreateSolidBrush(toColorRef(g_customColors ? g_defFg : 0xC0C0C0, false));
+                FrameRect(mem, &cur, cb);
+                DeleteObject(cb);
+            } else if (g_caretOn) {
+                InvertRect(mem, &cur);
+            }
+        }
     }
     // FTCS prompt pips (OSC 133): a small right-edge marker at each prompt line — green ok,
     // red failed, accent for a still-running command. The agent-status cue for Claude sessions.
@@ -2227,7 +2255,7 @@ static bool hitTest(int x, int y, int* pane, int* absRow, int* col) {
 // Extract the selected text (buffer-absolute rows), trailing spaces trimmed per line.
 static std::string selectionText() {
     if (!g_sel.has()) return "";
-    Session* s = g_sessions[g_pane[g_sel.pane]];
+    Session* s = (Session*)g_sel.sess;   // the session the selection was made in, not whatever the pane shows now
     int r0, c0, r1, c1;
     g_sel.norm(r0, c0, r1, c1);
     std::string out;
@@ -2291,6 +2319,22 @@ static void sendBytes(const char* bytes, int len) {
     if (s && s->data != INVALID_HANDLE_VALUE) ovIo(s->data, true, bytes, nullptr, (DWORD)len);
 }
 
+// Clipboard text on Windows is CRLF-delimited, but a terminal wants a bare CR per line: send the
+// LF too and the app sees two line breaks (inside a bracketed paste Claude Code renders doubled
+// blank lines; a shell may run the line early). The main app normalises before bracketing —
+// Program.Input.cs PasteTextInto — and lite has to agree, or the same paste behaves differently
+// in the two clients.
+static std::string pasteNormalize(std::string t) {
+    std::string out;
+    out.reserve(t.size());
+    for (size_t i = 0; i < t.size(); i++) {
+        if (t[i] == '\r' && i + 1 < t.size() && t[i + 1] == '\n') { out += '\r'; i++; }
+        else if (t[i] == '\n') out += '\r';
+        else out += t[i];
+    }
+    return out;
+}
+
 static void pasteClipboard() {
     Session* s = focusedSession();
     if (!s || s->data == INVALID_HANDLE_VALUE || !OpenClipboard(g_hwnd)) return;
@@ -2301,6 +2345,7 @@ static void pasteClipboard() {
             int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
             std::string u8(n > 0 ? n - 1 : 0, 0);
             if (!u8.empty()) WideCharToMultiByte(CP_UTF8, 0, w, -1, &u8[0], n, nullptr, nullptr);
+            u8 = pasteNormalize(std::move(u8));
             // Bracketed paste when the app enabled it (safer multiline paste), else raw.
             FfiEmuInfo info{};
             EnterCriticalSection(&g_lock);
@@ -3960,6 +4005,9 @@ public:
         MSG_WM_SIZE(OnSize)
         MSG_WM_EXITSIZEMOVE(OnExitSizeMove)
         MSG_WM_SETTINGCHANGE(OnSettingChange)
+        MSG_WM_TIMER(OnTimer)
+        MSG_WM_SETFOCUS(OnSetFocusFrame)
+        MSG_WM_KILLFOCUS(OnKillFocusFrame)
         MSG_WM_DESTROY(OnDestroy)
         MESSAGE_HANDLER(WM_KEYDOWN, OnKey)
         MESSAGE_HANDLER(WM_SYSKEYDOWN, OnKey)
@@ -4081,7 +4129,9 @@ public:
         if (hitTest(pt.x, pt.y, &pane, &absRow, &col)) {
             g_focus = pane;
             if (mouseReport(pt.x, pt.y, 0, true, false)) { SetFocus(); Invalidate(FALSE); return; }
-            g_sel = { pane, true, absRow, col, absRow, col };   // begin drag-select
+            int si = g_pane[pane];                              // begin drag-select, bound to THIS session
+            g_sel = { pane, si >= 0 && si < (int)g_sessions.size() ? (void*)g_sessions[si] : nullptr,
+                      true, absRow, col, absRow, col };
             SetCapture();
             Invalidate(FALSE);
         }
@@ -4121,6 +4171,33 @@ public:
         pasteClipboard();                                        // else right-click pastes
     }
     void OnRButtonUp(UINT, CPoint pt) { mouseReport(pt.x, pt.y, 2, false, false); }
+
+    // ---- caret blink + focus cue ----
+    // Only the caret cell needs repainting, so invalidate that instead of the whole client: on the
+    // low-end machines lite targets, a full 2 Hz recompose for a blinking block would be pure waste.
+    void InvalidateCaret() {
+        RECT rc; GetClientRect(&rc);
+        for (int p = 0; p < 2; p++) {
+            if (g_pane[p] < 0 || g_pane[p] >= (int)g_sessions.size()) continue;
+            if (p != g_focus) continue;
+            RECT pr; paneRect(p, rc, &pr);
+            FfiEmuInfo info{};
+            EnterCriticalSection(&g_lock);
+            emu_info(g_sessions[g_pane[p]]->emu, &info);
+            LeaveCriticalSection(&g_lock);
+            RECT cur{ pr.left + (LONG)info.cursorCol * g_cw, pr.top + (LONG)info.cursorRow * g_ch,
+                      pr.left + (LONG)(info.cursorCol + 1) * g_cw, pr.top + (LONG)(info.cursorRow + 1) * g_ch };
+            if (cur.right <= pr.right && cur.bottom <= pr.bottom) InvalidateRect(&cur, FALSE);
+        }
+    }
+    void OnTimer(UINT_PTR id) {
+        if (id != kCaretTimer) return;
+        if (!g_winFocused) return;            // hollow caret doesn't blink
+        g_caretOn = !g_caretOn;
+        InvalidateCaret();
+    }
+    void OnSetFocusFrame(CWindow) { g_winFocused = true;  g_caretOn = true; InvalidateCaret(); }
+    void OnKillFocusFrame(CWindow) { g_winFocused = false; g_caretOn = true; InvalidateCaret(); }
 
     LRESULT OnSetCursor(UINT, WPARAM wp, LPARAM lp, BOOL& bHandled) {
         // Children (toolbar/tree/status) forward WM_SETCURSOR here; wParam names the window the
@@ -4455,6 +4532,7 @@ public:
     }
 
     void OnDestroy() {
+        KillTimer(kCaretTimer);
         saveWindowRect();                        // remember window size + position for next launch
         saveSessionState();                      // final save with LIVE cwds — while the shells are
                                                  // still alive to answer the PEB query; the periodic
@@ -4705,9 +4783,9 @@ static std::string ctlDispatch(const std::string& line) {
         }
         return ctlOkStr("unchanged");   // already at the edge
     }
-    if (cmd == "session.copy") {   // the selection's text (only the focused pane has a selection)
+    if (cmd == "session.copy") {   // the selection's text (the selection belongs to one session)
         if (!target) return ctlErr("session not found");
-        if (target != focusedSession() || !g_sel.has()) return ctlOkStr("");
+        if (!g_sel.isFor(target)) return ctlOkStr("");
         return ctlOkStr(selectionText());
     }
     if (cmd == "session.paste") {   // paste text (or the clipboard) into the target
@@ -4719,9 +4797,18 @@ static std::string ctlDispatch(const std::string& line) {
             }
             CloseClipboard();
         }
-        for (char& ch : text) if (ch == '\n') ch = '\r';
-        if (!text.empty() && target->data != INVALID_HANDLE_VALUE)
+        // Same normalisation + bracketing as Ctrl+V (the main app shares one PasteTextInto for both);
+        // this used to map \n -> \r WITHOUT collapsing CRLF, so clipboard text arrived as \r\r.
+        text = pasteNormalize(std::move(text));
+        if (!text.empty() && target->data != INVALID_HANDLE_VALUE) {
+            FfiEmuInfo pinfo{};
+            EnterCriticalSection(&g_lock);
+            emu_info(target->emu, &pinfo);
+            LeaveCriticalSection(&g_lock);
+            if (pinfo.bracketedPaste) ovIo(target->data, true, "\x1b[200~", nullptr, 6);
             ovIo(target->data, true, text.data(), nullptr, (DWORD)text.size());
+            if (pinfo.bracketedPaste) ovIo(target->data, true, "\x1b[201~", nullptr, 6);
+        }
         return ctlOkStr("pasted");
     }
     if (cmd == "session.go") {   // dir: next|prev|first|last|next-attention|prev-attention
@@ -5089,6 +5176,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (!g_hwnd) fatal(L"could not create the main window");
     g_frame.SetWindowText(g_isDefaultInstance ? L"agwinterm lite"
                                               : (L"agwinterm lite \x2014 " + g_instance).c_str());
+    SetTimer(g_hwnd, kCaretTimer, kCaretBlinkMs, nullptr);   // the caret blink (lite's only timer)
     announceInstance(g_hwnd);   // visible to the other windows' window.* verbs
     g_frame.SetMenu(buildMenuBar());
     g_frame.SetIcon(g_appIcon, TRUE);    // VGA black+cyan terminal icon (window + taskbar)
