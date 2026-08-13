@@ -268,9 +268,6 @@ internal partial class Program
                 {
                     char c = (char)wParam;
                     if (_kittyAteChar) { _kittyAteChar = false; return IntPtr.Zero; }   // OnKeyDown already CSI-u-encoded this key
-                    // win32-input-mode encodes the char in the key-down sequence's Uc field, so the
-                    // normal WM_CHAR for this pane is redundant — drop it.
-                    if (ActiveSurface()?.S.Emulator.Win32InputMode == true) return IntPtr.Zero;
                     if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return IntPtr.Zero; }
                     if (_setOpen)
                     {
@@ -287,6 +284,15 @@ internal partial class Program
                         if (c >= 0x20 && c != 0x7f) { _searchQuery += c; RecomputeSearch(); _searchCur = 0; ScrollToMatch(); RequestRedraw(); }
                         return IntPtr.Zero;
                     }
+                    // win32-input-mode encodes the char in the key-down sequence's Uc field, so
+                    // sending it again here would duplicate it for this pane. Checked HERE, below the
+                    // overlay handlers, not above them: while the action palette / settings dropdown /
+                    // search bar is up it owns the keyboard, and dropping its characters made all
+                    // three impossible to type into whenever the pane's program had ?9001 on — which
+                    // ConPTY enables, so any pane running Claude Code did it. The overlay opened,
+                    // arrows and Enter worked (those are handled in OnKeyDown, above this path), but
+                    // no text ever arrived.
+                    if (ActiveSurface()?.S.Emulator.Win32InputMode == true) return IntPtr.Zero;
                     if (c >= 0x20 && c != 0x7f) Send(c.ToString());
                     return IntPtr.Zero;
                 }
