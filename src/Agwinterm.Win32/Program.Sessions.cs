@@ -473,12 +473,26 @@ internal partial class Program
         if (_cover is not null) RegridCover();
     }
 
-    /// <summary>Resize every pane's PTY grid to fit its column using the pane's own font metrics.</summary>
+    /// <summary>Resize every pane's PTY grid to fit its column using the pane's own font metrics.
+    /// Does nothing while the window has no usable client area — see the guard.</summary>
     private void RegridSession(Ses ses)
     {
+        // A minimized window's client rect is 0x0, and ContentArea() floors that with
+        // MathF.Max(1f, ...) — so the layout comes back as a 1-PIXEL column that looks valid.
+        // Regridding from it resized the PTY to 1x1 and ConPTY reflowed every line to a single
+        // character: that is the "Claude Code renders 1 char per line after I come back and switch
+        // sessions" report, and the blank PowerShell prompt that needed an Enter to redraw. Two
+        // defensive clamps (1px, then 1 col) combining into a destructive-but-"valid" size.
+        // Skipping leaves each PTY at its last good size; WM_SIZE regrids everything (RegridAll)
+        // the moment the window is real again, so nothing is lost by waiting.
+        if (_hwnd != IntPtr.Zero && IsIconic(_hwnd)) return;
+
         foreach (var (pane, _, _, w, h) in PaneLayout(ses))
         {
             var (_, cw, ch) = Metrics(pane.FontSize);
+            // Not even one cell fits: the layout is degenerate (mid-teardown, or a sidebar wider
+            // than the window). Leave this pane's PTY alone rather than telling it it's 1x1.
+            if (w < cw || h < ch) continue;
             int cols = Math.Max(1, (int)(w / cw)), rows = Math.Max(1, (int)(h / ch));
             if (pane.S.Cols != cols || pane.S.Rows != rows) pane.S.Resize(cols, rows);
             pane.ScrollOffset = Math.Clamp(pane.ScrollOffset, 0, pane.S.Emulator.HistoryCount);
@@ -661,8 +675,10 @@ internal partial class Program
     private void RegridCover()
     {
         if (_cover is null) return;
+        if (_hwnd != IntPtr.Zero && IsIconic(_hwnd)) return;   // same 1x1 trap as RegridSession
         var (_, _, w, h) = CoverRect();
         var (_, cw, ch) = Metrics(_cover.FontSize);
+        if (w < cw || h < ch) return;
         int cols = Math.Max(1, (int)(w / cw)), rows = Math.Max(1, (int)(h / ch));
         if (_cover.S.Cols != cols || _cover.S.Rows != rows) _cover.S.Resize(cols, rows);
         _cover.ScrollOffset = Math.Clamp(_cover.ScrollOffset, 0, _cover.S.Emulator.HistoryCount);
