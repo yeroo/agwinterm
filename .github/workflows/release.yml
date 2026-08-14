@@ -78,6 +78,18 @@ jobs:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           if (-not $env:WINGET_TOKEN) { Write-Warning 'WINGET_TOKEN secret not set - skipping winget publish'; exit 0 }
+          # Sync the fork FIRST. wingetcreate refuses to open a PR from a fork that has drifted
+          # ("The forked repository could not be synced with the upstream commits. Sync your fork
+          # manually and try again."), and upstream touches .github/workflows often enough that this
+          # recurs — it blocked 0.17.3 until the fork was synced by hand. merge-upstream is
+          # server-side, so it needs no checkout; the PAT carries the scope that a plain OAuth token
+          # lacks. Best-effort: a fresh fork (or none yet) must not fail the release.
+          $owner = '${{ github.repository_owner }}'
+          try {
+            $h = @{ Authorization = "token $env:WINGET_TOKEN"; 'User-Agent' = 'agwinterm-release'; Accept = 'application/vnd.github+json' }
+            $r = Invoke-RestMethod -Method Post -Headers $h -Uri "https://api.github.com/repos/$owner/winget-pkgs/merge-upstream" -Body (@{ branch = 'master' } | ConvertTo-Json)
+            Write-Host "fork sync: $($r.message)"
+          } catch { Write-Warning "fork sync skipped: $($_.Exception.Message)" }
           $version = '${{ github.ref_name }}'.TrimStart('v')
           $url = "https://github.com/${{ github.repository }}/releases/download/v$version/agwinterm-setup-$version.exe"
           Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
