@@ -1,0 +1,30 @@
+# Push (or REPUSH) the Chocolatey package for an already-published release.
+#
+# Chocolatey moderation asks for corrective changes to be repushed under the SAME version. The
+# release workflow can't do that: it runs on a tag and checks out the tagged tree, so re-running it
+# would just repackage the files that were rejected. This runs from the DEFAULT branch instead, so
+# packaging fixes land without re-tagging or burning a version number.
+name: Chocolatey push
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Released version to push, without the leading v (e.g. 0.17.3)'
+        required: true
+        type: string
+
+jobs:
+  push:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack and push to Chocolatey
+        shell: pwsh
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+        run: |
+          if (-not $env:CHOCO_API_KEY) { throw 'CHOCO_API_KEY secret is not set' }
+          ./packaging/chocolatey/publish.ps1 -Version '${{ inputs.version }}' -ApiKey $env:CHOCO_API_KEY -Repository '${{ github.repository }}'

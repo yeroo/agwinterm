@@ -107,18 +107,6 @@ jobs:
           CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
         run: |
           if (-not $env:CHOCO_API_KEY) { Write-Warning 'CHOCO_API_KEY secret not set - skipping chocolatey publish'; exit 0 }
+          # Shared with choco-push.yml (the repush-a-moderated-version path) so the two can't drift.
           $version = '${{ github.ref_name }}'.TrimStart('v')
-          $asset = "agwinterm-portable-$version-win-x64.exe"
-          $url = "https://github.com/${{ github.repository }}/releases/download/v$version/$asset"
-          Invoke-WebRequest $url -OutFile $asset
-          $sha = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
-          Push-Location packaging/chocolatey
-          (Get-Content agwinterm.nuspec -Raw) -replace '(?<=<version>)[^<]+(?=</version>)', $version | Set-Content agwinterm.nuspec
-          $ps = 'tools/chocolateyinstall.ps1'
-          $c = Get-Content $ps -Raw
-          $c = $c -replace 'download/v[^/]+/agwinterm-portable-[^'']+\.exe', "download/v$version/$asset"
-          $c = $c -replace "checksum64\s+= '[0-9a-fA-F]+'", "checksum64     = '$sha'"
-          Set-Content $ps $c
-          choco pack --outputdirectory $env:RUNNER_TEMP
-          choco push "$env:RUNNER_TEMP/agwinterm.$version.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
-          Pop-Location
+          ./packaging/chocolatey/publish.ps1 -Version $version -ApiKey $env:CHOCO_API_KEY -Repository '${{ github.repository }}'
