@@ -201,6 +201,13 @@ Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / C
 
 ## agwinterm-lite — the tiny client
 
+> **lite is becoming its own product, `agliteterm`.** This release is the handover: its
+> *Help → Check for Updates* points at the agliteterm feed, so an existing install finds the
+> successor by the mechanism it already trusts. agliteterm installs **alongside** rather than
+> replacing this one and adopts your sessions, settings and fonts on first run, so nothing is
+> lost and you can go back. Scripts that use `--pipe agwinterm-lite` keep working; the
+> `AGWINTERM_*` session variables are unchanged.
+
 **`agwinterm-lite`** is a second, minimal client for old or low-RAM machines: a single small
 C++ exe (Win32/WTL, no .NET) over the same Rust emulator core and pty-host. It trades the
 custom-drawn chrome for **real native controls** — menu bar, toolbar, TreeView sidebar,

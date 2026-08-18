@@ -3124,6 +3124,19 @@ static void scrollFocused(int deltaRows) {
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
+// ---- HANDOVER BUILD ---------------------------------------------------------------------------
+// This is the LAST agwinterm-lite. The product is now agliteterm, in its own repository
+// (docs/plans/2026-08-17-agliteterm-product-split.md), and the updater below points at ITS releases
+// so existing installs discover the successor through the mechanism they already trust.
+//
+// Without this build, agwinterm would simply stop publishing an agwinterm-lite-setup asset and every
+// install would go quiet: the check succeeds, finds no matching asset, and reports nothing. No error,
+// no notice, no route to the new product. That is why the handover ships BEFORE the rename.
+//
+// agliteterm installs ALONGSIDE (new AppId, new directory) and adopts this profile's sessions and
+// settings on first run, so the hand-off is reversible: agwinterm-lite stays installed and working
+// until the user removes it.
+//
 // ---- self-update (parity with the full app's app-update): GitHub releases/latest -> pick the
 // lite setup asset -> SHA-256-verified download (the release API's per-asset digest is the
 // integrity gate; we have no Authenticode cert) -> detached helper waits for exit, runs the
@@ -3263,7 +3276,7 @@ static UpdRelease updParse(const std::string& j) {
     if (!tag.empty() && (tag[0] == 'v' || tag[0] == 'V')) tag.erase(0, 1);
     if (tag.empty()) return r;
     for (char c : tag) r.ver += (wchar_t)c;
-    size_t a = j.find("\"name\":\"agwinterm-lite-setup-");
+    size_t a = j.find("\"name\":\"agliteterm-setup-");
     if (a == std::string::npos) return r;
     size_t end = j.find("\"name\":\"", a + 8);
     if (end == std::string::npos) end = j.size();
@@ -3275,7 +3288,7 @@ static UpdRelease updParse(const std::string& j) {
 }
 
 static const char kUpdHelper[] =
-    "param([int]$ProcId, [string]$Payload, [string]$Exe, [string]$Instance)\n"
+    "param([int]$ProcId, [string]$Payload, [string]$Exe, [string]$Instance, [string]$Successor)\n"
     "function Log([string]$m) { try { Add-Content -Path ($Payload + '.log') -Value (\"{0:HH:mm:ss.fff} {1}\" -f (Get-Date), $m) } catch { } }\n"
     "Log \"wait pid=$ProcId\"\n"
     "try { Wait-Process -Id $ProcId -Timeout 120 -ErrorAction SilentlyContinue } catch { }\n"
@@ -3284,12 +3297,34 @@ static const char kUpdHelper[] =
     "Log 'applying'\n"
     "Start-Process $Payload -ArgumentList '/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES' -Wait\n"
     "Log 'setup finished'\n"
-    // The instance name is passed as its OWN element, not baked into one argument string: a name with
-    // a space ("--pipe my win") came back through CommandLineToArgvW as instance "my", which is a
-    // different pipe AND a different state file — the "my sessions are gone" shape, self-inflicted by
-    // the update. Start-Process quotes an element that needs it.
-    "if ($Instance) { Start-Process $Exe -ArgumentList '--pipe', $Instance } else { Start-Process $Exe }\n"
+    // The instance name has to survive the round trip intact: a name with a space
+    // ("--pipe my win") came back through CommandLineToArgvW as instance "my", which is a different
+    // pipe AND a different state file — the "my sessions are gone" shape, self-inflicted by the
+    // update. Passing it as its own -ArgumentList element is NOT enough: Start-Process joins the
+    // list with spaces and quotes nothing, so the quotes have to be part of the value. The app
+    // parses its own command line with CommandLineToArgvW, which strips them again.
+    //
+    // The handover installs a DIFFERENT product alongside this one, so the exe to start after
+    // setup is not the one that launched the helper. Falls back to $Exe when the successor is
+    // not where we expect: relaunching the old build is a no-op the user can retry, while not
+    // relaunching at all looks like the update killed their terminal.
+    "$start = $Exe\n"
+    "if ($Successor) {\n"
+    "  if (Test-Path -LiteralPath $Successor) { $start = $Successor; Log 'relaunching the successor' }\n"
+    "  else { Log 'successor missing - relaunching this build' }\n"
+    "}\n"
+    "if ($Instance) { Start-Process $start -ArgumentList '--pipe', ('\"' + $Instance + '\"') } else { Start-Process $start }\n"
     "Log 'relaunched'\n";
+
+// The successor's installed exe. agliteterm ships under its OWN AppId and directory, so it lands
+// ALONGSIDE this build rather than replacing it — which is what makes the move reversible, and
+// also what makes relaunching GetModuleFileNameW() wrong here: it would start agwinterm lite
+// again and the user would see the update "do nothing". Mirrors installer/agliteterm.iss.
+static std::wstring updSuccessorExe() {
+    wchar_t base[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return {};
+    return std::wstring(base) + L"\\Programs\\agliteterm\\agliteterm.exe";
+}
 
 static std::wstring* updHeapStr(const std::wstring& s) { return new std::wstring(s); }   // freed by the UI handler
 
@@ -3300,7 +3335,7 @@ static DWORD WINAPI updWorker(LPVOID p) {
     std::wstring cur = updVersion();
     wchar_t apiw[512];
     std::wstring api = GetEnvironmentVariableW(L"AGWINTERM_UPDATE_API", apiw, 512) > 0
-                     ? apiw : L"https://api.github.com/repos/yeroo/agwinterm/releases/latest";
+                     ? apiw : L"https://api.github.com/repos/yeroo/agliteterm/releases/latest";
     std::vector<uint8_t> buf;
     if (!updFetch(api, buf)) {
         if (interactive) post(UPD_MSG, updHeapStr(L"update check failed (offline or rate-limited) — try again later"));
@@ -3312,7 +3347,7 @@ static DWORD WINAPI updWorker(LPVOID p) {
         return 0;
     }
     if (updCmpVer(rel.ver, cur) <= 0) {
-        if (interactive) post(UPD_MSG, updHeapStr(L"agwinterm lite " + cur + L" is already the latest"));
+        if (interactive) post(UPD_MSG, updHeapStr(L"no agliteterm release yet — agwinterm lite " + cur + L" stays as it is"));
         return 0;
     }
     if (!interactive) { post(UPD_BALLOON, updHeapStr(rel.ver)); return 0; }
@@ -3342,7 +3377,7 @@ static DWORD WINAPI updWorker(LPVOID p) {
     };
     UpdApply* a = new UpdApply;
     a->ver = rel.ver;
-    a->payload = dir + L"\\agwinterm-lite-setup-" + rel.ver + L".exe";
+    a->payload = dir + L"\\agliteterm-setup-" + rel.ver + L".exe";
     a->helper = dir + L"\\apply-update.ps1";
     if (!writeAll(a->payload, payload.data(), (DWORD)payload.size()) ||
         !writeAll(a->helper, kUpdHelper, (DWORD)(sizeof kUpdHelper - 1))) {
@@ -3360,7 +3395,7 @@ static void updCheck(bool interactive) {
         if (!updChannelInstalled()) {
             MessageBoxW(g_hwnd,
                 L"This copy of agwinterm lite is not the installed one, so it does not self-update.\n"
-                L"Get releases at github.com/yeroo/agwinterm/releases.",
+                L"Get agliteterm at github.com/yeroo/agliteterm/releases.",
                 L"agwinterm lite update", MB_OK | MB_ICONINFORMATION);
             return;
         }
@@ -4998,8 +5033,8 @@ public:
         if (wp == UPD_BALLOON) {   // background check: one tray balloon, no interruption
             std::wstring* v = (std::wstring*)lp;
             g_nid.uFlags |= NIF_INFO;
-            wcscpy_s(g_nid.szInfoTitle, L"agwinterm lite");
-            swprintf_s(g_nid.szInfo, L"%s is out (you have %s) — Help → Check for Updates",
+            wcscpy_s(g_nid.szInfoTitle, L"agwinterm lite is now agliteterm");
+            swprintf_s(g_nid.szInfo, L"agliteterm %s succeeds lite %s — Help → Check for Updates",
                        v->c_str(), updVersion().c_str());
             g_nid.dwInfoFlags = NIIF_INFO;
             Shell_NotifyIconW(NIM_MODIFY, &g_nid);
@@ -5017,15 +5052,22 @@ public:
                 MessageBoxW(L"Close the other agwinterm lite windows first — the installer can't "
                             L"replace a running exe.", L"agwinterm lite update", MB_OK | MB_ICONWARNING);
             } else {
-                std::wstring msg = L"agwinterm lite " + updVersion() + L" → " + a->ver +
-                                   L"\n\nDownload verified (SHA-256). Update and restart now?\n"
-                                   L"Sessions are saved and restored.";
-                if (MessageBoxW(msg.c_str(), L"agwinterm lite update", MB_OKCANCEL | MB_ICONQUESTION) == IDOK) {
+                std::wstring msg = L"agwinterm lite " + updVersion() + L"  →  agliteterm " + a->ver +
+                                   L"\n\nlite is now its own product, agliteterm. This is that move, "
+                                   L"not a routine update.\n\n"
+                                   L"•  Your sessions, settings and fonts come across on first run.\n"
+                                   L"•  agwinterm lite stays installed until you remove it, so you can go back.\n"
+                                   L"•  Scripts using --pipe agwinterm-lite keep working.\n\n"
+                                   L"Download verified (SHA-256). Install agliteterm and restart now?";
+                if (MessageBoxW(msg.c_str(), L"agwinterm lite is now agliteterm", MB_OKCANCEL | MB_ICONQUESTION) == IDOK) {
                     wchar_t exe[MAX_PATH];
                     GetModuleFileNameW(nullptr, exe, MAX_PATH);
+                    std::wstring succ = updSuccessorExe();
                     std::wstring cmd = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden"
                                        L" -File \"" + a->helper + L"\" -ProcId " + std::to_wstring(GetCurrentProcessId()) +
                                        L" -Payload \"" + a->payload + L"\" -Exe \"" + exe + L"\"";
+                    if (!succ.empty())          // hand the session to agliteterm, not back to us
+                        cmd += L" -Successor \"" + succ + L"\"";
                     if (!g_isDefaultInstance)   // named instances come back under their own pipe
                         cmd += L" -Instance \"" + g_instance + L"\"";
                     STARTUPINFOW si{ sizeof si }; PROCESS_INFORMATION pi{};
