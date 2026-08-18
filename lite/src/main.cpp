@@ -3361,11 +3361,13 @@ static const char kUpdHelper[] =
     "Log 'applying'\n"
     "Start-Process $Payload -ArgumentList '/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES' -Wait\n"
     "Log 'setup finished'\n"
-    // The instance name is passed as its OWN element, not baked into one argument string: a name with
+    // The instance name has to survive the round trip intact: a name with
     // a space ("--pipe my win") came back through CommandLineToArgvW as instance "my", which is a
     // different pipe AND a different state file — the "my sessions are gone" shape, self-inflicted by
-    // the update. Start-Process quotes an element that needs it.
-    "if ($Instance) { Start-Process $Exe -ArgumentList '--pipe', $Instance } else { Start-Process $Exe }\n"
+    // the update. Passing it as its own -ArgumentList element is NOT enough: Start-Process joins
+    // the list with spaces and quotes nothing, so the quotes have to be part of the value. The
+    // app parses its own command line with CommandLineToArgvW, which strips them again.
+    "if ($Instance) { Start-Process $Exe -ArgumentList '--pipe', ('\"' + $Instance + '\"') } else { Start-Process $Exe }\n"
     "Log 'relaunched'\n";
 
 static std::wstring* updHeapStr(const std::wstring& s) { return new std::wstring(s); }   // freed by the UI handler
