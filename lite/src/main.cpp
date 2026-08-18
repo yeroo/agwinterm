@@ -1545,6 +1545,7 @@ static std::vector<HostSession> hostSessions() {
 // What the host held when this lite connected, read ONCE at startup (the list is also the handshake
 // probe, so asking twice was a wasted round trip). Filled by scanHostSessions().
 static std::vector<HostSession> g_hostLive;
+static std::vector<std::string> g_adoptedIds;   // ids this launch picked back up (never reaped)
 
 /// Read the host's sessions and make sure this window can never mint an id the host already has.
 /// Must run for EVERY launch, not just a restoring one: with --no-restore (or a state file that
@@ -1606,13 +1607,16 @@ static void closeSessionAt(int idx) {
     bool anyVisible = false;
     for (const Session* vs : g_sessions) if (!vs->hidden || vs == splitShell) { anyVisible = true; break; }
     bool allGone = g_sessions.empty();
+    // Set under the lock, with the session list it was judged from: this runs on the control-pipe
+    // thread as well as the UI one, and saveSessionState reads the flag to decide whether it may
+    // write a zero-session file and drop the .bak.
+    if (!anyVisible) g_userEmptied = true;
     LeaveCriticalSection(&g_lock);
     // The user closed the last session, so the window goes with it. This is the ONLY path that may
     // legitimately write a zero-session state file; every other empty list is transient and the save
     // refuses it (see saveSessionState). The flag describes THIS empty, not the process: driven over
     // the control pipe the DestroyWindow below is a no-op (wrong thread) and the window lives on, so
     // adding a session clears it again — otherwise the guard would stay off for good.
-    if (!anyVisible) g_userEmptied = true;
     if (allGone) { DestroyWindow(g_hwnd); return; }
     syncPaneSizes();
     InvalidateRect(g_hwnd, nullptr, FALSE);
@@ -1993,7 +1997,13 @@ static int stateFileSessionCount(const std::wstring& path, DWORD* err = nullptr)
     int n = 0;
     for (size_t i = 0; i < d.size();) {
         size_t e = d.find('\n', i);
-        if (d.compare(i, 2, "S\t") == 0) n++;
+        size_t len = (e == std::string::npos) ? d.size() - i : e - i;
+        // Count what parseStateFile would actually RESTORE, not every line that merely starts "S\t".
+        // A record cut mid-write (what an interrupted in-place save leaves) parses to nothing, so
+        // counting it as a session would let the save rotate that wreckage into the .bak — over the
+        // one generation that still held the sessions — and let it call a good file "not empty".
+        if (d.compare(i, 2, "S\t") == 0 &&
+            std::count(d.begin() + i, d.begin() + i + len, '\t') >= 4) n++;
         if (e == std::string::npos) break;
         i = e + 1;
     }
@@ -2021,7 +2031,13 @@ static std::string tsvField(const std::string& s) {
 // place, so the only copy was destroyed the instant the write began.
 static void saveSessionState() {
     std::wstring path = stateFilePath();
-    if (path.empty()) return;
+    if (path.empty()) {
+        // The last silent save failure left: no state directory means nothing is written and, before
+        // this line, nothing said so — "restore doesn't work" with an empty log, on exactly the kind
+        // of redirected/policy-locked profile the field reports come from.
+        logWarn("save FAILED: no state directory (%%LOCALAPPDATA%% is not set) — nothing was saved");
+        return;
+    }
     std::string out = "V1\n";
     for (const auto& w : g_workspaces) out += "W\t" + tsvField(narrow(w)) + "\n";
     EnterCriticalSection(&g_lock);
@@ -2045,6 +2061,10 @@ static void saveSessionState() {
         idLine += "\t" + s->id;
         saved++;
     }
+    // Read under the lock, with the session list it describes: the flag is written from the
+    // control-pipe thread (closeSessionAt) while this can run on the UI one, and it gates both the
+    // zero-session refusal and the .bak delete — the two decisions that can cost saved sessions.
+    bool userEmptied = g_userEmptied;
     LeaveCriticalSection(&g_lock);
     if (!flagLine.empty()) out += "F" + flagLine + "\n";
     if (!idLine.empty()) out += "D" + idLine + "\n";
@@ -2053,7 +2073,7 @@ static void saveSessionState() {
     // Anything that rebuilds the tree while the session list is momentarily empty used to rewrite the
     // file with zero S lines — a good file replaced by a useless one, with nothing to fall back to.
     // The one legitimate zero-session save is the user closing the last session (g_userEmptied).
-    if (saved == 0 && !g_userEmptied) {
+    if (saved == 0 && !userEmptied) {
         DWORD hadErr = 0;
         int had = stateFileSessionCount(path, &hadErr);
         // No file yet is not a file that "could not be read" — that is every first run, and saying
@@ -2083,6 +2103,14 @@ static void saveSessionState() {
         // right trade only because the alternative here is no file at all, and it is what every build
         // before this one did on every save.
         DWORD terr = GetLastError();
+        // Keep the generation by hand, because CREATE_ALWAYS below truncates the only copy the
+        // instant it opens — the atomic path's rotation (ReplaceFileW) is exactly what this path
+        // does not get. Copying first is best effort: if it fails the in-place write still has to
+        // happen, since the alternative here is no file at all.
+        if (!(saved == 0 && userEmptied) && stateFileSessionCount(path) > 0 &&
+            !CopyFileW(path.c_str(), bak.c_str(), FALSE))
+            logWarn("save: could not keep a .bak generation of %s (err %lu) before writing in place",
+                    narrow(path).c_str(), GetLastError());
         HANDLE g = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (g == INVALID_HANDLE_VALUE) {
             // The silent return that made "restore doesn't work" unanswerable in the field: if the
@@ -2100,11 +2128,15 @@ static void saveSessionState() {
         DWORD werr2 = ok2 ? 0 : GetLastError();
         if (ok2) FlushFileBuffers(g);
         CloseHandle(g);
-        if (ok2 && wr2 == out.size())
+        if (ok2 && wr2 == out.size()) {
+            // The same rule the atomic path applies: the user emptying the window on purpose drops
+            // the previous generation. Left behind, restore's fallback reads it on the next launch
+            // and brings back exactly the sessions they just closed.
+            if (saved == 0 && userEmptied) DeleteFileW(bak.c_str());
             logWarn("save ok (IN PLACE): %d session(s), %zu bytes -> %s — %s could not be created "
                     "(err %lu), so this save was not atomic",
                     saved, out.size(), narrow(path).c_str(), narrow(tmp).c_str(), terr);
-        else
+        } else
             logWarn("save FAILED in place to %s: wrote %lu of %zu bytes (err %lu) after %s could not "
                     "be created (err %lu)", narrow(path).c_str(), wr2, out.size(), werr2,
                     narrow(tmp).c_str(), terr);
@@ -2121,12 +2153,19 @@ static void saveSessionState() {
         DeleteFileW(tmp.c_str());
         return;
     }
-    // Keep exactly one previous generation, but only rotate a file that actually held sessions, so a
-    // good .bak is never overwritten by an empty or absent primary. The user emptying the window ON
-    // PURPOSE is the one case that drops the .bak: keeping it would resurrect on the next launch
-    // exactly what they just closed.
-    bool rotate = !(saved == 0 && g_userEmptied) && stateFileSessionCount(path) > 0;
-    if (saved == 0 && g_userEmptied) DeleteFileW(bak.c_str());
+    // Keep exactly one previous generation, but only rotate a file that is actually worth keeping, so
+    // a good .bak is never overwritten by an empty primary. The user emptying the window ON PURPOSE is
+    // the one case that drops the .bak: keeping it would resurrect on the next launch exactly what
+    // they just closed. A primary that exists but cannot be READ right now (an AV scan, a transient
+    // lock) still holds the saved sessions, so it counts as worth keeping — publishing over it with no
+    // .bak is the one outcome that loses them. Only "there is no file at all" — every first save —
+    // means there is nothing to preserve, and that is also the case ReplaceFileW cannot serve (it
+    // needs an existing target).
+    DWORD prevErr = 0;
+    int prev = stateFileSessionCount(path, &prevErr);
+    bool havePrev = prev > 0 || (prev < 0 && prevErr != ERROR_FILE_NOT_FOUND && prevErr != ERROR_PATH_NOT_FOUND);
+    bool rotate = !(saved == 0 && userEmptied) && havePrev;
+    if (saved == 0 && userEmptied) DeleteFileW(bak.c_str());
     // ReplaceFileW does the rotation and the publish as ONE operation, and never unlinks the target
     // in between. Doing it as two renames leaves a window in which no primary exists at all — and a
     // shutdown landing in that window (the OnDestroy save is exactly when Windows is killing things)
@@ -5648,6 +5687,13 @@ static std::string ctlDispatch(const std::string& line) {
             std::wstring nm = w->name;   // copy before the instance dies
             PostMessageW(w->hwnd, WM_CLOSE, 0, 0);
             if (cmd == "window.delete" && lstrcmpiW(nm.c_str(), L"agwinterm-lite") != 0) {
+                // The name becomes a FILENAME here, and it arrives from the HKCU instance registry —
+                // which an older build, or a hand edit, can have written unsanitized. "..\..\x" would
+                // then delete outside the state directory. Only ever delete state belonging to a name
+                // this build would itself have registered; the window is closed either way.
+                if (sanitizeInstanceName(nm) != nm)
+                    return ctlErr("window '" + narrow(nm) + "' was closed, but its name is not one "
+                                  "this build would create, so its state file was left alone");
                 Sleep(800);   // let it finish its teardown writes, then drop its saved state
                 wchar_t base[MAX_PATH];
                 if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) {
@@ -5827,6 +5873,33 @@ static Session* failedSpecSession(const RestoreSpec& sp, int cols, int rows) {
     return s;
 }
 
+// Host records whose shell has EXITED are tombstones only an explicit kill removes, and no other code
+// path ever sends one: nothing here closed them, so nothing here killed them. They survive every
+// future launch, and enough of them push `list` past this build's field storage (ListReply.sessions
+// is max_count:64), at which point the whole reply stops decoding and adoption — plus the id
+// reservation that rides along with it — is off PERMANENTLY. Sweep them once adoption has had its
+// chance. Runs on EVERY launch, not just a restoring one: --no-restore, a missing state file and a
+// file that parsed to nothing all leave the host holding the same tombstones, and those are exactly
+// the launches after which nobody ever comes back to clear them. Deliberately narrow: only this
+// instance's id prefix (another window's sessions are not ours to touch), only entries the host
+// reported exited, never one it reported attached, and never one this run just adopted.
+static void reapExitedHostSessions() {
+    for (const auto& hs : g_hostLive) {
+        if (!hs.exited || hs.attached) continue;
+        size_t dash = hs.id.rfind('-');
+        if (dash == std::string::npos || hs.id.compare(0, dash, g_idPrefix) != 0) continue;
+        if (!fitsField(hs.id.c_str(), sizeof agwinterm_ptyhost_SessionRef::id)) continue;
+        bool mine = false;
+        for (const auto& t : g_adoptedIds) if (t == hs.id) { mine = true; break; }
+        if (mine) continue;
+        agwinterm_ptyhost_Request k = agwinterm_ptyhost_Request_init_default;
+        agwinterm_ptyhost_Reply kr = agwinterm_ptyhost_Reply_init_default;
+        k.which_cmd = agwinterm_ptyhost_Request_kill_tag;
+        strcpy_s(k.cmd.kill.id, hs.id.c_str());
+        if (request(k, &kr)) logInfo("restore: reaped exited host session '%s'", hs.id.c_str());
+    }
+}
+
 // Rebuild the saved workspaces + sessions on launch. Returns false (caller opens a default session) if
 // there's nothing to restore. Sessions relaunch with their remembered profile + creation cwd.
 static bool restoreSessions() {
@@ -5886,7 +5959,8 @@ static bool restoreSessions() {
     // which is the case the .bak fallback exists for — adopts one host session into TWO panes: the
     // second attach supersedes the first, the first goes dead on EOF, and closing either kills the
     // shell out from under the other.
-    std::vector<std::string> taken;
+    std::vector<std::string>& taken = g_adoptedIds;   // the reap below must never touch these
+    taken.clear();
     auto isAdoptable = [&](const std::string& id) {
         if (id.empty()) return false;
         for (const auto& t : taken) if (t == id) return false;
@@ -5904,7 +5978,12 @@ static bool restoreSessions() {
                               sp.args.empty() ? nullptr : &sp.args, sp.cwd.empty() ? nullptr : sp.cwd.c_str(),
                               true);   // repaint: the shell already has a screen, ask it to redraw
             if (s) { adopted++; taken.push_back(want); logInfo("restore: adopted live session '%s' (%s)", want.c_str(), sp.name.c_str()); }
-            else logWarn("restore: adopt of live session '%s' failed — creating a fresh one", want.c_str());
+            // The shell itself is untouched by a failed adopt (attach may well have succeeded and
+            // only the data pipe refused), so it keeps running under an id nothing points at any
+            // more — a duplicate for the same spec is created beside it. Name the id: that orphan is
+            // otherwise invisible, and it is the reader's only handle on "why are there two?".
+            else logWarn("restore: adopt of live session '%s' failed — creating a fresh one; the "
+                         "host may still be running the old shell under that id", want.c_str());
         }
         if (!s)
             s = newSession(cols, rows, sp.app.empty() ? nullptr : sp.app.c_str(),
@@ -5923,28 +6002,6 @@ static bool restoreSessions() {
         }
     }
     g_restoring = false;
-    // Host records whose shell has EXITED are tombstones only an explicit kill removes, and no other
-    // code path ever sends one: nothing here closed them, so nothing here killed them. They survive
-    // every future launch, and enough of them push `list` past this build's field storage
-    // (ListReply.sessions is max_count:64), at which point the whole reply stops decoding and
-    // adoption — plus the id reservation that rides along with it — is off PERMANENTLY. Sweep them
-    // now that adoption is done. Deliberately narrow: only this instance's id prefix (another
-    // window's sessions are not ours to touch), only entries the host reported exited, never one it
-    // reported attached, and never one this run just adopted.
-    for (const auto& hs : g_hostLive) {
-        if (!hs.exited || hs.attached) continue;
-        size_t dash = hs.id.rfind('-');
-        if (dash == std::string::npos || hs.id.compare(0, dash, g_idPrefix) != 0) continue;
-        if (!fitsField(hs.id.c_str(), sizeof agwinterm_ptyhost_SessionRef::id)) continue;
-        bool mine = false;
-        for (const auto& t : taken) if (t == hs.id) { mine = true; break; }
-        if (mine) continue;
-        agwinterm_ptyhost_Request k = agwinterm_ptyhost_Request_init_default;
-        agwinterm_ptyhost_Reply kr = agwinterm_ptyhost_Reply_init_default;
-        k.which_cmd = agwinterm_ptyhost_Request_kill_tag;
-        strcpy_s(k.cmd.kill.id, hs.id.c_str());
-        if (request(k, &kr)) logInfo("restore: reaped exited host session '%s'", hs.id.c_str());
-    }
     logInfo("restore: %d of %zu session(s) built (%d adopted live from the pty-host, %d kept as dead)",
             built, specs.size(), adopted, dead);
     if (firstIdx < 0) {   // exit 4 of 4: specs parsed but nothing could be started
@@ -6165,6 +6222,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     bool haveProf = resolveLaunchProfile(argApp, argAppArgs);
     bool wantLaunch = haveProf || !g_argDir.empty();   // -p/-d ask for a specific session
     bool restored = !g_argNoRestore && restoreSessions();
+    reapExitedHostSessions();   // after adoption has had its chance, on every launch path
     if (!restored || wantLaunch) {   // fresh first session, or an EXTRA one for the launch args
         int cols, rows;
         paneGridSize(0, &cols, &rows);
