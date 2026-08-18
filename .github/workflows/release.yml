@@ -27,7 +27,7 @@ jobs:
         run: choco install innosetup -y --no-progress
 
       # Builds BOTH Inno setups: agwinterm-setup-<ver>.exe (main) and
-      # agwinterm-lite-setup-<ver>.exe (the C++/GDI client, standalone).
+      # agliteterm-setup-<ver>.exe (the C++/GDI client, standalone).
       - name: Build installers
         shell: pwsh
         run: ./installer/build.ps1
@@ -56,7 +56,7 @@ jobs:
         with:
           subject-path: |
             installer/Output/agwinterm-setup-*.exe
-            installer/Output/agwinterm-lite-setup-*.exe
+            installer/Output/agliteterm-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
             installer/Output/agwinterm_core-abi*.dll
             installer/Output/agwinterm-ptyhost-abi*.exe
@@ -67,7 +67,7 @@ jobs:
         with:
           files: |
             installer/Output/agwinterm-setup-*.exe
-            installer/Output/agwinterm-lite-setup-*.exe
+            installer/Output/agliteterm-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
             installer/Output/agwinterm_core-abi*.dll
             installer/Output/agwinterm-ptyhost-abi*.exe

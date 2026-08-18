@@ -199,16 +199,16 @@ agwintermctl window new --name scratchpad    # open a second window
 Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
 Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.
 
-## agwinterm-lite — the tiny client
+## agliteterm — the tiny client
 
-> **lite is becoming its own product, `agliteterm`.** This release is the handover: its
-> *Help → Check for Updates* points at the agliteterm feed, so an existing install finds the
-> successor by the mechanism it already trusts. agliteterm installs **alongside** rather than
-> replacing this one and adopts your sessions, settings and fonts on first run, so nothing is
-> lost and you can go back. Scripts that use `--pipe agwinterm-lite` keep working; the
+> **lite is now `agliteterm`, its own product.** Same client, new name, new home. An existing
+> **agwinterm-lite** install is handed over by its own updater — 0.17.4 points at the agliteterm
+> feed — and agliteterm installs **alongside** rather than replacing it, adopting your sessions,
+> settings and fonts on first run, so nothing is lost and you can go back. Scripts that use
+> `--pipe agwinterm-lite` keep working: the default instance answers on both names. The
 > `AGWINTERM_*` session variables are unchanged.
 
-**`agwinterm-lite`** is a second, minimal client for old or low-RAM machines: a single small
+**`agliteterm`** is a second, minimal client for old or low-RAM machines: a single small
 C++ exe (Win32/WTL, no .NET) over the same Rust emulator core and pty-host. It trades the
 custom-drawn chrome for **real native controls** — menu bar, toolbar, TreeView sidebar,
 status bar — in the classic Windows look.
@@ -228,18 +228,18 @@ status bar — in the classic Windows look.
   default — keystrokes belong to your shell).
 - **Scriptable**: the same newline-JSON control pipe, speaking the `agwintermctl` dialect —
   38 verbs covering sessions, workspaces, windows, and the tree (`agwintermctl --pipe
-  agwinterm-lite tree`). Shells get `AGWINTERM_*` env, so hooks and the agent skill work.
+  agliteterm tree`). Shells get `AGWINTERM_*` env, so hooks and the agent skill work.
 - **Multi-window, the lite way**: every window is its own tiny process (`--pipe <name>`), all
   sharing one pty-host; `agwintermctl window new/list/select/...` drives them.
 - **CLI**: `-p/--profile`, `-d/--dir`, `--maximized`, `--no-restore`, `--pipe` — the full app's
   flag names — plus `--diagnose` (see below).
 - **Explains itself**: lite keeps a small always-on log of its own decisions — session saves and
   restores (with counts, byte totals, and the exact error when a write fails), focus handoffs, and
-  font/pack resolution — at `%LOCALAPPDATA%\agwinterm-lite\lite.log` (`lite-<instance>.log` for named
+  font/pack resolution — at `%LOCALAPPDATA%\agliteterm\agliteterm.log` (`agliteterm-<instance>.log` for named
   instances), rotating at ~1 MB into `.log.old`. It records what lite *did*, never terminal output,
   pasted text, or your command lines, so it's safe to attach to an issue.
 
-Grab **`agwinterm-lite-setup-<version>.exe`** from Releases (per-user, no admin), or build it
+Grab **`agliteterm-setup-<version>.exe`** from Releases (per-user, no admin), or build it
 (needs the VC++ ATL component): `./lite/build.ps1` (dev build) / `./installer/build-lite.ps1` (setup).
 
 ### Session restore & the state file
@@ -247,7 +247,7 @@ Grab **`agwinterm-lite-setup-<version>.exe`** from Releases (per-user, no admin)
 Lite saves its workspaces and sessions whenever the tree changes and on exit, and rebuilds them on
 the next launch (`--no-restore` starts empty instead). Everything about that is on disk and readable:
 
-- **One state file per instance.** `%LOCALAPPDATA%\agwinterm-lite\sessions.tsv` for the default
+- **One state file per instance.** `%LOCALAPPDATA%\agliteterm\sessions.tsv` for the default
   instance, `sessions-<instance>.tsv` for a named one. **Because every lite window is its own
   process, each window restores only its own sessions** — sessions you created in
   `--pipe work` come back in `--pipe work`, never in the default window. That is the mundane
@@ -289,29 +289,29 @@ the next launch (`--no-restore` starts empty instead). Everything about that is 
   it starts normally again on the machine that has the app. Scripts can spot one without reading the
   log: `agwintermctl tree --json` reports `"failed"` and `"exited"` per session.
 
-Every one of those branches names itself in `lite.log`, and `lite/test/restore-matrix.ps1` drives the
+Every one of those branches names itself in `agliteterm.log`, and `lite/test/restore-matrix.ps1` drives the
 whole matrix — kill vs. graceful close, two windows at once, interrupted writes, `.bak` fallback,
 bogus apps, old and future file formats — as regression cover.
 
 If lite exits at startup with **"pty-host did not become usable"**, a previous `agwinterm-ptyhost.exe`
-is wedged: end it in Task Manager and relaunch. `lite.log` records the connection attempt by attempt,
+is wedged: end it in Task Manager and relaunch. `agliteterm.log` records the connection attempt by attempt,
 including the case it is really there for — a host left dying by a killed window, which answers a
 handshake for a moment while refusing every real command.
 
 ### Reporting a lite problem
 
-Run `agwinterm-lite --diagnose` and attach its output plus `lite.log`. The report is read-only and
+Run `agliteterm --diagnose` and attach its output plus `agliteterm.log`. The report is read-only and
 safe to run while lite is open; it prints the state file's path, whether that directory is genuinely
 writable (a real write probe, which is what catches a redirected or policy-locked profile), the state
 file's contents and its `.bak` generation, the resolved font, and the bundled pack inventory:
 
 ```
-> agwinterm-lite --diagnose
+> agliteterm --diagnose
   version: 0.17.2
   instance: (default)
-  restart cmdline: "C:\Users\you\AppData\Local\Programs\agwinterm\agwinterm-lite.exe"
+  restart cmdline: "C:\Users\you\AppData\Local\Programs\agliteterm\agliteterm.exe"
 state
-  dir: C:\Users\you\AppData\Local\agwinterm-lite
+  dir: C:\Users\you\AppData\Local\agliteterm
   dir writable: yes
   session file: ...\sessions.tsv
     size: 59 bytes

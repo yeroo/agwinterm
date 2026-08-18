@@ -15,7 +15,7 @@
 # every cell (and any lite window already open) talks to the same agwinterm-ptyhost.exe. Don't run
 # the suite with a real lite window open — the last instance out shuts the host down.
 param(
-    [string]$Exe = "$PSScriptRoot\..\bin\agwinterm-lite.exe",
+    [string]$Exe = "$PSScriptRoot\..\bin\agliteterm.exe",
     [string]$Only = ''          # run a single cell by name
 )
 
@@ -25,11 +25,11 @@ $ErrorActionPreference = 'Stop'
 # iteration and every cell fails for a reason that has nothing to do with restore.
 $PSNativeCommandUseErrorActionPreference = $false
 $ctl = "$env:LOCALAPPDATA\Programs\agwinterm\agwintermctl.exe"
-$dir = "$env:LOCALAPPDATA\agwinterm-lite"
+$dir = "$env:LOCALAPPDATA\agliteterm"
 $script:failed = @()
 
 function State($inst) { "$dir\sessions-$inst.tsv" }
-function Log($inst)   { "$dir\lite-$inst.log" }
+function Log($inst)   { "$dir\agliteterm-$inst.log" }
 
 # Seed a state file with EXACTLY these bytes. Not Set-Content -Encoding utf8: that means "UTF-8 with
 # BOM" on Windows PowerShell 5.1 and "UTF-8 without BOM" on pwsh 7, so under 5.1 every seeded file
@@ -422,21 +422,21 @@ if (-not $Only -or $Only -eq 'two-windows') {
 # and read a different sessions file. Nothing crashed; the sessions were simply someone else's.
 
 function Find-Lite($inst) {
-    Get-CimInstance Win32_Process -Filter "Name='agwinterm-lite.exe'" |
+    Get-CimInstance Win32_Process -Filter "Name='agliteterm.exe'" |
         Where-Object { $_.CommandLine -match [regex]::Escape($inst) } |
         ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
 }
 
-# Every agwinterm-lite.exe alive right now, by pid. Snapshotted before the restart so anything the
+# Every agliteterm.exe alive right now, by pid. Snapshotted before the restart so anything the
 # restart itself produces can be told apart from the user's own running lite.
-function Lite-Pids { @(Get-CimInstance Win32_Process -Filter "Name='agwinterm-lite.exe'" | ForEach-Object { $_.ProcessId }) }
+function Lite-Pids { @(Get-CimInstance Win32_Process -Filter "Name='agliteterm.exe'" | ForEach-Object { $_.ProcessId }) }
 
 # The regression this cell exists to catch is also the regression that makes it dangerous: if
 # restartCommandLine() ever drops the --pipe, "Restart everything" relaunches as the DEFAULT
 # instance, which owns the user's REAL sessions.tsv and would overwrite it on its next save. The
 # cell's own $p2 lookup finds nothing in that case and throws, so nothing else would ever stop it.
 function Stop-Stray-Lite($known) {
-    Get-CimInstance Win32_Process -Filter "Name='agwinterm-lite.exe'" |
+    Get-CimInstance Win32_Process -Filter "Name='agliteterm.exe'" |
         Where-Object { $known -notcontains $_.ProcessId } | ForEach-Object {
             "        (stopping stray lite pid $($_.ProcessId): $($_.CommandLine))"
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
@@ -510,8 +510,8 @@ Restart-Cell -Name 'restart-named'
 if (-not $Only -or $Only -eq 'restart-cmdline') {
     $named = (& $Exe --pipe rm-restart-cmdline --diagnose 2>&1 | Out-String)
     $plain = (& $Exe --diagnose 2>&1 | Out-String)
-    $nOk = $named -match '(?m)^\s*restart cmdline: .*agwinterm-lite\.exe" --pipe "rm-restart-cmdline"'
-    $dOk = ($plain -match '(?m)^\s*restart cmdline: .*agwinterm-lite\.exe"\s*$') -and ($plain -notmatch 'restart cmdline: .*--pipe')
+    $nOk = $named -match '(?m)^\s*restart cmdline: .*agliteterm\.exe" --pipe "rm-restart-cmdline"'
+    $dOk = ($plain -match '(?m)^\s*restart cmdline: .*agliteterm\.exe"\s*$') -and ($plain -notmatch 'restart cmdline: .*--pipe')
     if ($nOk -and $dOk) {
         "  PASS  {0,-22} (named keeps --pipe; default stays bare)" -f 'restart-cmdline'
     } else {
