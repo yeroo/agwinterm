@@ -48,6 +48,23 @@ jobs:
           Copy-Item native/target/release/agwinterm_core.dll     "installer/Output/agwinterm_core-abi$abi.dll"
           Copy-Item native/target/release/agwinterm-ptyhost.exe  "installer/Output/agwinterm-ptyhost-abi$abi.exe"
 
+      # agliteterm ships from its own repository but is driven by the SAME control client — which
+      # is what "speaks the agwintermctl dialect" has to mean if it is to be tested rather than
+      # asserted. Its CI cannot install agwinterm to get one, so the client ships as a release
+      # asset: SELF-CONTAINED single file, so the consuming repo pins no .NET version and the
+      # contract is one URL rather than a runtime handshake.
+      # Compressed (73 MB -> 37 MB); NOT trimmed — trimming a reflection-using JSON path to save
+      # another 20 MB would be a poor trade for the tool that verifies the API contract.
+      - name: Publish agwintermctl for other repositories
+        shell: pwsh
+        run: |
+          $v = '${{ github.ref_name }}'
+          $v = if ($v -match '^v\d') { $v.TrimStart('v') } else { '0.0.0' }
+          dotnet publish src/Agwinterm.Ctl/Agwinterm.Ctl.csproj -c Release -r win-x64 `
+            --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:Version=$v `
+            -o ctl-publish
+          Copy-Item ctl-publish/agwintermctl.exe installer/Output/agwintermctl.exe
+
       # Free, certless supply-chain signing: a Sigstore-backed attestation binding each artifact to
       # this commit + workflow. Verify with:  gh attestation verify <file> --repo yeroo/agwinterm
       # (Doesn't remove SmartScreen — that needs Authenticode, e.g. a SignPath Foundation OSS cert.)
@@ -58,6 +75,7 @@ jobs:
             installer/Output/agwinterm-setup-*.exe
             installer/Output/agliteterm-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
+            installer/Output/agwintermctl.exe
             installer/Output/agwinterm_core-abi*.dll
             installer/Output/agwinterm-ptyhost-abi*.exe
             installer/Output/agwinterm-core-abi.json
@@ -69,11 +87,12 @@ jobs:
             installer/Output/agwinterm-setup-*.exe
             installer/Output/agliteterm-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
+            installer/Output/agwintermctl.exe
             installer/Output/agwinterm_core-abi*.dll
             installer/Output/agwinterm-ptyhost-abi*.exe
             installer/Output/agwinterm-core-abi.json
           generate_release_notes: true
-          fail_on_unmatched_files: true    # all three are hard build products now — a missing one is a broken release
+          fail_on_unmatched_files: true    # every one is a hard build product now — a missing one is a broken release
 
   # Opens the version-bump PR to microsoft/winget-pkgs for each release. Runs as a job here
   # (not a `release:` workflow) because releases published with GITHUB_TOKEN don't trigger
