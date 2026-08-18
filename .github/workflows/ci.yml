@@ -47,6 +47,15 @@ jobs:
         shell: pwsh
         run: ./lite/build.ps1
 
+      # The control API is a cross-product contract now: agliteterm ships from its own repository
+      # promising to speak this dialect, and its CI runs THIS spec against its own client. Running
+      # it here too is what makes "same control API" a gate rather than a claim — a verb reshaped
+      # in the full app fails the other product's build, and vice versa.
+      - name: Control-API conformance
+        shell: pwsh
+        timeout-minutes: 15
+        run: ./tests/conformance/conformance.ps1 -Strict
+
       - name: Test (Core + Pty)
         # One retry for the known .NET 10 test-host #118 pathology under named-pipe churn, which
         # manifests two ways: a native CRASH ("Test Run Aborted") OR a DEADLOCK that hangs the run
