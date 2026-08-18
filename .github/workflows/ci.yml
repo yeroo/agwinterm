@@ -28,6 +28,13 @@ jobs:
       - name: Build
         run: dotnet build Agwinterm.slnx -c Release --no-restore
 
+      - name: Check agwinterm-core ABI agreement
+        # The C ABI is declared three times (Rust const, C# RequiredAbi, lite kRequiredAbi) and a
+        # drift is otherwise only caught at load, by whoever runs the mismatched pair. Cheap to
+        # check, and it becomes the cross-repo gate once agliteterm ships from its own repository.
+        shell: pwsh
+        run: ./tools/check-abi.ps1
+
       - name: Build Rust core (arms the parity oracle)
         # RustParityTests skip silently when the crate dll is absent; building it here makes
         # the C#↔Rust differential oracles (wcwidth, screen, parser, emulator, images) a
