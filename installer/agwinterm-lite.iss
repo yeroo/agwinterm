@@ -2,31 +2,31 @@
 ; its own copy of the shared Rust pty-host + core dll, plus its bundled fonts + toolbar icons.
 ; Built via installer\build.ps1 (stages to stage-lite\ then runs ISCC on this file).
 
-#define AppName    "agliteterm"
-#define AppVersion "0.17.3"
-#define AppExe     "agliteterm.exe"
+#define AppName    "agwinterm lite"
+#define AppVersion "0.17.4"
+#define AppExe     "agwinterm-lite.exe"
 #define AppPublisher "Boris Kudriashov"
 
 [Setup]
-AppId={{E0ACBA4E-AAD3-4689-9234-66D3CD207A6A}
+AppId={{B8F4A2D3-6C1E-4F7B-9D32-4A1E8B5C9F26}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 VersionInfoVersion={#AppVersion}
-DefaultDirName={localappdata}\Programs\agliteterm
+DefaultDirName={localappdata}\Programs\agwinterm-lite
 DisableProgramGroupPage=yes
 DisableDirPage=auto
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-SetupIconFile=..\lite\assets\agliteterm.ico
+SetupIconFile=..\lite\assets\agwinterm-lite.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 WizardStyle=modern
 Compression=lzma2
 SolidCompression=yes
 OutputDir=Output
-OutputBaseFilename=agliteterm-setup-{#AppVersion}
+OutputBaseFilename=agwinterm-lite-setup-{#AppVersion}
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"

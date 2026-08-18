@@ -1,6 +1,6 @@
 # Build BOTH agwinterm installers (separate setups for the main terminal and lite):
 #   installer\Output\agwinterm-setup-<ver>.exe        (main: Agwinterm.Win32 + agwintermctl)
-#   installer\Output\agliteterm-setup-<ver>.exe       (agliteterm.exe, standalone)
+#   installer\Output\agwinterm-lite-setup-<ver>.exe   (lite: agwinterm-lite.exe, standalone)
 # Each ships its own copy of the shared Rust pty-host + core dll.
 # Prereqs: .NET SDK (net10.0-windows) + Inno Setup 6 (ISCC on PATH or the usual locations).
 $ErrorActionPreference = "Stop"
@@ -27,9 +27,9 @@ foreach ($d in @($stage, $stageLite)) { if (Test-Path $d) { Remove-Item -Recurse
 $issText = Get-Content (Join-Path $here "agwinterm.iss") -Raw
 if ($issText -notmatch '#define\s+AppVersion\s+"([^"]+)"') { throw "AppVersion not found in agwinterm.iss" }
 $ver = $Matches[1]
-$liteText = Get-Content (Join-Path $here "agliteterm.iss") -Raw
+$liteText = Get-Content (Join-Path $here "agwinterm-lite.iss") -Raw
 if ($liteText -match '#define\s+AppVersion\s+"([^"]+)"' -and $Matches[1] -ne $ver) {
-  throw "version mismatch: agwinterm.iss=$ver but agliteterm.iss=$($Matches[1]) - keep them in step"
+  throw "version mismatch: agwinterm.iss=$ver but agwinterm-lite.iss=$($Matches[1]) - keep them in step"
 }
 
 # Self-contained folder publish (robust for Vortice native libs + the on-disk themes\/assets\).
@@ -55,12 +55,12 @@ Copy-Item $ptyExe  $stage -Force
 Copy-Item (Join-Path $root "lite\assets\MesloLGLDZNerdFont-Regular.ttf") $stage -Force
 Copy-Item (Join-Path $root "lite\assets\FONT-LICENSE.txt") $stage -Force
 
-Write-Host "== build agliteterm (C++/GDI) ==" -ForegroundColor Cyan
+Write-Host "== build agwinterm-lite (C++/GDI) ==" -ForegroundColor Cyan
 & (Join-Path $root "lite\build.ps1")
 if ($LASTEXITCODE -ne 0) { throw "lite build failed" }
 # Lite stage: the lite exe + its own copy of the shared core/pty-host + ALL bundled assets (fonts,
 # toolbar icons, licenses) + the app icon for its shortcut.
-Copy-Item (Join-Path $root "lite\bin\agliteterm.exe") $stageLite -Force
+Copy-Item (Join-Path $root "lite\bin\agwinterm-lite.exe") $stageLite -Force
 Copy-Item $coreDll $stageLite -Force
 Copy-Item $ptyExe  $stageLite -Force
 Copy-Item (Join-Path $root "lite\assets\*") $stageLite -Force   # fonts + licenses + lite icon
@@ -70,7 +70,7 @@ foreach ($f in @("Agwinterm.Win32.exe","agwintermctl.exe","agwinterm_core.dll","
   if (-not (Test-Path (Join-Path $stage $f))) { throw "main stage missing $f" }
 }
 if (-not (Get-ChildItem (Join-Path $stage "themes") -Filter *.conf -ErrorAction SilentlyContinue)) { throw "main stage missing themes\*.conf" }
-foreach ($f in @("agliteterm.exe","agwinterm_core.dll","agwinterm-ptyhost.exe","agliteterm.ico","CozetteVector.ttf")) {
+foreach ($f in @("agwinterm-lite.exe","agwinterm_core.dll","agwinterm-ptyhost.exe","agwinterm-lite.ico","CozetteVector.ttf")) {
   if (-not (Test-Path (Join-Path $stageLite $f))) { throw "lite stage missing $f" }
 }
 Write-Host ("stage OK: main {0} files, lite {1} files" -f (Get-ChildItem $stage -Recurse -File).Count, (Get-ChildItem $stageLite -Recurse -File).Count) -ForegroundColor Green
@@ -79,7 +79,7 @@ Write-Host "== compile main installer (ISCC) ==" -ForegroundColor Cyan
 & $iscc (Join-Path $here "agwinterm.iss")
 if ($LASTEXITCODE -ne 0) { throw "ISCC (main) failed" }
 Write-Host "== compile lite installer (ISCC) ==" -ForegroundColor Cyan
-& $iscc (Join-Path $here "agliteterm.iss")
+& $iscc (Join-Path $here "agwinterm-lite.iss")
 if ($LASTEXITCODE -ne 0) { throw "ISCC (lite) failed" }
 
 Get-ChildItem (Join-Path $here "Output") -Filter *.exe |

@@ -1,4 +1,4 @@
-# Build agliteterm: MSVC cl.exe (located via vswhere), plus the Rust workspace
+# Build agwinterm-lite: MSVC cl.exe (located via vswhere), plus the Rust workspace
 # it depends on. Output: lite\bin\ with the exe + agwinterm_core.dll + agwinterm-ptyhost.exe.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -26,12 +26,12 @@ $rc = Join-Path $PSScriptRoot 'src\lite.rc'
 # self-update compares this against GitHub releases. Missing iss (odd checkout) -> "dev",
 # which never triggers an update.
 $ver = 'dev'
-$iss = Join-Path $root 'installer\agliteterm.iss'
+$iss = Join-Path $root 'installer\agwinterm-lite.iss'
 if (Test-Path $iss) {
   $m = Select-String -Path $iss -Pattern '#define AppVersion "([^"]+)"'
   if ($m) { $ver = $m.Matches[0].Groups[1].Value }
 }
-$cmd = "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && rc /nologo /fo `"$bin\lite.res`" `"$rc`" && cl /nologo /O2 /W3 /EHsc /utf-8 /DUNICODE /D_UNICODE /DPB_FIELD_32BIT /DAGWL_VERSION_STR=`"\`"$ver\`"`" /I `"$pb`" /I `"$wtl`" `"$src`" `"$pb\ptyhost.pb.c`" `"$pb\pb_encode.c`" `"$pb\pb_decode.c`" `"$pb\pb_common.c`" /Fe:`"$bin\agliteterm.exe`" /Fo:`"$bin\\`" user32.lib gdi32.lib `"$bin\lite.res`""
+$cmd = "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" && rc /nologo /fo `"$bin\lite.res`" `"$rc`" && cl /nologo /O2 /W3 /EHsc /utf-8 /DUNICODE /D_UNICODE /DPB_FIELD_32BIT /DAGWL_VERSION_STR=`"\`"$ver\`"`" /I `"$pb`" /I `"$wtl`" `"$src`" `"$pb\ptyhost.pb.c`" `"$pb\pb_encode.c`" `"$pb\pb_decode.c`" `"$pb\pb_common.c`" /Fe:`"$bin\agwinterm-lite.exe`" /Fo:`"$bin\\`" user32.lib gdi32.lib `"$bin\lite.res`""
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { throw 'cl.exe failed' }
 
@@ -39,4 +39,4 @@ if ($LASTEXITCODE -ne 0) { throw 'cl.exe failed' }
 Copy-Item (Join-Path $root 'native\target\release\agwinterm_core.dll') $bin -Force
 Copy-Item (Join-Path $root 'native\target\release\agwinterm-ptyhost.exe') $bin -Force
 Copy-Item (Join-Path $PSScriptRoot 'assets\*') $bin -Force   # bundled font + license
-"built: $bin\agliteterm.exe"
+"built: $bin\agwinterm-lite.exe"
