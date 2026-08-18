@@ -54,9 +54,7 @@ jobs:
       - name: Control-API conformance
         shell: pwsh
         timeout-minutes: 15
-        env:
-          AGWINTERMCTL: ${{ github.workspace }}\src\Agwinterm.Ctl\bin\Release\net10.0-windows\agwintermctl.exe
-        run: ./tests/conformance/conformance.ps1 -Strict -Exe "${{ github.workspace }}\src\Agwinterm.Win32\bin\Release\net10.0-windows\win-x64\Agwinterm.Win32.exe"
+        run: ./tests/conformance/conformance.ps1 -Strict
 
       - name: Test (Core + Pty)
         # One retry for the known .NET 10 test-host #118 pathology under named-pipe churn, which

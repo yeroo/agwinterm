@@ -16,7 +16,7 @@
 #   - always a sandbox instance (--pipe <name>); never the default instance, which owns real state
 #   - never inject global input — every action goes through the control pipe
 param(
-    [string]$Exe = "$env:LOCALAPPDATA\Programs\agwinterm\Agwinterm.Win32.exe",
+    [string]$Exe,
     [string]$Spec = "$PSScriptRoot\control-api.json",
     # CI passes -Strict: a suite that skips is reporting success while checking nothing,
     # which is worse than not running it at all. Locally a skip is the right answer.
@@ -32,14 +32,29 @@ function Check([string]$name, [bool]$ok, [string]$detail = '') {
 
 "== conformance =="
 
-# The full app's own build tree first, then an installed copy — the same resolution order the
-# other repository uses, minus its download step.
-$ctl = @($env:AGWINTERMCTL,
-         (Join-Path $PSScriptRoot '..\..\src\Agwinterm.Ctl\bin\Release\net10.0-windows\agwintermctl.exe'),
-         "$env:LOCALAPPDATA\Programs\agwinterm\agwintermctl.exe") |
-       Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+# Build layouts differ by where the build ran — locally bin\Release\..., in CI bin\x64\Release\...
+# because the solution config sets a platform. So both binaries are FOUND rather than assumed, and a
+# miss reports what it looked at: a hardcoded path that silently misses is how this suite first went
+# green having checked nothing.
+function Resolve-Binary([string]$explicit, [string]$name, [string]$projectDir) {
+    $roots = @()
+    if ($explicit) { $roots += $explicit }
+    $built = Join-Path (Join-Path $PSScriptRoot '..\..') "src\$projectDir\bin"
+    if (Test-Path $built) {
+        # newest first: a stale Debug copy must not win over the Release build CI just made
+        $roots += (Get-ChildItem $built -Recurse -Filter $name -ErrorAction SilentlyContinue |
+                   Sort-Object LastWriteTime -Descending | Select-Object -ExpandProperty FullName)
+    }
+    $roots += "$env:LOCALAPPDATA\Programs\agwinterm\$name"
+    foreach ($r in $roots) { if ($r -and (Test-Path $r)) { return $r } }
+    return $null
+}
+
+$ctl = Resolve-Binary $env:AGWINTERMCTL 'agwintermctl.exe' 'Agwinterm.Ctl'
+$Exe = Resolve-Binary $Exe 'Agwinterm.Win32.exe' 'Agwinterm.Win32'
 if (-not $ctl) { "  SKIP  agwintermctl not found (set AGWINTERMCTL)"; exit ($Strict ? 1 : 0) }
-if (-not (Test-Path $Exe)) { "  SKIP  agwinterm not found at $Exe"; exit ($Strict ? 1 : 0) }
+if (-not $Exe) { "  SKIP  agwinterm not found (pass -Exe)"; exit ($Strict ? 1 : 0) }
+"  using: $(Split-Path $Exe -Leaf) from $(Split-Path $Exe -Parent)"
 
 # NOT back into $Spec: that parameter is typed [string], and PowerShell is case-insensitive, so
 # assigning the parsed object to $spec would silently ConvertTo-String it — $contract.steps then reads
