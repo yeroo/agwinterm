@@ -5,7 +5,7 @@
 #   - always a sandbox instance (--pipe <name>); never the default instance, which owns real state
 #   - never inject global input (keybd_event/SendInput) — it lands wherever focus happens to be
 #   - capture windows with PrintWindow, never CopyFromScreen, which grabs whatever overlaps
-param([string]$Exe = "$PSScriptRoot\..\bin\agliteterm.exe")
+param([string]$Exe = "$PSScriptRoot\..\bin\agwinterm-lite.exe")
 
 $ErrorActionPreference = 'Stop'
 $fail = 0
@@ -15,8 +15,8 @@ function Check([string]$name, [bool]$ok, [string]$detail = '') {
 }
 
 $pipe = 'logtest'
-$logDir = "$env:LOCALAPPDATA\agliteterm"
-$log = "$logDir\agliteterm-$pipe.log"
+$logDir = "$env:LOCALAPPDATA\agwinterm-lite"
+$log = "$logDir\lite-$pipe.log"
 Remove-Item $log, "$log.old" -ErrorAction SilentlyContinue
 
 "== log-basics =="
@@ -26,7 +26,7 @@ $p = Start-Process $Exe -ArgumentList @('--pipe', $pipe) -PassThru
 Start-Sleep -Seconds 7
 Check 'log file created' (Test-Path $log) $log
 $text = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
-Check 'records the startup banner' ($text -match 'agliteterm .* starting')
+Check 'records the startup banner' ($text -match 'agwinterm-lite .* starting')
 Check 'records instance + exe + args' ($text -match "instance=$pipe" -and $text -match 'args=\[')
 Check 'timestamped, levelled lines' ($text -match '\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\s+INFO\s+')
 

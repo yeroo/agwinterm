@@ -1,5 +1,5 @@
 # lite diagnostics — Task 4 checks: --diagnose must be a safe, useful one-shot report.
-param([string]$Exe = "$PSScriptRoot\..\bin\agliteterm.exe")
+param([string]$Exe = "$PSScriptRoot\..\bin\agwinterm-lite.exe")
 
 $ErrorActionPreference = 'Stop'
 $fail = 0
@@ -11,17 +11,17 @@ function Check([string]$name, [bool]$ok, [string]$detail = '') {
 "== diagnose =="
 
 # --- normal profile ---------------------------------------------------------------------------
-$before = @(Get-Process -Name 'agliteterm' -ErrorAction SilentlyContinue).Count
+$before = @(Get-Process -Name 'agwinterm-lite' -ErrorAction SilentlyContinue).Count
 $out = & $Exe --pipe diagchk --diagnose 2>&1 | Out-String
 $code = $LASTEXITCODE
 Start-Sleep -Seconds 2
-$after = @(Get-Process -Name 'agliteterm' -ErrorAction SilentlyContinue).Count
+$after = @(Get-Process -Name 'agwinterm-lite' -ErrorAction SilentlyContinue).Count
 
 Check 'exits 0' ($code -eq 0) "exit=$code"
 Check 'leaves no process behind (no window)' ($after -le $before) "before=$before after=$after"
 Check 'reports the version' ($out -match 'version: \d+\.\d+\.\d+|version: dev')
 Check 'reports the instance' ($out -match 'instance: diagchk')
-Check 'reports the state dir' ($out -match 'dir: .*agliteterm')
+Check 'reports the state dir' ($out -match 'dir: .*agwinterm-lite')
 Check 'reports writability' ($out -match 'dir writable: yes')
 Check 'reports the session file' ($out -match 'session file:')
 Check 'reports the log path' ($out -match 'log\s+path: .*\.log')

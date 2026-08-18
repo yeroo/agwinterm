@@ -1,4 +1,4 @@
-// agliteterm (was agwinterm-lite) M1 phase 1 (issue #134): layout core over the Rust server.
+// agwinterm-lite M1 phase 1 (issue #134): layout core over the Rust server.
 //
 // M0 gave one session on the full stack (Rust pty-host + agwinterm-core replica
 // + GDI ExtTextOutW/lpDx). M1p1 adds the layout skeleton with main-app parity:
@@ -22,7 +22,7 @@
 #include <winhttp.h>    // self-update HTTP
 #include <bcrypt.h>     // self-update SHA-256
 
-// Stamped by build.ps1 from installer/agliteterm.iss so exe and setup can never disagree;
+// Stamped by build.ps1 from installer/agwinterm-lite.iss so exe and setup can never disagree;
 // an unstamped ("dev") build never triggers a self-update.
 #ifndef AGWL_VERSION_STR
 #define AGWL_VERSION_STR "dev"
@@ -115,105 +115,20 @@ static bool g_argMaximized = false;       // --maximized
 static bool g_argNoRestore = false;       // --no-restore: don't rebuild the saved sessions
 static bool g_argBenchAgbf = false;       // --bench-agbf: print pack benchmarks to the console, exit
 static bool g_argDiagnose = false;        // --diagnose: print an environment/state report, exit
-static std::wstring g_argPipe;            // --pipe <name>: control-pipe name (default agliteterm)
+static std::wstring g_argPipe;            // --pipe <name>: control-pipe name (default agwinterm-lite)
 
 static HWND g_hwnd;   // main frame (declared early: the instance registry compares against it)
 
 // ---- multi-window (multi-process): each lite window is one process ---------------------------
-// The instance name comes from --pipe; the default instance is "agliteterm". It namespaces the
+// The instance name comes from --pipe; the default instance is "agwinterm-lite". It namespaces the
 // session ids on the SHARED pty-host, the state file, and the saved window geometry — that is what
 // lets any number of lite windows coexist. Instances see each other through a registry of
 // name -> {pid, hwnd} entries under HKCU, which the window.* control verbs act on.
-static std::wstring g_instance = L"agliteterm";   // resolved in parseLaunchArgs
+static std::wstring g_instance = L"agwinterm-lite";   // resolved in parseLaunchArgs
 static std::wstring g_instanceRaw;                    // --pipe as TYPED, when sanitizing changed it
 static std::string  g_idPrefix = "lite";              // session-id prefix ("<prefix>-N")
 static bool g_isDefaultInstance = true;
-// ---- product identity ------------------------------------------------------------------------
-// agwinterm-lite became agliteterm, its own product in its own repository
-// (docs/plans/2026-08-17-agliteterm-product-split.md). Every name lives HERE, once: the rename has
-// to be paired with a migration, and a scattered literal is a stranded user — the settings key and
-// the state directory own fonts, colours, keybindings and saved sessions.
-// The diagnostics log is defined further down; migrateFromLegacy (just below) reports through it.
-static void logInfo(const char* fmt, ...);
-static void logWarn(const char* fmt, ...);
-static const wchar_t* kProduct       = L"agliteterm";
-static const wchar_t* kRegKey        = L"Software\\agliteterm";
-static const wchar_t* kInstKey       = L"Software\\agliteterm\\Instances";
-// The 0.17.x names. Read-only: migration copies FROM them and never writes back, so a user who
-// rolls back still finds their old install intact.
-static const wchar_t* kLegacyProduct = L"agwinterm-lite";
-static const wchar_t* kLegacyRegKey  = L"Software\\agwinterm-lite";
-
-/// The per-user state root. One helper, because the rename has to be paired with a migration and
-/// every caller must agree on where "old" and "new" live: sessions, the .bak generation, the log
-/// and the update payloads all sit here.
-static std::wstring stateDir(bool legacy = false) {
-    wchar_t base[MAX_PATH];
-    if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) == 0) return {};
-    return std::wstring(base) + L"\\" + (legacy ? kLegacyProduct : kProduct);
-}
-
-/// Adopt 0.17.x state on first run as agliteterm.
-///
-/// The rename moved four things that belong to the USER, not to us: saved sessions and their .bak
-/// generation, the font, the colours and the keybindings. Renaming without this is indistinguishable
-/// from the data loss the restore matrix exists to prevent — the window simply comes up empty.
-///
-/// COPY, never move. A user who rolls back to agwinterm-lite must still find their install working,
-/// so the legacy directory and key are read-only here. Runs only when the new side is untouched:
-/// if agliteterm already has state, it wins and the legacy copy is left exactly as it is.
-static void migrateFromLegacy() {
-    std::wstring cur = stateDir(), old = stateDir(true);
-    if (cur.empty() || old.empty() || cur == old) return;
-    if (GetFileAttributesW(old.c_str()) == INVALID_FILE_ATTRIBUTES) return;   // nothing to adopt
-
-    // "Untouched" means no session state, not "no directory": logInit has already created the
-    // directory and written a line into it by the time we run.
-    bool haveNew = false;
-    WIN32_FIND_DATAW fd{};
-    HANDLE h = FindFirstFileW((cur + L"\\sessions*.tsv").c_str(), &fd);
-    if (h != INVALID_HANDLE_VALUE) { haveNew = true; FindClose(h); }
-    if (haveNew) { logInfo("migrate: agliteterm state already present - legacy state left untouched"); return; }
-
-    int files = 0;
-    CreateDirectoryW(cur.c_str(), nullptr);
-    for (const wchar_t* pat : { L"\\sessions*.tsv", L"\\sessions*.tsv.bak" }) {
-        WIN32_FIND_DATAW f{};
-        HANDLE fh = FindFirstFileW((old + pat).c_str(), &f);
-        if (fh == INVALID_HANDLE_VALUE) continue;
-        do {
-            if (f.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-            if (CopyFileW((old + L"\\" + f.cFileName).c_str(),
-                          (cur + L"\\" + f.cFileName).c_str(), TRUE)) files++;
-            else logWarn("migrate: could not copy %s (err %lu)", narrow(f.cFileName).c_str(), GetLastError());
-        } while (FindNextFileW(fh, &f));
-        FindClose(fh);
-    }
-
-    // Settings: copy every value under the legacy key. Enumerated rather than listed by name so a
-    // key this build does not know about (an older or newer build's) travels too.
-    int values = 0;
-    HKEY src{};
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kLegacyRegKey, 0, KEY_READ, &src) == ERROR_SUCCESS) {
-        HKEY dst{};
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegKey, 0, nullptr, 0, KEY_WRITE, nullptr, &dst, nullptr) == ERROR_SUCCESS) {
-            for (DWORD idx = 0;; idx++) {
-                wchar_t name[256]; DWORD nlen = 256, type = 0;
-                BYTE data[2048]; DWORD dlen = sizeof data;
-                LONG r = RegEnumValueW(src, idx, name, &nlen, nullptr, &type, data, &dlen);
-                if (r == ERROR_NO_MORE_ITEMS) break;
-                if (r != ERROR_SUCCESS) continue;
-                if (RegSetValueExW(dst, name, 0, type, data, dlen) == ERROR_SUCCESS) values++;
-            }
-            RegCloseKey(dst);
-        }
-        RegCloseKey(src);
-    }
-    if (files || values)
-        logInfo("migrate: adopted %d state file(s) and %d setting(s) from %s",
-                files, values, narrow(old).c_str());
-}
-
+static const wchar_t* kInstKey = L"Software\\agwinterm-lite\\Instances";
 
 /// The instance name as it will actually be used. It becomes a FILENAME (sessions-<name>.tsv,
 /// lite-<name>.log) and is interpolated into the "Restart everything" command line, so drop the
@@ -856,8 +771,7 @@ static int g_activeWs = 0;           // workspace new sessions are created into
 static int g_pane[2] = { 0, -1 };   // session index per pane; pane[1] = -1 → no split
 static int g_focus = 0;             // focused pane (0/1)
 static int g_seq = 1;
-static const wchar_t* kAppId = L"agliteterm";
-static const wchar_t* kLegacyAppId = L"agwinterm-lite";   // control-pipe alias, see ctlServerThread
+static const wchar_t* kAppId = L"agwinterm-lite";
 
 // ---- selection (buffer-absolute rows; the same viewport composition as paint) ----
 struct Sel {
@@ -923,7 +837,7 @@ static const PalAction kPalActions[] = {
     { L"Properties…",         IDM_PROPERTIES, -1,           -1 },
     { L"Check for Updates",        IDM_UPDATE,     -1,           -1 },
     { L"Restart Everything",       IDM_RESTART,    -1,           -1 },
-    { L"About agliteterm",         IDM_ABOUT,      -1,           -1 },
+    { L"About agwinterm lite",     IDM_ABOUT,      -1,           -1 },
     { L"Exit",                     IDM_EXIT,       -1,           -1 },
 };
 static constexpr int kPalCount = (int)(sizeof kPalActions / sizeof kPalActions[0]);
@@ -980,7 +894,7 @@ static std::wstring palKeyName(WORD combo) {
 }
 
 static void fatal(const wchar_t* msg) {
-    MessageBoxW(nullptr, msg, L"agliteterm", MB_ICONERROR);
+    MessageBoxW(nullptr, msg, L"agwinterm-lite", MB_ICONERROR);
     ExitProcess(1);
 }
 
@@ -1041,17 +955,18 @@ static void logWarn(const char* fmt, ...) { va_list ap; va_start(ap, fmt); logWr
 /// lite is one process per window — a shared file would interleave four writers' lines.
 static void logInit(int argc, wchar_t** argv) {
     InitializeCriticalSection(&g_logLock);
-    std::wstring dir = stateDir();
-    if (dir.empty()) { g_logDead = true; return; }
+    wchar_t base[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) == 0) { g_logDead = true; return; }
+    std::wstring dir = std::wstring(base) + L"\\agwinterm-lite";
     CreateDirectoryW(dir.c_str(), nullptr);
-    g_logPath = dir + (g_isDefaultInstance ? L"\\agliteterm.log" : (L"\\agliteterm-" + g_instance + L".log"));
+    g_logPath = dir + (g_isDefaultInstance ? L"\\lite.log" : (L"\\lite-" + g_instance + L".log"));
     g_logReady = true;
 
     wchar_t exe[MAX_PATH]{};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring cmd;
     for (int i = 1; i < argc; i++) { if (i > 1) cmd += L" "; cmd += argv[i]; }
-    logInfo("---- agliteterm %s starting ----", AGWL_VERSION_STR);
+    logInfo("---- agwinterm-lite %s starting ----", AGWL_VERSION_STR);
     logInfo("instance=%s exe=%s args=[%s]",
             narrow(g_isDefaultInstance ? L"(default)" : g_instance).c_str(),
             narrow(exe).c_str(), narrow(cmd).c_str());
@@ -1491,13 +1406,11 @@ static Session* newSession(int cols, int rows, const char* app = nullptr,
     req.cmd.create.env_count = 6;
     setEnv(0, "AGWINTERM", "1");
     setEnv(1, "AGWINTERM_ENABLED", "1");
-    std::string pipeNarrow = g_argPipe.empty() ? narrow(kAppId) : narrow(g_argPipe);
+    std::string pipeNarrow = g_argPipe.empty() ? "agwinterm-lite" : narrow(g_argPipe);
     setEnv(2, "AGWINTERM_PIPE", pipeNarrow.c_str());
     setEnv(3, "AGWINTERM_SESSION_ID", idbuf);
     setEnv(4, "AGWINTERM_PANE_ID", idbuf);
-    // TERM_PROGRAM names the TERMINAL, so it takes the new name. The AGWINTERM_* vars above
-    // deliberately do NOT: the agent skill, the status hooks and agwintermctl all read them.
-    setEnv(5, "TERM_PROGRAM", "agliteterm");
+    setEnv(5, "TERM_PROGRAM", "agwinterm-lite");
     // An id the host already holds is REFUSED, and that single rejection is what used to sink every
     // spec of a restore at once. scanHostSessions() reserves the ids it can see, but it only sees
     // what `list` returns: a reply this build cannot decode (more sessions than its field storage
@@ -1877,19 +1790,19 @@ static void setDefaultFont() {
 static void saveFontSel() {
     if (g_faceIdx < 0 || g_faceIdx >= (int)g_catalog.size()) return;
     const FontEntry& e = g_catalog[g_faceIdx]; const FontSize& s = e.sizes[g_sizeIdx];
-    RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"FontFace", REG_SZ, e.face, (DWORD)((wcslen(e.face) + 1) * sizeof(wchar_t)));
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontFace", REG_SZ, e.face, (DWORD)((wcslen(e.face) + 1) * sizeof(wchar_t)));
     DWORD h = (DWORD)(int)s.h, w = (DWORD)(int)s.w;
-    RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"FontH", REG_DWORD, &h, sizeof(h));
-    RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"FontW", REG_DWORD, &w, sizeof(w));
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontH", REG_DWORD, &h, sizeof(h));
+    RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontW", REG_DWORD, &w, sizeof(w));
 }
 static bool g_fontFromReg = false;   // did the remembered selection resolve, or did we fall back?
 static void loadFontSel() {
     g_fontFromReg = false;
     wchar_t face[64] = L""; DWORD sz = sizeof(face);
-    if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"FontFace", RRF_RT_REG_SZ, nullptr, face, &sz) != ERROR_SUCCESS) { setDefaultFont(); return; }
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontFace", RRF_RT_REG_SZ, nullptr, face, &sz) != ERROR_SUCCESS) { setDefaultFont(); return; }
     DWORD h = 0, w = 0, s = sizeof(DWORD);
-    RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"FontH", RRF_RT_REG_DWORD, nullptr, &h, &s); s = sizeof(DWORD);
-    RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"FontW", RRF_RT_REG_DWORD, nullptr, &w, &s);
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontH", RRF_RT_REG_DWORD, nullptr, &h, &s); s = sizeof(DWORD);
+    RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontW", RRF_RT_REG_DWORD, nullptr, &w, &s);
     for (int fi = 0; fi < (int)g_catalog.size(); fi++) {
         if (wcscmp(g_catalog[fi].face, face) != 0) continue;
         for (int si = 0; si < (int)g_catalog[fi].sizes.size(); si++)
@@ -1900,16 +1813,16 @@ static void loadFontSel() {
 }
 static void loadColors() {   // Properties->Colors overrides (default fg/bg + on/off), persisted like the font
     DWORD v, sz;
-    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"CustomColors", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_customColors = v != 0;
-    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"DefFg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defFg = v & 0xFFFFFF;
-    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"DefBg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defBg = v & 0xFFFFFF;
-    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"DosPalette", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_dosPalette = v != 0;
-    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"Theme", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS && v <= TH_CLASSIC) g_themeMode = (int)v;
-    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"SidebarW", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS && v >= 90 && v <= 900) g_sidebarW = v;
-    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"ShowSidebar", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showSidebar = v != 0;
-    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"ShowToolbar", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showToolbar = v != 0;
-    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"ShowStatus", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showStatus = v != 0;
-    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"FlagView", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_flagView = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"CustomColors", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_customColors = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defFg = v & 0xFFFFFF;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_defBg = v & 0xFFFFFF;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DosPalette", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_dosPalette = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"Theme", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS && v <= TH_CLASSIC) g_themeMode = (int)v;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"SidebarW", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS && v >= 90 && v <= 900) g_sidebarW = v;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowSidebar", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showSidebar = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowToolbar", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showToolbar = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowStatus", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_showStatus = v != 0;
+    sz = sizeof(v); if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FlagView", RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_flagView = v != 0;
 }
 static void loadKeys() {   // configurable key bindings; absent = unbound (0)
     // One seeded default: Ctrl+Shift+P opens the command palette (parity with the full app).
@@ -1917,32 +1830,32 @@ static void loadKeys() {   // configurable key bindings; absent = unbound (0)
     g_keys[KB_PALETTE] = MAKEWORD('P', HOTKEYF_CONTROL | HOTKEYF_SHIFT);
     for (int a = 0; a < KB_COUNT; a++) {
         DWORD v = 0, sz = sizeof(v);
-        if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, kKbInfo[a].reg, RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_keys[a] = (WORD)v;
+        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", kKbInfo[a].reg, RRF_RT_REG_DWORD, nullptr, &v, &sz) == ERROR_SUCCESS) g_keys[a] = (WORD)v;
     }
     // Font zoom was removed (raster faces only exist at their pack's strike sizes). The Keyboard
     // dialog wrote every action, so these linger in the registry on any machine that saved keys;
     // sweep them so an inspected key list matches the actions lite actually has.
     for (const wchar_t* dead : { L"Key_ZoomIn", L"Key_ZoomOut", L"Key_ZoomReset" })
-        RegDeleteKeyValueW(HKEY_CURRENT_USER, kRegKey, dead);
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", dead);
 }
 static void saveKeys() {
     for (int a = 0; a < KB_COUNT; a++) {
         DWORD v = g_keys[a];
-        RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, kKbInfo[a].reg, REG_DWORD, &v, sizeof(v));
+        RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", kKbInfo[a].reg, REG_DWORD, &v, sizeof(v));
     }
 }
 static void saveColors() {
     DWORD v;
-    v = g_customColors ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"CustomColors", REG_DWORD, &v, sizeof(v));
-    v = g_defFg; RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"DefFg", REG_DWORD, &v, sizeof(v));
-    v = g_defBg; RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"DefBg", REG_DWORD, &v, sizeof(v));
-    v = g_dosPalette ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"DosPalette", REG_DWORD, &v, sizeof(v));
-    v = (DWORD)g_themeMode;   RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"Theme", REG_DWORD, &v, sizeof(v));
-    v = g_sidebarW; RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"SidebarW", REG_DWORD, &v, sizeof(v));
-    v = g_showSidebar ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"ShowSidebar", REG_DWORD, &v, sizeof(v));
-    v = g_showToolbar ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"ShowToolbar", REG_DWORD, &v, sizeof(v));
-    v = g_showStatus ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"ShowStatus", REG_DWORD, &v, sizeof(v));
-    v = g_flagView ? 1 : 0;   RegSetKeyValueW(HKEY_CURRENT_USER, kRegKey, L"FlagView", REG_DWORD, &v, sizeof(v));
+    v = g_customColors ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"CustomColors", REG_DWORD, &v, sizeof(v));
+    v = g_defFg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefFg", REG_DWORD, &v, sizeof(v));
+    v = g_defBg; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DefBg", REG_DWORD, &v, sizeof(v));
+    v = g_dosPalette ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"DosPalette", REG_DWORD, &v, sizeof(v));
+    v = (DWORD)g_themeMode;   RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"Theme", REG_DWORD, &v, sizeof(v));
+    v = g_sidebarW; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"SidebarW", REG_DWORD, &v, sizeof(v));
+    v = g_showSidebar ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowSidebar", REG_DWORD, &v, sizeof(v));
+    v = g_showToolbar ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowToolbar", REG_DWORD, &v, sizeof(v));
+    v = g_showStatus ? 1 : 0; RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"ShowStatus", REG_DWORD, &v, sizeof(v));
+    v = g_flagView ? 1 : 0;   RegSetKeyValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FlagView", REG_DWORD, &v, sizeof(v));
 }
 // Window geometry persistence. loadWindowRect resolves the saved rect (clamped onto a visible monitor
 // so an unplugged screen / resolution change can't strand the window off-screen) and is applied at
@@ -1951,7 +1864,7 @@ static std::wstring geoName(const wchar_t* base) {   // per-instance geometry va
     return g_isDefaultInstance ? base : (std::wstring(base) + L"-" + g_instance);
 }
 static bool loadWindowRect(RECT* out, bool* maxed) {
-    const wchar_t* k = kRegKey;
+    const wchar_t* k = L"Software\\agwinterm-lite";
     DWORD x, y, w, h, mx = 0, sz;
     sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, geoName(L"WinW").c_str(), RRF_RT_REG_DWORD, nullptr, &w, &sz) != ERROR_SUCCESS) return false;
     sz = sizeof(DWORD); if (RegGetValueW(HKEY_CURRENT_USER, k, geoName(L"WinH").c_str(), RRF_RT_REG_DWORD, nullptr, &h, &sz) != ERROR_SUCCESS) return false;
@@ -1973,7 +1886,7 @@ static void saveWindowRect() {
     WINDOWPLACEMENT wp{ sizeof(wp) };
     if (!g_hwnd || !GetWindowPlacement(g_hwnd, &wp)) return;
     RECT rc = wp.rcNormalPosition;   // the restore rect (correct even while maximized/minimized)
-    const wchar_t* k = kRegKey;
+    const wchar_t* k = L"Software\\agwinterm-lite";
     DWORD x = (DWORD)rc.left, y = (DWORD)rc.top, w = (DWORD)(rc.right - rc.left), h = (DWORD)(rc.bottom - rc.top);
     DWORD mx = (wp.showCmd == SW_SHOWMAXIMIZED || (wp.flags & WPF_RESTORETOMAXIMIZED)) ? 1 : 0;
     RegSetKeyValueW(HKEY_CURRENT_USER, k, geoName(L"WinX").c_str(), REG_DWORD, &x, sizeof(x));
@@ -1994,10 +1907,11 @@ static std::wstring widen(const std::string& s) {
     int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
     std::wstring w(n, 0); MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n); return w;
 }
-// State file: %LOCALAPPDATA%\agliteterm\sessions.tsv (per-user, created on demand).
+// State file: %LOCALAPPDATA%\agwinterm-lite\sessions.tsv (per-user, created on demand).
 static std::wstring stateFilePath() {
-    std::wstring dir = stateDir();
-    if (dir.empty()) { return {}; }
+    wchar_t base[MAX_PATH];
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) == 0) return {};
+    std::wstring dir = std::wstring(base) + L"\\agwinterm-lite";
     if (!CreateDirectoryW(dir.c_str(), nullptr)) {
         DWORD e = GetLastError();
         if (e != ERROR_ALREADY_EXISTS) logWarn("state dir could not be created: %s (err %lu)", narrow(dir).c_str(), e);
@@ -2576,16 +2490,16 @@ static int liteDiagnose() {
     wchar_t exe[MAX_PATH]{}; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     wchar_t lad[MAX_PATH]{}; DWORD ladOk = GetEnvironmentVariableW(L"LOCALAPPDATA", lad, MAX_PATH);
 
-    say("\nagliteterm --diagnose\r\n\r\n");
+    say("\nagwinterm-lite --diagnose\r\n\r\n");
     line("version", AGWL_VERSION_STR);
     line("exe", narrow(exe));
     line("instance", g_isDefaultInstance ? "(default)" : narrow(g_instance));
     line("restart cmdline", narrow(restartCommandLine()));
     line("LOCALAPPDATA", ladOk ? narrow(lad) : "(not set!)");
 
-    std::wstring dir = std::wstring(ladOk ? lad : L"") + L"\\" + kProduct;
+    std::wstring dir = std::wstring(ladOk ? lad : L"") + L"\\agwinterm-lite";
     std::wstring state = dir + (g_isDefaultInstance ? L"\\sessions.tsv" : (L"\\sessions-" + g_instance + L".tsv"));
-    std::wstring log = dir + (g_isDefaultInstance ? L"\\agliteterm.log" : (L"\\agliteterm-" + g_instance + L".log"));
+    std::wstring log = dir + (g_isDefaultInstance ? L"\\lite.log" : (L"\\lite-" + g_instance + L".log"));
 
     say("\r\nstate\r\n");
     line("dir", narrow(dir));
@@ -2646,7 +2560,7 @@ static int liteDiagnose() {
         line(narrow(p).c_str(), GetFileAttributesW(fp.c_str()) != INVALID_FILE_ATTRIBUTES ? "present" : "missing");
     }
     wchar_t face[64] = L""; DWORD sz = sizeof(face);
-    bool haveReg = RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"FontFace",
+    bool haveReg = RegGetValueW(HKEY_CURRENT_USER, L"Software\\agwinterm-lite", L"FontFace",
                                 RRF_RT_REG_SZ, nullptr, face, &sz) == ERROR_SUCCESS;
     line("remembered face", haveReg ? narrow(face) : "(none -> first-run default)");
     say("\r\n");
@@ -3210,11 +3124,24 @@ static void scrollFocused(int deltaRows) {
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
+// ---- HANDOVER BUILD ---------------------------------------------------------------------------
+// This is the LAST agwinterm-lite. The product is now agliteterm, in its own repository
+// (docs/plans/2026-08-17-agliteterm-product-split.md), and the updater below points at ITS releases
+// so existing installs discover the successor through the mechanism they already trust.
+//
+// Without this build, agwinterm would simply stop publishing an agwinterm-lite-setup asset and every
+// install would go quiet: the check succeeds, finds no matching asset, and reports nothing. No error,
+// no notice, no route to the new product. That is why the handover ships BEFORE the rename.
+//
+// agliteterm installs ALONGSIDE (new AppId, new directory) and adopts this profile's sessions and
+// settings on first run, so the hand-off is reversible: agwinterm-lite stays installed and working
+// until the user removes it.
+//
 // ---- self-update (parity with the full app's app-update): GitHub releases/latest -> pick the
 // lite setup asset -> SHA-256-verified download (the release API's per-asset digest is the
 // integrity gate; we have no Authenticode cert) -> detached helper waits for exit, runs the
 // setup silently, relaunches. FAIL-CLOSED at every step: no digest / bad digest / parse mismatch
-// -> abort, nothing applied. Only the INSTALLED copy (%LOCALAPPDATA%\Programs\agliteterm)
+// -> abort, nothing applied. Only the INSTALLED copy (%LOCALAPPDATA%\Programs\agwinterm-lite)
 // self-updates; dev/portable copies get pointed at GitHub instead.
 enum { UPD_BALLOON = 1, UPD_MSG = 2, UPD_APPLY = 3 };   // WM_APP_UPDATE wParam
 struct UpdApply { std::wstring ver, payload, helper; };
@@ -3241,12 +3168,13 @@ static bool updChannelInstalled() {
         return wcscmp(env, L"installed") == 0;
     wchar_t base[MAX_PATH], exe[MAX_PATH];
     if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) || !GetModuleFileNameW(nullptr, exe, MAX_PATH)) return false;
-    std::wstring dir = std::wstring(base) + L"\\Programs\\" + kProduct + L"\\";
+    std::wstring dir = std::wstring(base) + L"\\Programs\\agwinterm-lite\\";
     return _wcsnicmp(exe, dir.c_str(), dir.size()) == 0;
 }
 static std::wstring updDir() {   // downloads + helper live here; cleaned on startup
-    std::wstring d = stateDir();
-    if (d.empty()) return {};
+    wchar_t base[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return {};
+    std::wstring d = std::wstring(base) + L"\\agwinterm-lite";
     CreateDirectoryW(d.c_str(), nullptr);
     d += L"\\updates";
     CreateDirectoryW(d.c_str(), nullptr);
@@ -3270,7 +3198,7 @@ static bool updHttpGet(const std::wstring& url, std::vector<uint8_t>& out) {
     uc.lpszHostName = host; uc.dwHostNameLength = 256;
     uc.lpszUrlPath = path; uc.dwUrlPathLength = 2048;
     if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) return false;
-    HINTERNET ses = WinHttpOpen(kProduct, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+    HINTERNET ses = WinHttpOpen(L"agwinterm-lite", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!ses) return false;
     HINTERNET con = WinHttpConnect(ses, host, uc.nPort, 0);
@@ -3360,7 +3288,7 @@ static UpdRelease updParse(const std::string& j) {
 }
 
 static const char kUpdHelper[] =
-    "param([int]$ProcId, [string]$Payload, [string]$Exe, [string]$Instance)\n"
+    "param([int]$ProcId, [string]$Payload, [string]$Exe, [string]$Instance, [string]$Successor)\n"
     "function Log([string]$m) { try { Add-Content -Path ($Payload + '.log') -Value (\"{0:HH:mm:ss.fff} {1}\" -f (Get-Date), $m) } catch { } }\n"
     "Log \"wait pid=$ProcId\"\n"
     "try { Wait-Process -Id $ProcId -Timeout 120 -ErrorAction SilentlyContinue } catch { }\n"
@@ -3369,14 +3297,34 @@ static const char kUpdHelper[] =
     "Log 'applying'\n"
     "Start-Process $Payload -ArgumentList '/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES' -Wait\n"
     "Log 'setup finished'\n"
-    // The instance name has to survive the round trip intact: a name with
-    // a space ("--pipe my win") came back through CommandLineToArgvW as instance "my", which is a
-    // different pipe AND a different state file — the "my sessions are gone" shape, self-inflicted by
-    // the update. Passing it as its own -ArgumentList element is NOT enough: Start-Process joins
-    // the list with spaces and quotes nothing, so the quotes have to be part of the value. The
-    // app parses its own command line with CommandLineToArgvW, which strips them again.
-    "if ($Instance) { Start-Process $Exe -ArgumentList '--pipe', ('\"' + $Instance + '\"') } else { Start-Process $Exe }\n"
+    // The instance name has to survive the round trip intact: a name with a space
+    // ("--pipe my win") came back through CommandLineToArgvW as instance "my", which is a different
+    // pipe AND a different state file — the "my sessions are gone" shape, self-inflicted by the
+    // update. Passing it as its own -ArgumentList element is NOT enough: Start-Process joins the
+    // list with spaces and quotes nothing, so the quotes have to be part of the value. The app
+    // parses its own command line with CommandLineToArgvW, which strips them again.
+    //
+    // The handover installs a DIFFERENT product alongside this one, so the exe to start after
+    // setup is not the one that launched the helper. Falls back to $Exe when the successor is
+    // not where we expect: relaunching the old build is a no-op the user can retry, while not
+    // relaunching at all looks like the update killed their terminal.
+    "$start = $Exe\n"
+    "if ($Successor) {\n"
+    "  if (Test-Path -LiteralPath $Successor) { $start = $Successor; Log 'relaunching the successor' }\n"
+    "  else { Log 'successor missing - relaunching this build' }\n"
+    "}\n"
+    "if ($Instance) { Start-Process $start -ArgumentList '--pipe', ('\"' + $Instance + '\"') } else { Start-Process $start }\n"
     "Log 'relaunched'\n";
+
+// The successor's installed exe. agliteterm ships under its OWN AppId and directory, so it lands
+// ALONGSIDE this build rather than replacing it — which is what makes the move reversible, and
+// also what makes relaunching GetModuleFileNameW() wrong here: it would start agwinterm lite
+// again and the user would see the update "do nothing". Mirrors installer/agliteterm.iss.
+static std::wstring updSuccessorExe() {
+    wchar_t base[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) return {};
+    return std::wstring(base) + L"\\Programs\\agliteterm\\agliteterm.exe";
+}
 
 static std::wstring* updHeapStr(const std::wstring& s) { return new std::wstring(s); }   // freed by the UI handler
 
@@ -3399,7 +3347,7 @@ static DWORD WINAPI updWorker(LPVOID p) {
         return 0;
     }
     if (updCmpVer(rel.ver, cur) <= 0) {
-        if (interactive) post(UPD_MSG, updHeapStr(L"agliteterm " + cur + L" is already the latest"));
+        if (interactive) post(UPD_MSG, updHeapStr(L"no agliteterm release yet — agwinterm lite " + cur + L" stays as it is"));
         return 0;
     }
     if (!interactive) { post(UPD_BALLOON, updHeapStr(rel.ver)); return 0; }
@@ -3446,9 +3394,9 @@ static void updCheck(bool interactive) {
         if (g_updBusy) return;
         if (!updChannelInstalled()) {
             MessageBoxW(g_hwnd,
-                L"This copy of agliteterm is not the installed one, so it does not self-update.\n"
-                L"Get releases at github.com/yeroo/agliteterm/releases.",
-                L"agliteterm update", MB_OK | MB_ICONINFORMATION);
+                L"This copy of agwinterm lite is not the installed one, so it does not self-update.\n"
+                L"Get agliteterm at github.com/yeroo/agliteterm/releases.",
+                L"agwinterm lite update", MB_OK | MB_ICONINFORMATION);
             return;
         }
         g_updBusy = true;
@@ -3828,7 +3776,7 @@ static HMENU buildMenuBar() {
     // Font selection lives in File -> Properties now (no separate View -> Font submenu).
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, IDM_UPDATE, L"Check for &Updates…");
-    AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agliteterm");
+    AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agwinterm lite");
     HMENU bar = CreateMenu();
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)file, L"&File");
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)edit, L"&Edit");
@@ -4203,7 +4151,7 @@ static void showPropertiesDialog() {
     g_pPrev = makePreviewFontSel();
     const int W = 396, H = 490;   // grew for the Theme row (was 452)
     RECT pw; GetWindowRect(g_hwnd, &pw);
-    g_pHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteProps", L"agliteterm — Properties",
+    g_pHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteProps", L"agwinterm lite — Properties",
                               WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,   // erase-on-repaint won't flicker the controls
                               pw.left + 60, pw.top + 40, W, H, g_hwnd, nullptr, inst, nullptr);
     HFONT gui = g_uiFont ? g_uiFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
@@ -4279,7 +4227,7 @@ static void showKeyboardDialog() {
     }
     const int W = 360, H = 96 + KB_COUNT * 26 + 56;
     RECT pw; GetWindowRect(g_hwnd, &pw);
-    g_kbHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteKeys", L"agliteterm — Keyboard",
+    g_kbHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteKeys", L"agwinterm lite — Keyboard",
                                WS_POPUP | WS_CAPTION | WS_SYSMENU, pw.left + 60, pw.top + 40, W, H, g_hwnd, nullptr, inst, nullptr);
     HFONT gui = g_uiFont ? g_uiFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     auto mk = [&](const wchar_t* cls, const wchar_t* txt, DWORD st, int x, int y, int ww, int hh, int id) {
@@ -4337,7 +4285,7 @@ static void showMainWindow() {
 static void showTrayMenu() {
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, IDM_SHOW, L"&Show agliteterm");
+    AppendMenuW(m, MF_STRING, IDM_SHOW, L"&Show agwinterm lite");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_NEW, L"&New Session…");
     AppendMenuW(m, MF_STRING, IDM_RESTART, L"&Restart");
@@ -4585,7 +4533,7 @@ static void togglePopupTerminal(bool scratch) {
         return;
     }
     if (!hw) {
-        hw = createPopupWindow(scratch ? L"agliteterm — scratch" : L"agliteterm — quick", 0.66, 0.6);
+        hw = createPopupWindow(scratch ? L"agwinterm lite — scratch" : L"agwinterm lite — quick", 0.66, 0.6);
         RECT rc; GetClientRect(hw, &rc);
         sess = newSession(max(1, (int)(rc.right / g_cw)), max(1, (int)(rc.bottom / g_ch)));   // windowForSession routes to hw (set above)
         if (sess) { sess->hidden = true; sess->name = scratch ? L"scratch" : L"quick"; }      // not in the sidebar / not persisted
@@ -4600,7 +4548,7 @@ static void togglePopupTerminal(bool scratch) {
 static void openOverlay(const std::string& command, int sizePct) {
     if (g_overlayHwnd) DestroyWindow(g_overlayHwnd);   // one at a time; WM_DESTROY kills the old session + clears state
     double f = sizePct > 0 ? min(0.95, sizePct / 100.0) : 0.7;
-    g_overlayHwnd = createPopupWindow(L"agliteterm — overlay", f, f);
+    g_overlayHwnd = createPopupWindow(L"agwinterm lite — overlay", f, f);
     RECT rc; GetClientRect(g_overlayHwnd, &rc);
     g_overlaySession = newSession(max(1, (int)(rc.right / g_cw)), max(1, (int)(rc.bottom / g_ch)),
                                   command.empty() ? nullptr : command.c_str());
@@ -5085,8 +5033,8 @@ public:
         if (wp == UPD_BALLOON) {   // background check: one tray balloon, no interruption
             std::wstring* v = (std::wstring*)lp;
             g_nid.uFlags |= NIF_INFO;
-            wcscpy_s(g_nid.szInfoTitle, L"agliteterm");
-            swprintf_s(g_nid.szInfo, L"%s is out (you have %s) — Help → Check for Updates",
+            wcscpy_s(g_nid.szInfoTitle, L"agwinterm lite is now agliteterm");
+            swprintf_s(g_nid.szInfo, L"agliteterm %s succeeds lite %s — Help → Check for Updates",
                        v->c_str(), updVersion().c_str());
             g_nid.dwInfoFlags = NIIF_INFO;
             Shell_NotifyIconW(NIM_MODIFY, &g_nid);
@@ -5095,24 +5043,31 @@ public:
         } else if (wp == UPD_MSG) {
             std::wstring* m = (std::wstring*)lp;
             g_updBusy = false;
-            MessageBoxW(m->c_str(), L"agliteterm update", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(m->c_str(), L"agwinterm lite update", MB_OK | MB_ICONINFORMATION);
             delete m;
         } else if (wp == UPD_APPLY) {   // verified payload on disk; confirm, hand off, exit
             UpdApply* a = (UpdApply*)lp;
             if (listInstances().size() > 1) {
                 g_updBusy = false;
-                MessageBoxW(L"Close the other agliteterm windows first — the installer can't "
-                            L"replace a running exe.", L"agliteterm update", MB_OK | MB_ICONWARNING);
+                MessageBoxW(L"Close the other agwinterm lite windows first — the installer can't "
+                            L"replace a running exe.", L"agwinterm lite update", MB_OK | MB_ICONWARNING);
             } else {
-                std::wstring msg = L"agliteterm " + updVersion() + L" → " + a->ver +
-                                   L"\n\nDownload verified (SHA-256). Update and restart now?\n"
-                                   L"Sessions are saved and restored.";
-                if (MessageBoxW(msg.c_str(), L"agliteterm update", MB_OKCANCEL | MB_ICONQUESTION) == IDOK) {
+                std::wstring msg = L"agwinterm lite " + updVersion() + L"  →  agliteterm " + a->ver +
+                                   L"\n\nlite is now its own product, agliteterm. This is that move, "
+                                   L"not a routine update.\n\n"
+                                   L"•  Your sessions, settings and fonts come across on first run.\n"
+                                   L"•  agwinterm lite stays installed until you remove it, so you can go back.\n"
+                                   L"•  Scripts using --pipe agwinterm-lite keep working.\n\n"
+                                   L"Download verified (SHA-256). Install agliteterm and restart now?";
+                if (MessageBoxW(msg.c_str(), L"agwinterm lite is now agliteterm", MB_OKCANCEL | MB_ICONQUESTION) == IDOK) {
                     wchar_t exe[MAX_PATH];
                     GetModuleFileNameW(nullptr, exe, MAX_PATH);
+                    std::wstring succ = updSuccessorExe();
                     std::wstring cmd = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden"
                                        L" -File \"" + a->helper + L"\" -ProcId " + std::to_wstring(GetCurrentProcessId()) +
                                        L" -Payload \"" + a->payload + L"\" -Exe \"" + exe + L"\"";
+                    if (!succ.empty())          // hand the session to agliteterm, not back to us
+                        cmd += L" -Successor \"" + succ + L"\"";
                     if (!g_isDefaultInstance)   // named instances come back under their own pipe
                         cmd += L" -Instance \"" + g_instance + L"\"";
                     STARTUPINFOW si{ sizeof si }; PROCESS_INFORMATION pi{};
@@ -5122,7 +5077,7 @@ public:
                         DestroyWindow();        // graceful: saves sessions, drops tray, quits
                     } else {
                         g_updBusy = false;
-                        MessageBoxW(L"Failed to start the update helper.", L"agliteterm update", MB_OK | MB_ICONERROR);
+                        MessageBoxW(L"Failed to start the update helper.", L"agwinterm lite update", MB_OK | MB_ICONERROR);
                     }
                 } else g_updBusy = false;
             }
@@ -5341,7 +5296,7 @@ public:
             case IDM_EXIT: DestroyWindow(); break;
             case IDM_UPDATE: updCheck(true); break;
             case IDM_ABOUT: {
-                std::wstring about = L"agliteterm " + updVersion() +
+                std::wstring about = L"agwinterm lite " + updVersion() +
                                      L"\nA lightweight native terminal over the Rust pty-host.";
                 MessageBoxW(about.c_str(), L"About", MB_OK | MB_ICONINFORMATION);
                 break;
@@ -5430,7 +5385,7 @@ static std::string ctlDispatch(const std::string& line) {
     if (!jsonParseObject(line, i, "", req)) return ctlErr("invalid JSON");
     const std::string& cmd = req.get("cmd");
 
-    if (cmd == "ping") return ctlOkStr("agliteterm 0.1");
+    if (cmd == "ping") return ctlOkStr("agwinterm-lite 0.1");
     if (cmd == "tree") {   // real structure: workspaces with their sessions, flags, unread, focus
         std::string wss;
         for (int w = 0; w < (int)g_workspaces.size(); w++) {
@@ -5773,7 +5728,7 @@ static std::string ctlDispatch(const std::string& line) {
         if (cmd == "window.close" || cmd == "window.delete") {
             std::wstring nm = w->name;   // copy before the instance dies
             PostMessageW(w->hwnd, WM_CLOSE, 0, 0);
-            if (cmd == "window.delete" && lstrcmpiW(nm.c_str(), kAppId) != 0) {
+            if (cmd == "window.delete" && lstrcmpiW(nm.c_str(), L"agwinterm-lite") != 0) {
                 // The name becomes a FILENAME here, and it arrives from the HKCU instance registry —
                 // which an older build, or a hand edit, can have written unsanitized. "..\..\x" would
                 // then delete outside the state directory. Only ever delete state belonging to a name
@@ -5784,7 +5739,7 @@ static std::string ctlDispatch(const std::string& line) {
                 Sleep(800);   // let it finish its teardown writes, then drop its saved state
                 wchar_t base[MAX_PATH];
                 if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH)) {
-                    std::wstring f = stateDir() + L"\\sessions-" + nm + L".tsv";
+                    std::wstring f = std::wstring(base) + L"\\agwinterm-lite\\sessions-" + nm + L".tsv";
                     // The .bak too, or restore's fallback brings the deleted window's sessions
                     // straight back on the next --pipe <name>; the .tmp so no wreckage is left.
                     DeleteFileW(f.c_str());
@@ -5797,7 +5752,7 @@ static std::string ctlDispatch(const std::string& line) {
         if (cmd == "window.rename") {   // identity is the pipe name; rename retitles the window
             std::string nm = req.get("args.name");
             if (nm.empty()) return ctlErr("rename needs a name");
-            SetWindowTextW(w->hwnd, (L"agliteterm \x2014 " + widen(nm)).c_str());
+            SetWindowTextW(w->hwnd, (L"agwinterm lite \x2014 " + widen(nm)).c_str());
             return ctlOkStr("renamed");
         }
         if (cmd == "window.zoom") {
@@ -5849,12 +5804,8 @@ static DWORD WINAPI ctlClientThread(void* param) {
     return 0;
 }
 
-/// Serves ONE control pipe. Started twice for the default instance: once on agliteterm, once on the
-/// 0.17.x name, so `agwintermctl --pipe agwinterm-lite` and any script a user already wrote keep
-/// working through the rename. The agent skill and the hooks need no alias — they read
-/// AGWINTERM_PIPE, which sessions get with the new name.
-static DWORD WINAPI ctlServerThreadFor(void* arg) {
-    std::wstring pipeName = L"\\\\.\\pipe\\" + std::wstring((const wchar_t*)arg);
+static DWORD WINAPI ctlServerThread(void*) {
+    std::wstring pipeName = L"\\\\.\\pipe\\" + (g_argPipe.empty() ? L"agwinterm-lite" : g_argPipe);
     for (;;) {
         HANDLE pipe = CreateNamedPipeW(pipeName.c_str(), PIPE_ACCESS_DUPLEX,
                                        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
@@ -5862,10 +5813,6 @@ static DWORD WINAPI ctlServerThreadFor(void* arg) {
         if (pipe == INVALID_HANDLE_VALUE) return 1;
         BOOL ok = ConnectNamedPipe(pipe, nullptr);
         if (!ok && GetLastError() != ERROR_PIPE_CONNECTED) { CloseHandle(pipe); continue; }
-        if (pipeName.find(kLegacyAppId) != std::wstring::npos) {
-            static bool warned = false;
-            if (!warned) { warned = true; logInfo("ctl: a client used the legacy pipe name '%s' - alias still in use", narrow(kLegacyAppId).c_str()); }
-        }
         CreateThread(nullptr, 0, ctlClientThread, pipe, 0, nullptr);
     }
 }
@@ -5956,7 +5903,7 @@ static Session* failedSpecSession(const RestoreSpec& sp, int cols, int rows) {
     s->emu = emu_new(cols, rows);
     // Say it in the pane as well as the tree: the terminal is where the user looks first, and "why
     // is this session dead?" has to be answerable without opening the log.
-    std::string msg = "\r\n  [agliteterm] this session could not be restored on this machine.\r\n"
+    std::string msg = "\r\n  [agwinterm-lite] this session could not be restored on this machine.\r\n"
                       "  app: " + (sp.app.empty() ? std::string("(default shell)") : sp.app) + "\r\n";
     if (!sp.cwd.empty()) msg += "  cwd: " + sp.cwd + "\r\n";
     msg += "  The entry is kept so its name and settings are not lost.\r\n";
@@ -6138,7 +6085,7 @@ static void parseLaunchArgs() {
         DWORD at = GetFileAttributesA(g_argDir.c_str());
         if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) g_argDir.clear();
     }
-    if (!g_argPipe.empty() && g_argPipe != kAppId) {   // named instance
+    if (!g_argPipe.empty() && g_argPipe != L"agwinterm-lite") {   // named instance
         std::wstring clean = sanitizeInstanceName(g_argPipe);
         if (clean != g_argPipe) g_instanceRaw = g_argPipe;   // logInit reports it; see sanitizeInstanceName
         g_argPipe = clean;
@@ -6179,9 +6126,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         logInit(argc, argv);
         if (argv) LocalFree(argv);
     }
-    // Before ANY read of settings or state: loadColors/loadFontSel/loadKeys and restoreSessions
-    // all resolve through the new names, so the adoption has to have happened already.
-    migrateFromLegacy();
     InitializeCriticalSection(&g_lock);
     InitializeCriticalSection(&g_reqLock);
     loadCore();
@@ -6244,8 +6188,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     // WTL frame: CFrameWinTraits already carries WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN.
     g_hwnd = g_frame.CreateEx(nullptr, haveRect ? &frameRc : nullptr);
     if (!g_hwnd) fatal(L"could not create the main window");
-    g_frame.SetWindowText(g_isDefaultInstance ? L"agliteterm"
-                                              : (L"agliteterm \x2014 " + g_instance).c_str());
+    g_frame.SetWindowText(g_isDefaultInstance ? L"agwinterm lite"
+                                              : (L"agwinterm lite \x2014 " + g_instance).c_str());
     SetTimer(g_hwnd, kCaretTimer, kCaretBlinkMs, nullptr);   // the caret blink (lite's only timer)
     announceInstance(g_hwnd);   // visible to the other windows' window.* verbs
     g_frame.SetMenu(buildMenuBar());
@@ -6306,7 +6250,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_APP_TRAY;
     g_nid.hIcon = g_appIconSm;
-    wcscpy_s(g_nid.szTip, L"agliteterm");
+    wcscpy_s(g_nid.szTip, L"agwinterm lite");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 
     updCleanup();       // drop payloads a previous update left behind
@@ -6336,13 +6280,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         if (s) { g_pane[0] = (int)g_sessions.size() - 1; g_focus = 0; syncPaneSizes(); }
         refreshTree();
     }
-    static std::wstring ctlName = g_argPipe.empty() ? std::wstring(kAppId) : g_argPipe;
-    CreateThread(nullptr, 0, ctlServerThreadFor, (void*)ctlName.c_str(), 0, nullptr);   // agwintermctl --pipe agliteterm
-    // Deprecation alias: only the DEFAULT instance answers to the old product name. Gated on
-    // g_isDefaultInstance, not on g_argPipe being empty - `--pipe agliteterm` names the default
-    // instance explicitly, and it must behave identically to omitting the flag.
-    if (g_isDefaultInstance)
-        CreateThread(nullptr, 0, ctlServerThreadFor, (void*)kLegacyAppId, 0, nullptr);
+    CreateThread(nullptr, 0, ctlServerThread, nullptr, 0, nullptr);   // agwintermctl --pipe agwinterm-lite
     InvalidateRect(g_hwnd, nullptr, FALSE);
 
     CMessageLoop loop;          // WTL message pump (adds PreTranslateMessage / OnIdle hooks)

@@ -27,7 +27,9 @@ jobs:
         run: choco install innosetup -y --no-progress
 
       # Builds BOTH Inno setups: agwinterm-setup-<ver>.exe (main) and
-      # agliteterm-setup-<ver>.exe (the C++/GDI client, standalone).
+      # agwinterm-lite-setup-<ver>.exe — the HANDOVER build (see lite/src/main.cpp): the last
+      # agwinterm-lite, whose updater points at the agliteterm feed so existing installs find
+      # their successor. It must ship at least once before this repo stops publishing it.
       - name: Build installers
         shell: pwsh
         run: ./installer/build.ps1
@@ -73,7 +75,7 @@ jobs:
         with:
           subject-path: |
             installer/Output/agwinterm-setup-*.exe
-            installer/Output/agliteterm-setup-*.exe
+            installer/Output/agwinterm-lite-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
             installer/Output/agwintermctl.exe
             installer/Output/agwinterm_core-abi*.dll
@@ -85,7 +87,7 @@ jobs:
         with:
           files: |
             installer/Output/agwinterm-setup-*.exe
-            installer/Output/agliteterm-setup-*.exe
+            installer/Output/agwinterm-lite-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
             installer/Output/agwintermctl.exe
             installer/Output/agwinterm_core-abi*.dll
