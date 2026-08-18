@@ -923,7 +923,7 @@ static const PalAction kPalActions[] = {
     { L"Properties…",         IDM_PROPERTIES, -1,           -1 },
     { L"Check for Updates",        IDM_UPDATE,     -1,           -1 },
     { L"Restart Everything",       IDM_RESTART,    -1,           -1 },
-    { L"About agwinterm lite",     IDM_ABOUT,      -1,           -1 },
+    { L"About agliteterm",         IDM_ABOUT,      -1,           -1 },
     { L"Exit",                     IDM_EXIT,       -1,           -1 },
 };
 static constexpr int kPalCount = (int)(sizeof kPalActions / sizeof kPalActions[0]);
@@ -1158,7 +1158,15 @@ static void loadCore() {
     core_free_buf = (decltype(core_free_buf))GetProcAddress(m, "agwcore_free_buf");
     if (!core_abi || !emu_new || !emu_feed || !emu_info || !emu_copy_grid || !emu_resize || !emu_free || !emu_copy_history_row || !emu_marks || !emu_get_text || !core_free_buf)
         fatal(L"agwinterm_core.dll: exports missing");
-    if (core_abi() != kRequiredAbi) fatal(L"agwinterm_core.dll: ABI mismatch (need v15)");
+    // Name BOTH numbers. The old message hardcoded "need v15", so it went stale on every bump and
+    // never said what the dll actually reported — the one fact you need when the exe and the core
+    // ship from different repositories (see docs/plans/2026-08-17-agliteterm-product-split.md).
+    if (core_abi() != kRequiredAbi) {
+        wchar_t msg[160];
+        wsprintfW(msg, L"agwinterm_core.dll: ABI mismatch - the dll is v%u, this build requires v%u",
+                  core_abi(), kRequiredAbi);
+        fatal(msg);
+    }
 }
 
 /// Handshake + liveness probe. `hello` alone is NOT enough: a pty-host whose client was killed is
@@ -3391,7 +3399,7 @@ static DWORD WINAPI updWorker(LPVOID p) {
         return 0;
     }
     if (updCmpVer(rel.ver, cur) <= 0) {
-        if (interactive) post(UPD_MSG, updHeapStr(L"agwinterm lite " + cur + L" is already the latest"));
+        if (interactive) post(UPD_MSG, updHeapStr(L"agliteterm " + cur + L" is already the latest"));
         return 0;
     }
     if (!interactive) { post(UPD_BALLOON, updHeapStr(rel.ver)); return 0; }
@@ -3438,9 +3446,9 @@ static void updCheck(bool interactive) {
         if (g_updBusy) return;
         if (!updChannelInstalled()) {
             MessageBoxW(g_hwnd,
-                L"This copy of agwinterm lite is not the installed one, so it does not self-update.\n"
+                L"This copy of agliteterm is not the installed one, so it does not self-update.\n"
                 L"Get releases at github.com/yeroo/agliteterm/releases.",
-                L"agwinterm lite update", MB_OK | MB_ICONINFORMATION);
+                L"agliteterm update", MB_OK | MB_ICONINFORMATION);
             return;
         }
         g_updBusy = true;
@@ -3820,7 +3828,7 @@ static HMENU buildMenuBar() {
     // Font selection lives in File -> Properties now (no separate View -> Font submenu).
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, IDM_UPDATE, L"Check for &Updates…");
-    AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agwinterm lite");
+    AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&About agliteterm");
     HMENU bar = CreateMenu();
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)file, L"&File");
     AppendMenuW(bar, MF_POPUP, (UINT_PTR)edit, L"&Edit");
@@ -4195,7 +4203,7 @@ static void showPropertiesDialog() {
     g_pPrev = makePreviewFontSel();
     const int W = 396, H = 490;   // grew for the Theme row (was 452)
     RECT pw; GetWindowRect(g_hwnd, &pw);
-    g_pHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteProps", L"agwinterm lite — Properties",
+    g_pHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteProps", L"agliteterm — Properties",
                               WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,   // erase-on-repaint won't flicker the controls
                               pw.left + 60, pw.top + 40, W, H, g_hwnd, nullptr, inst, nullptr);
     HFONT gui = g_uiFont ? g_uiFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
@@ -4271,7 +4279,7 @@ static void showKeyboardDialog() {
     }
     const int W = 360, H = 96 + KB_COUNT * 26 + 56;
     RECT pw; GetWindowRect(g_hwnd, &pw);
-    g_kbHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteKeys", L"agwinterm lite — Keyboard",
+    g_kbHwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"AgwintermLiteKeys", L"agliteterm — Keyboard",
                                WS_POPUP | WS_CAPTION | WS_SYSMENU, pw.left + 60, pw.top + 40, W, H, g_hwnd, nullptr, inst, nullptr);
     HFONT gui = g_uiFont ? g_uiFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     auto mk = [&](const wchar_t* cls, const wchar_t* txt, DWORD st, int x, int y, int ww, int hh, int id) {
@@ -4329,7 +4337,7 @@ static void showMainWindow() {
 static void showTrayMenu() {
     POINT pt; GetCursorPos(&pt);
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING, IDM_SHOW, L"&Show agwinterm lite");
+    AppendMenuW(m, MF_STRING, IDM_SHOW, L"&Show agliteterm");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_NEW, L"&New Session…");
     AppendMenuW(m, MF_STRING, IDM_RESTART, L"&Restart");
@@ -4577,7 +4585,7 @@ static void togglePopupTerminal(bool scratch) {
         return;
     }
     if (!hw) {
-        hw = createPopupWindow(scratch ? L"agwinterm lite — scratch" : L"agwinterm lite — quick", 0.66, 0.6);
+        hw = createPopupWindow(scratch ? L"agliteterm — scratch" : L"agliteterm — quick", 0.66, 0.6);
         RECT rc; GetClientRect(hw, &rc);
         sess = newSession(max(1, (int)(rc.right / g_cw)), max(1, (int)(rc.bottom / g_ch)));   // windowForSession routes to hw (set above)
         if (sess) { sess->hidden = true; sess->name = scratch ? L"scratch" : L"quick"; }      // not in the sidebar / not persisted
@@ -4592,7 +4600,7 @@ static void togglePopupTerminal(bool scratch) {
 static void openOverlay(const std::string& command, int sizePct) {
     if (g_overlayHwnd) DestroyWindow(g_overlayHwnd);   // one at a time; WM_DESTROY kills the old session + clears state
     double f = sizePct > 0 ? min(0.95, sizePct / 100.0) : 0.7;
-    g_overlayHwnd = createPopupWindow(L"agwinterm lite — overlay", f, f);
+    g_overlayHwnd = createPopupWindow(L"agliteterm — overlay", f, f);
     RECT rc; GetClientRect(g_overlayHwnd, &rc);
     g_overlaySession = newSession(max(1, (int)(rc.right / g_cw)), max(1, (int)(rc.bottom / g_ch)),
                                   command.empty() ? nullptr : command.c_str());
@@ -5077,7 +5085,7 @@ public:
         if (wp == UPD_BALLOON) {   // background check: one tray balloon, no interruption
             std::wstring* v = (std::wstring*)lp;
             g_nid.uFlags |= NIF_INFO;
-            wcscpy_s(g_nid.szInfoTitle, L"agwinterm lite");
+            wcscpy_s(g_nid.szInfoTitle, L"agliteterm");
             swprintf_s(g_nid.szInfo, L"%s is out (you have %s) — Help → Check for Updates",
                        v->c_str(), updVersion().c_str());
             g_nid.dwInfoFlags = NIIF_INFO;
@@ -5087,19 +5095,19 @@ public:
         } else if (wp == UPD_MSG) {
             std::wstring* m = (std::wstring*)lp;
             g_updBusy = false;
-            MessageBoxW(m->c_str(), L"agwinterm lite update", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(m->c_str(), L"agliteterm update", MB_OK | MB_ICONINFORMATION);
             delete m;
         } else if (wp == UPD_APPLY) {   // verified payload on disk; confirm, hand off, exit
             UpdApply* a = (UpdApply*)lp;
             if (listInstances().size() > 1) {
                 g_updBusy = false;
-                MessageBoxW(L"Close the other agwinterm lite windows first — the installer can't "
-                            L"replace a running exe.", L"agwinterm lite update", MB_OK | MB_ICONWARNING);
+                MessageBoxW(L"Close the other agliteterm windows first — the installer can't "
+                            L"replace a running exe.", L"agliteterm update", MB_OK | MB_ICONWARNING);
             } else {
-                std::wstring msg = L"agwinterm lite " + updVersion() + L" → " + a->ver +
+                std::wstring msg = L"agliteterm " + updVersion() + L" → " + a->ver +
                                    L"\n\nDownload verified (SHA-256). Update and restart now?\n"
                                    L"Sessions are saved and restored.";
-                if (MessageBoxW(msg.c_str(), L"agwinterm lite update", MB_OKCANCEL | MB_ICONQUESTION) == IDOK) {
+                if (MessageBoxW(msg.c_str(), L"agliteterm update", MB_OKCANCEL | MB_ICONQUESTION) == IDOK) {
                     wchar_t exe[MAX_PATH];
                     GetModuleFileNameW(nullptr, exe, MAX_PATH);
                     std::wstring cmd = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden"
@@ -5114,7 +5122,7 @@ public:
                         DestroyWindow();        // graceful: saves sessions, drops tray, quits
                     } else {
                         g_updBusy = false;
-                        MessageBoxW(L"Failed to start the update helper.", L"agwinterm lite update", MB_OK | MB_ICONERROR);
+                        MessageBoxW(L"Failed to start the update helper.", L"agliteterm update", MB_OK | MB_ICONERROR);
                     }
                 } else g_updBusy = false;
             }
@@ -5333,7 +5341,7 @@ public:
             case IDM_EXIT: DestroyWindow(); break;
             case IDM_UPDATE: updCheck(true); break;
             case IDM_ABOUT: {
-                std::wstring about = L"agwinterm lite " + updVersion() +
+                std::wstring about = L"agliteterm " + updVersion() +
                                      L"\nA lightweight native terminal over the Rust pty-host.";
                 MessageBoxW(about.c_str(), L"About", MB_OK | MB_ICONINFORMATION);
                 break;
@@ -5789,7 +5797,7 @@ static std::string ctlDispatch(const std::string& line) {
         if (cmd == "window.rename") {   // identity is the pipe name; rename retitles the window
             std::string nm = req.get("args.name");
             if (nm.empty()) return ctlErr("rename needs a name");
-            SetWindowTextW(w->hwnd, (L"agwinterm lite \x2014 " + widen(nm)).c_str());
+            SetWindowTextW(w->hwnd, (L"agliteterm \x2014 " + widen(nm)).c_str());
             return ctlOkStr("renamed");
         }
         if (cmd == "window.zoom") {
@@ -6236,8 +6244,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     // WTL frame: CFrameWinTraits already carries WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN.
     g_hwnd = g_frame.CreateEx(nullptr, haveRect ? &frameRc : nullptr);
     if (!g_hwnd) fatal(L"could not create the main window");
-    g_frame.SetWindowText(g_isDefaultInstance ? L"agwinterm lite"
-                                              : (L"agwinterm lite \x2014 " + g_instance).c_str());
+    g_frame.SetWindowText(g_isDefaultInstance ? L"agliteterm"
+                                              : (L"agliteterm \x2014 " + g_instance).c_str());
     SetTimer(g_hwnd, kCaretTimer, kCaretBlinkMs, nullptr);   // the caret blink (lite's only timer)
     announceInstance(g_hwnd);   // visible to the other windows' window.* verbs
     g_frame.SetMenu(buildMenuBar());
@@ -6298,7 +6306,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_APP_TRAY;
     g_nid.hIcon = g_appIconSm;
-    wcscpy_s(g_nid.szTip, L"agwinterm lite");
+    wcscpy_s(g_nid.szTip, L"agliteterm");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 
     updCleanup();       // drop payloads a previous update left behind
