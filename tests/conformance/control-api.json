@@ -1,0 +1,483 @@
+{
+  "$comment": [
+    "THE CONTROL-API CONTRACT. agliteterm's promise is that it speaks the agwintermctl dialect, and",
+    "this file is what makes that testable rather than asserted: the same spec runs in BOTH",
+    "repositories' CI — in agwinterm against the full app, here against agliteterm — so a verb",
+    "removed or reshaped on one side fails the other side's build.",
+    "",
+    "It checks SHAPE, not values. 'session.text returns a string' is a contract; 'it returns exactly",
+    "these bytes' is a snapshot of one machine's shell. Every response is the same envelope:",
+    "{ok:true,result:<json>} or {ok:false,error:<string>}.",
+    "",
+    "Steps run in order and share state — a session must exist before anything can select it — and",
+    "{placeholders} carry captured values forward.",
+    "",
+    "The full app implements a superset (38 verbs here; it also has search, output, readonly, bind,",
+    "background, theme.*, config.*, install.*, ...). Those are deliberately NOT in this file: this is",
+    "the shared floor both products stand on, not an inventory of either one."
+  ],
+  "envelope": {
+    "ok": "bool",
+    "result": "present when ok",
+    "error": "present when not ok"
+  },
+  "sessionEnv": [
+    "AGWINTERM_ENABLED",
+    "AGWINTERM_PIPE",
+    "AGWINTERM_SESSION_ID",
+    "AGWINTERM_PANE_ID"
+  ],
+  "steps": [
+    {
+      "verb": "ping",
+      "args": [
+        "ping"
+      ],
+      "result": "string",
+      "note": "liveness. The string names the product, so it is deliberately not compared."
+    },
+    {
+      "verb": "tree",
+      "args": [
+        "tree",
+        "--json"
+      ],
+      "result": "object",
+      "fields": [
+        "workspaces"
+      ],
+      "note": "the whole structure in one call — what every script reads first."
+    },
+    {
+      "verb": "session.new",
+      "args": [
+        "session",
+        "new",
+        "--name",
+        "conf-alpha"
+      ],
+      "result": "string",
+      "capture": "alpha",
+      "settle": 3,
+      "note": "returns the new session's id, which the rest of the run targets. The settle is not politeness: the full app posts the creation to its UI thread and returns the id first, so a verb aimed at it a millisecond later legitimately cannot find it."
+    },
+    {
+      "verb": "session.select",
+      "args": [
+        "session",
+        "select",
+        "{alpha}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.rename",
+      "args": [
+        "session",
+        "rename",
+        "conf-renamed",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.status",
+      "args": [
+        "session",
+        "status",
+        "working",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string",
+      "note": "agent status is what drives the sidebar's bold/italic and the attention bell."
+    },
+    {
+      "verb": "session.seen",
+      "args": [
+        "session",
+        "seen",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.flag",
+      "args": [
+        "session",
+        "flag",
+        "on",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.text",
+      "args": [
+        "session",
+        "text",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string",
+      "note": "the visible buffer. A string even when the pane is empty."
+    },
+    {
+      "verb": "session.copy",
+      "args": [
+        "session",
+        "copy",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string",
+      "note": "the selection's text, and an empty string when there is no selection — not an error."
+    },
+    {
+      "verb": "session.type",
+      "args": [
+        "session",
+        "type",
+        "echo conformance",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.paste",
+      "args": [
+        "session",
+        "paste",
+        "pasted-text",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.duplicate",
+      "args": [
+        "session",
+        "duplicate",
+        "{alpha}"
+      ],
+      "result": "string",
+      "capture": "beta",
+      "settle": 3,
+      "note": "clones the launch spec; returns the NEW id, so a caller can drive what it just made."
+    },
+    {
+      "verb": "session.move",
+      "args": [
+        "session",
+        "move",
+        "--to",
+        "up",
+        "--target",
+        "{beta}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.go",
+      "args": [
+        "session",
+        "go",
+        "next"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.split",
+      "args": [
+        "session",
+        "split",
+        "off"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.scratch",
+      "args": [
+        "session",
+        "scratch",
+        "off"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.overlay",
+      "args": [
+        "session",
+        "overlay",
+        "close"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "quick",
+      "args": [
+        "quick",
+        "off"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "session.close",
+      "args": [
+        "session",
+        "close",
+        "{beta}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "workspace.new",
+      "args": [
+        "workspace",
+        "new",
+        "conf-ws"
+      ],
+      "result": "string",
+      "capture": "ws",
+      "settle": 2
+    },
+    {
+      "verb": "workspace.rename",
+      "args": [
+        "workspace",
+        "rename",
+        "conf-ws2",
+        "--target",
+        "{ws}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "workspace.select",
+      "args": [
+        "workspace",
+        "select",
+        "--target",
+        "{ws}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "workspace.collapse",
+      "args": [
+        "workspace",
+        "collapse",
+        "{ws}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "workspace.expand",
+      "args": [
+        "workspace",
+        "expand",
+        "{ws}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "workspace.focus",
+      "args": [
+        "workspace",
+        "focus",
+        "off"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "workspace.delete",
+      "args": [
+        "workspace",
+        "delete",
+        "--target",
+        "{ws}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "sidebar",
+      "args": [
+        "sidebar",
+        "on"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "window.list",
+      "args": [
+        "window",
+        "list"
+      ],
+      "result": "object",
+      "fields": [
+        "windows"
+      ],
+      "note": "the window registry. WRAPPED in an object: a bare array would break every script that reads .result.windows."
+    },
+    {
+      "verb": "window.new",
+      "args": [
+        "window",
+        "new",
+        "--name",
+        "conf-win"
+      ],
+      "result": "string",
+      "capture": "win",
+      "settle": 6,
+      "note": "spawns a real second window and returns its HANDLE — an id in the full app, the pipe name in agliteterm. Everything downstream targets the captured value, never the name it asked for."
+    },
+    {
+      "verb": "window.select",
+      "args": [
+        "window",
+        "select",
+        "{win}"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "window.rename",
+      "args": [
+        "window",
+        "rename",
+        "{win}",
+        "conf-titled"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "window.move",
+      "args": [
+        "window",
+        "move",
+        "{win}",
+        "80",
+        "80"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "window.resize",
+      "args": [
+        "window",
+        "resize",
+        "{win}",
+        "900",
+        "600"
+      ],
+      "result": "string"
+    },
+    {
+      "verb": "window.state",
+      "args": [
+        "window",
+        "state"
+      ],
+      "result": "object",
+      "fields": [
+        "sidebarVisible",
+        "fullscreen",
+        "maximized",
+        "quickTerminalVisible",
+        "activeWorkspace",
+        "activeSession"
+      ],
+      "note": "a read-back of the window's UI flags — not geometry, and not a setter. Extra fields are allowed; these must be present."
+    },
+    {
+      "verb": "window.zoom",
+      "args": [
+        "window",
+        "zoom",
+        "{win}"
+      ],
+      "result": "string",
+      "note": "toggles; the target is positional, so an op word here would name a window instead."
+    },
+    {
+      "verb": "window.close",
+      "args": [
+        "window",
+        "close",
+        "{win}"
+      ],
+      "result": "string",
+      "settle": 3
+    },
+    {
+      "verb": "window.new",
+      "args": [
+        "window",
+        "new",
+        "--name",
+        "conf-win2"
+      ],
+      "result": "string",
+      "capture": "win2",
+      "settle": 6,
+      "note": "a second one, because window.delete consumes what it deletes."
+    },
+    {
+      "verb": "window.delete",
+      "args": [
+        "window",
+        "delete",
+        "{win2}"
+      ],
+      "result": "string",
+      "settle": 3,
+      "note": "close AND drop that window's saved state — the one verb that deletes a file."
+    }
+  ],
+  "$errorsComment": [
+    "Server-side refusals only. agwintermctl rejects some malformed invocations itself (exit 2, no",
+    "JSON) — that is the client's behaviour and identical for both products, so it says nothing",
+    "about whether the two speak the same dialect."
+  ],
+  "errors": [
+    {
+      "note": "A bad target is a REFUSAL, not a crash and not a silent success — scripts branch on ok.",
+      "args": [
+        "session",
+        "select",
+        "no-such-session-id"
+      ]
+    },
+    {
+      "note": "Same for windows: the registry is authoritative and an unknown name is an error.",
+      "args": [
+        "window",
+        "select",
+        "no-such-window"
+      ]
+    },
+    {
+      "note": "Workspaces resolve by index or name, and an unknown one is refused rather than silently acting on the active workspace.",
+      "args": [
+        "workspace",
+        "select",
+        "--target",
+        "no-such-workspace"
+      ]
+    }
+  ],
+  "$orderComment": [
+    "ORDER MATTERS, and not only because a session must exist before it can be selected.",
+    "In the full app every window shares one process and content verbs act on the FRONTMOST window;",
+    "in agliteterm every window is its own process with its own pipe, so it cannot happen there. Do the",
+    "session and workspace lifecycle FIRST, then the window block — otherwise selecting a new window",
+    "silently redirects the later verbs to a host that has never heard of the ids they carry, and the",
+    "suite reports a contract break that is really its own fault."
+  ]
+}
