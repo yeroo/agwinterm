@@ -17,7 +17,10 @@
 #   - never inject global input — every action goes through the control pipe
 param(
     [string]$Exe = "$env:LOCALAPPDATA\Programs\agwinterm\Agwinterm.Win32.exe",
-    [string]$Spec = "$PSScriptRoot\control-api.json"
+    [string]$Spec = "$PSScriptRoot\control-api.json",
+    # CI passes -Strict: a suite that skips is reporting success while checking nothing,
+    # which is worse than not running it at all. Locally a skip is the right answer.
+    [switch]$Strict
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,8 +38,8 @@ $ctl = @($env:AGWINTERMCTL,
          (Join-Path $PSScriptRoot '..\..\src\Agwinterm.Ctl\bin\Release\net10.0-windows\agwintermctl.exe'),
          "$env:LOCALAPPDATA\Programs\agwinterm\agwintermctl.exe") |
        Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-if (-not $ctl) { "  SKIP  agwintermctl not found (set AGWINTERMCTL)"; exit 0 }
-if (-not (Test-Path $Exe)) { "  SKIP  agwinterm not found at $Exe"; exit 0 }
+if (-not $ctl) { "  SKIP  agwintermctl not found (set AGWINTERMCTL)"; exit ($Strict ? 1 : 0) }
+if (-not (Test-Path $Exe)) { "  SKIP  agwinterm not found at $Exe"; exit ($Strict ? 1 : 0) }
 
 # NOT back into $Spec: that parameter is typed [string], and PowerShell is case-insensitive, so
 # assigning the parsed object to $spec would silently ConvertTo-String it — $contract.steps then reads
