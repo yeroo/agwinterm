@@ -36,6 +36,18 @@ jobs:
         shell: pwsh
         run: ./installer/build-portable.ps1
 
+      # The native core is about to become a CROSS-REPO dependency: agliteterm will build against a
+      # PINNED core rather than a sibling directory (docs/plans/2026-08-17-agliteterm-product-split.md).
+      # Publishing it, with a manifest naming the ABI version, is what makes that pin possible — and
+      # lets a consumer verify the pairing before loading the dll instead of discovering it at fatal().
+      - name: Stage native core for consumers
+        shell: pwsh
+        run: |
+          ./tools/check-abi.ps1 -ManifestOut installer/Output/agwinterm-core-abi.json
+          $abi = (Get-Content installer/Output/agwinterm-core-abi.json | ConvertFrom-Json).abiVersion
+          Copy-Item native/target/release/agwinterm_core.dll     "installer/Output/agwinterm_core-abi$abi.dll"
+          Copy-Item native/target/release/agwinterm-ptyhost.exe  "installer/Output/agwinterm-ptyhost-abi$abi.exe"
+
       # Free, certless supply-chain signing: a Sigstore-backed attestation binding each artifact to
       # this commit + workflow. Verify with:  gh attestation verify <file> --repo yeroo/agwinterm
       # (Doesn't remove SmartScreen — that needs Authenticode, e.g. a SignPath Foundation OSS cert.)
@@ -46,6 +58,9 @@ jobs:
             installer/Output/agwinterm-setup-*.exe
             installer/Output/agwinterm-lite-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
+            installer/Output/agwinterm_core-abi*.dll
+            installer/Output/agwinterm-ptyhost-abi*.exe
+            installer/Output/agwinterm-core-abi.json
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -54,6 +69,9 @@ jobs:
             installer/Output/agwinterm-setup-*.exe
             installer/Output/agwinterm-lite-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
+            installer/Output/agwinterm_core-abi*.dll
+            installer/Output/agwinterm-ptyhost-abi*.exe
+            installer/Output/agwinterm-core-abi.json
           generate_release_notes: true
           fail_on_unmatched_files: true    # all three are hard build products now — a missing one is a broken release
 

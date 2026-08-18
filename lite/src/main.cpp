@@ -1073,7 +1073,15 @@ static void loadCore() {
     core_free_buf = (decltype(core_free_buf))GetProcAddress(m, "agwcore_free_buf");
     if (!core_abi || !emu_new || !emu_feed || !emu_info || !emu_copy_grid || !emu_resize || !emu_free || !emu_copy_history_row || !emu_marks || !emu_get_text || !core_free_buf)
         fatal(L"agwinterm_core.dll: exports missing");
-    if (core_abi() != kRequiredAbi) fatal(L"agwinterm_core.dll: ABI mismatch (need v15)");
+    // Name BOTH numbers. The old message hardcoded "need v15", so it went stale on every bump and
+    // never said what the dll actually reported — the one fact you need when the exe and the core
+    // ship from different repositories (see docs/plans/2026-08-17-agliteterm-product-split.md).
+    if (core_abi() != kRequiredAbi) {
+        wchar_t msg[160];
+        wsprintfW(msg, L"agwinterm_core.dll: ABI mismatch - the dll is v%u, this build requires v%u",
+                  core_abi(), kRequiredAbi);
+        fatal(msg);
+    }
 }
 
 /// Handshake + liveness probe. `hello` alone is NOT enough: a pty-host whose client was killed is
