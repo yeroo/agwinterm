@@ -797,6 +797,60 @@ if (-not $Only -or $Only -eq 'publish-blocked') {
     }
 }
 
+# The OTHER half of the atomic write, and the one no other cell reaches: the temp file cannot be
+# CREATED at all (a policy-locked profile, a DLP/AV agent that blocks new files), so the save falls
+# back to writing sessions.tsv in place. publish-blocked locks the PRIMARY, which forces a failed
+# publish, not a failed create — so this fallback shipped untested. It has to keep both promises the
+# atomic path makes: a generation in the .bak (copied by hand here, since nothing rotates), and the
+# .bak dropped when the user deliberately empties the window, or the next launch reads it and brings
+# back exactly what they just closed.
+if (-not $Only -or $Only -eq 'inplace-fallback') {
+    $inst = 'rm-inplace-fallback'
+    Reset-Cell $inst
+    $err = ''; $inPlace = $false; $current = $false; $bakIsPrev = $false; $bakGone = $false; $after = ''
+    $p = $null; $p2 = $null; $fs = $null
+    try {
+        $p = Start-Lite $inst
+        $id = LastSessionId $inst
+        & $ctl session rename inplace-one --target $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3                       # the generation the fallback must preserve
+        if ((Get-Content (State $inst) -Raw) -notmatch 'inplace-one') { throw 'setup save never landed' }
+        # FileShare.None on the .tmp path: lite's CREATE_ALWAYS on it fails with a sharing violation,
+        # which is the same door-slam a profile that forbids creating new files gives it.
+        $fs = [System.IO.File]::Open("$(State $inst).tmp", 'Create', 'ReadWrite', 'None')
+        & $ctl session rename inplace-two --target $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        $inPlace = Log-Has $inst 'save ok \(IN PLACE\)'
+        $current = (Get-Content (State $inst) -Raw) -match 'inplace-two'
+        if (Test-Path "$(State $inst).bak") {
+            $bak = Get-Content "$(State $inst).bak" -Raw
+            $bakIsPrev = ($bak -match 'inplace-one') -and ($bak -notmatch 'inplace-two')
+        }
+        # Now the deliberate empty, still on the in-place path: the .bak must go with it.
+        & $ctl session close $id --pipe $inst 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        $bakGone = -not (Test-Path "$(State $inst).bak")
+        $fs.Close(); $fs = $null
+        Stop-Lite $p -Kill; $p = $null               # a graceful stop would save again, atomically
+        $p2 = Start-Lite $inst
+        Start-Sleep -Seconds 2
+        $after = Signature $inst
+        Stop-Lite $p2 -Kill; $p2 = $null
+    } catch { $err = $_.Exception.Message }
+    finally { if ($fs) { try { $fs.Close() } catch { } }; Stop-Leftover $p; Stop-Leftover $p2 }
+    if (-not $err -and $inPlace -and $current -and $bakIsPrev -and $bakGone -and $after -notmatch 'inplace-two') {
+        "  PASS  {0,-22} (in-place save keeps a generation, and drops it on a deliberate empty)" -f 'inplace-fallback'
+    } else {
+        $script:failed += 'inplace-fallback'
+        "  FAIL  inplace-fallback"
+        if ($err) { "        error:  $err" }
+        "        wrote in place: $inPlace ; primary holds the new state: $current"
+        "        .bak held the previous generation: $bakIsPrev ; dropped on the deliberate empty: $bakGone"
+        "        after:  [$after]"
+        "        log:    $(Restore-Verdict $inst)"
+    }
+}
+
 # Backward compatibility: a plain 0.17.x file — no D line, no .bak anywhere — must still restore.
 Seeded -Name 'compat-0.17' `
     -Tsv "V1`nW`tws-c`nS`t0`told-one`t`t$cwd`nS`t0`told-two`t`t$cwd`nF`t1`nA`t0`n" -Assert {
