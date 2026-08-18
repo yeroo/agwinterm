@@ -27,7 +27,7 @@ jobs:
         run: choco install innosetup -y --no-progress
 
       # Builds BOTH Inno setups: agwinterm-setup-<ver>.exe (main) and
-      # agwinterm-lite-setup-<ver>.exe (the C++/GDI client, standalone).
+      # agliteterm-setup-<ver>.exe (the C++/GDI client, standalone).
       - name: Build installers
         shell: pwsh
         run: ./installer/build.ps1
@@ -44,7 +44,7 @@ jobs:
         with:
           subject-path: |
             installer/Output/agwinterm-setup-*.exe
-            installer/Output/agwinterm-lite-setup-*.exe
+            installer/Output/agliteterm-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
 
       - name: Publish GitHub Release
@@ -52,7 +52,7 @@ jobs:
         with:
           files: |
             installer/Output/agwinterm-setup-*.exe
-            installer/Output/agwinterm-lite-setup-*.exe
+            installer/Output/agliteterm-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
           generate_release_notes: true
           fail_on_unmatched_files: true    # all three are hard build products now — a missing one is a broken release

@@ -3,7 +3,7 @@
 # The point of these lines is the work-laptop report "restore doesn't work at all", which was
 # unanswerable because a failed save and a failed rebuild look identical from outside. The log now
 # distinguishes them, and this check pins the wording so it can't silently regress.
-param([string]$Exe = "$PSScriptRoot\..\bin\agwinterm-lite.exe")
+param([string]$Exe = "$PSScriptRoot\..\bin\agliteterm.exe")
 
 $ErrorActionPreference = 'Stop'
 $fail = 0
@@ -13,8 +13,8 @@ function Check([string]$name, [bool]$ok, [string]$detail = '') {
 }
 
 $pipe  = 'logrst'
-$dir   = "$env:LOCALAPPDATA\agwinterm-lite"
-$log   = "$dir\lite-$pipe.log"
+$dir   = "$env:LOCALAPPDATA\agliteterm"
+$log   = "$dir\agliteterm-$pipe.log"
 $state = "$dir\sessions-$pipe.tsv"
 $ctl   = "$env:LOCALAPPDATA\Programs\agwinterm\agwintermctl.exe"
 # The .bak and .tmp go too: since the save keeps a previous generation, leaving one behind means

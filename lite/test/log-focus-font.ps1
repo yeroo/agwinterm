@@ -2,7 +2,7 @@
 #
 # "I can't type after switching sessions" was only pinned because GetGUIThreadInfo could be run live
 # on the dev machine. These lines make the same story readable from a laptop's log file.
-param([string]$Exe = "$PSScriptRoot\..\bin\agwinterm-lite.exe")
+param([string]$Exe = "$PSScriptRoot\..\bin\agliteterm.exe")
 
 $ErrorActionPreference = 'Stop'
 $fail = 0
@@ -28,8 +28,8 @@ public class FF {
 "@
 
 $pipe = 'logfoc'
-$dir  = "$env:LOCALAPPDATA\agwinterm-lite"
-$log  = "$dir\lite-$pipe.log"
+$dir  = "$env:LOCALAPPDATA\agliteterm"
+$log  = "$dir\agliteterm-$pipe.log"
 $ctl  = "$env:LOCALAPPDATA\Programs\agwinterm\agwintermctl.exe"
 Remove-Item $log, "$dir\sessions-$pipe.tsv" -ErrorAction SilentlyContinue
 
