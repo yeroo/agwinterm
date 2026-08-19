@@ -208,126 +208,28 @@ Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / C
 
 ## agliteterm — the tiny client
 
-> **lite is now `agliteterm`, its own product.** Same client, new name, new home. An existing
-> **agwinterm-lite** install is handed over by its own updater — 0.17.4 points at the agliteterm
-> feed — and agliteterm installs **alongside** rather than replacing it, adopting your sessions,
-> settings and fonts on first run, so nothing is lost and you can go back. Scripts that use
-> `--pipe agwinterm-lite` keep working: the default instance answers on both names. The
-> `AGWINTERM_*` session variables are unchanged.
+**agliteterm is its own product now**, at **[github.com/yeroo/agliteterm](https://github.com/yeroo/agliteterm)**.
+It was `agwinterm-lite`: a single small C++ exe (Win32/WTL, no .NET) over the **same Rust emulator
+core and pty-host** as this app, with real native controls instead of custom-drawn chrome — for old
+or low-RAM machines. Its docs, releases and issues live there.
 
-**`agliteterm`** is a second, minimal client for old or low-RAM machines: a single small
-C++ exe (Win32/WTL, no .NET) over the same Rust emulator core and pty-host. It trades the
-custom-drawn chrome for **real native controls** — menu bar, toolbar, TreeView sidebar,
-status bar — in the classic Windows look.
+They stay one family by contract, not by convention:
 
-- **Themes**: Dark / Light / Classic / Auto (follows Windows) from *File → Properties*. Dark
-  covers everything — menus, toolbar, sidebar, dialogs, scrollbars, title bar. **Classic** keeps
-  the authentic raised-3D, pre-theme look.
-- **Agent workflow**: per-session agent status (bold = blocked, italic = working), an
-  **attention bell** that lights amber and jumps to the next blocked session, **flagged
-  sessions** with a flagged-only view, **unread badges** (commands finished while a session was
-  off-screen), workspace focus, sidebar **drag & drop**.
-- **Terminals**: workspaces + sessions with restore, a 2-pane split, quick / scratch / overlay
-  popup terminals, font catalog (incl. bundled Cozette, Tamzen, Terminus, Spleen, UNSCII &
-  GNU Unifont bitmap fonts) — face and size are chosen once in Properties; there is deliberately
-  **no zoom**, because a raster face only exists at the strike sizes its pack ships,
-  MS-DOS/EGA palette, cmd.exe-style Properties dialog, fully rebindable keys (all unbound by
-  default — keystrokes belong to your shell).
-- **Scriptable**: the same newline-JSON control pipe, speaking the `agwintermctl` dialect —
-  38 verbs covering sessions, workspaces, windows, and the tree (`agwintermctl --pipe
-  agliteterm tree`). Shells get `AGWINTERM_*` env, so hooks and the agent skill work.
-- **Multi-window, the lite way**: every window is its own tiny process (`--pipe <name>`), all
-  sharing one pty-host; `agwintermctl window new/list/select/...` drives them.
-- **CLI**: `-p/--profile`, `-d/--dir`, `--maximized`, `--no-restore`, `--pipe` — the full app's
-  flag names — plus `--diagnose` (see below).
-- **Explains itself**: lite keeps a small always-on log of its own decisions — session saves and
-  restores (with counts, byte totals, and the exact error when a write fails), focus handoffs, and
-  font/pack resolution — at `%LOCALAPPDATA%\agliteterm\agliteterm.log` (`agliteterm-<instance>.log` for named
-  instances), rotating at ~1 MB into `.log.old`. It records what lite *did*, never terminal output,
-  pasted text, or your command lines, so it's safe to attach to an issue.
+- **The same control API.** `tests/conformance/control-api.json` here is the canonical spec — 38
+  verbs with their expected response shapes — and **both repositories run it in CI**, this one
+  against the full app and agliteterm against its client. A verb reshaped on either side fails the
+  other's build.
+- **The same session environment.** `AGWINTERM_*` is unchanged in agliteterm, so the agent skill,
+  the status hooks and `agwintermctl` work identically in both.
+- **The same core.** agliteterm builds against an ABI-pinned `agwinterm_core.dll` published from
+  this repo, and refuses to build if the published `abiVersion` is not the one it requires.
 
-Grab **`agliteterm-setup-<version>.exe`** from Releases (per-user, no admin), or build it
-(needs the VC++ ATL component): `./lite/build.ps1` (dev build) / `./installer/build-lite.ps1` (setup).
-
-### Session restore & the state file
-
-Lite saves its workspaces and sessions whenever the tree changes and on exit, and rebuilds them on
-the next launch (`--no-restore` starts empty instead). Everything about that is on disk and readable:
-
-- **One state file per instance.** `%LOCALAPPDATA%\agliteterm\sessions.tsv` for the default
-  instance, `sessions-<instance>.tsv` for a named one. **Because every lite window is its own
-  process, each window restores only its own sessions** — sessions you created in
-  `--pipe work` come back in `--pipe work`, never in the default window. That is the mundane
-  reading of "my sessions are gone": right sessions, wrong window.
-- **Format**: tab-separated UTF-8 text, `V1` header, one record per line — `W` workspace, `S` session
-  (workspace index, name, app, cwd, then args), `F` flagged indices, `D` host session ids, `A` active
-  workspace. The format grows by *adding* line types, so a file written by an older build still
-  restores, a line type this build doesn't write is still honoured when it finds one (`O`, focused
-  workspace), and a file from a **newer** build is read for the lines this one knows rather than
-  thrown away.
-- **What is saved**: the visible sessions, each with its *live* working directory (read from the
-  shell process, so it follows you as you `cd`). Split-pane shells are hidden and deliberately not
-  persisted — the split comes back as a single pane.
-- **Writes are atomic, and keep one generation.** The save writes `sessions.tsv.tmp`, rotates the
-  current file to **`sessions.tsv.bak`**, then renames the temp over the target — a crash or a full
-  disk mid-write can no longer leave a truncated file where a good one was. A zero-session save is
-  *refused* over a populated file (and says so in the log); the one legitimate empty is you closing
-  the last session, which also deletes the `.bak` so what you just closed doesn't come back.
-- **Restore order**: `sessions.tsv` → `.bak` if the primary is missing, empty, or parses to zero
-  sessions → a fresh window. If the pty-host still holds the shells — lite was killed or the machine
-  was shut down rather than closed — those shells are **still running** and get adopted live instead
-  of relaunched. An adopted shell keeps everything it was running, and lite asks it to redraw, so the
-  **screen comes back** — but the **scrollback does not**: lite re-attaches to the live process with a
-  fresh emulator, so only what is on screen is repainted, not the history the old window had. A shell
-  that has already exited, or one another window is currently driving, is not adopted — it is
-  relaunched (or left to its owner) instead.
-- **Recovering by hand.** `--no-restore` starts empty, and the next save publishes *that* over
-  `sessions.tsv` — but the generation you wanted survives as `sessions.tsv.bak`. **Copy the `.bak`
-  somewhere safe first**: only one generation is kept, so the next save of the window you are looking
-  at overwrites it in turn. Then close lite, copy your saved file over `sessions.tsv`, and relaunch.
-  `--diagnose` prints both files with their sizes (and the primary's contents), so you can tell which
-  one holds your sessions before you copy anything.
-- **"Restart everything"** (*File → Restart everything*) relaunches the **same** instance — it carries
-  this window's `--pipe <name>` over, so it comes back reading the same state file. `--diagnose`
-  prints the exact command line it would use.
-- **A spec that won't start on this machine** (a profile whose exe only exists on your other PC, a
-  cwd on an unmounted drive) stays in the tree as a `(failed to start)` entry with a note in its
-  pane, rather than silently vanishing. Its name, workspace, cwd and args are kept and re-saved, so
-  it starts normally again on the machine that has the app. Scripts can spot one without reading the
-  log: `agwintermctl tree --json` reports `"failed"` and `"exited"` per session.
-
-Every one of those branches names itself in `agliteterm.log`, and `lite/test/restore-matrix.ps1` drives the
-whole matrix — kill vs. graceful close, two windows at once, interrupted writes, `.bak` fallback,
-bogus apps, old and future file formats — as regression cover.
-
-If lite exits at startup with **"pty-host did not become usable"**, a previous `agwinterm-ptyhost.exe`
-is wedged: end it in Task Manager and relaunch. `agliteterm.log` records the connection attempt by attempt,
-including the case it is really there for — a host left dying by a killed window, which answers a
-handshake for a moment while refusing every real command.
-
-### Reporting a lite problem
-
-Run `agliteterm --diagnose` and attach its output plus `agliteterm.log`. The report is read-only and
-safe to run while lite is open; it prints the state file's path, whether that directory is genuinely
-writable (a real write probe, which is what catches a redirected or policy-locked profile), the state
-file's contents and its `.bak` generation, the resolved font, and the bundled pack inventory:
-
-```
-> agliteterm --diagnose
-  version: 0.17.2
-  instance: (default)
-  restart cmdline: "C:\Users\you\AppData\Local\Programs\agliteterm\agliteterm.exe"
-state
-  dir: C:\Users\you\AppData\Local\agliteterm
-  dir writable: yes
-  session file: ...\sessions.tsv
-    size: 59 bytes
-    modified: 2026-07-31 20:14:02
-  backup file: ...\sessions.tsv.bak (59 bytes)
-```
-
-Use `--pipe <instance> --diagnose` to ask about a named instance — it reports *that* instance's
-state file, which is the one its window restores from.
+An existing **agwinterm-lite** install is handed over by its own updater: 0.17.4 points at the
+agliteterm feed, and agliteterm installs *alongside* rather than replacing it, adopting that
+profile's sessions, settings and fonts on first run — so nothing is lost and a rollback still
+works. Scripts using `--pipe agwinterm-lite` keep working; the default instance answers on both
+names. Releases here still carry a frozen `agwinterm-lite-setup-0.17.4.exe` so installs that
+predate the handover can still find their way across.
 
 ## Keyboard essentials
 

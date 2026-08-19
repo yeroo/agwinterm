@@ -1,0 +1,1 @@
+MesloLGLDZ Nerd Font (Meslo LG: Apache License 2.0, (c) Andre Berg / based on Menlo; Nerd Fonts patches: MIT). Redistributed unmodified as the bundled default font of agwinterm.

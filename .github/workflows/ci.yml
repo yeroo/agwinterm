@@ -41,12 +41,6 @@ jobs:
         # hard merge gate.
         run: cargo build --release --manifest-path native/Cargo.toml
 
-      - name: Build agwinterm-lite (the handover build)
-        # Compiles the lite client against the Rust core dll + committed nanopb sources, so a
-        # protocol/schema drift or C++ break fails the merge. cl.exe is on windows-latest.
-        shell: pwsh
-        run: ./lite/build.ps1
-
       # The control API is a cross-product contract now: agliteterm ships from its own repository
       # promising to speak this dialect, and its CI runs THIS spec against its own client. Running
       # it here too is what makes "same control API" a gate rather than a claim — a verb reshaped

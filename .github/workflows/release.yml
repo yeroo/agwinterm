@@ -31,13 +31,34 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
-      # Builds BOTH Inno setups: agwinterm-setup-<ver>.exe (main) and
-      # agwinterm-lite-setup-<ver>.exe — the HANDOVER build (see lite/src/main.cpp): the last
-      # agwinterm-lite, whose updater points at the agliteterm feed so existing installs find
-      # their successor. It must ship at least once before this repo stops publishing it.
-      - name: Build installers
+      - name: Build installer
         shell: pwsh
         run: ./installer/build.ps1
+
+      # ---- the handover asset, carried forward -----------------------------------------------
+      # agwinterm-lite left this repository, but installs that predate the handover (<= 0.17.3) still
+      # look HERE for an asset whose name starts "agwinterm-lite-setup-". Stop publishing one and they
+      # go silent forever: the check succeeds, matches nothing, and says nothing — no error, no notice,
+      # no route to agliteterm.
+      #
+      # So every release re-attaches the FROZEN 0.17.4 handover build. Matching is by prefix and the
+      # version comes from tag_name, not the filename, so a stale install downloads this, installs the
+      # handover, and finds agliteterm on its next check. Two hops, no source tree to maintain.
+      #
+      # Delete this step when the pre-0.17.4 population is gone; the release then simply stops carrying
+      # it, which is the same silence — by then deliberate.
+      - name: Carry the frozen handover asset forward
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/${{ github.repository }}/releases/download/v0.17.4/agwinterm-lite-setup-0.17.4.exe'
+          $out = 'installer/Output/agwinterm-lite-setup-0.17.4.exe'
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          # The digest a pre-handover updater verifies against is the one the release API publishes for
+          # THIS asset, so the bytes must be the same ones 0.17.4 shipped. Fail loudly if they are not.
+          $sha = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
+          $want = '714ca6d2fa66da4d662764dc9eb3ae58ce45df4a4bc040a3b4ba475f02f25169'
+          if ($sha -ne $want) { throw "handover asset is not the one 0.17.4 shipped: got $sha, expected $want" }
+          "carried forward: agwinterm-lite-setup-0.17.4.exe ($sha)"
 
       - name: Build portable exe
         shell: pwsh
@@ -75,12 +96,14 @@ jobs:
       # Free, certless supply-chain signing: a Sigstore-backed attestation binding each artifact to
       # this commit + workflow. Verify with:  gh attestation verify <file> --repo yeroo/agwinterm
       # (Doesn't remove SmartScreen — that needs Authenticode, e.g. a SignPath Foundation OSS cert.)
+      # The carried-forward handover asset is deliberately NOT in this list: this run did not build
+      # those bytes, and attesting them here would claim provenance this workflow cannot vouch for.
+      # Its attestation is the one v0.17.4 produced, which still verifies.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v1
         with:
           subject-path: |
             installer/Output/agwinterm-setup-*.exe
-            installer/Output/agwinterm-lite-setup-*.exe
             installer/Output/agwinterm-portable-*.exe
             installer/Output/agwintermctl.exe
             installer/Output/agwinterm_core-abi*.dll
@@ -92,7 +115,7 @@ jobs:
         with:
           files: |
             installer/Output/agwinterm-setup-*.exe
-            installer/Output/agwinterm-lite-setup-*.exe
+            installer/Output/agwinterm-lite-setup-0.17.4.exe
             installer/Output/agwinterm-portable-*.exe
             installer/Output/agwintermctl.exe
             installer/Output/agwinterm_core-abi*.dll
