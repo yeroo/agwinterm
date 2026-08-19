@@ -1,8 +1,8 @@
 # Third-party fonts
 
-Every font bundled with agwinterm / agwinterm-lite or rasterized into generated
-assets, with exact versions and licenses. License texts ship next to the font files
-in `lite/assets/` (and inside the installers).
+Every font bundled with agwinterm or agliteterm, or rasterized into generated assets, with exact
+versions and licenses. License texts ship next to the font files — `assets/fonts/` here, `assets/`
+in [agliteterm](https://github.com/yeroo/agliteterm) — and inside the installers.
 
 | Project | Version | URL | License | Used as | Modified? |
 |---|---|---|---|---|---|

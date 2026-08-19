@@ -116,10 +116,12 @@ The **committed** packs are additionally validated on every CI run
 (`tests/Agwinterm.Core.Tests/AgbfPackTests.cs`: header sanity, CRC-32, sorted
 index, atlas bounds, per-family coverage) — a corrupted regeneration can't ship.
 
-## Runtime (agwinterm-lite)
+## Runtime (agliteterm)
 
-The four packs are committed to `lite/assets/` (regenerate + re-copy deliberately)
-and ship next to the exe. Selecting **AGWin Bitmap 14/16/18/20** in Properties
+The packs are consumed by **agliteterm**, which is its own product now — they are committed to
+`assets/` in [that repository](https://github.com/yeroo/agliteterm) (regenerate here, copy there
+deliberately) and ship next to its exe. Its `test/agbf-packs.ps1` is the golden check on those
+committed bytes, and it lives beside them rather than here. Selecting **AGWin Bitmap 14/16/18/20** in Properties
 renders every cell from the pack atlas — a single 32bpp DIB composed per pane, no
 GDI text, no vector fonts. CRC-validated load (corrupted packs are rejected),
 binary-search glyph lookup, synthetic bold (1px overstrike), underline/strike from
