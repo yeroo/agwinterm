@@ -6,6 +6,11 @@ on:
   push:
     tags: [ 'v*' ]
   workflow_dispatch:
+    inputs:
+      publish_packages:
+        description: 'Submit to winget + Chocolatey regardless of the checkpoint rule'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -96,14 +101,71 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true    # every one is a hard build product now — a missing one is a broken release
 
+  # ---- checkpoint releases ----------------------------------------------------------------------
+  # winget and Chocolatey are HUMAN-MODERATED. Every submission costs a reviewer a slot in a queue,
+  # and this project releases far faster than those queues drain — versions started stacking up
+  # behind each other, which is how 0.17.x ended up with one package version in moderation blocking
+  # the next (Chocolatey answers 403 to a new version while the previous one is unreviewed).
+  #
+  # So only CHECKPOINT versions are submitted: a patch number that is a multiple of 9 (x.y.9,
+  # x.y.18, x.y.27...). Everything between them is a GitHub release, which the in-app updater and
+  # scoop both consume perfectly well — scoop's Excavator polls on a schedule and has no reviewer to
+  # burden, so it deliberately stays ungated.
+  #
+  # The gaps are the point. If .8 does not feel like something to put in front of a reviewer, go
+  # straight to .10 and let the next checkpoint be .18. The rule never forces a submission; it only
+  # ever decides whether one is allowed.
+  #
+  # To submit anything else — a security fix, or a x.y.0 that opens a new line — run this workflow
+  # manually with publish_packages: true. That override exists because the rule has one sharp edge:
+  # a minor bump (0.18.0) is NOT a checkpoint, so it reaches the package managers only at 0.18.9
+  # unless it is pushed by hand.
+  gate:
+    needs: installer
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - id: check
+        shell: bash
+        run: |
+          if [ "${{ inputs.publish_packages }}" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::manual override - submitting to winget + Chocolatey"
+            exit 0
+          fi
+          ref="${{ github.ref_name }}"
+          case "$ref" in
+            v*) ver="${ref#v}" ;;
+            *)  echo "publish=false" >> "$GITHUB_OUTPUT"
+                echo "::notice::not a tag - no package submission"
+                exit 0 ;;
+          esac
+          patch="${ver##*.}"
+          # A non-numeric patch (a prerelease like 0.17.9-rc1) is never a checkpoint: package
+          # managers should see finished versions, and "-rc1" would fail the arithmetic anyway.
+          if ! [[ "$patch" =~ ^[0-9]+$ ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$ver is a prerelease - no package submission"
+            exit 0
+          fi
+          if [ "$patch" -gt 0 ] && [ $((patch % 9)) -eq 0 ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$ver is a checkpoint release - submitting to winget + Chocolatey"
+          else
+            next=$(( (patch / 9 + 1) * 9 ))
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$ver is not a checkpoint (next is ${ver%.*}.$next) - GitHub release only"
+          fi
+
   # Opens the version-bump PR to microsoft/winget-pkgs for each release. Runs as a job here
   # (not a `release:` workflow) because releases published with GITHUB_TOKEN don't trigger
   # other workflows. Needs the WINGET_TOKEN secret — a classic PAT with the public_repo
   # scope (used to fork winget-pkgs and open the PR); skips with a warning if unset.
   # The scoop bucket needs no equivalent: its Excavator updates itself on a schedule.
   winget:
-    needs: installer
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [installer, gate]
+    if: needs.gate.outputs.publish == 'true'
     runs-on: windows-latest
     # Best-effort: a brand-new package can't be updated until its first version clears winget-pkgs
     # moderation, so this can legitimately fail early on — don't fail the whole release for it.
@@ -142,8 +204,8 @@ jobs:
   # skips with a warning if unset. Rewrites version + download URL + checksum in-place from the
   # release asset so the committed template can stay pinned at the last released version.
   chocolatey:
-    needs: installer
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [installer, gate]
+    if: needs.gate.outputs.publish == 'true'
     runs-on: windows-latest
     # Best-effort: Chocolatey rejects new versions of a package whose first version is still in
     # moderation (403), so this can legitimately fail early on — don't fail the whole release for it.

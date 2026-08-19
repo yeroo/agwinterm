@@ -121,7 +121,7 @@ Grab either from the [**Releases**](https://github.com/yeroo/agwinterm/releases)
 
 Both are **self-contained** (no .NET runtime needed) and need **no admin rights**.
 
-Or install from a package manager (both use the release artifacts and self-update on new releases):
+Or install from a package manager (all use the release artifacts and self-update on new releases):
 
 ```powershell
 # Scoop (portable build)
@@ -134,6 +134,13 @@ winget install yeroo.agwinterm
 # Chocolatey (portable build)
 choco install agwinterm
 ```
+
+**winget and Chocolatey get checkpoint releases only** — versions whose patch number is a multiple
+of 9 (0.17.9, 0.17.18, 0.17.27...). Both are human-moderated, and this project releases faster than
+those queues drain, so submitting every version just stacks them up behind each other. Everything in
+between still ships as a GitHub release, and both the in-app updater and scoop pick those up
+immediately — so **the fastest way to stay current is the installer or scoop**, not winget or choco.
+
 
 - Binaries are currently **unsigned**, so SmartScreen will warn on first run → *More info → Run
   anyway*. Release artifacts carry **Sigstore build-provenance attestations** — verify with
