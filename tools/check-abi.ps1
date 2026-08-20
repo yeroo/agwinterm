@@ -3,7 +3,9 @@
 #
 #   native/agwinterm-core/src/lib.rs      pub const ABI_VERSION      (the source of truth)
 #   src/Agwinterm.Core/RustEmulatorCore.cs      public const uint RequiredAbi
-#   lite/src/main.cpp                    static constexpr uint32_t kRequiredAbi
+#
+# A third consumer, agliteterm, declares kRequiredAbi in its OWN repository. It is checked there,
+# against the manifest this script emits — which is exactly the case that motivated all of this.
 #
 # Today a drift is caught at RUNTIME by each consumer's handshake, which is a loud refusal rather
 # than corruption — but only once someone runs the mismatched pair. That is tolerable while all
@@ -31,8 +33,11 @@ function Read-Abi([string]$Path, [string]$Pattern, [string]$Label) {
 $decls = @(
     Read-Abi 'native/agwinterm-core/src/lib.rs'      'pub const ABI_VERSION:\s*u32\s*=\s*(\d+)'        'rust core (source of truth)'
     Read-Abi 'src/Agwinterm.Core/RustEmulatorCore.cs' 'public const uint RequiredAbi\s*=\s*(\d+)'       'C# RustEmulatorCore'
-    Read-Abi 'lite/src/main.cpp'                      'constexpr uint32_t kRequiredAbi\s*=\s*(\d+)'     'lite (C++)'
 )
+# The third consumer, agliteterm, now lives in its own repository and is NOT checked here — it
+# CANNOT be, and that is the point of publishing the ABI manifest: it pins a released core, reads
+# the abiVersion this repo published beside it, and refuses to build on a mismatch. The check moved
+# to the consumer, where the pairing is actually decided.
 
 $decls | ForEach-Object { "  {0,-28} v{1,-3} {2}" -f $_.Label, $_.Abi, $_.Path }
 
@@ -40,7 +45,8 @@ $distinct = @($decls.Abi | Sort-Object -Unique)
 if ($distinct.Count -ne 1) {
     throw ("agwinterm-core ABI DRIFT: consumers disagree ({0}). " -f ($distinct -join ' vs ')) +
           "Bump every declaration in the same commit — a mismatched pair is a hard refusal at load, " +
-          "and across repositories it can ship."
+          "and across repositories it can ship: agliteterm builds against whatever abiVersion the " +
+          "manifest here claims."
 }
 
 $abi = $distinct[0]

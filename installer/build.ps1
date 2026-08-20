@@ -1,14 +1,15 @@
-# Build BOTH agwinterm installers (separate setups for the main terminal and lite):
-#   installer\Output\agwinterm-setup-<ver>.exe        (main: Agwinterm.Win32 + agwintermctl)
-#   installer\Output\agwinterm-lite-setup-<ver>.exe   (lite: agwinterm-lite.exe, standalone)
-# Each ships its own copy of the shared Rust pty-host + core dll.
+# Build the agwinterm installer: installer\Output\agwinterm-setup-<ver>.exe
+# (Agwinterm.Win32 + agwintermctl + the Rust pty-host and core dll).
+#
+# The lite terminal is no longer built here — it became its own product, agliteterm, and ships from
+# github.com/yeroo/agliteterm. Releases still CARRY a frozen agwinterm-lite-setup asset so installs
+# that predate the handover can still find their way across; see .github/workflows/release.yml.
 # Prereqs: .NET SDK (net10.0-windows) + Inno Setup 6 (ISCC on PATH or the usual locations).
 $ErrorActionPreference = "Stop"
 $here   = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $root   = Split-Path -Parent $here
 $dotnet = if (Test-Path "C:\Program Files\dotnet\dotnet.exe") { "C:\Program Files\dotnet\dotnet.exe" } else { "dotnet" }
-$stage      = Join-Path $here "stage"        # main terminal payload
-$stageLite  = Join-Path $here "stage-lite"   # lite terminal payload
+$stage = Join-Path $here "stage"
 
 # resolve ISCC (Inno Setup compiler): PATH, machine-wide (choco/CI), and the per-user winget location.
 $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
@@ -19,18 +20,14 @@ if (-not $iscc) {
 }
 if (-not $iscc) { throw "ISCC (Inno Setup compiler) not found. Install Inno Setup 6 (winget install JRSoftware.InnoSetup)." }
 
-Write-Host "== clean stages ==" -ForegroundColor Cyan
-foreach ($d in @($stage, $stageLite)) { if (Test-Path $d) { Remove-Item -Recurse -Force $d }; New-Item -ItemType Directory -Force $d | Out-Null }
+Write-Host "== clean stage ==" -ForegroundColor Cyan
+if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+New-Item -ItemType Directory -Force $stage | Out-Null
 
-# version = the main installer's AppVersion define (stamped into the assemblies so `ping` reports it).
-# The lite installer's AppVersion must be kept in step with it.
+# version = the installer's AppVersion define (stamped into the assemblies so `ping` reports it).
 $issText = Get-Content (Join-Path $here "agwinterm.iss") -Raw
 if ($issText -notmatch '#define\s+AppVersion\s+"([^"]+)"') { throw "AppVersion not found in agwinterm.iss" }
 $ver = $Matches[1]
-$liteText = Get-Content (Join-Path $here "agwinterm-lite.iss") -Raw
-if ($liteText -match '#define\s+AppVersion\s+"([^"]+)"' -and $Matches[1] -ne $ver) {
-  throw "version mismatch: agwinterm.iss=$ver but agwinterm-lite.iss=$($Matches[1]) - keep them in step"
-}
 
 # Self-contained folder publish (robust for Vortice native libs + the on-disk themes\/assets\).
 $common = @("-c","Release","-r","win-x64","--self-contained","true","-p:PublishSingleFile=false","-p:Version=$ver","-o",$stage)
@@ -51,36 +48,22 @@ $coreDll = Join-Path $root "native\target\release\agwinterm_core.dll"
 $ptyExe  = Join-Path $root "native\target\release\agwinterm-ptyhost.exe"
 Copy-Item $coreDll $stage -Force
 Copy-Item $ptyExe  $stage -Force
-# The main app loads the Meslo Nerd Font by name from its exe dir (lite/assets is the canonical source).
-Copy-Item (Join-Path $root "lite\assets\MesloLGLDZNerdFont-Regular.ttf") $stage -Force
-Copy-Item (Join-Path $root "lite\assets\FONT-LICENSE.txt") $stage -Force
+# The app loads the Meslo Nerd Font by name from its exe dir. It used to live in lite/assets and
+# moved to assets/fonts/ when lite left this repository — it is the MAIN app's font too, and a
+# shared file has no business living inside a component that was about to be deleted.
+Copy-Item (Join-Path $root "assets\fonts\MesloLGLDZNerdFont-Regular.ttf") $stage -Force
+Copy-Item (Join-Path $root "assets\fonts\FONT-LICENSE.txt") $stage -Force
 
-Write-Host "== build agwinterm-lite (C++/GDI) ==" -ForegroundColor Cyan
-& (Join-Path $root "lite\build.ps1")
-if ($LASTEXITCODE -ne 0) { throw "lite build failed" }
-# Lite stage: the lite exe + its own copy of the shared core/pty-host + ALL bundled assets (fonts,
-# toolbar icons, licenses) + the app icon for its shortcut.
-Copy-Item (Join-Path $root "lite\bin\agwinterm-lite.exe") $stageLite -Force
-Copy-Item $coreDll $stageLite -Force
-Copy-Item $ptyExe  $stageLite -Force
-Copy-Item (Join-Path $root "lite\assets\*") $stageLite -Force   # fonts + licenses + lite icon
-
-# sanity: required payload present in each stage
+# sanity: required payload present
 foreach ($f in @("Agwinterm.Win32.exe","agwintermctl.exe","agwinterm_core.dll","agwinterm-ptyhost.exe","MesloLGLDZNerdFont-Regular.ttf","assets\agwinterm.ico")) {
-  if (-not (Test-Path (Join-Path $stage $f))) { throw "main stage missing $f" }
+  if (-not (Test-Path (Join-Path $stage $f))) { throw "stage missing $f" }
 }
-if (-not (Get-ChildItem (Join-Path $stage "themes") -Filter *.conf -ErrorAction SilentlyContinue)) { throw "main stage missing themes\*.conf" }
-foreach ($f in @("agwinterm-lite.exe","agwinterm_core.dll","agwinterm-ptyhost.exe","agwinterm-lite.ico","CozetteVector.ttf")) {
-  if (-not (Test-Path (Join-Path $stageLite $f))) { throw "lite stage missing $f" }
-}
-Write-Host ("stage OK: main {0} files, lite {1} files" -f (Get-ChildItem $stage -Recurse -File).Count, (Get-ChildItem $stageLite -Recurse -File).Count) -ForegroundColor Green
+if (-not (Get-ChildItem (Join-Path $stage "themes") -Filter *.conf -ErrorAction SilentlyContinue)) { throw "stage missing themes\*.conf" }
+Write-Host ("stage OK: {0} files" -f (Get-ChildItem $stage -Recurse -File).Count) -ForegroundColor Green
 
-Write-Host "== compile main installer (ISCC) ==" -ForegroundColor Cyan
+Write-Host "== compile installer (ISCC) ==" -ForegroundColor Cyan
 & $iscc (Join-Path $here "agwinterm.iss")
-if ($LASTEXITCODE -ne 0) { throw "ISCC (main) failed" }
-Write-Host "== compile lite installer (ISCC) ==" -ForegroundColor Cyan
-& $iscc (Join-Path $here "agwinterm-lite.iss")
-if ($LASTEXITCODE -ne 0) { throw "ISCC (lite) failed" }
+if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
 Get-ChildItem (Join-Path $here "Output") -Filter *.exe |
   Where-Object { $_.Name -like "*$ver*" } | Sort-Object LastWriteTime -Descending |

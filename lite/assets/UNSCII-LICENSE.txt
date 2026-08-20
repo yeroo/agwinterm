@@ -1,8 +1,0 @@
-unscii 2.1 — a set of bitmapped Unicode fonts by Viznut (Ville-Matias Heikkila).
-http://viznut.fi/unscii/
-
-License: Public Domain. From the unscii website: the fonts are released into the
-Public Domain (portions derived from various public-domain classic system fonts).
-
-Files: unscii-16.ttf (8x16), unscii-8.ttf (8x8; name table edited to "unscii-8"
-so both strikes can be installed side by side — otherwise unmodified).
