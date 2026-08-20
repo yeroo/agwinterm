@@ -263,6 +263,40 @@ def load_emoji(path):
     return out
 
 
+def fit_cell(img, bx, by, cells, cellw, cellh, onebit=False):
+    """Force a cropped glyph inside its cell box, returning (img, bx, by).
+
+    The rasterizer crops to the ink bbox and records it as-is, so a face whose glyph is drawn
+    larger than the advance produced records wider than the cell: U+2714 was 17px in a 10px cell,
+    U+2B24 15px, U+23FA 12px. The renderer clips at the cell edge, so those arrived on screen cut
+    in half - a bisected circle reads as U+25D0, not as a dot.
+
+    Fitting belongs HERE rather than at paint time: it happens once per pack instead of once per
+    frame, and it can use a real resampler instead of the nearest-neighbour a renderer can afford.
+
+    Two cases, deliberately different:
+      - genuinely too big  -> scale down uniformly (squashing one axis turns a circle into an egg)
+      - a pixel or two out -> just move it in. Scaling for a 1px overhang would blur a bitmap face
+                              for no visible gain, and most overhangs are exactly that.
+    """
+    avail_w, avail_h = cells * cellw, cellh
+    if img.width > avail_w or img.height > avail_h:
+        s = min(avail_w / img.width, avail_h / img.height)
+        w, h = max(1, round(img.width * s)), max(1, round(img.height * s))
+        # Resample in greyscale even for 1-bit sources, then re-threshold: scaling a bitmask
+        # directly drops whole strokes at small sizes.
+        img = img.convert("L").resize((w, h), Image.LANCZOS)
+        if onebit:
+            img = img.point(lambda v: 255 if v > 110 else 0)
+        # Re-place: centred horizontally, and keep the glyph's bottom where it was so it stays on
+        # the baseline rather than floating.
+        bx = (avail_w - w) // 2
+        by = min(by, avail_h - h)
+    bx = max(0, min(bx, avail_w - img.width))
+    by = max(0, min(by, avail_h - img.height))
+    return img, bx, by
+
+
 def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None, emoji=None):
     em, cellw, asc, desc, upos, uth = cell_geometry(ttf_path, nominal)
     cellh = asc + desc
@@ -287,7 +321,8 @@ def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None, emoji=None):
                 records.append((cp, len(atlas), 0, 0, 0, 0, wide, 8))
                 continue
             img = img8.crop(bbox)
-            records.append((cp, len(atlas), bbox[0], bbox[1], img.width, img.height, wide, 8))
+            img, bx, by = fit_cell(img, bbox[0], bbox[1], wide, cellw, cellh)
+            records.append((cp, len(atlas), bx, by, img.width, img.height, wide, 8))
             atlas.extend(img.tobytes())
             continue
         if cp in emoji:   # color emoji: PNG strike scaled into the 2-cell box, BGRA straight alpha
@@ -310,8 +345,9 @@ def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None, emoji=None):
             if bbox is None:
                 records.append((cp, len(atlas), 0, 0, 0, 0, wide, 6))
                 continue
-            img1 = bw.crop(bbox).convert("1", dither=Image.NONE)
-            records.append((cp, len(atlas), bbox[0] - cellw, bbox[1], img1.width, img1.height, wide, 6))
+            img1, bx, by = fit_cell(bw.crop(bbox), bbox[0] - cellw, bbox[1], wide, cellw, cellh, onebit=True)
+            img1 = img1.convert("1", dither=Image.NONE)
+            records.append((cp, len(atlas), bx, by, img1.width, img1.height, wide, 6))
             atlas.extend(img1.tobytes())    # rows bit-packed MSB-first, byte-padded
             continue
         synth = cp in BOX or cp in BLOCKS or cp in PL_SOLID or cp in PL_ROUND or cp == 0xE0A0
@@ -332,6 +368,7 @@ def rasterize(cps, ttf_path, nominal, fb_cps=None, fb_path=None, emoji=None):
             x0, y0, x1, y1 = bbox
             img = img8.crop(bbox)
             bx, by = x0 - cellw, y0 - 0  # bearings vs cell origin (top-left)
+            img, bx, by = fit_cell(img, bx, by, 1, cellw, cellh)
         wpx, hpx = img.size
         records.append((cp, len(atlas), bx, by, wpx, hpx, 1, 1 if synth else 0))
         atlas.extend(img.tobytes())
@@ -440,6 +477,13 @@ def main():
         for need in (0x2500, 0x2502, 0x253C, 0x2588, 0x2591, 0xE0B0, 0x0410, 0x044F, 0xFFFD):
             assert need in set(cps_out), f"missing required glyph U+{need:04X}"
         assert all(r[6] in (1, 2) for r in records), "bad cellWidth"
+        # Every glyph must fit the cells it claims. This is the invariant the renderer relies on:
+        # it clips at the cell edge, so a record that overflows arrives on screen cut in half.
+        over = [r for r in records
+                if r[4] and (r[2] < 0 or r[3] < 0
+                             or r[2] + r[4] > r[6] * geo["cellw"] or r[3] + r[5] > geo["cellh"])]
+        assert not over, (f"{len(over)} glyphs overflow their cell, e.g. "
+                          + ", ".join(f"U+{r[0]:04X} {r[4]}x{r[5]} at ({r[2]},{r[3]})" for r in over[:5]))
         if fb_cps:
             byCp = {r[0]: r for r in records}
             for need, wide in ((0x4E2D, 2), (0x05D0, 1), (0x0250, 1), (0x3042, 2), (0xAC00, 2)):
