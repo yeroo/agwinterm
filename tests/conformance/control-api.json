@@ -59,7 +59,7 @@
       "result": "string",
       "capture": "alpha",
       "settle": 3,
-      "note": "returns the new session's id, which the rest of the run targets. The settle is not politeness: the full app posts the creation to its UI thread and returns the id first, so a verb aimed at it a millisecond later legitimately cannot find it."
+      "note": "returns the new session's id, and MUST honour --name: agliteterm ignored it and handed back a session called \"<pipe>-<n>\", so an agent could not find what it had just created, by name or in the tree. The settle is not politeness — the full app posts the creation to its UI thread and answers first, so a verb aimed at that id a millisecond later legitimately cannot find it."
     },
     {
       "verb": "session.select",
@@ -80,6 +80,16 @@
         "{alpha}"
       ],
       "result": "string"
+    },
+    {
+      "verb": "session.select",
+      "args": [
+        "session",
+        "select",
+        "conf-renamed"
+      ],
+      "result": "string",
+      "note": "targeted BY NAME, not by id. This is the phrasing an agent is given — \"run it in the build session\" — and it used to be the one that could not work: both products resolved ids only and answered a flat \"session not found\". An ambiguous name still resolves to nothing, because typing into the wrong terminal is worse than refusing."
     },
     {
       "verb": "session.status",
