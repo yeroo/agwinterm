@@ -1604,13 +1604,27 @@ internal partial class Program
         RequestRedraw(); SaveState();
     }
 
+    /// <summary>
+    /// Resolve a control-API target: id (exact), then id prefix, then NAME.
+    /// </summary>
+    /// <remarks>
+    /// The name is what a person says and therefore what an agent is told — "run it in the build
+    /// session" — and an id-only lookup made that the one phrasing that could not work, while every
+    /// verb reported the same flat "session not found".
+    ///
+    /// An ambiguous name resolves to NOTHING rather than to the first match: sessions can share a
+    /// name, and silently typing into the wrong terminal is worse than refusing.
+    /// </remarks>
     private Ses? Find(string? target)
     {
         lock (_workspaces)
         {
             if (string.IsNullOrEmpty(target) || target == "active") return _active;
             var all = _workspaces.SelectMany(w => w.Sessions).ToList();
-            return all.FirstOrDefault(x => x.Id == target) ?? all.FirstOrDefault(x => x.Id.StartsWith(target));
+            var byId = all.FirstOrDefault(x => x.Id == target) ?? all.FirstOrDefault(x => x.Id.StartsWith(target));
+            if (byId is not null) return byId;
+            var named = all.Where(x => string.Equals(x.Name, target, StringComparison.OrdinalIgnoreCase)).ToList();
+            return named.Count == 1 ? named[0] : null;
         }
     }
 
