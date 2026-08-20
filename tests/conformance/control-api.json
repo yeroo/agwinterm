@@ -49,6 +49,18 @@
       "note": "the whole structure in one call — what every script reads first."
     },
     {
+      "verb": "events",
+      "args": [
+        "events"
+      ],
+      "result": "object",
+      "fields": [
+        "cursor",
+        "events"
+      ],
+      "note": "cursor-polled change log. The reply carries the current cursor even when nothing happened, so polling a quiet terminal still moves the caller forward instead of re-reading history. Types: session / status / tree."
+    },
+    {
       "verb": "session.new",
       "args": [
         "session",
@@ -134,6 +146,17 @@
       ],
       "result": "string",
       "note": "the visible buffer. A string even when the pane is empty."
+    },
+    {
+      "verb": "session.output",
+      "args": [
+        "session",
+        "output",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string",
+      "note": "the last COMPLETED command's output, delimited by FTCS (OSC 133) marks. A string either way: with no shell integration it says so, rather than returning \"\" — which an agent would read as \"the command printed nothing\"."
     },
     {
       "verb": "session.copy",

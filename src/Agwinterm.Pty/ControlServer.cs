@@ -205,7 +205,11 @@ public sealed class ControlServer : IDisposable
                     return host.SessionBind(target, GetString(args, "agent") ?? "claude") ? Ok("bound") : Err("session not found");
                 case "session.restore":
                     return host.SessionRestore(target, GetString(args, "command") ?? "") ? Ok("pinned") : Err("session not found");
-                case "events": return Ok(host.Events(GetInt(args, "since", 0), GetInt(args, "limit", 0)));
+                // OkRaw, not Ok: Events() already returns JSON. Ok() would serialize it AGAIN, so
+                // .result arrived as a STRING of JSON and a caller had to parse it a second time —
+                // while tree and window.list, built the same way, return objects. The conformance
+                // contract caught it as a divergence from agliteterm, which had it right.
+                case "events": return OkRaw(host.Events(GetInt(args, "since", 0), GetInt(args, "limit", 0)));
                 case "claude.adopt":
                     return Ok(host.AdoptClaude());
                 case "claude.yolo":
