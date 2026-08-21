@@ -128,6 +128,7 @@ internal partial class Program
                     var pt = new POINT { x = sx, y = sy };
                     if (sx == -1 && sy == -1) { GetCursorScreen(out sx, out sy); pt.x = sx; pt.y = sy; } // keyboard menu key
                     ScreenToClient(hwnd, ref pt);
+                    pt.x = ToDip(pt.x); pt.y = ToDip(pt.y);   // sx/sy stay SCREEN px (the menu is placed with them)
                     if (pt.x < (int)_sidebarW && pt.y >= (int)TitleBarH)
                     {
                         var item = RowAt(pt.y);
@@ -206,6 +207,30 @@ internal partial class Program
                 _cursorOn = !_cursorOn;
                 InvalidateRect(hwnd, IntPtr.Zero, false);
                 return IntPtr.Zero;
+
+            // A monitor was attached or detached, or the window crossed to a screen with a different
+            // scaling. PER_MONITOR_AWARE_V2 means Windows will NOT resize or rescale us — it only
+            // tells us, and hands over the rect it thinks we should occupy. Ignoring it (which is
+            // what happened before) leaves the window at its old PIXEL size and the UI at its old
+            // scale: unplug a 100% monitor from a 150% laptop and the whole terminal goes small.
+            case WM_DPICHANGED:
+                {
+                    _dpi = (ushort)((long)wParam & 0xFFFF);       // wParam packs the new DPI in both words
+                    if (_dpi <= 0) _dpi = 96f;
+                    if (_rt is not null) _rt.Dpi = new Vortice.Mathematics.Size(_dpi, _dpi);
+                    // Take the SUGGESTED rect. It is the contract for this message: it already accounts
+                    // for the new scaling, and a window that sizes itself here instead lands wrong.
+                    var sug = System.Runtime.InteropServices.Marshal.PtrToStructure<RECT>(lParam);
+                    SetWindowPos(hwnd, IntPtr.Zero, sug.left, sug.top,
+                                 sug.right - sug.left, sug.bottom - sug.top,
+                                 SWP_NOZORDER | SWP_NOACTIVATE);
+                    // No metrics to invalidate: cell size is measured in DIPs from the text format, so
+                    // it does not move with the scale — and the SetWindowPos above raises WM_SIZE,
+                    // which resizes the surface and regrids every session. This message's job is only
+                    // to change the scale and accept the rect.
+                    InvalidateRect(hwnd, IntPtr.Zero, false);
+                    return IntPtr.Zero;
+                }
 
             case WM_SIZE:
                 if (_rt is not null)
@@ -299,7 +324,7 @@ internal partial class Program
 
             case WM_LBUTTONDOWN:
                 {
-                    int mx = LoWord(lParam), my = HiWord(lParam);
+                    int mx = DipX(lParam), my = DipY(lParam);   // device px -> DIP layout
                     if (_chromeFocus) ExitChromeFocus(announce: false);   // a click leaves the F6 sidebar zone
                     if (_helpOpen)
                     {
@@ -378,7 +403,7 @@ internal partial class Program
                 if (_pressBtn is not null)
                 {
                     ReleaseCapture();
-                    int ux = LoWord(lParam), uy = HiWord(lParam);
+                    int ux = DipX(lParam), uy = DipY(lParam);
                     string? over = uy < (int)TitleBarH ? ChromeHit(_titleButtons, ux)
                         : (ux < (int)_sidebarW && uy >= ClientH() - (int)FooterH ? ChromeHit(_footerButtons, ux) : null);
                     string fired = _pressBtn; _pressBtn = null; RequestRedraw();
@@ -389,7 +414,7 @@ internal partial class Program
                 if (_sbPress)
                 {
                     ReleaseCapture();
-                    int ux = LoWord(lParam), uy = HiWord(lParam);
+                    int ux = DipX(lParam), uy = DipY(lParam);
                     if (_dragging && _dragItem is not null) DropDrag(_dragItem, uy);
                     else SidebarClick(ux, uy);   // was a click, not a drag
                     _sbPress = false; _pressItem = null; _dragItem = null; _dragging = false;
@@ -409,7 +434,7 @@ internal partial class Program
 
             case WM_LBUTTONDBLCLK:
                 {
-                    int mx = LoWord(lParam), my = HiWord(lParam);
+                    int mx = DipX(lParam), my = DipY(lParam);   // device px -> DIP layout
                     if (_dashboardOpen) { DashboardClick(mx, my, doubleClick: true); return IntPtr.Zero; }
                     if (mx < (int)_sidebarW && my >= (int)TitleBarH && my < ClientH() - (int)FooterH)
                     {
@@ -436,7 +461,7 @@ internal partial class Program
                     // Claude Code keep mouse mode on the whole time, which used to make the setting
                     // dead exactly where pasting matters most. Apps that need the right button can
                     // still get it by turning the setting off.
-                    if (_config.RightClickPaste && (PaneAt(LoWord(lParam), HiWord(lParam))?.pane ?? ActiveSurface()) is { } pp)
+                    if (_config.RightClickPaste && (PaneAt(DipX(lParam), DipY(lParam))?.pane ?? ActiveSurface()) is { } pp)
                         PasteInto(pp);
                     else if (em2 is not null && em2.MouseReporting) { SendMousePx(2, lParam, true); _rbtnForwarded = true; }
                     return IntPtr.Zero;
@@ -450,22 +475,22 @@ internal partial class Program
 
             case WM_MOUSEMOVE:
                 {
-                    if (_setOpen) { if (_setDragRow is not null) SettingsDrag(LoWord(lParam)); return IntPtr.Zero; }
+                    if (_setOpen) { if (_setDragRow is not null) SettingsDrag(DipX(lParam)); return IntPtr.Zero; }
                     if (!_mouseTracking)
                     {
                         var tme = new TRACKMOUSEEVENT { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<TRACKMOUSEEVENT>(), dwFlags = TME_LEAVE, hwndTrack = hwnd, dwHoverTime = 0 };
                         TrackMouseEvent(ref tme); _mouseTracking = true;
                     }
-                    if (!_divDragging && !_sbPress && !_selecting) UpdateChromeHover(LoWord(lParam), HiWord(lParam));
+                    if (!_divDragging && !_sbPress && !_selecting) UpdateChromeHover(DipX(lParam), DipY(lParam));
                     if (!_divDragging && !_sbPress && !_selecting)
                     {
-                        if (KeyDown(VK_CONTROL)) UpdateLinkHover(LoWord(lParam), HiWord(lParam));   // Ctrl+hover: link detection
+                        if (KeyDown(VK_CONTROL)) UpdateLinkHover(DipX(lParam), DipY(lParam));   // Ctrl+hover: link detection
                         else ClearLinkHover();
                     }
-                    if (_divDragging && ((long)wParam & MK_LBUTTON) != 0) { DragDivider(LoWord(lParam)); return IntPtr.Zero; }
+                    if (_divDragging && ((long)wParam & MK_LBUTTON) != 0) { DragDivider(DipX(lParam)); return IntPtr.Zero; }
                     if (_sbPress && ((long)wParam & MK_LBUTTON) != 0)
                     {
-                        int mx = LoWord(lParam), my = HiWord(lParam);
+                        int mx = DipX(lParam), my = DipY(lParam);   // device px -> DIP layout
                         if (!_dragging && _pressItem is not null &&
                             Math.Abs(mx - _pressX) + Math.Abs(my - _pressY) > DragThreshold)
                         { _dragging = true; _dragItem = _pressItem; }
@@ -502,6 +527,7 @@ internal partial class Program
                     if (_setOpen) { SettingsWheel(HiWord(wParam) > 0 ? 1 : -1); return IntPtr.Zero; }
                     var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
                     ScreenToClient(_hwnd, ref pt);
+                    pt.x = ToDip(pt.x); pt.y = ToDip(pt.y);   // ...and they are compared against DIP layout
                     // Ctrl+wheel: font zoom (Windows-wide convention), on the active surface.
                     if (KeyDown(VK_CONTROL) && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
                     {

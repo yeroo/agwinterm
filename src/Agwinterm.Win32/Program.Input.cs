@@ -386,7 +386,7 @@ internal partial class Program
 
     /// <summary>Report a mouse event given raw client pixels packed in lParam (button code already encoded).</summary>
     private void SendMousePx(int btn, IntPtr lParam, bool press)
-        => SendMouse(btn, LoWord(lParam), HiWord(lParam), press);
+        => SendMouse(btn, DipX(lParam), DipY(lParam), press);   // cell mapping uses DIP metrics
 
     /// <summary>Origin (px) + metrics of the ACTIVE pane, for mouse→cell mapping.</summary>
     private (float ox, float oy, float cw, float ch) ActivePaneView()

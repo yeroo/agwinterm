@@ -77,7 +77,7 @@ internal partial class Program
         }
 
         _menuHwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, MenuClassName, "",
-            WS_POPUP, x, y, (int)_menuW, (int)_menuH, _hwnd, IntPtr.Zero, _hInstance, IntPtr.Zero);
+            WS_POPUP, x, y, (int)(_menuW * Scale), (int)(_menuH * Scale), _hwnd, IntPtr.Zero, _hInstance, IntPtr.Zero);
         if (_menuHwnd == IntPtr.Zero) return;
         _menuByHwnd[_menuHwnd] = this;
 
@@ -85,11 +85,13 @@ internal partial class Program
         {
             Type = RenderTargetType.Default,
             PixelFormat = new PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Ignore),
-            DpiX = 96f,
-            DpiY = 96f,
+            DpiX = _dpi,
+            DpiY = _dpi,
         };
-        var hp = new HwndRenderTargetProperties { Hwnd = _menuHwnd, PixelSize = new SizeI((int)_menuW, (int)_menuH), PresentOptions = PresentOptions.None };
+        // PixelSize is the SURFACE (device pixels); _menuW/_menuH are DIPs like the rest of the layout.
+        var hp = new HwndRenderTargetProperties { Hwnd = _menuHwnd, PixelSize = new SizeI((int)(_menuW * Scale), (int)(_menuH * Scale)), PresentOptions = PresentOptions.None };
         _menuRt = _d2d.CreateHwndRenderTarget(props, hp);
+        _menuRt.Dpi = new Vortice.Mathematics.Size(_dpi, _dpi);   // properties alone do not stick (see CreateRenderTarget)
         _menuRt.TextAntialiasMode = Vortice.Direct2D1.TextAntialiasMode.Grayscale;
         _menuBrush = _menuRt.CreateSolidColorBrush(ChromeText);
 
@@ -200,7 +202,7 @@ internal partial class Program
             }
             case WM_MOUSEMOVE:
             {
-                int i = self.MenuIndexAt(LoWord(lParam), HiWord(lParam));
+                int i = self.MenuIndexAt(self.DipX(lParam), self.DipY(lParam));
                 if (i != self._menuSel) { self._menuSel = i; InvalidateRect(hwnd, IntPtr.Zero, false); }
                 return IntPtr.Zero;
             }
@@ -208,13 +210,13 @@ internal partial class Program
             case WM_RBUTTONDOWN:
             {
                 // Outside the menu (coords can be negative under capture): dismiss and swallow.
-                int mx = LoWord(lParam), my = HiWord(lParam);
+                int mx = self.DipX(lParam), my = self.DipY(lParam);   // vs DIP menu geometry
                 if (mx < 0 || my < 0 || mx >= self._menuW || my >= self._menuH) self.CloseMenuWindow();
                 return IntPtr.Zero;
             }
             case WM_LBUTTONUP:
             {
-                int i = self.MenuIndexAt(LoWord(lParam), HiWord(lParam));
+                int i = self.MenuIndexAt(self.DipX(lParam), self.DipY(lParam));
                 if (i >= 0 && self._menuItems[i].Run is { } run) { self.CloseMenuWindow(); run(); }
                 return IntPtr.Zero;
             }
