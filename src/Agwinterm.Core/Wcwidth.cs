@@ -37,6 +37,8 @@ public static class Wcwidth
         (0x0670, 0x0670),
         (0x06D6, 0x06DC),
         (0x200B, 0x200F), // zero-width space / joiners / marks
+        (0xFE00, 0xFE0F), // variation selectors: VS16 selects emoji presentation of the
+                          // PRECEDING character, it is not a character of its own
         (0xFE20, 0xFE2F), // combining half marks
     };
 
