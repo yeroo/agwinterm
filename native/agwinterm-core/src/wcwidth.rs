@@ -30,6 +30,8 @@ const ZERO_WIDTH: &[(u32, u32)] = &[
     (0x0670, 0x0670),
     (0x06D6, 0x06DC),
     (0x200B, 0x200F),  // zero-width space / joiners / marks
+    (0xFE00, 0xFE0F),  // variation selectors: VS16 selects emoji presentation of the
+                       // PRECEDING character, it is not a character of its own
     (0xFE20, 0xFE2F),  // combining half marks
 ];
 
@@ -95,6 +97,15 @@ mod tests {
     fn combining_is_zero() {
         assert_eq!(of(0x0301), 0); // combining acute
         assert_eq!(of(0x200D), 0); // ZWJ
+    }
+
+    #[test]
+    fn variation_selectors_are_zero() {
+        // Claude Code prints the snowflake as U+2744 U+FE0F. Giving VS16 a column of its own
+        // cost a cell and drew a hex-box glyph over the row.
+        assert_eq!(of(0xFE0F), 0); // VS16 — emoji presentation
+        assert_eq!(of(0xFE0E), 0); // VS15 — text presentation
+        assert_eq!(of(0x2744), 1); // the base character keeps its width
     }
 
     #[test]

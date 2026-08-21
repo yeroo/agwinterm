@@ -28,6 +28,22 @@ public class WideCharTests
     }
 
     [Fact]
+    public void VariationSelector_TakesNoCell()
+    {
+        // Claude Code prints the snowflake as U+2744 U+FE0F. VS16 asks for the emoji
+        // presentation of the character BEFORE it; treating it as a character of its own
+        // cost a column and painted a hex-box glyph across the row.
+        Assert.Equal(0, Wcwidth.Of(0xFE0F));   // VS16 - emoji presentation
+        Assert.Equal(0, Wcwidth.Of(0xFE0E));   // VS15 - text presentation
+        Assert.Equal(1, Wcwidth.Of(0x2744));   // the base character is unaffected
+
+        var t = Feed(10, 2, "\u2744\uFE0F!");
+        Assert.Equal(0x2744, t.Screen[0, 0].Rune);
+        Assert.Equal((int)'!', t.Screen[0, 1].Rune);   // the '!' lands in column 1, not 2
+        Assert.Equal(2, t.CursorCol);
+    }
+
+    [Fact]
     public void WideChar_OccupiesTwoCells()
     {
         var t = Feed(10, 2, Zhong);
