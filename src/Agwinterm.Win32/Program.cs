@@ -24,6 +24,29 @@ internal partial class Program : ISessionHost, IWindowHost
 {
     private const float PadX = 8f;
     private const float PadY = 6f;
+
+    // ---- per-monitor DPI ------------------------------------------------------------------------
+    // The process is PER_MONITOR_AWARE_V2, which tells Windows NOT to scale us — so everything below
+    // is ours to do. It was not done: the render target was pinned at 96 DPI and every metric in the
+    // chrome is a pixel literal, so on a 150% laptop panel the whole UI drew at two thirds of its
+    // intended physical size, and unplugging an external monitor changed nothing at all.
+    //
+    // Rather than scale ~350 layout literals by hand, the render target now carries the REAL DPI.
+    // Direct2D then treats every coordinate we pass as a DIP and scales it for us, so the existing
+    // literals become correct at any scaling — including the font, whose size is already a DIP.
+    //
+    // The boundary that remains is input: mouse coordinates arrive from Windows in DEVICE pixels and
+    // are compared against DIP layout, so they are converted on the way in (DipX/DipY). Getting that
+    // wrong does not look like a DPI bug — it looks like clicks landing in the wrong place.
+    private float _dpi = 96f;
+    private float Scale => _dpi / 96f;
+
+    /// <summary>Client mouse X from an lParam, in DIPs (Windows gives device pixels).</summary>
+    private int DipX(IntPtr lParam) => (int)MathF.Round(LoWord(lParam) / Scale);
+    /// <summary>Client mouse Y from an lParam, in DIPs.</summary>
+    private int DipY(IntPtr lParam) => (int)MathF.Round(HiWord(lParam) / Scale);
+    /// <summary>A device-pixel length (client rect, screen coords) in DIPs.</summary>
+    private int ToDip(int devicePx) => (int)MathF.Round(devicePx / Scale);
     private const string ClassName = "AgwintermWin32";
 
     // Kept alive for the lifetime of the process so the GC never collects the thunk.
@@ -1137,12 +1160,21 @@ internal partial class Program : ISessionHost, IWindowHost
         int w = Math.Max(1, rc.right - rc.left);
         int h = Math.Max(1, rc.bottom - rc.top);
 
+        // The window's real DPI, not 96: this is what makes every coordinate we pass a DIP, so the
+        // chrome's pixel literals and the configured font size come out the right PHYSICAL size on
+        // any monitor. PixelSize stays in device pixels — that is the surface, not the coordinate space.
+        _dpi = GetDpiForWindow(_hwnd) is var d && d > 0 ? d : 96f;
+        // Test seam: force a scaling without a second monitor. Per-monitor DPI is otherwise only
+        // reachable with hardware, which is how this went unimplemented for so long.
+        if (Environment.GetEnvironmentVariable("AGWINTERM_DPI_OVERRIDE") is { Length: > 0 } dpiEnv
+            && float.TryParse(dpiEnv, out var forced) && forced >= 72f && forced <= 480f)
+            _dpi = forced;
         var props = new RenderTargetProperties
         {
             Type = RenderTargetType.Default,
             PixelFormat = new PixelFormat(Vortice.DXGI.Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Ignore),
-            DpiX = 96f,
-            DpiY = 96f,
+            DpiX = _dpi,
+            DpiY = _dpi,
         };
         var hwndProps = new HwndRenderTargetProperties
         {
@@ -1151,6 +1183,10 @@ internal partial class Program : ISessionHost, IWindowHost
             PresentOptions = PresentOptions.None,
         };
         _rt = _d2d.CreateHwndRenderTarget(props, hwndProps);
+        // Set it again on the created target: the DPI passed in RenderTargetProperties did not stick
+        // (the grid scaled because ClientW/H are DIPs, but glyphs and chrome still drew at 1:1), and
+        // a half-scaled UI is worse than an unscaled one.
+        _rt.Dpi = new Vortice.Mathematics.Size(_dpi, _dpi);
         // Grayscale AA (like Windows Terminal): glyphs sit at fractional x on the grid, and
         // ClearType would fringe vertical strokes (e.g. box-drawing borders) with colour.
         _rt.TextAntialiasMode = Vortice.Direct2D1.TextAntialiasMode.Grayscale;

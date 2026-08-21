@@ -10,6 +10,8 @@ internal static class Win32
 {
     public const uint WM_DESTROY = 0x0002;
     public const uint WM_SIZE = 0x0005;
+    /// <summary>Monitor DPI changed (moved between monitors, or a monitor was attached/detached).</summary>
+    public const uint WM_DPICHANGED = 0x02E0;
     public const uint WM_PAINT = 0x000F;
     public const uint WM_CLOSE = 0x0010;
     public const uint WM_KEYDOWN = 0x0100;
@@ -379,6 +381,10 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+
+    /// <summary>Per-monitor DPI of the monitor this window is on (96 = 100%). Win10 1607+.</summary>
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForWindow(IntPtr hwnd);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]   // W entry point: the name must marshal as UTF-16
     public static extern IntPtr GetModuleHandleW(string? lpModuleName);

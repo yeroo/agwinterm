@@ -36,6 +36,20 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
 
 ---
 
+> ### Also: [**agliteterm**](https://github.com/yeroo/agliteterm) — the lightweight one
+>
+> A second terminal in the same family, for **older or low-RAM machines**: a single small C++ exe
+> (Win32/WTL, **no .NET runtime**) with real native controls instead of custom-drawn chrome, over
+> the **same Rust emulator core and pty-host** as this app — **half the download** (15 MB vs 31 MB)
+> and a fraction of the moving parts.
+>
+> It speaks the **same `agwintermctl` control API** and sets the same `AGWINTERM_*` session
+> variables, so your scripts, hooks and the agent skill work in both — enforced by a shared
+> conformance suite that runs in *both* repositories' CI, not merely promised.
+>
+> **[→ github.com/yeroo/agliteterm](https://github.com/yeroo/agliteterm)**
+
+
 ## Highlights
 
 ### Agent-first
@@ -120,6 +134,10 @@ Grab either from the [**Releases**](https://github.com/yeroo/agwinterm/releases)
   installation — run it from anywhere (settings still live under `%LOCALAPPDATA%\agwinterm`).
 
 Both are **self-contained** (no .NET runtime needed) and need **no admin rights**.
+
+> On an older or low-RAM machine, take **[agliteterm](https://github.com/yeroo/agliteterm/releases)**
+> instead — half the download, no .NET at all, and the same control API. The two install
+> independently and can live side by side.
 
 Or install from a package manager (all use the release artifacts and self-update on new releases):
 
@@ -206,30 +224,45 @@ agwintermctl window new --name scratchpad    # open a second window
 Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
 Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.
 
-## agliteterm — the tiny client
+## agliteterm — the lightweight sibling
 
-**agliteterm is its own product now**, at **[github.com/yeroo/agliteterm](https://github.com/yeroo/agliteterm)**.
-It was `agwinterm-lite`: a single small C++ exe (Win32/WTL, no .NET) over the **same Rust emulator
-core and pty-host** as this app, with real native controls instead of custom-drawn chrome — for old
-or low-RAM machines. Its docs, releases and issues live there.
+**[agliteterm](https://github.com/yeroo/agliteterm)** is its own product, in its own repository. It
+was `agwinterm-lite` until 0.17.4. Same family, different trade: a single small C++ exe over the
+same Rust emulator core, built for machines where a .NET app is too much.
 
-They stay one family by contract, not by convention:
+|                | **agwinterm** | **agliteterm** |
+|---|---|---|
+| Stack | C# / .NET, Win32 + Direct2D | C++ / Win32 + WTL, **no .NET** |
+| Chrome | custom-drawn | real native controls |
+| Download | 31 MB | 15 MB |
+| Fonts | any TrueType, ligatures, images/sixel | bundled bitmap packs, raster-crisp at fixed sizes |
+| Control API | the full set — `search`, `command run`, `dashboard`, `theme`, `image`, profiles… | the shared core (41 verbs), incl. `events` and `session output` |
+| Best for | your main machine | old, small, or remote/RDP machines |
 
-- **The same control API.** `tests/conformance/control-api.json` here is the canonical spec — 38
-  verbs with their expected response shapes — and **both repositories run it in CI**, this one
-  against the full app and agliteterm against its client. A verb reshaped on either side fails the
-  other's build.
+Neither is a cut-down build of the other — they are separate programs that agreed on an interface.
+
+**What that interface guarantees**, so a script does not have to care which one it is talking to:
+
+- **The same control API.** `tests/conformance/control-api.json` here is the canonical spec — every
+  verb with its expected response shape — and **both repositories run it in CI**, this one against
+  the full app and agliteterm against its client. A verb reshaped on either side fails the other's
+  build. It has already caught real drift in *both* directions.
 - **The same session environment.** `AGWINTERM_*` is unchanged in agliteterm, so the agent skill,
   the status hooks and `agwintermctl` work identically in both.
 - **The same core.** agliteterm builds against an ABI-pinned `agwinterm_core.dll` published from
   this repo, and refuses to build if the published `abiVersion` is not the one it requires.
 
-An existing **agwinterm-lite** install is handed over by its own updater: 0.17.4 points at the
-agliteterm feed, and agliteterm installs *alongside* rather than replacing it, adopting that
-profile's sessions, settings and fonts on first run — so nothing is lost and a rollback still
-works. Scripts using `--pipe agwinterm-lite` keep working; the default instance answers on both
-names. Releases here still carry a frozen `agwinterm-lite-setup-0.17.4.exe` so installs that
-predate the handover can still find their way across.
+<details>
+<summary>Coming from <code>agwinterm-lite</code>?</summary>
+
+Nothing to do — 0.17.4's updater points at the agliteterm feed. agliteterm installs *alongside*
+rather than replacing it and adopts that profile's sessions, settings and fonts on first run, so
+nothing is lost and a rollback still works. Scripts using `--pipe agwinterm-lite` keep working: the
+default instance answers on both names. Releases here still carry a frozen
+`agwinterm-lite-setup-0.17.4.exe` so installs that predate the handover can still find their way
+across.
+
+</details>
 
 ## Keyboard essentials
 

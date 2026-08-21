@@ -1257,12 +1257,14 @@ internal partial class Program
         }
     }
 
-    private int ClientW() { GetClientRect(_hwnd, out RECT rc); return rc.right - rc.left; }
-    private int ClientH() { GetClientRect(_hwnd, out RECT rc); return rc.bottom - rc.top; }
+    // In DIPs, like everything else the layout works in. GetClientRect answers in device pixels, and
+    // returning those would put every caller (28 of them) half a scale factor out on a HiDPI screen.
+    private int ClientW() { GetClientRect(_hwnd, out RECT rc); return ToDip(rc.right - rc.left); }
+    private int ClientH() { GetClientRect(_hwnd, out RECT rc); return ToDip(rc.bottom - rc.top); }
 
     private bool InContent(IntPtr lParam)
     {
-        int x = LoWord(lParam), y = HiWord(lParam);
+        int x = DipX(lParam), y = DipY(lParam);   // vs DIP layout
         return x >= (int)_sidebarW && y >= (int)TitleBarH;
     }
 
@@ -1286,6 +1288,7 @@ internal partial class Program
     {
         var pt = new POINT { x = sx, y = sy };
         ScreenToClient(hwnd, ref pt);
+        pt.x = ToDip(pt.x); pt.y = ToDip(pt.y);   // device px from the OS -> DIP layout
         int cw = ClientW(), ch = ClientH();
         const int B = 8;
         bool hidden = ToolbarHidden;
