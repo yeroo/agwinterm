@@ -1,0 +1,19 @@
+# Project-local ralphex config for agwinterm.
+#
+# Deliberately minimal. Precedence is CLI flags > this file > ~/.config/ralphex/
+# > embedded defaults, so every key set here SHADOWS the global config —
+# including ones copied in by `ralphex --init` that you never meant to pin. Only
+# the two lines below are this project's own decision; everything else is left
+# to inherit. (This file WAS the full commented template, which meant the hook
+# beside it had never once been reached.)
+
+# revmux is this project's review harness, so ralphex's external review phase is
+# delegated to it rather than to codex directly. See tools\ralphex-revmux.cmd,
+# which is the spelling below and the only one that runs.
+external_review_tool = custom
+
+# MUST use backslashes. ralphex runs this with exec.Command(script, promptFile),
+# and for a .cmd that goes through cmd.exe, which reads a leading "/" as a switch
+# prefix: "./tools/..." fails with "'.' is not recognized as an internal or
+# external command" and takes the whole review phase down with it.
+custom_review_script = .\tools\ralphex-revmux.cmd
