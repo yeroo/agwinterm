@@ -16,7 +16,7 @@ namespace Agwinterm.Core;
 /// </summary>
 public sealed unsafe class RustEmulatorCore : IDisposable
 {
-    public const uint RequiredAbi = 15;
+    public const uint RequiredAbi = 16;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Info
@@ -100,7 +100,8 @@ public sealed unsafe class RustEmulatorCore : IDisposable
             _takeHostActions = Get<EmuTakeHostActionsFn>("agwcore_emu_take_host_actions");
             _freeBuf = Get<FreeBufFn>("agwcore_free_buf");
             _marks = Get<EmuMarksFn>("agwcore_emu_marks");
-            _seed = Get<EmuSeedFn>("agwcore_emu_seed_scrollback");
+            _seed = Get<EmuSeedFn>("agwcore_emu_seed_scrollback");
+            _setScrollback = Get<EmuSetScrollbackFn>("agwcore_emu_set_scrollback");   // ABI v16
             _placementCount = Get<EmuPlacementCountFn>("agwcore_emu_placement_count");
             _copyPlacements = Get<EmuCopyPlacementsFn>("agwcore_emu_copy_placements");
             _imageMetas = Get<EmuImageMetasFn>("agwcore_emu_image_metas");
@@ -175,9 +176,11 @@ public sealed unsafe class RustEmulatorCore : IDisposable
     }
 
     private delegate uint EmuMarksFn(nint p, NativeMark* marks, uint cap);
-    private delegate bool EmuSeedFn(nint p, byte* text, uint len);
+    private delegate bool EmuSeedFn(nint p, byte* text, uint len);
+    private delegate bool EmuSetScrollbackFn(nint p, uint max);
     private static EmuMarksFn _marks = null!;
     private static EmuSeedFn _seed = null!;
+    private static EmuSetScrollbackFn _setScrollback = null!;
 
     /// <summary>All FTCS marks, converted to the managed mark type.</summary>
     public TerminalEmulator.ShellMark[] GetMarks()
@@ -199,6 +202,11 @@ public sealed unsafe class RustEmulatorCore : IDisposable
             };
         return result;
     }
+
+    /// <summary>Set the scrollback cap (0 disables history). Before ABI v16 there was no way to
+    /// tell the core this at all, so <c>scrollback-lines</c> was read from the config and then
+    /// silently dropped.</summary>
+    public void SetScrollbackMax(int max) => _setScrollback(_handle, (uint)Math.Max(0, max));
 
     public void SeedScrollback(string joinedLines)
     {

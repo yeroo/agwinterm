@@ -438,7 +438,7 @@ internal partial class Program
             return from > m.EndLine - 1 ? "" : RowsText(pane, from, m.EndLine - 1);
         }
 
-        public string SessionCopy(string? target)
+        public string SessionCopy(string? target) => InvokeOnUi(() =>
         {
             var s = Resolve(target);
             if (s is null) return "";
@@ -446,20 +446,22 @@ internal partial class Program
             lock (_workspaces)
                 pane = _workspaces.SelectMany(w => w.Sessions).SelectMany(x => x.Panes)
                                   .FirstOrDefault(p => ReferenceEquals(p.S, s));
-            return pane is not null ? SelectionText(pane) : ""; // reads under the session lock; safe off-UI-thread
-        }
+            // On the UI thread: reading a selection RECONCILES it (eviction may have renumbered or
+            // invalidated it), and selection state belongs to this thread.
+            return pane is not null ? SelectionText(pane) : "";
+        });
 
         // Selection/clipboard control API. Clipboard + selection are UI-thread concepts, so hop on-thread.
         public string SelectionAll(string? target) => InvokeOnUi(() =>
         {
             var p = PaneForTarget(target); if (p is null) return "no session";
-            SelectAll(p); return p.HasSel ? "selected all" : "empty";
+            SelectAll(p); return HasLiveSel(p) ? "selected all" : "empty";
         });
 
         public string SelectionCopy(string? target) => InvokeOnUi(() =>
         {
             var p = PaneForTarget(target); if (p is null) return "no session";
-            if (!p.HasSel) return "no selection";
+            if (!HasLiveSel(p)) return "no selection";
             string t = SelectionText(p); CopySelection(p); return $"copied {t.Length} chars";
         });
 
@@ -474,7 +476,7 @@ internal partial class Program
         {
             var p = PaneForTarget(target); if (p is null) return "no session";
             FinalizeSelection(p);
-            return _config.CopyOnSelect ? (p.HasSel ? "finalized (copied)" : "finalized (empty)") : "finalized (copy-on-select off)";
+            return _config.CopyOnSelect ? (HasLiveSel(p) ? "finalized (copied)" : "finalized (empty)") : "finalized (copy-on-select off)";
         });
 
         public string SessionPaste(string? target, string? text) => InvokeOnUi(() =>

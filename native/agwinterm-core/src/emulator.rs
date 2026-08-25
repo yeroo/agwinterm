@@ -399,16 +399,35 @@ impl Emulator {
         self.history.push(row);
         self.scroll_generation += 1;
         if self.history.len() > self.scrollback_max + TRIM_SLACK {
-            let trim = (self.history.len() - self.scrollback_max) as i64;
-            self.history.drain(0..trim as usize);
-            self.marks.retain_mut(|m| {
-                m.prompt_line -= trim;
-                if m.command_line >= 0 { m.command_line -= trim; }
-                if m.output_line >= 0 { m.output_line -= trim; }
-                if m.end_line >= 0 { m.end_line -= trim; }
-                m.prompt_line >= 0
-            });
+            self.trim_history();
         }
+    }
+
+    /// Drop the oldest history down to the cap, moving every stored line number with it.
+    ///
+    /// Absolute line numbers are history-relative, so trimming renumbers them: the marks are
+    /// shifted here, and a host tracking anything else by absolute line (a text selection) works
+    /// the shift out from `scroll_generation` against `history.len()`.
+    fn trim_history(&mut self) {
+        if self.history.len() <= self.scrollback_max {
+            return;
+        }
+        let trim = (self.history.len() - self.scrollback_max) as i64;
+        self.history.drain(0..trim as usize);
+        self.marks.retain_mut(|m| {
+            m.prompt_line -= trim;
+            if m.command_line >= 0 { m.command_line -= trim; }
+            if m.output_line >= 0 { m.output_line -= trim; }
+            if m.end_line >= 0 { m.end_line -= trim; }
+            m.prompt_line >= 0
+        });
+    }
+
+    /// Set the scrollback cap. 0 disables history entirely — nothing is pushed and what is already
+    /// stored is dropped, so the setting means the same thing whenever it is applied.
+    pub fn set_scrollback_max(&mut self, max: usize) {
+        self.scrollback_max = max;
+        self.trim_history();   // a LOWER cap must take effect now, not at the next scroll
     }
 
     fn index(&mut self) {

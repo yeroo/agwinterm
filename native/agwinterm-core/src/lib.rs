@@ -27,7 +27,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 15;
+pub const ABI_VERSION: u32 = 16;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -583,6 +583,26 @@ pub unsafe extern "C" fn agwcore_emu_marks(p: *mut Terminal, out: *mut FfiMark, 
         };
     }
     n as u32
+}
+
+/// Set the scrollback cap for this emulator. 0 disables history entirely.
+///
+/// Until this existed the cap was whatever the core defaulted to, and `scrollback-lines` in the
+/// host's config set a field on the host side that never reached here — the knob was documented,
+/// read, and then silently ignored.
+///
+/// # Safety
+/// `p` must be a live `Terminal` from `agwcore_emu_new` that has not been freed, and no other
+/// thread may be inside this emulator for the duration of the call. A null pointer returns false.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_set_scrollback(p: *mut Terminal, max: u32) -> bool {
+    match unsafe { p.as_mut() } {
+        Some(t) => {
+            t.emu.set_scrollback_max(max as usize);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Seed the scrollback with plain-text lines ('\n'-separated UTF-8) — the restore path.

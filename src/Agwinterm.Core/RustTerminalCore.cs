@@ -97,7 +97,20 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     public int KeyboardFlags => _info.KeyboardFlags;
 
     // ---- scrollback ----
-    public int ScrollbackMax { get; set; } = 5000;   // native side owns the real cap (same default)
+    // The cap lives in the core; this mirrors it so the getter is free. Before ABI v16 the setter
+    // went nowhere and the core kept its own default, which made `scrollback-lines` a dead knob.
+    private int _scrollbackMax = 5000;
+    public int ScrollbackMax
+    {
+        get => _scrollbackMax;
+        set
+        {
+            _scrollbackMax = Math.Max(0, value);
+            _rust.SetScrollbackMax(_scrollbackMax);
+            Sync();   // a LOWER cap trims the core at once; the mirror must not keep claiming
+                      // rows the core no longer has, or reads of them return stale text
+        }
+    }
     public int HistoryCount => _histMirror.Count;
     public long ScrollGeneration => _info.ScrollGeneration;
 

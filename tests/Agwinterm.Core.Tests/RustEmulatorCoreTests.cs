@@ -342,4 +342,41 @@ public class RustEmulatorCoreTests
         rust.ClearPlacements();
         Assert.Empty(rust.Placements);
     }
+
+    [Fact]
+    public void Adapter_ScrollbackMax_ReachesTheCore()
+    {
+        if (!Available) return;
+        // `scrollback-lines` was read from the config, assigned to this property, and then dropped:
+        // there was no way to tell the core, so it kept its own 5000 whatever the user asked for.
+        using var rust = new RustTerminalCore(10, 3);
+        rust.ScrollbackMax = 50;
+        for (int i = 1; i <= 900; i++) rust.Feed(System.Text.Encoding.ASCII.GetBytes($"L{i}\r\n"));
+        Assert.Equal(50, rust.ScrollbackMax);
+        // Trimming is batched, so the cap is a floor with slack above it - not 5000.
+        Assert.InRange(rust.HistoryCount, 50, 50 + 512);
+    }
+
+    [Fact]
+    public void Adapter_ScrollbackZero_KeepsNoHistory()
+    {
+        if (!Available) return;
+        using var rust = new RustTerminalCore(10, 3);
+        rust.ScrollbackMax = 0;
+        for (int i = 1; i <= 200; i++) rust.Feed(System.Text.Encoding.ASCII.GetBytes($"L{i}\r\n"));
+        Assert.Equal(0, rust.HistoryCount);
+    }
+
+    [Fact]
+    public void Adapter_LoweringScrollback_TrimsWhatIsAlreadyStored()
+    {
+        if (!Available) return;
+        // Applying a lower cap must take effect at once. If it only applied to future scrolls, a
+        // user who turned scrollback down would keep the old megabytes until something scrolled.
+        using var rust = new RustTerminalCore(10, 3);
+        for (int i = 1; i <= 900; i++) rust.Feed(System.Text.Encoding.ASCII.GetBytes($"L{i}\r\n"));
+        Assert.True(rust.HistoryCount > 100, "expected a full-ish history before lowering the cap");
+        rust.ScrollbackMax = 20;
+        Assert.Equal(20, rust.HistoryCount);
+    }
 }
