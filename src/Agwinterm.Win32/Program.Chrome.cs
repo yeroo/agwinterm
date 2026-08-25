@@ -800,7 +800,7 @@ internal partial class Program
                 A("Focus Workspace", "", () => WorkspaceFocusOp("toggle"));
                 A("Toggle Sidebar", "", ToggleSidebar);
                 A("Select All", "Ctrl+Shift+A", () => { if (ActiveSurface() is { } p) SelectAll(p); });
-                A("Copy Selection", "Ctrl+C", () => { if (ActiveSurface() is { } p && p.HasSel) CopySelection(p); });
+                A("Copy Selection", "Ctrl+C", () => { if (ActiveSurface() is { } p && HasLiveSel(p)) CopySelection(p); });
                 A("Paste", "Ctrl+V", () => { if (ActiveSurface() is { } p) PasteInto(p); });
                 A("Next Session", "Ctrl+Tab", () => CycleSession(1));
                 A("Previous Session", "Ctrl+Shift+Tab", () => CycleSession(-1));

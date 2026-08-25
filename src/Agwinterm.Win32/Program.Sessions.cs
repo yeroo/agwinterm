@@ -75,20 +75,29 @@ internal partial class Program
                 session = InProcessSessionBackend.Instance.Create(paneId, cols, rows);
                 ShowToast("pty-host unavailable (" + ex.Message + ") — session created in-process", 5000);
             }
-        session.Emulator.ScrollbackMax = _config.Scrollback;
+        // Under the session lock: with the Rust core this setter now crosses into native code and
+        // re-syncs the mirrors, and an ADOPTED session's reader thread is already feeding by now.
+        lock (session.SyncRoot) session.Emulator.ScrollbackMax = _config.Scrollback;
         var pane = new Pane { Id = paneId, S = session, StartCwd = cwd, FontSize = fontSize };
-        // New output only snaps this pane back to the live bottom and drops the selection when the buffer
-        // ACTUALLY scrolled (a line pushed into history) — not on every repaint. TUIs like Claude Code
-        // redraw in place without scrolling, so a mouse selection now survives those frames and Ctrl+C can
-        // copy it (previously any repaint wiped the selection microseconds after you made it). #copy-selection
+        // New output snaps this pane back to the live bottom when the buffer ACTUALLY scrolled (a line
+        // pushed into history) — not on every repaint. TUIs like Claude Code redraw in place without
+        // scrolling, so a mouse selection survives those frames. #copy-selection
+        //
+        // Scrolling used to DROP the selection outright here, which made Ctrl+C-copies-the-selection
+        // close to unusable next to a running agent: the agent prints, the selection you just made is
+        // gone, and Ctrl+C falls through to the interrupt — cancelling its turn. The selection is
+        // reconciled in ReconcileSel instead, on the UI thread, against the snapshot taken when it was made.
+        // This handler therefore writes NOTHING about the selection; it only bumps a counter that lets
+        // the reconcile tell "output has arrived since" from "nothing has happened".
         // Repaints are requested ONLY when this pane is on screen: a background tab's output flood
         // used to repaint the (unchanged!) foreground at the full frame cap, starving typing on slow
         // machines. The emulator still consumes everything; switching to the pane shows current
         // content, and the sidebar title catches up on the next paint (cursor blink at the latest).
         session.OutputReceived += () =>
         {
+            System.Threading.Interlocked.Increment(ref pane.OutputSeq);
             long gen = session.Emulator.ScrollGeneration;
-            if (gen != pane.LastScrollGen) { pane.LastScrollGen = gen; pane.ScrollOffset = 0; pane.ClearSel(); }
+            if (gen != pane.LastScrollGen) { pane.LastScrollGen = gen; pane.ScrollOffset = 0; }
             // Synchronized output (DECSET ?2026): while the app is mid-frame, defer painting so a
             // partial redraw never reaches the screen — the closing 2026l chunk clears the mode and
             // paints the frame atomically. The cursor-blink InvalidateRect still repaints within ~one

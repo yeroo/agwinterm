@@ -287,11 +287,22 @@ internal partial class Program : ISessionHost, IWindowHost
         public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
         public long LastScrollGen; // emulator ScrollGeneration last seen on output (detects real scroll vs in-place repaint)
+        public long OutputSeq;     // bumped (Interlocked) on every output; the only thing the reader thread writes here
         public int Unread;         // unread desktop-notification count (OSC 9/777 / notify) since last visit
         public bool ReadOnly;      // block keyboard input to this pane (protect a running agent from stray keys)
         // Text selection (absolute line index: [0..HistoryCount) history, then the live grid rows).
         public bool HasSel;
         public int SelAncLine, SelAncCol, SelFocLine, SelFocCol;
+        // The buffer as it was when the selection was made. Absolute indices only mean anything
+        // relative to this: scrolling leaves them alone, but EVICTION renumbers, and the alt screen
+        // is a different buffer entirely. Everything is recorded at selection time and compared on
+        // the UI thread when the selection is used, so nothing about a selection is ever written
+        // from the thread reading the pty. SelTrackable = false means the shift cannot be measured
+        // at all (no scrollback, a partial DECSTBM region, the alt screen) — such a selection is
+        // dropped as soon as any output arrives rather than left pointing at whatever moved in.
+        public long SelGen, SelOutSeq;
+        public int SelHist;
+        public bool SelAlt, SelTrackable;
         public bool BlockSel;   // rectangular (Alt+drag) selection: clip each row to [minCol,maxCol]
         public void ClearSel() => HasSel = false;
         public int UiaAnnouncedAbs = -1;   // absolute buffer line (history + cursor row) last spoken to a screen reader

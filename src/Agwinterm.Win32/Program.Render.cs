@@ -386,7 +386,9 @@ internal partial class Program
         {
             var snap = _cellSnap;
             Cell CellAt(int r, int c) => snap[r * cols + c];
-            bool hasSel = selPane is { HasSel: true };
+            // Reconcile before drawing: the highlight must sit on the text the user selected,
+            // and a selection whose lines have been evicted must stop being drawn at all.
+            bool hasSel = selPane is not null && HasLiveSel(selPane);
             int sl0 = 0, sc0 = 0, sl1 = 0, sc1 = 0;
             if (hasSel) NormSel(selPane!, out sl0, out sc0, out sl1, out sc1);
             bool searchHere = _searchActive && selPane is not null && ReferenceEquals(selPane, ActiveSurface());

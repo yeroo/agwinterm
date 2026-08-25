@@ -156,7 +156,7 @@ internal partial class Program
             case "previous_prompt": JumpPrompt(-1); break;
             case "next_prompt": JumpPrompt(1); break;
             case "select_all": if (ActiveSurface() is { } sa) SelectAll(sa); break;
-            case "copy_selection": if (ActiveSurface() is { } sc && sc.HasSel) CopySelection(sc); break;
+            case "copy_selection": if (ActiveSurface() is { } sc && HasLiveSel(sc)) CopySelection(sc); break;
             case "paste": if (ActiveSurface() is { } sp2) PasteInto(sp2); break;
         }
     }
@@ -592,9 +592,74 @@ internal partial class Program
         (l1, c1) = ancFirst ? (p.SelFocLine, p.SelFocCol) : (p.SelAncLine, p.SelAncCol);
     }
 
+    /// <summary>Record the buffer a selection was just made against. Absolute line indices only mean
+    /// something relative to this snapshot, and ReconcileSel reconciles the two later.</summary>
+    private static void StampSel(Pane p)
+    {
+        var em = p.S.Emulator;
+        lock (p.S.SyncRoot)
+        {
+            p.SelGen = em.ScrollGeneration;
+            p.SelHist = em.HistoryCount;
+            p.SelAlt = em.IsAltScreen;
+            // Trackable = every line leaving the screen is either kept in history or countable as
+            // evicted, so a shift can be MEASURED. Without scrollback there is no history to count
+            // against; inside a partial DECSTBM region (a reserved status line) rows move with no
+            // history push at all; the alt screen has no history by definition. ScrollGeneration
+            // stays flat in all three — see TerminalEmulator.ScrollRegionUp's guard — so a selection
+            // taken there can only ever be dropped, never followed.
+            p.SelTrackable = !em.IsAltScreen && em.ScrollbackMax > 0
+                             && em.ScrollTop == 0 && em.ScrollBottom == em.Screen.Rows - 1;
+        }
+        p.SelOutSeq = System.Threading.Interlocked.Read(ref p.OutputSeq);
+    }
+
+    /// <summary>Reconcile a selection with everything that has happened to the buffer since it was
+    /// made, and report whether anything is still selected. UI THREAD ONLY — the pty reader never
+    /// touches selection state, it only bumps <see cref="Pane.OutputSeq"/>.</summary>
+    private static bool HasLiveSel(Pane p) => p.HasSel && ReconcileSel(p);
+
+    /// <summary>The reconcile itself, WITHOUT the <see cref="Pane.HasSel"/> guard.
+    ///
+    /// A drag needs this: <see cref="BeginSelect"/> deliberately leaves HasSel false (a plain click
+    /// must not select), so the first mouse-move would otherwise pair an anchor in the numbering of
+    /// mouse-down with a focus in today's — and the next reconcile would shift the fresh end too.
+    /// Returns false when the stamped coordinates no longer refer to anything, in which case the
+    /// caller must re-anchor and re-stamp rather than carry them forward.</summary>
+    private static bool ReconcileSel(Pane p)
+    {
+        var em = p.S.Emulator;
+        long gen; int hist, rows; bool alt; int top, bottom, sbMax;
+        lock (p.S.SyncRoot)
+        {
+            gen = em.ScrollGeneration; hist = em.HistoryCount; rows = em.Screen.Rows;
+            alt = em.IsAltScreen; top = em.ScrollTop; bottom = em.ScrollBottom; sbMax = em.ScrollbackMax;
+        }
+        // The alt screen is a different buffer: an index into one names unrelated text in the other.
+        if (alt != p.SelAlt) { p.ClearSel(); return false; }
+        bool trackable = !alt && sbMax > 0 && top == 0 && bottom == rows - 1;
+        if (!trackable || !p.SelTrackable)
+        {
+            // Content can move here with nothing to measure it by. Drop the selection the moment
+            // anything is printed rather than let it cover text the user never highlighted.
+            if (System.Threading.Interlocked.Read(ref p.OutputSeq) != p.SelOutSeq) { p.ClearSel(); return false; }
+            return true;
+        }
+        // One generation per line pushed into history: what scrolled but did not grow history was
+        // evicted off the front, and eviction is the only thing that renumbers absolute indices.
+        long evicted = (gen - p.SelGen) - (hist - p.SelHist);
+        if (evicted > 0)
+        {
+            p.SelGen = gen; p.SelHist = hist;
+            if (Math.Min(p.SelAncLine, p.SelFocLine) < evicted) { p.ClearSel(); return false; }
+            p.SelAncLine -= (int)evicted; p.SelFocLine -= (int)evicted;
+        }
+        return true;
+    }
+
     private static string SelectionText(Pane pane)
     {
-        if (!pane.HasSel) return "";
+        if (!HasLiveSel(pane)) return "";
         var em = pane.S.Emulator;
         var sb = new StringBuilder();
         lock (pane.S.SyncRoot)
@@ -634,6 +699,7 @@ internal partial class Program
         lock (p.S.SyncRoot) { hist = em.HistoryCount; row = em.CursorRow; col = em.CursorCol; }
         int abs = hist - Math.Clamp(p.ScrollOffset, 0, hist) + row;   // buffer-absolute caret line
         p.SelAncLine = p.SelFocLine = abs; p.SelAncCol = p.SelFocCol = col; p.HasSel = true; p.BlockSel = false;
+        StampSel(p);
         _markMode = true;
         ShowToast("mark mode: arrows select · Shift+arrows by word/line · Enter copies · Esc exits");
         RequestRedraw();
@@ -643,6 +709,10 @@ internal partial class Program
     private bool MarkModeKey(int vk, bool ctrl)
     {
         if (ActiveSurface() is not { } p) { _markMode = false; return false; }
+        // Reconcile first, for the reason UpdateSelect does: the clamps below are computed from the
+        // CURRENT history count and applied to the stored focus, so an unreconciled anchor would be
+        // left in the old numbering and the two ends would name different eras of the buffer.
+        if (p.HasSel && !ReconcileSel(p)) { _markMode = false; p.ClearSel(); RequestRedraw(); return true; }
         var em = p.S.Emulator;
         int cols, rows, hist;
         lock (p.S.SyncRoot) { cols = em.Screen.Cols; rows = em.Screen.Rows; hist = em.HistoryCount; }
@@ -671,12 +741,24 @@ internal partial class Program
 
     private void BeginSelect(Pane p, int line, int col, bool extend)
     {
-        if (extend && p.HasSel) { p.SelFocLine = line; p.SelFocCol = col; _selMoved = true; }
-        else { p.SelAncLine = p.SelFocLine = line; p.SelAncCol = p.SelFocCol = col; p.HasSel = false; _selMoved = false; }
+        if (extend && HasLiveSel(p)) { p.SelFocLine = line; p.SelFocCol = col; _selMoved = true; }
+        else { p.SelAncLine = p.SelFocLine = line; p.SelAncCol = p.SelFocCol = col; p.HasSel = false; _selMoved = false; StampSel(p); }
     }
 
     private void UpdateSelect(Pane p, int line, int col)
     {
+        // Reconcile BEFORE writing: `line` is in today's numbering, while the anchor may still be in
+        // the numbering of whenever the drag started. Storing them together would leave the next
+        // reconcile shifting the fresh end as well, dragging the selection off its text.
+        //
+        // And HONOUR the answer. Setting HasSel = true after a reconcile that dropped the selection
+        // would revive an anchor that was never shifted next to a baseline that was — the selection
+        // then looks self-consistent and quietly covers text the user never highlighted.
+        if (!ReconcileSel(p))
+        {
+            p.SelAncLine = line; p.SelAncCol = col;   // its anchor is gone: start again from here
+            StampSel(p);
+        }
         p.SelFocLine = line; p.SelFocCol = col; p.HasSel = true; _selMoved = true;
     }
 
@@ -696,14 +778,14 @@ internal partial class Program
             int a = col, b = col;
             while (a > 0 && Word(a - 1)) a--;
             while (b < cols - 1 && Word(b + 1)) b++;
-            p.SelAncLine = p.SelFocLine = line; p.SelAncCol = a; p.SelFocCol = b; p.HasSel = true;
+            p.SelAncLine = p.SelFocLine = line; p.SelAncCol = a; p.SelFocCol = b; p.HasSel = true; StampSel(p);
         }
     }
 
     private void SelectLine(Pane p, int line)
     {
         int cols; lock (p.S.SyncRoot) cols = p.S.Emulator.Screen.Cols;
-        p.SelAncLine = p.SelFocLine = line; p.SelAncCol = 0; p.SelFocCol = cols - 1; p.HasSel = true;
+        p.SelAncLine = p.SelFocLine = line; p.SelAncCol = 0; p.SelFocCol = cols - 1; p.HasSel = true; StampSel(p);
     }
 
     private void CopySelection(Pane pane, bool clear = true)
@@ -723,6 +805,7 @@ internal partial class Program
         p.SelAncLine = 0; p.SelAncCol = 0;
         p.SelFocLine = hist + rows - 1; p.SelFocCol = cols - 1;
         p.HasSel = (hist + rows) > 0 && cols > 0;
+        StampSel(p);   // the one creation site that did not, so the first reconcile dropped it
         RequestRedraw();
     }
 
@@ -730,7 +813,7 @@ internal partial class Program
     /// by copying to the clipboard without clearing the highlight.</summary>
     private void FinalizeSelection(Pane p)
     {
-        if (_config.CopyOnSelect && p.HasSel) CopySelection(p, clear: false);
+        if (_config.CopyOnSelect && HasLiveSel(p)) CopySelection(p, clear: false);
     }
 
     private void StopSelAutoscroll()
@@ -1009,8 +1092,8 @@ internal partial class Program
                 // Ctrl+Shift+C is the explicit copy shortcut (always consumed). Plain Ctrl+C copies the
                 // selection only when copy-on-ctrl-c is on — otherwise it falls through and interrupts,
                 // so with nothing selected (or the option off) the shell still gets ^C.
-                if (shift) { if (ap.HasSel) { CopySelection(ap); ShowToast("Text copied", 500); } return true; }
-                if (_config.CopyOnCtrlC && ap.HasSel) { CopySelection(ap); ShowToast("Text copied", 500); return true; }
+                if (shift) { if (HasLiveSel(ap)) { CopySelection(ap); ShowToast("Text copied", 500); } return true; }
+                if (_config.CopyOnCtrlC && HasLiveSel(ap)) { CopySelection(ap); ShowToast("Text copied", 500); return true; }
                 // plain Ctrl+C with no selection (or option off) falls through to the interrupt below
             }
             else if (vk == 0x56) { PasteInto(ap); return true; } // Ctrl+V / Ctrl+Shift+V

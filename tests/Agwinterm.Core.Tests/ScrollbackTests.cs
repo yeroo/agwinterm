@@ -57,9 +57,39 @@ public class ScrollbackTests
     public void ScrollbackCap_DropsOldest()
     {
         var t = new TerminalEmulator(10, 3) { ScrollbackMax = 100 };
-        for (int i = 1; i <= 700; i++) Feed(t, $"X\r\n");
+        for (int i = 1; i <= 700; i++) Feed(t, $"L{i}\r\n");
         // ~698 scrolls but bounded near the cap (batched trim allows a little slack), far below 698.
         Assert.InRange(t.HistoryCount, 100, 100 + 512);
+        // WHICH rows went, not only how many. Distinct content per line, because "X" everywhere let
+        // a trim from the wrong end - or of the wrong size - pass unnoticed.
+        Assert.StartsWith("L", HistoryRow(t, 0, 10));
+        int oldest = int.Parse(HistoryRow(t, 0, 10).Substring(1));
+        int newest = int.Parse(HistoryRow(t, t.HistoryCount - 1, 10).Substring(1));
+        Assert.Equal(t.HistoryCount - 1, newest - oldest);   // a contiguous run: the FRONT was trimmed
+    }
+
+    [Fact]
+    public void EvictionCount_IsScrollGenerationMinusHistoryGrowth()
+    {
+        // The identity the panes' selection tracking is built on: every line that scrolled either
+        // stayed in history or fell off the front, so
+        //     evicted = (delta ScrollGeneration) - (delta HistoryCount)
+        // and the rows that went are the OLDEST. If the trim end or its size ever changed, a
+        // selection would silently follow the wrong text and paste something never selected.
+        var t = new TerminalEmulator(10, 3) { ScrollbackMax = 100 };
+        for (int i = 1; i <= 800; i++) Feed(t, $"L{i}\r\n");   // trimming is BATCHED (cap + slack),
+        //                                                        so hundreds of lines pass before any drop
+        long gen0 = t.ScrollGeneration;
+        int hist0 = t.HistoryCount;
+        int oldest0 = int.Parse(HistoryRow(t, 0, 10).Substring(1));
+
+        for (int i = 801; i <= 1600; i++) Feed(t, $"L{i}\r\n");
+        long evicted = (t.ScrollGeneration - gen0) - (t.HistoryCount - hist0);
+        Assert.True(evicted > 0, $"gen {gen0}->{t.ScrollGeneration}, hist {hist0}->{t.HistoryCount}: nothing was evicted");
+
+        // The line that sat at history index `evicted` is now at index 0 - exactly the oldest
+        // `evicted` rows were dropped, from the front.
+        Assert.Equal($"L{oldest0 + evicted}", HistoryRow(t, 0, 10));
     }
 
     [Fact]
