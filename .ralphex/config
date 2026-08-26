@@ -17,3 +17,30 @@ external_review_tool = custom
 # prefix: "./tools/..." fails with "'.' is not recognized as an internal or
 # external command" and takes the whole review phase down with it.
 custom_review_script = .\tools\ralphex-revmux.cmd
+
+# ---- convergence -------------------------------------------------------------
+# The point of these: an unbounded review loop is how a run quietly spends a day's
+# tokens re-litigating the same diff. None of them were set, and every default is
+# wide open — max-iterations 50, review-patience 0 (disabled), external iterations
+# "auto".
+#
+# review-patience is the important one: stop the external review after N rounds
+# that changed nothing. Two rounds of "no new findings" is convergence; a third is
+# paying to be told so again.
+review_patience = 2
+
+# A hard ceiling on the review loop regardless of what it keeps finding. Three
+# passes is enough for find -> fix -> confirm; past that it is a conversation, and
+# a conversation belongs in a PR.
+max_external_iterations = 3
+
+# Task iterations for one plan. 50 is a runaway guard, not a budget: a plan whose
+# tasks cannot be done in 15 passes has a planning problem, and burning 35 more
+# iterations will not find it.
+max_iterations = 15
+
+# Kill a TASK/REVIEW executor that has produced nothing for this long. Note the
+# limit of this knob: in default Claude mode it does NOT cover the external
+# review phase, so it is no help against a wedged revmux — that one has its own
+# --idle-timeout (2m) and --hard-timeout (20m) per agent.
+idle_timeout = 10m

@@ -97,7 +97,9 @@ if [ -n "$PROFILE_MD" ]; then
 # Project conventions
 
 agwinterm is a Windows terminal for AI coding agents, built on .NET with a
-native layer beside it (`native/`) and a separate lite product (`lite/`).
+native layer beside it (`native/`). The lite product moved to its own
+repository (agliteterm) at 0.17.5 — `lite/` here holds only the frozen
+handover installer, and is not something a change should touch.
 
 ## Build and test
 
@@ -106,9 +108,13 @@ dotnet build Agwinterm.slnx -c Release
 dotnet test  Agwinterm.slnx -c Release
 ```
 
-Both must be clean before a task closes. `lite/` and `native/` build
-separately from the solution — a green `Agwinterm.slnx` says nothing about
-them, so check whichever the change touches.
+Both must be clean before a task closes. `native/` builds separately from the
+solution (`cargo build --release`, `cargo test`) — a green `Agwinterm.slnx`
+says nothing about it, so check it whenever the change reaches the core. The
+core's C ABI is declared in two places that MUST agree (`ABI_VERSION` in
+`native/agwinterm-core/src/lib.rs`, `RequiredAbi` in
+`src/Agwinterm.Core/RustEmulatorCore.cs`); `tools/check-abi.ps1` fails the
+build otherwise, and agliteterm pins the same number from its own repository.
 
 ## What is worth reporting
 
