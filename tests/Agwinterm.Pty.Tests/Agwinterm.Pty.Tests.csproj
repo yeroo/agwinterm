@@ -12,5 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Agwinterm.Pty/Agwinterm.Pty.csproj" />
+    <!-- agwintermctl arg parsing (FrameShmCli) is unit-tested here; the exe reference is harmless. -->
+    <ProjectReference Include="../../src/Agwinterm.Ctl/Agwinterm.Ctl.csproj" />
   </ItemGroup>
 </Project>

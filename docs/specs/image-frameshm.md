@@ -193,6 +193,35 @@ the prefix, a slot that overruns the view — the whole request answers `{"ok":f
 *nothing* is applied, not even the entries that validated. The pane keeps showing the previous
 frame rather than a half-updated one.
 
+## Driving it from the CLI
+
+`agwintermctl image frameshm` is the manual and scripting surface, a sibling of `image show`:
+
+```
+agwintermctl image frameshm Local\agwinterm-frame-browser-1 --slot 1 --seq 4 \
+    --width 1920 --height 1080 --stride 7680 --format 132 --cols 120 --rows 30
+```
+
+The positional is the mapping name and every other field of an `images[]` entry is a `--flag` of the
+same name (`id`, `slot`, `seq`, `width`, `height`, `stride`, `format`, `row`, `col`, `cols`, `rows`,
+`sx`, `sy`, `sw`, `sh`). An omitted flag is left out of the JSON entirely, so the terminal applies
+its own default rather than an explicit `0` the caller never asked for. The CLI parses each one and
+emits a JSON **number** — that is the whole reason the parsing exists, since a quoted number is
+rejected by `ControlServer`.
+
+Two checks happen locally, before the pipe is opened: a value that is not a whole number, and a
+mapping name outside the `Local\agwinterm-frame-` prefix. Everything else — ranges, the header, the
+slot descriptor — is the reader's business and reports through the reply.
+
+For the multi-entry, all-or-nothing case there is no flag shape, so pass the array directly:
+
+```
+agwintermctl image frameshm --images '[{"name":"Local\agwinterm-frame-a","slot":0,"seq":3},
+                                       {"name":"Local\agwinterm-frame-b","slot":1,"seq":3}]'
+```
+
+`--images` is forwarded verbatim and is mutually exclusive with the positional name.
+
 ## Format
 
 BGRA end to end (`KittyFormat.Bgra = 132`). Chromium's `paint` hands out BGRA and Direct2D wants

@@ -258,11 +258,43 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 
 ### Task 5: Expose the verb on `agwintermctl`
 
-- [ ] add the CLI surface in `src/Agwinterm.Ctl` alongside the existing `image` verbs
-- [ ] parse numeric options with `int.TryParse` and place **ints** into `cargs`, never strings
-- [ ] keep the CLI shape close to `image frame` so the two read as siblings
-- [ ] write tests for arg parsing, especially that numerics serialize as JSON numbers
-- [ ] run tests — must pass before Task 6
+- [x] add the CLI surface in `src/Agwinterm.Ctl` alongside the existing `image` verbs —
+      `agwintermctl image frameshm <Local\agwinterm-frame-NAME> [--slot N] [--seq N] ...`, dispatched
+      from `Program.cs` next to `image show`/`image sixel`
+- [x] parse numeric options with `int.TryParse` and place **ints** into `cargs`, never strings
+- [x] keep the CLI shape close to `image frame` so the two read as siblings
+- [x] write tests for arg parsing, especially that numerics serialize as JSON numbers —
+      `tests/Agwinterm.Pty.Tests/FrameShmCliTests.cs`, 22 tests
+- [x] run tests — must pass before Task 6 — 461 pass (250 Pty, 211 Core); `dotnet format` reports
+      no findings on the touched files (the pre-existing `RustParityTests.cs` ones are untouched)
+
+- ⚠️ **`image.frame` has no CLI verb**, so "close to `image frame`" had nothing to copy. The shape
+      follows `image show` instead — a positional for the resource (there a path, here the mapping
+      name) plus one `--flag` per field. The two do read as siblings; the plan item assumed a ctl
+      surface that was never built.
+- ➕ **arg building lives in `src/Agwinterm.Ctl/FrameShmCli.cs`, not in `Program.cs`.** Top-level
+      statements are not addressable from a test project, and the numeric handling is precisely the
+      part that must be tested. `Program.cs` keeps only the dispatch arm.
+      `tests/Agwinterm.Pty.Tests` now project-references `Agwinterm.Ctl`.
+- ➕ **`--images '<json array>'` is accepted as well**, mutually exclusive with the positional name
+      and forwarded verbatim. The verb applies an `images[]` array all-or-nothing and a composition
+      of several mappings has no flag shape; without this the CLI could not reach a documented
+      behaviour of the command.
+- ➕ **an omitted flag is omitted from the JSON**, rather than sent as an explicit `0`. The server
+      already defines every default; sending `0` would state a value the caller never chose.
+- ➕ **`--seq` is parsed as a `long`.** `TryNum` reads `seq` as 64-bit — it is a publish counter, not
+      a dimension — and truncating it at the CLI would be a ceiling invented here. Every other field
+      is range-checked to 32 bits so the error names the *flag* rather than the JSON property.
+- ➕ **only two things are validated locally**: a non-numeric flag value, and a mapping name outside
+      the `Local\agwinterm-frame-` prefix. Both are cheap, both are stable parts of the spec, and
+      both otherwise cost a pipe round-trip to learn. Ranges, the header and the slot descriptor stay
+      the reader's business — duplicating those would let the CLI drift into rejecting frames the
+      terminal accepts.
+- ➕ a flag given with no value parses as the literal `"true"` in `Program.cs`'s option splitter, so
+      `FrameShmCli` skips it rather than failing on it; `--slot` with nothing after it means
+      "unset", not an error. Covered by `AValuelessFlagIsIgnoredRatherThanParsedAsTrue`.
+- ➕ documented the CLI in `docs/specs/image-frameshm.md` ("Driving it from the CLI"), since the spec
+      is what winterm-browser codes against and the ctl is the manual way to exercise it.
 
 ### Task 6: Prove it end to end against a live dev instance
 

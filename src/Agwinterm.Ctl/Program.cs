@@ -19,6 +19,12 @@ using System.Text.Json;
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
 //   agwintermctl selection all|copy|clear|finalize [--target ID]
 //   agwintermctl image show <path> [--row R] [--col C] [--id N] [--target ID]
+//   agwintermctl image sixel <path> [--row R] [--col C] [--target ID]
+//   agwintermctl image frameshm <Local\agwinterm-frame-NAME> [--slot N] [--seq N] [--width N]
+//       [--height N] [--stride N] [--format N] [--id N] [--row R] [--col C] [--cols N] [--rows N]
+//       [--sx N] [--sy N] [--sw N] [--sh N] [--target ID]
+//   agwintermctl image frameshm --images '[{"name":"Local\\agwinterm-frame-x","slot":0,...}]'
+//       (several entries applied as one all-or-nothing frame; see docs/specs/image-frameshm.md)
 //   agwintermctl install hooks
 // Target defaults to $AGWINTERM_SESSION_ID (the current session) when not given.
 
@@ -324,6 +330,13 @@ switch (area)
         if (int.TryParse(Opt("row"), out var row)) cargs["row"] = row;
         if (int.TryParse(Opt("col"), out var col)) cargs["col"] = col;
         if (int.TryParse(Opt("id"), out var id)) cargs["id"] = id;
+        break;
+    case "image" when sub == "frameshm":
+        cmd = "image.frameshm";
+        target = DefaultTarget();
+        if (!Agwinterm.Ctl.FrameShmCli.TryBuildArgs(rest, options, out var shmArgs, out var shmErr))
+        { Console.Error.WriteLine("image frameshm: " + shmErr); return 2; }
+        foreach (var kv in shmArgs) cargs[kv.Key] = kv.Value;
         break;
     case "image" when sub == "sixel":
         cmd = "image.sixel";
