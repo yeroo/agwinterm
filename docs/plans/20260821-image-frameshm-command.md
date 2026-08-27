@@ -373,7 +373,7 @@ are simply not published.
       **and** the pane's pixel box, where `GetConsoleScreenBufferInfo` gives cells only and nothing
       gives the pixel box. This is not an argument against also adding XTWINOPS — it would help
       every other client — only that this consumer neither needs it nor should be blocked on it.
-- [ ] implement the chosen mechanism, reading the live `_cellW`/`_cellH`, not a constant.
+- [x] implement the chosen mechanism, reading the live `_cellW`/`_cellH`, not a constant.
       **The wire shape the consumer already codes against** (`pixel-core/src/agwinterm.rs`,
       `ControlClient::pane_metrics`):
       request `{"cmd":"session.metrics","target":"<pane id>"}`, reply via `OkRaw` — the way `tree`
@@ -384,11 +384,24 @@ are simply not published.
       missing either, or with either zero, as "no metrics" rather than as an error, and reads
       `unknown command 'session.metrics'` as a capability gap it latches and stops asking about.
       `cols`/`rows`/`widthPx`/`heightPx` are optional and default to zero.
-- [ ] note that `Agwinterm.App/MainWindow.xaml.cs` is **dead code** — absent from `Agwinterm.slnx`.
+      - ? implemented as a session-targeted `session.metrics` dispatch returning an `OkRaw` object.
+        `ISessionHost.PaneMetrics` is the host seam; the Win32 host resolves an exact pane (including
+        split-pane ids), marshals synchronously to the UI thread, and measures the target's current
+        grid, layout and DPI. The repository has evolved beyond the plan's single base
+        `_cellW`/`_cellH`: terminal rendering and regridding now use per-pane
+        `Metrics(pane.FontSize)`, so the verb reads those same live values and correctly follows
+        per-pane font zoom instead of reporting only the base chrome font.
+- [x] note that `Agwinterm.App/MainWindow.xaml.cs` is **dead code** - absent from `Agwinterm.slnx`.
       The live values are in `Agwinterm.Win32`. Do not implement against the dead project.
-- [ ] write tests for the response carrying the live metrics, and for it tracking a font-size change
-- [ ] if XTWINOPS: write tests that the new `t` arm does not swallow sequences previously `Unhandled`
-- [ ] document the mechanism in `docs/specs/image-frameshm.md` or its own spec, and tell
+      - ? the control host and spec both state this explicitly; the implementation is only in
+        `Agwinterm.Win32/Program.ControlHost.cs`.
+- [x] write tests for the response carrying the live metrics, and for it tracking a font-size change
+      - ? `SessionMetricsTests` has ten tests pinning the six camelCase fields, object-valued
+        `OkRaw` result, live font-size and pane-size changes, target resolution, zero fallback and
+        the older-build capability-probe distinction.
+- [x] if XTWINOPS: write tests that the new `t` arm does not swallow sequences previously `Unhandled`
+      - ? skipped - not applicable: the chosen mechanism is the control verb, so no `t` arm changed.
+- [x] document the mechanism in `docs/specs/image-frameshm.md` or its own spec, and tell
       winterm-browser's Task 6, which is where it is consumed
       — ➕ the telling has already happened in the other direction: winterm-browser's Task 6 shipped
       the client, fixed the wire shape above, and recorded it in its own
@@ -401,7 +414,11 @@ are simply not published.
       viewport. The consumer therefore ships with `TERMINAL_BROWSER_CELL_PX` as an explicit
       override and a logged fallback, and this task upgrades it from "works, resampled" to "works,
       sharp" rather than unblocking it.
-- [ ] run tests — must pass before Task 7
+- [x] run tests - must pass before Task 7
+      - ? 477 pass in Release (266 Pty, including 10 new metrics tests; 211 Core). The explicit
+        `Agwinterm.Win32` Release build also passes. `dotnet format --verify-no-changes` finds no
+        issue in the added ranges; its remaining findings are the pre-existing whitespace in the
+        touched legacy files already noted by earlier tasks.
 
 ### Task 6c: `?1016` SGR-Pixels mouse — optional, lifts a product ceiling
 

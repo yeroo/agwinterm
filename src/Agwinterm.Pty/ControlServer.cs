@@ -250,6 +250,7 @@ public sealed class ControlServer : IDisposable
                 "session.type" => HandleType(s, args),
                 "session.text" => HandleText(s),
                 "session.status" => HandleStatus(s, args),
+                "session.metrics" => HandleSessionMetrics(host, s, target),
                 "image.show" => HandleImageShow(s, args),
                 "image.sixel" => HandleImageSixel(s, args),
                 "image.clear" => HandleImageClear(s),
@@ -342,6 +343,35 @@ public sealed class ControlServer : IDisposable
         if (s.ActiveWorkspace is not null) sb.Append(",\"activeWorkspace\":").Append(JsonSerializer.Serialize(s.ActiveWorkspace));
         if (s.ActiveSession is not null) sb.Append(",\"activeSession\":").Append(JsonSerializer.Serialize(s.ActiveSession));
         sb.Append('}');
+        return OkRaw(sb.ToString());
+    }
+
+    /// <summary>
+    /// session.metrics: the pane's live cell size and pixel box, for a producer that has to size a
+    /// frame buffer to the pane (image.frameshm's consumer sizes every frame from this).
+    ///
+    /// OkRaw, not Ok — an object like tree and window.state, camelCase like window.state's
+    /// sidebarVisible. Pixel fields are DEVICE pixels: the frame the producer hands over is device
+    /// pixels, and a DIP cell size would come out short by the DPI scale on any non-96 monitor,
+    /// which does not look like a units bug — it looks like a blurry pane.
+    ///
+    /// A host that cannot measure (headless, or a target with no pane in the layout) answers zeros
+    /// rather than an error: the consumer reads a zero cell size as "no metrics" and falls back,
+    /// where ok:false would read as a broken terminal. cols/rows still come from the session, which
+    /// every host knows.
+    /// </summary>
+    private static string HandleSessionMetrics(ISessionHost host, ISession s, string? target)
+    {
+        var m = host.PaneMetrics(target);
+        int cols = m is { Cols: > 0 } ? m.Cols : s.Cols;
+        int rows = m is { Rows: > 0 } ? m.Rows : s.Rows;
+        var sb = new StringBuilder("{\"cols\":").Append(cols)
+            .Append(",\"rows\":").Append(rows)
+            .Append(",\"cellWidth\":").Append(Math.Max(0, m?.CellWidth ?? 0))
+            .Append(",\"cellHeight\":").Append(Math.Max(0, m?.CellHeight ?? 0))
+            .Append(",\"widthPx\":").Append(Math.Max(0, m?.WidthPx ?? 0))
+            .Append(",\"heightPx\":").Append(Math.Max(0, m?.HeightPx ?? 0))
+            .Append('}');
         return OkRaw(sb.ToString());
     }
 

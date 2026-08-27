@@ -19,6 +19,12 @@ public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IRea
 public sealed record WindowStateSnapshot(bool SidebarVisible, bool Fullscreen, bool Maximized,
     bool QuickTerminalVisible, string? ActiveWorkspace, string? ActiveSession);
 
+/// <summary>A pane's live geometry for `session.metrics`, in DEVICE pixels — the space a producer's
+/// frame buffer lives in, not the DIPs the chrome lays out in. <see cref="CellWidth"/>/<see cref="CellHeight"/>
+/// are the only fields a consumer needs (a shared-frame producer sizes its buffer from them); the rest
+/// spare it a second round trip. A host with no UI to measure reports zeros, which reads as "no metrics".</summary>
+public sealed record PaneMetricsSnapshot(int Cols, int Rows, int CellWidth, int CellHeight, int WidthPx, int HeightPx);
+
 /// <summary>
 /// The control server's view of the app. Lets it target a session by id / unique-prefix /
 /// "active" (or null = active), enumerate the workspace→session tree, and create/select/close
@@ -34,6 +40,13 @@ public interface ISessionHost
 
     /// <summary>Window-level UI state (sidebar/fullscreen/zoom/quick-terminal visibility + active ws/session).</summary>
     WindowStateSnapshot WindowState();
+
+    /// <summary>Live cell + pane pixel metrics for <paramref name="target"/> (pane id / session id /
+    /// "active" / null), in device pixels. Null = this host cannot measure (no UI, or the target has no
+    /// pane in the layout); the control server then answers zeros rather than an error, because a
+    /// consumer treats a zero cell size as "no metrics" and a hard error as a broken terminal.
+    /// Default: null, so a host that does not draw need not pretend to know its geometry.</summary>
+    PaneMetricsSnapshot? PaneMetrics(string? target) => null;
 
     /// <summary>
     /// Create a session; returns its id. Optionally in a workspace (by id/prefix via
@@ -232,6 +245,9 @@ public sealed class SingleSessionHost : ISessionHost
         new[] { new WorkspaceSnapshot("ws", "workspace", true,
             new[] { new SessionSnapshot("single", "session", true, _session.Status) }) };
     public WindowStateSnapshot WindowState() => new(true, false, false, false, "ws", "single");
+    // Cols/rows come from the session; there is no window here, so the pixel fields stay zero
+    // ("no metrics") rather than inventing a cell size a caller might size a frame buffer from.
+    public PaneMetricsSnapshot? PaneMetrics(string? target) => new(_session.Cols, _session.Rows, 0, 0, 0, 0);
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false) => "single";
     public string DuplicateSession(string? target) => "";

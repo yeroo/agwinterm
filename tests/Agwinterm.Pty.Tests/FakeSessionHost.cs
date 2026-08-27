@@ -53,6 +53,14 @@ internal sealed class FakeSessionHost : ISessionHost
     public WindowStateSnapshot WindowState() =>
         new(SidebarVisible, Fullscreen, Maximized, QuickVisible, ActiveWs.Name, ActiveSess?.Name);
 
+    // Stands in for the real host's live measurement: the test moves these the way a font-size change
+    // or a resize would, and asserts session.metrics reports the NEW numbers rather than a snapshot.
+    internal int CellW = 9, CellH = 19, PaneW = 1188, PaneH = 703;
+    internal bool Measurable = true;
+    public PaneMetricsSnapshot? PaneMetrics(string? target) =>
+        !Measurable || Find(target) is null ? null
+        : new PaneMetricsSnapshot(_session.Cols, _session.Rows, CellW, CellH, PaneW, PaneH);
+
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
     {

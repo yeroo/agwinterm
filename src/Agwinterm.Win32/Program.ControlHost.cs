@@ -196,6 +196,58 @@ internal partial class Program
                 ActiveWorkspace: a?.Ws.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
         }
 
+    /// <summary>
+    /// Live cell + pane metrics for `session.metrics`, in DEVICE pixels. Measured on the UI thread:
+    /// <see cref="Metrics"/> memoises text formats in a static dictionary the render path writes to,
+    /// so reading it from the pipe thread would race a font rebuild — and taking the layout and the
+    /// cell size in one hop also keeps them describing the same instant.
+    ///
+    /// The numbers are the ones the renderer actually draws with (<see cref="PaneLayout"/> +
+    /// <c>Metrics(pane.FontSize)</c>), converted DIP→device by <see cref="Scale"/>, so a producer
+    /// sizing a frame to cols*cellWidth fills the pane without Direct2D resampling it.
+    /// </summary>
+    public PaneMetricsSnapshot? PaneMetrics(string? target)
+    {
+        PaneMetricsSnapshot? snap = null;
+        InvokeOnUi(() => { snap = MeasurePane(target); return ""; });
+        return snap;
+    }
+
+    private PaneMetricsSnapshot? MeasurePane(string? target)
+    {
+        // Same resolution order as Resolve(): active, then pane id (exact, then prefix), then
+        // session. A pane targeted by its AGWINTERM_PANE_ID must land on ITS column, not the
+        // session's active one — a split browser pane would otherwise be told the wrong width.
+        Ses? ses = null; Pane? pane = null;
+        lock (_workspaces)
+        {
+            if (string.IsNullOrEmpty(target) || target == "active") { ses = _active; pane = _active?.ActivePane; }
+            else
+            {
+                var all = _workspaces.SelectMany(w => w.Sessions).ToList();
+                foreach (var s in all)
+                {
+                    var p = s.Panes.FirstOrDefault(x => x.Id == target) ?? s.Panes.FirstOrDefault(x => x.Id.StartsWith(target));
+                    if (p is not null) { ses = s; pane = p; break; }
+                }
+            }
+        }
+        if (ses is null || pane is null) { var f = Find(target); ses = f; pane = f?.ActivePane; }
+        if (ses is null || pane is null) return null;
+
+        var (_, cwDip, chDip) = Metrics(pane.FontSize);
+        float wDip = 0, hDip = 0;
+        foreach (var (p, _, _, w, h) in PaneLayout(ses))
+            if (ReferenceEquals(p, pane)) { wDip = w; hDip = h; break; }
+        float sc = Scale;
+        return new PaneMetricsSnapshot(
+            Cols: pane.S.Cols, Rows: pane.S.Rows,
+            CellWidth: Math.Max(1, (int)MathF.Round(cwDip * sc)),
+            CellHeight: Math.Max(1, (int)MathF.Round(chDip * sc)),
+            WidthPx: Math.Max(0, (int)MathF.Round(wDip * sc)),
+            HeightPx: Math.Max(0, (int)MathF.Round(hDip * sc)));
+    }
+
         public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
             string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
         {

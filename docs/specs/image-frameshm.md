@@ -222,6 +222,48 @@ agwintermctl image frameshm --images '[{"name":"Local\agwinterm-frame-a","slot":
 
 `--images` is forwarded verbatim and is mutually exclusive with the positional name.
 
+## Sizing a pane with `session.metrics`
+
+A producer should size its viewport and frame from the pane's live cell metrics instead of guessing
+a font-dependent cell size. Send the pane id from `AGWINTERM_SESSION_ID` as the target:
+
+```json
+{"cmd":"session.metrics","target":"<pane id>"}
+```
+
+The successful reply has an object-valued `result` (not a string containing JSON):
+
+```json
+{
+  "ok": true,
+  "result": {
+    "cols": 132,
+    "rows": 37,
+    "cellWidth": 9,
+    "cellHeight": 19,
+    "widthPx": 1188,
+    "heightPx": 703
+  }
+}
+```
+
+All pixel fields are **device pixels**, the same coordinate space as a BGRA frame. `cellWidth` and
+`cellHeight` are the required capability: multiply them by the terminal grid dimensions to size the
+producer's pixel viewport. `cols`, `rows`, `widthPx` and `heightPx` are included to avoid another
+query but may be zero on a host that cannot measure them. A zero cell dimension means "metrics are
+unavailable" and the producer should use its configured fallback. An older terminal reports
+`unknown command 'session.metrics'`; a client may latch that capability miss and stop probing.
+
+The Win32 host measures on every request from the target pane's current font size, layout and DPI.
+It uses the same per-pane `Metrics(pane.FontSize)` values as rendering and regridding, so a font-size
+change or pane resize is reflected in the next reply rather than waiting for a new session. The
+control-pipe surface is implemented in the live `Agwinterm.Win32` project; the similarly named
+`Agwinterm.App/MainWindow.xaml.cs` is not part of `Agwinterm.slnx` and is not an implementation.
+
+For manual inspection, the ctl exposes the same call as
+`agwintermctl session metrics [<pane-id>] --json`. winterm-browser consumes the JSON form in
+`pixel-core`'s `ControlClient::pane_metrics`.
+
 ## Format
 
 BGRA end to end (`KittyFormat.Bgra = 132`). Chromium's `paint` hands out BGRA and Direct2D wants

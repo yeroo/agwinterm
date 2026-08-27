@@ -13,6 +13,7 @@ using System.Text.Json;
 //   agwintermctl session seen [--target ID]        (clear the unseen-notification badge)
 //   agwintermctl sidebar state                      (read-back: "visible tree" | "hidden flagged" | ...)
 //   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
+//   agwintermctl session metrics [<pane-id>] [--json] (live cell + pane pixel metrics)
 //   agwintermctl session type <text...> [--target ID]
 //   agwintermctl session write <text...> [--target ID]
 //   agwintermctl session copy [--target ID]           (returns the selection text)
@@ -139,6 +140,11 @@ switch (area)
             case "rename": // session rename <new-name...> [--target ID]
                 if (rest.Count == 0 && Opt("name") is null) { Console.Error.WriteLine("session rename needs a name"); return 2; }
                 cargs["name"] = rest.Count > 0 ? string.Join(' ', rest) : Opt("name")!;
+                break;
+            // session metrics [<pane-id>] — cell size + pixel box of a pane, for sizing an
+            // image.frameshm buffer. No args of its own; --json is the useful form.
+            case "metrics":
+                if (rest.Count > 0) target = rest[0];
                 break;
             case "status":
                 if (rest.Count == 0) { Console.Error.WriteLine("session status needs a state"); return 2; }
