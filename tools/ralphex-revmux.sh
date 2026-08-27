@@ -102,11 +102,17 @@ pluck() {
   printf '%s' "$PATHS_JSON" | jq -er --arg key "$1" '.[$key] // empty'
 }
 
-SCOPE="$(pluck scope 2>/dev/null || true)"
-TASK_FILE="$(pluck task_file 2>/dev/null || true)"
-[ -n "$SCOPE" ] || fail "could not read scope path from revmux new"
+SCOPE="$(pluck scope)" || fail "could not read scope path from revmux new"
+TASK_FILE="$(pluck task_file)" || fail "could not read task-file path from revmux new"
+[ -n "$SCOPE" ] || fail "revmux new returned an empty scope path"
+[ -n "$TASK_FILE" ] || fail "revmux new returned an empty task-file path"
 TASK_FILE_CREATED="$(printf '%s' "$PATHS_JSON" \
-  | jq -er '((.created | type == "array") and (.created | index("task_file") != null)) | tostring' 2>/dev/null)" \
+  | jq -er '
+      if (.created | type) != "array" or any(.created[]; type != "string") then
+        error("created must be an array of strings")
+      else
+        (.created | index("task_file") != null) | tostring
+      end')" \
   || fail "revmux new returned an incompatible paths payload"
 
 {
@@ -119,7 +125,17 @@ TASK_FILE_CREATED="$(printf '%s' "$PATHS_JSON" \
   printf '%s\n' '- Ignore generated .ralphex/progress and .revmux/tasks artifacts.'
 } > "$SCOPE" || fail "could not write scope"
 
-if [ "$TASK_FILE_CREATED" = "true" ] && [ -n "$TASK_FILE" ]; then
+TASK_FILE_IS_TEMPLATE=false
+if [ -f "$TASK_FILE" ] \
+   && grep -Eq '^# description:' "$TASK_FILE" \
+   && grep -Eq '^# branch:' "$TASK_FILE" \
+   && grep -Eq '^# base:' "$TASK_FILE" \
+   && ! grep -Eq '^(description|branch|base):' "$TASK_FILE"; then
+  TASK_FILE_IS_TEMPLATE=true
+fi
+[ -f "$TASK_FILE" ] || fail "revmux task file does not exist: $TASK_FILE"
+
+if [ "$TASK_FILE_CREATED" = "true" ] || [ "$TASK_FILE_IS_TEMPLATE" = "true" ]; then
   BRANCH="$(git branch --show-current 2>/dev/null || true)"
   DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
   [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
@@ -134,12 +150,6 @@ fi
 
 printf 'ralphex-revmux: running revmux (profile=%s, task=%s, run=%s)\n' \
   "$PROFILE" "$TASK" "$RUN" >&2
-
-if [ "${RALPHEX_REVMUX_DRY_RUN:-0}" = "1" ]; then
-  printf 'ralphex-revmux: dry run; scope=%s\n' "$SCOPE" >&2
-  printf '%s\n' 'NO ISSUES FOUND'
-  exit 0
-fi
 
 REPORT_JSON="$(mktemp)" || fail "could not allocate report file"
 PROGRESS_LOG="$(mktemp)" || fail "could not allocate progress log"
@@ -160,8 +170,9 @@ fi
 jq -e '
   type == "object" and
   (.sources | type == "object") and
-  (.sources.expected | type == "number") and
-  (.sources.reported | type == "number") and
+  (.sources.expected | type == "number" and . > 0 and . == floor) and
+  (.sources.reported | type == "number" and . > 0 and . == floor) and
+  (.sources.reported <= .sources.expected) and
   (.sources.degraded | type == "array") and
   (all(.sources.degraded[]; type == "string")) and
   (.findings | type == "array") and
