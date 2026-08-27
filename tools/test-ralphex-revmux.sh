@@ -5,7 +5,12 @@ ROOT="$(git rev-parse --show-toplevel)"
 BRIDGE="$ROOT/tools/ralphex-revmux.sh"
 REAL_GIT="$(command -v git)"
 TMP="$(mktemp -d)"
-trap 'rm -rf -- "$TMP"' EXIT
+RALPHEX_FIXTURE_PROGRESS=""
+cleanup_test() {
+  rm -rf -- "$TMP"
+  [ -z "$RALPHEX_FIXTURE_PROGRESS" ] || rm -f -- "$RALPHEX_FIXTURE_PROGRESS"
+}
+trap cleanup_test EXIT
 
 mkdir -p "$TMP/bin" "$TMP/rounds"
 
@@ -357,9 +362,11 @@ esac
 # When Ralphex is installed, exercise its real config loader and CustomExecutor
 # too. CI still has deterministic coverage above without downloading Ralphex.
 if command -v ralphex >/dev/null 2>&1; then
+  launcher_plan_name="launcher-reachability-$$-$RANDOM"
+  RALPHEX_FIXTURE_PROGRESS="$ROOT/.ralphex/progress/progress-$launcher_plan_name-codex.txt"
   printf '%s\n' '# Launcher reachability fixture' '' '- [x] No implementation work.' \
-    > "$TMP/launcher-plan.md"
-  launcher_plan_windows="$(cygpath -w "$TMP/launcher-plan.md")"
+    > "$TMP/$launcher_plan_name.md"
+  launcher_plan_windows="$(cygpath -w "$TMP/$launcher_plan_name.md")"
   tasks_before="$(wc -l < "$TMP/tasks.log" | tr -d ' ')"
   set +e
   PATH="$TMP/bin:$PATH" REAL_GIT_BIN="$REAL_GIT" FAKE_ROOT="$TMP" \
