@@ -46,5 +46,6 @@ max_iterations = 15
 # Kill a TASK/REVIEW executor that has produced nothing for this long. Note the
 # limit of this knob: in default Claude mode it does NOT cover the external
 # review phase, so it is no help against a wedged revmux — that one has its own
-# --idle-timeout (2m) and --hard-timeout (20m) per agent.
+# --idle-timeout (2m) and the bridge's configurable --hard-timeout (40m by default)
+# per agent.
 idle_timeout = 10m

@@ -9,11 +9,12 @@
 set -uo pipefail
 
 PROMPT_FILE="${1:-}"
-DONE_SIGNAL='<<<RALPHEX:CODEX_REVIEW_DONE>>>'
+NEW_LOG=""
 REPORT_JSON=""
 PROGRESS_LOG=""
 
 cleanup() {
+  [ -z "$NEW_LOG" ] || rm -f -- "$NEW_LOG"
   [ -z "$REPORT_JSON" ] || rm -f -- "$REPORT_JSON"
   [ -z "$PROGRESS_LOG" ] || rm -f -- "$PROGRESS_LOG"
 }
@@ -30,6 +31,10 @@ fail() {
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
   || fail "not running inside a git worktree"
 cd "$REPO_ROOT" || fail "cannot enter repository root"
+REPO_ROOT_FS="$REPO_ROOT"
+if [[ "$REPO_ROOT" =~ ^[A-Za-z]:/ ]] && command -v cygpath >/dev/null 2>&1; then
+  REPO_ROOT_FS="$(cygpath -u "$REPO_ROOT")"
+fi
 
 command -v revmux >/dev/null 2>&1 || fail "revmux not on PATH" 127
 command -v jq >/dev/null 2>&1 || fail "jq not on PATH" 127
@@ -58,25 +63,40 @@ normalize_plan_path() {
     unix_path="$(cygpath -u "$raw")"
   fi
   if [ -e "$unix_path" ] && command -v realpath >/dev/null 2>&1; then
-    relative="$(realpath --relative-to="$REPO_ROOT" "$unix_path" 2>/dev/null || true)"
-    [ -z "$relative" ] || unix_path="$relative"
+    relative="$(realpath --relative-to="$REPO_ROOT_FS" "$unix_path" 2>/dev/null || true)"
+    if [ -n "$relative" ] && [[ "$relative" != ../* ]]; then
+      unix_path="$relative"
+    fi
   fi
   printf '%s' "$unix_path" | sed 's#^\./##; s#//*#/#g'
 }
 
 PLAN_REL="$(normalize_plan_path "$PLAN_PATH")"
-PLAN_STEM="${PLAN_REL%.md}"
+TASK_SUBJECT="$PLAN_REL"
+if [[ "$PLAN_REL" == "(no plan file"* ]]; then
+  CURRENT_BRANCH="$(git branch --show-current 2>/dev/null || true)"
+  if [ -z "$CURRENT_BRANCH" ]; then
+    CURRENT_BRANCH="detached-$(git rev-parse --short HEAD 2>/dev/null)" \
+      || fail "could not identify planless review checkout"
+  fi
+  TASK_SUBJECT="branch/$CURRENT_BRANCH"
+fi
+
+PLAN_STEM="${TASK_SUBJECT%.md}"
 PLAN_SLUG="$(printf '%s' "$PLAN_STEM" \
   | tr '[:upper:]' '[:lower:]' \
   | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' \
   | cut -c1-48)"
 [ -n "$PLAN_SLUG" ] || PLAN_SLUG="review"
-PLAN_HASH="$(printf '%s' "$PLAN_REL" | sha256sum | cut -c1-10)"
+PLAN_HASH="$(printf '%s' "$TASK_SUBJECT" | sha256sum | cut -c1-10)"
 TASK="ralphex-${PLAN_SLUG}-${PLAN_HASH}"
 RUN="$(date +%Y%m%d-%H%M%S)"
 
-PATHS_JSON="$(revmux new --task "$TASK" --run "$RUN" 2>/dev/null)" \
-  || fail "revmux new failed"
+NEW_LOG="$(mktemp)" || fail "could not allocate revmux-new log"
+if ! PATHS_JSON="$(revmux new --task "$TASK" --run "$RUN" 2>"$NEW_LOG")"; then
+  tail -n 20 "$NEW_LOG" >&2
+  fail "revmux new failed"
+fi
 
 pluck() {
   printf '%s' "$PATHS_JSON" | jq -er --arg key "$1" '.[$key] // empty'
@@ -85,6 +105,9 @@ pluck() {
 SCOPE="$(pluck scope 2>/dev/null || true)"
 TASK_FILE="$(pluck task_file 2>/dev/null || true)"
 [ -n "$SCOPE" ] || fail "could not read scope path from revmux new"
+TASK_FILE_CREATED="$(printf '%s' "$PATHS_JSON" \
+  | jq -er '((.created | type == "array") and (.created | index("task_file") != null)) | tostring' 2>/dev/null)" \
+  || fail "revmux new returned an incompatible paths payload"
 
 {
   printf '%s\n' '- Automated Ralphex external-review round.'
@@ -96,7 +119,7 @@ TASK_FILE="$(pluck task_file 2>/dev/null || true)"
   printf '%s\n' '- Ignore generated .ralphex/progress and .revmux/tasks artifacts.'
 } > "$SCOPE" || fail "could not write scope"
 
-if [ -n "$TASK_FILE" ] && grep -q '^description:[[:space:]]*$' "$TASK_FILE" 2>/dev/null; then
+if [ "$TASK_FILE_CREATED" = "true" ] && [ -n "$TASK_FILE" ]; then
   BRANCH="$(git branch --show-current 2>/dev/null || true)"
   DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
   [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
@@ -114,7 +137,7 @@ printf 'ralphex-revmux: running revmux (profile=%s, task=%s, run=%s)\n' \
 
 if [ "${RALPHEX_REVMUX_DRY_RUN:-0}" = "1" ]; then
   printf 'ralphex-revmux: dry run; scope=%s\n' "$SCOPE" >&2
-  printf '%s\n%s\n' 'NO ISSUES FOUND' "$DONE_SIGNAL"
+  printf '%s\n' 'NO ISSUES FOUND'
   exit 0
 fi
 
@@ -134,31 +157,55 @@ if [ "$REVMUX_STATUS" -ne 0 ] && [ "$REVMUX_STATUS" -ne 1 ]; then
   fail "revmux failed with exit $REVMUX_STATUS" "$REVMUX_STATUS"
 fi
 
-jq -e . "$REPORT_JSON" >/dev/null 2>&1 \
-  || fail "revmux returned malformed JSON"
+jq -e '
+  type == "object" and
+  (.sources | type == "object") and
+  (.sources.expected | type == "number") and
+  (.sources.reported | type == "number") and
+  (.sources.degraded | type == "array") and
+  (all(.sources.degraded[]; type == "string")) and
+  (.findings | type == "array") and
+  (all(.findings[];
+    type == "object" and
+    (.severity | type == "string") and
+    (.confidence | type == "number") and
+    (.file | type == "string") and
+    (.line | type == "number") and
+    (.title | type == "string") and
+    (.body | type == "string") and
+    (.fix | type == "string"))) and
+  (.open_questions | type == "array") and
+  (.pre_existing | type == "array") and
+  (.immaterial | type == "array")
+' "$REPORT_JSON" >/dev/null 2>&1 \
+  || fail "revmux returned an incompatible report schema"
 
-if jq -e '(.sources.expected != .sources.reported) or ((.sources.degraded // []) | length > 0)' \
-     "$REPORT_JSON" >/dev/null; then
+IS_DEGRADED="$(jq -er '((.sources.expected != .sources.reported) or (.sources.degraded | length > 0)) | tostring' \
+  "$REPORT_JSON")" || fail "could not read revmux source completeness"
+if [ "$IS_DEGRADED" = "true" ]; then
   jq -r '"degraded review: expected \(.sources.expected), reported \(.sources.reported), degraded=\((.sources.degraded // []) | join(","))"' \
-    "$REPORT_JSON" >&2
+    "$REPORT_JSON" >&2 || fail "could not render degraded source details"
   fail "refusing to treat a partial panel as a usable review"
 fi
 
-if jq -e '(.open_questions // []) | length > 0' "$REPORT_JSON" >/dev/null; then
+OPEN_QUESTION_COUNT="$(jq -er '.open_questions | length' "$REPORT_JSON")" \
+  || fail "could not read revmux open questions"
+if [ "$OPEN_QUESTION_COUNT" -gt 0 ]; then
   jq -r '.open_questions[] | "open question: " + (.title // .body // tostring)' \
-    "$REPORT_JSON" >&2
+    "$REPORT_JSON" >&2 || fail "could not render revmux open questions"
   fail "review needs a human decision before Ralphex can continue"
 fi
 
-FINDING_COUNT="$(jq '(.findings // []) | length' "$REPORT_JSON")"
+FINDING_COUNT="$(jq -er '.findings | length' "$REPORT_JSON")" \
+  || fail "could not read revmux findings"
 if [ "$FINDING_COUNT" -eq 0 ]; then
   printf '%s\n' 'NO ISSUES FOUND'
 else
   jq -r '.findings[] |
     "- [\(.severity), confidence \(.confidence)] \(.file):\(.line) - \(.title)\n" +
     "  \(.body)\n" +
-    "  Fix: \(.fix)"' "$REPORT_JSON"
+    "  Fix: \(.fix)"' "$REPORT_JSON" \
+    || fail "could not render actionable revmux findings"
 fi
 
-printf '%s\n' "$DONE_SIGNAL"
 exit 0

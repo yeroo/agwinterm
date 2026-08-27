@@ -12,7 +12,10 @@ cat > "$TMP/bin/revmux" <<'FAKE_REVMUX'
 #!/usr/bin/env bash
 set -u
 if [ "${1:-}" = "new" ]; then
-  [ "${FAKE_NEW_STATUS:-0}" = "0" ] || exit "$FAKE_NEW_STATUS"
+  if [ "${FAKE_NEW_STATUS:-0}" != "0" ]; then
+    echo 'synthetic revmux-new diagnostic' >&2
+    exit "$FAKE_NEW_STATUS"
+  fi
   task=""
   run=""
   while [ "$#" -gt 0 ]; do
@@ -25,15 +28,20 @@ if [ "${1:-}" = "new" ]; then
   round="$FAKE_ROOT/rounds/$task/$run"
   mkdir -p "$round/input"
   task_file="$FAKE_ROOT/rounds/$task/task.md"
+  created_task_file=false
   if [ ! -f "$task_file" ]; then
-    printf '%s\n' '---' 'description:' 'branch:' 'base:' '---' > "$task_file"
+    created_task_file=true
+    printf '%s\n' '---' '# description: one line naming what this task reviews' \
+      '# branch: feature/name' '# base: main' '---' > "$task_file"
   fi
   printf '%s\n' "$task" >> "$FAKE_ROOT/tasks.log"
   printf '%s' "$round/input/scope.md" > "$FAKE_ROOT/last-scope"
   jq -n --arg round_dir "$round" \
         --arg scope "$round/input/scope.md" \
         --arg task_file "$task_file" \
-        '{round_dir:$round_dir, scope:$scope, task_file:$task_file}'
+        --argjson created_task_file "$created_task_file" \
+        '{round_dir:$round_dir, scope:$scope, task_file:$task_file,
+          created:(if $created_task_file then ["task_dir","task_file","round_dir","input_dir"] else ["round_dir","input_dir"] end)}'
   exit 0
 fi
 
@@ -100,12 +108,14 @@ assert_not_contains() {
 write_prompt "$TMP/api-auth.txt" 'docs/plans/api/auth.md'
 run_bridge "$TMP/api-auth.txt" "$TMP/clean.json" > "$TMP/clean.out" 2> "$TMP/clean.err"
 assert_contains "$TMP/clean.out" 'NO ISSUES FOUND'
-assert_contains "$TMP/clean.out" '<<<RALPHEX:CODEX_REVIEW_DONE>>>'
+assert_not_contains "$TMP/clean.out" '<<<RALPHEX:CODEX_REVIEW_DONE>>>'
 scope="$(cat "$TMP/last-scope")"
 assert_contains "$scope" 'git diff main...HEAD'
 assert_contains "$scope" 'docs/plans/api/auth.md'
 assert_not_contains "$scope" 'Output Format'
 assert_not_contains "$scope" 'STALE_CONTEXT_MUST_NOT_REACH_SCOPE'
+task_file="$TMP/rounds/$(tail -n 1 "$TMP/tasks.log")/task.md"
+assert_contains "$task_file" 'description: Ralphex review loop for docs/plans/api/auth.md'
 
 write_prompt "$TMP/legacy-auth.txt" 'docs/plans/legacy/auth.md'
 RALPHEX_REVMUX_DRY_RUN=1 run_bridge "$TMP/legacy-auth.txt" "$TMP/clean.json" \
@@ -120,8 +130,11 @@ RALPHEX_REVMUX_DRY_RUN=1 run_bridge "$TMP/relative-plan.txt" "$TMP/clean.json" \
 relative_task="$(tail -n 1 "$TMP/tasks.log")"
 absolute_plan="$(cygpath -w "$ROOT/$existing_plan")"
 write_prompt "$TMP/absolute-plan.txt" "$absolute_plan"
-RALPHEX_REVMUX_DRY_RUN=1 run_bridge "$TMP/absolute-plan.txt" "$TMP/clean.json" \
-  > "$TMP/absolute.out" 2> "$TMP/absolute.err"
+if ! RALPHEX_REVMUX_DRY_RUN=1 run_bridge "$TMP/absolute-plan.txt" "$TMP/clean.json" \
+  > "$TMP/absolute.out" 2> "$TMP/absolute.err"; then
+  cat "$TMP/absolute.err" >&2
+  exit 1
+fi
 absolute_task="$(tail -n 1 "$TMP/tasks.log")"
 [ "$relative_task" = "$absolute_task" ] \
   || { echo 'absolute and relative spellings produced different task ids' >&2; exit 1; }
@@ -129,6 +142,7 @@ absolute_task="$(tail -n 1 "$TMP/tasks.log")"
 run_bridge "$TMP/api-auth.txt" "$TMP/findings.json" 1 > "$TMP/findings.out" 2> "$TMP/findings.err"
 assert_contains "$TMP/findings.out" 'Actionable defect'
 assert_contains "$TMP/findings.out" 'Repair the mechanism.'
+assert_not_contains "$TMP/findings.out" '<<<RALPHEX:CODEX_REVIEW_DONE>>>'
 assert_not_contains "$TMP/findings.out" 'Do not fix old code'
 assert_not_contains "$TMP/findings.out" 'Do not polish this'
 
@@ -152,6 +166,7 @@ PATH="$TMP/bin:$PATH" FAKE_ROOT="$TMP" FAKE_REPORT="$TMP/clean.json" FAKE_NEW_ST
 new_failure_status=$?
 set -e
 [ "$new_failure_status" -ne 0 ] || { echo 'revmux new failure returned success' >&2; exit 1; }
+assert_contains "$TMP/new-failure.err" 'synthetic revmux-new diagnostic'
 
 printf '%s\n' 'not-json' > "$TMP/malformed.json"
 set +e
@@ -159,6 +174,13 @@ run_bridge "$TMP/api-auth.txt" "$TMP/malformed.json" > "$TMP/malformed.out" 2> "
 malformed_status=$?
 set -e
 [ "$malformed_status" -ne 0 ] || { echo 'malformed report returned success' >&2; exit 1; }
+
+printf '%s\n' '{}' > "$TMP/empty-object.json"
+set +e
+run_bridge "$TMP/api-auth.txt" "$TMP/empty-object.json" > "$TMP/empty-object.out" 2> "$TMP/empty-object.err"
+empty_object_status=$?
+set -e
+[ "$empty_object_status" -ne 0 ] || { echo 'empty report object returned success' >&2; exit 1; }
 
 set +e
 run_bridge "$TMP/api-auth.txt" "$TMP/questions.json" > "$TMP/questions.out" 2> "$TMP/questions.err"
@@ -170,5 +192,16 @@ PATH="$TMP/bin:$PATH" FAKE_ROOT="$TMP" FAKE_REPORT="$TMP/clean.json" \
   RALPHEX_REVMUX_DRY_RUN=1 bash "$ROOT/.ralphex/prompts/custom_review.txt" \
   > "$TMP/wrapper.out" 2> "$TMP/wrapper.err"
 assert_contains "$TMP/wrapper.out" 'NO ISSUES FOUND'
+
+write_prompt "$TMP/planless.txt" '(no plan file - reviewing current branch)'
+RALPHEX_REVMUX_DRY_RUN=1 run_bridge "$TMP/planless.txt" "$TMP/clean.json" \
+  > "$TMP/planless.out" 2> "$TMP/planless.err"
+planless_task="$(tail -n 1 "$TMP/tasks.log")"
+current_branch="$(git branch --show-current)"
+branch_slug="$(printf '%s' "$current_branch" | sed 's/[^A-Za-z0-9]/-/g')"
+case "$planless_task" in
+  *"$branch_slug"*) ;;
+  *) echo 'planless task id does not include the current branch' >&2; exit 1 ;;
+esac
 
 echo 'ralphex-revmux bridge tests passed'
