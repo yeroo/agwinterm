@@ -122,27 +122,27 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 
 ### Task 1: Define the shared-frame wire format and header
 
-- [ ] add `docs/specs/image-frameshm.md` documenting the mapping layout and the JSON args, so the
+- [x] add `docs/specs/image-frameshm.md` documenting the mapping layout and the JSON args, so the
       consuming project has a written contract rather than a reading of the source
-- [ ] define the mapping layout in `src/Agwinterm.Pty/ShmFrameLayout.cs`: a fixed-size header
+- [x] define the mapping layout in `src/Agwinterm.Pty/ShmFrameLayout.cs`: a fixed-size header
       followed by two pixel slots, so the producer writes one slot while the renderer reads the other
-- [ ] header carries at minimum: a magic value, a layout version, slot count, slot byte stride,
+- [x] header carries at minimum: a magic value, a layout version, slot count, slot byte stride,
       per-slot `(width, height, stride, format)` and a monotonically increasing `ready` sequence
       number identifying the slot that is complete
-- [ ] define the JSON args shape: `{"images":[{"id":N,"name":"Local\\...","slot":N,"seq":N,
+- [x] define the JSON args shape: `{"images":[{"id":N,"name":"Local\\...","slot":N,"seq":N,
       "width":N,"height":N,"stride":N,"format":N,"row":N,"col":N,"cols":N,"rows":N}]}` — every
       numeric a JSON number, `name` the mapping name, ids reusing `image.frame` semantics
-- [ ] **write the literal `Local\` name prefix into the spec.** Task 3 restricts accepted names to a
+- [x] **write the literal `Local\` name prefix into the spec.** Task 3 restricts accepted names to a
       fixed prefix; if the string is not in the spec, the producer picks its own and is rejected at
       runtime with a validation error that reads like a bug. Neither document currently contains the
       string a producer must actually use. [triage: major]
-- [ ] **state the producer slot-reuse invariant explicitly**: a producer must not begin filling a
+- [x] **state the producer slot-reuse invariant explicitly**: a producer must not begin filling a
       slot until the reply for the frame two back has returned. This is what actually makes two slots
       sufficient — see Technical Details. Without it in the spec, a producer that pipelines requests
       to hide pipe latency tears, and nothing forbids that. [triage: major]
-- [ ] write tests for header encode/decode round-trip
-- [ ] write tests for rejecting a bad magic, an unknown version and an out-of-range slot index
-- [ ] run tests — must pass before Task 2
+- [x] write tests for header encode/decode round-trip
+- [x] write tests for rejecting a bad magic, an unknown version and an out-of-range slot index
+- [x] run tests — must pass before Task 2
 
 ### Task 2: Add BGRA as an internal pixel format
 
