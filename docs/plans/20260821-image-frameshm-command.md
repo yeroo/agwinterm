@@ -174,20 +174,41 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 
 ### Task 3: Open and validate a producer's mapping safely
 
-- [ ] add `src/Agwinterm.Pty/ShmFrameReader.cs` that opens a named mapping with
+- [x] add `src/Agwinterm.Pty/ShmFrameReader.cs` that opens a named mapping with
       `MemoryMappedFile.OpenExisting(name, MemoryMappedFileRights.Read)`
-- [ ] validate before any copy: view length is at least header size; `stride >= width * 4`;
+- [x] validate before any copy: view length is at least header size; `stride >= width * 4`;
       `height * stride` fits within the slot; the slot's byte range lies inside the view; `width`
       and `height` are positive and within a sane maximum
-- [ ] restrict accepted names to a fixed prefix in the `Local\` namespace so a request cannot name
+- [x] restrict accepted names to a fixed prefix in the `Local\` namespace so a request cannot name
       an arbitrary existing object
-- [ ] return a typed failure rather than throwing for every rejection, so the control server answers
-      `{"ok":false,...}` instead of tearing down the connection
-- [ ] treat a vanished mapping (producer died) as an ordinary failure, not an exception path
-- [ ] write tests for each rejection: short view, `stride < width*4`, slot out of range, negative and
+- [x] return a typed failure rather than throwing for every rejection, so the control server answers
+      `{"ok":false,...}` instead of tearing down the connection — `ShmFrameError` grew eleven
+      reader-only cases, and `ShmFrameReader.Describe` gives each a one-line reply string
+- [x] treat a vanished mapping (producer died) as an ordinary failure, not an exception path
+- [x] write tests for each rejection: short view, `stride < width*4`, slot out of range, negative and
       overflowing dimensions, name outside the allowed prefix, nonexistent mapping
-- [ ] write a test for the success case reading known bytes out of a real `MemoryMappedFile`
-- [ ] run tests — must pass before Task 4
+- [x] write a test for the success case reading known bytes out of a real `MemoryMappedFile`
+- [x] run tests — must pass before Task 4 — 414 pass (203 Pty, 211 Core); `dotnet format` reports
+      nothing on the touched files
+- ➕ **the reader validates three things the task list did not name**, all of them because the
+      alternative is worse than a rejection: `format` must be `132` or `32`, since every stride and
+      size bound assumes 4 bytes per pixel and `Rgb = 24` would leave them a third too large;
+      a non-zero `width`/`height`/`stride`/`format` in the args must match the slot descriptor,
+      because a disagreement means one of the producer's two statements is stale and guessing which
+      is worse than saying so; and `seq` may not exceed the header's `ready`, so the reader never
+      copies a slot the producer's release fence has not covered. All three are now in the spec.
+- ➕ **the mapping is opened per call, not cached.** A producer may tear down and recreate a mapping
+      under the same name between frames, and a cached handle would keep the dead section alive and
+      read it forever. The open is a syscall; the copy is megabytes.
+- ⚠️ **`ShmFrameError.ShortView` is unreachable through the open path.** Windows rounds a section up
+      to a page, so `MemoryMappedFile.CreateNew(name, 64)` yields a 4096-byte view. The guard still
+      has to hold — it is what makes the 256-byte header read in-bounds — so its test drives the
+      internal `TryReadFrame(view, …)` overload with a deliberately narrowed view. Two other tests
+      were rewritten around the same rounding: a slot that overruns the view now sits a megabyte
+      in, well past any page granularity.
+- ➕ spec: `docs/specs/image-frameshm.md` gained a "Validation the reader applies" table listing
+      every rejection and its reason, the name's exact character set and case-sensitivity, and the
+      `ready`-before-request producer obligation.
 
 ### Task 4: Wire `image.frameshm` into the control server
 

@@ -68,6 +68,10 @@ the reader: it keeps a request from naming an arbitrary pre-existing kernel obje
 rejected with `{"ok":false,...}` — this is a validation error, not a bug, so use the prefix above
 verbatim.
 
+The prefix match is **case-sensitive and literal** (`local\…` is rejected), and what follows it
+must be 1..128 characters drawn from `[A-Za-z0-9._-]`. The character set is what enforces the
+namespace: with no backslash available, a suffix cannot walk back out of `Local\`.
+
 ### Publishing a frame
 
 1. Pick the slot for the frame's sequence number: `slot = seq % slotCount`. Sequences start at `1`;
@@ -103,6 +107,39 @@ These are normative. Two slots are sufficient **only** because of the first one.
 - **Bump `seq` on every published frame, monotonically.** The terminal skips re-transmitting a slot
   whose `(id, seq)` matches the last one it accepted, so a repeated `seq` means "nothing changed,
   just re-place it".
+- **Store `ready` before sending the request, never after.** A request whose `seq` is greater than
+  the header's `ready` names a frame the producer has not published, and is rejected — the reader
+  will not copy a slot the release fence has not covered. Send `seq: 0` (or omit it) to mean "read
+  whatever is in this slot", which skips that check.
+
+## Validation the reader applies
+
+Every one of these answers `{"ok":false,...}` and leaves the session untouched. None of them is an
+error condition for the terminal; they are all ordinary input from another process.
+
+| rejected when | why |
+|---|---|
+| `name` outside `Local\agwinterm-frame-` or using characters outside `[A-Za-z0-9._-]` | naming an arbitrary kernel object |
+| the mapping does not exist | the producer exited — expected, not exceptional |
+| view shorter than 256 bytes, bad `magic`, `version != 1`, `slotCount` outside 2..8 | not this layout |
+| `pixelOffset < 256`, non-positive `slotStride` | offsets that overlap the header or overflow |
+| `slot` outside `0..slotCount-1` | out of range |
+| `width` or `height` outside `1..16384` | non-positive, or larger than any real display |
+| `stride < width * 4` | rows would read into each other |
+| `height * stride > slotStride` | slots would overlap |
+| the slot's byte range is not entirely inside the mapped view | the mapping is smaller than the header claims |
+| `format` is not `132` or `32` | see below |
+| `width`/`height`/`stride`/`format` in the args disagree with the slot descriptor | one of the two is stale; guessing which is worse than saying so |
+| `seq` greater than the header's `ready` | the frame has not been published |
+
+Note the format restriction: only the **4-bytes-per-pixel** formats are carried, `132` (`Bgra`) and
+`32` (`Rgba`). `24` (`Rgb`) and `100` (`Png`) are valid `KittyFormat` values but not valid here —
+every stride and size bound above assumes 4 bpp. Send PNG through `image.frame`, which is the path
+built for it.
+
+A non-zero `width`, `height`, `stride` or `format` in the args must match the slot descriptor; zero
+means "trust the descriptor". A producer that fills the args from the same variables it wrote into
+the header gets a free consistency check; one that would rather not repeat itself sends zeros.
 
 ## JSON args
 

@@ -24,6 +24,32 @@ public enum ShmFrameError
     BadPixelOffset,
     /// <summary>Slot stride is non-positive, or the slot array overflows a long.</summary>
     BadSlotStride,
+
+    // Below: rejections only <see cref="ShmFrameReader"/> can make, because they need the mapping
+    // name or the length of the actual mapped view rather than the header alone.
+
+    /// <summary>Name is outside the <see cref="ShmFrameReader.NamePrefix"/> namespace.</summary>
+    NameRejected,
+    /// <summary>No such mapping — normally a producer that exited.</summary>
+    MappingNotFound,
+    /// <summary>The mapping exists but could not be opened or viewed for reading.</summary>
+    MappingUnreadable,
+    /// <summary>Slot width or height is non-positive or above <see cref="ShmFrameReader.MaxDimension"/>.</summary>
+    BadDimensions,
+    /// <summary>Slot stride is below <c>width * 4</c>, so a row would read into the next row.</summary>
+    StrideTooSmall,
+    /// <summary><c>height * stride</c> exceeds the header's slot stride, so slots would overlap.</summary>
+    SlotOverflow,
+    /// <summary>The slot's byte range is not entirely inside the mapped view.</summary>
+    OutOfView,
+    /// <summary>Format is not one of the 4-bytes-per-pixel formats this transport carries.</summary>
+    UnsupportedFormat,
+    /// <summary>The tightly-packed frame exceeds <see cref="ShmFrameReader.MaxFrameBytes"/>.</summary>
+    FrameTooLarge,
+    /// <summary>The requested sequence is ahead of the header's published <c>ready</c>.</summary>
+    FrameNotPublished,
+    /// <summary>The request's geometry contradicts the slot descriptor's.</summary>
+    GeometryMismatch,
 }
 
 /// <summary>
