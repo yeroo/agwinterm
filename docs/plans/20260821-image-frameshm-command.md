@@ -212,23 +212,49 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 
 ### Task 4: Wire `image.frameshm` into the control server
 
-- [ ] add `"image.frameshm" => HandleImageFrameShm(s, args)` to the session-targeted dispatch in
+- [x] add `"image.frameshm" => HandleImageFrameShm(s, args)` to the session-targeted dispatch in
       `src/Agwinterm.Pty/ControlServer.cs`
-- [ ] implement `HandleImageFrameShm` mirroring `HandleImageFrame`'s two-phase structure: resolve
+- [x] implement `HandleImageFrameShm` mirroring `HandleImageFrame`'s two-phase structure: resolve
       placements and copy pixel bytes out of the mapping **off** the render lock, then take the
       brief lock for `ClearPlacements` and the placement/image swap
-- [ ] skip re-transmitting a slot whose `(id, seq)` matches what was last accepted, the shm analogue
+- [x] skip re-transmitting a slot whose `(id, seq)` matches what was last accepted, the shm analogue
       of `image.frame`'s content-signature cache
-- [ ] return the same result shape as `image.frame` (count, transmits, bytes read) so a caller can
+- [x] return the same result shape as `image.frame` (count, transmits, bytes read) so a caller can
       tell whether a frame actually moved
-- [ ] write tests for a single frame producing the expected `KittyImage` and `ImagePlacement`
-- [ ] write tests for the `(id, seq)` cache skipping a repeat and accepting a bumped seq
-- [ ] write tests for malformed args: missing `images`, missing `name`, a string where a number
+- [x] write tests for a single frame producing the expected `KittyImage` and `ImagePlacement`
+- [x] write tests for the `(id, seq)` cache skipping a repeat and accepting a bumped seq
+- [x] write tests for malformed args: missing `images`, missing `name`, a string where a number
       belongs, an id that is not an int
-- [ ] **write a test where the producer publishes frames faster than the consumer drains them** —
+- [x] **write a test where the producer publishes frames faster than the consumer drains them** —
       the case the two-slot scheme does not cover on its own. No test in revision 1 exercised a
       producer running ahead; every test was argument validation or cache behaviour. [triage: major]
-- [ ] run tests — must pass before Task 5
+- [x] run tests — must pass before Task 5 — 439 pass (228 Pty, 211 Core); `dotnet format` reports
+      no new findings on the touched files (the pre-existing `ControlServer.cs` ones only shift
+      by the seven lines added above them)
+
+- ➕ **a frame is all-or-nothing.** `HandleImageFrame` skips an image it cannot read and applies the
+      rest; `image.frameshm` cannot, because a producer's entries are frames of one composition and
+      showing entry 1 of 2 is a visible artefact, not a degraded mode. Any rejection returns before
+      phase 2, so the pane keeps the previous frame. Tested by
+      `ASecondImageFailingLeavesTheFirstUnapplied`. Now in the spec.
+- ➕ **numeric args are parsed by a local `TryNum`, not `GetInt`.** `GetInt` swallows a wrong type
+      into its default, and the outer `catch` turns a string where a number belongs into
+      `"requires an element of type 'Number'"` — which does not say *which* field was wrong. `TryNum`
+      names the field and distinguishes "not a number", "not whole" and "out of 32-bit range".
+- ➕ **the `(id, seq)` cache lives in its own `_shmState` table**, not in `_txState`. A file content
+      signature and a producer's frame counter are unrelated number spaces keyed by the same image
+      id, and letting them alias would make a signature collide with a sequence.
+- ➕ **`seq: 0` is never cached.** It means "read whatever is in the slot", which by definition
+      cannot be memoised; only a positive seq enters the cache.
+- ⚠️ **assert on the parsed `error` string, not on the raw reply.** `JsonSerializer` escapes an
+      apostrophe to `'`, so `Assert.Contains("'seq' must be…", resp)` fails against a reply
+      that does contain the message. The tests parse the JSON and read `error`.
+- ➕ the producer-running-ahead item is covered by three tests, since one number cannot say it:
+      `AProducerThatSerialisesOnTheReplyNeverLosesAFrame` (the obligation held — six frames over two
+      slots, all intact), `AProducerRunningAheadOnTwoSlotsSubstitutesANewerFrameRatherThanTearing`
+      (the obligation broken — the reply carries frame 3's whole pixels under frame 1's request,
+      which is substitution, not tearing) and
+      `AProducerRunningAheadWithEnoughSlotsDeliversEveryFrameIntact` (the prescribed fix).
 
 ### Task 5: Expose the verb on `agwintermctl`
 

@@ -23,6 +23,13 @@ public sealed class ControlServer : IDisposable
     // unchanged image can be re-placed (a=p) instead of re-transmitted (a=T) on every frame.
     private readonly ConditionalWeakTable<ISession, Dictionary<int, long>> _txState = new();
 
+    // Per-session record of the last publish sequence accepted for each image id on the
+    // shared-memory path. It is the `image.frameshm` analogue of _txState's content signature:
+    // a producer that re-sends the same (id, seq) is saying "nothing changed, just re-place it",
+    // so the megabyte copy is skipped. Kept separate from _txState because the two spaces are
+    // unrelated - a file signature and a producer's frame counter must never alias.
+    private readonly ConditionalWeakTable<ISession, Dictionary<int, long>> _shmState = new();
+
     public ControlServer(ISessionHost host, string pipeName = "agwinterm")
     {
         _host = host;
@@ -247,6 +254,7 @@ public sealed class ControlServer : IDisposable
                 "image.sixel" => HandleImageSixel(s, args),
                 "image.clear" => HandleImageClear(s),
                 "image.frame" => HandleImageFrame(s, args),
+                "image.frameshm" => HandleImageFrameShm(s, args),
                 _ => Err($"unknown command '{cmd}'"),
             };
         }
@@ -479,6 +487,126 @@ public sealed class ControlServer : IDisposable
         if (_perfLog is not null)
             Perf($"frame images={count} transmits={transmits} readKB={readBytes / 1024} lockMs={System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds:F2}");
         return Ok($"frame:{count}/{transmits}");
+    }
+
+    /// <summary>
+    /// Shared-memory sibling of <see cref="HandleImageFrame"/>. Pixels arrive through a producer's
+    /// named mapping instead of a file, so a browser-rate producer pays one memcpy per frame rather
+    /// than a PNG encode plus a disk round-trip. The structure is deliberately identical: phase 1
+    /// validates the args and copies every frame out of the mapping <b>off</b> the render lock,
+    /// phase 2 takes a brief lock for the placement swap only.
+    ///
+    /// Everything in the args comes from another process, so nothing is trusted and nothing throws:
+    /// a bad name, a dead producer, a slot that overruns the view all answer <c>{"ok":false,...}</c>
+    /// with the session left exactly as it was, because a rejected frame must not half-apply.
+    /// See <c>docs/specs/image-frameshm.md</c> for the normative contract.
+    /// </summary>
+    private string HandleImageFrameShm(ISession s, JsonElement args)
+    {
+        if (args.ValueKind != JsonValueKind.Object ||
+            !args.TryGetProperty("images", out var images) || images.ValueKind != JsonValueKind.Array)
+            return Err("image.frameshm requires args.images array");
+
+        var state = _shmState.GetOrCreateValue(s);
+
+        // Phase 1 (OFF the render lock): validate, then copy each changed frame out of its mapping.
+        // Nothing is applied yet - a failure anywhere below returns before phase 2 runs, so a
+        // rejected request never leaves the pane holding half a frame.
+        var ops = new List<(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh, ShmFrame? frame)>();
+        int count = 0, transmits = 0;
+        long readBytes = 0;
+        foreach (var img in images.EnumerateArray())
+        {
+            if (img.ValueKind != JsonValueKind.Object)
+                return Err("image.frameshm: each entry of images must be an object");
+
+            string? name = GetString(img, "name");
+            if (name is null) return Err("image.frameshm: each image requires a string 'name'");
+
+            string? bad = null;
+            if (!TryNum(img, "id", count + 1, out int id, ref bad) ||
+                !TryNum(img, "slot", 0, out int slot, ref bad) ||
+                !TryNum(img, "seq", 0, out long seq, ref bad) ||
+                !TryNum(img, "width", 0, out int width, ref bad) ||
+                !TryNum(img, "height", 0, out int height, ref bad) ||
+                !TryNum(img, "stride", 0, out int stride, ref bad) ||
+                !TryNum(img, "format", 0, out int format, ref bad) ||
+                !TryNum(img, "row", 0, out int row, ref bad) ||
+                !TryNum(img, "col", 0, out int col, ref bad) ||
+                !TryNum(img, "cols", 0, out int cols, ref bad) ||
+                !TryNum(img, "rows", 0, out int rows, ref bad) ||
+                !TryNum(img, "sx", 0, out int sx, ref bad) ||
+                !TryNum(img, "sy", 0, out int sy, ref bad) ||
+                !TryNum(img, "sw", 0, out int sw, ref bad) ||
+                !TryNum(img, "sh", 0, out int sh, ref bad))
+                return Err("image.frameshm: " + bad);
+
+            // The (id, seq) cache, the shm analogue of image.frame's content signature: a repeated
+            // seq means "nothing changed, just re-place it", and skipping it saves the whole copy.
+            // seq 0 is the producer's "read whatever is in the slot", which is never cacheable.
+            bool transmit;
+            lock (state) transmit = seq <= 0 || !(state.TryGetValue(id, out long prev) && prev == seq);
+
+            ShmFrame? frame = null;
+            if (transmit)
+            {
+                var request = new ShmFrameRequest(name, slot, seq, width, height, stride, format);
+                if (!ShmFrameReader.TryReadFrame(request, out frame, out var error))
+                    return Err("image.frameshm: " + ShmFrameReader.Describe(error));
+                if (seq > 0) lock (state) state[id] = seq;
+                transmits++;
+                readBytes += frame.Pixels.Length;
+            }
+            ops.Add((id, row, col, cols, rows, sx, sy, sw, sh, frame));
+            count++;
+        }
+
+        // Phase 2 (BRIEF lock): dictionary/list swaps only, exactly as image.frame does - the
+        // megabytes were already copied above, so the paint thread stalls for microseconds.
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        s.MutateLocked(em =>
+        {
+            em.ClearPlacements();
+            foreach (var op in ops)
+            {
+                if (op.frame is not null)
+                    em.SetImageData(op.id, (KittyFormat)op.frame.Format, op.frame.Width, op.frame.Height, op.frame.Pixels);
+                else if (!em.HasImage(op.id))
+                    continue; // cache said "unchanged" but nothing was ever transmitted -> nothing to place
+                em.PlaceImage(op.id, op.row, op.col, op.cols, op.rows, op.sx, op.sy, op.sw, op.sh);
+            }
+        });
+        if (_perfLog is not null)
+            Perf($"frameshm images={count} transmits={transmits} readKB={readBytes / 1024} lockMs={System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds:F2}");
+        return Ok($"frame:{count}/{transmits}");
+    }
+
+    /// <summary>
+    /// Reads an optional integer arg, rejecting a non-number rather than letting
+    /// <see cref="JsonElement.TryGetInt64"/> throw "requires an element of type 'Number'" from
+    /// somewhere the caller cannot tell which field was wrong. A missing key takes
+    /// <paramref name="def"/>; a string, a float or an out-of-range value sets
+    /// <paramref name="error"/> and returns false.
+    /// </summary>
+    private static bool TryNum(JsonElement el, string key, long def, out long value, ref string? error)
+    {
+        value = def;
+        if (!el.TryGetProperty(key, out var v)) return true;
+        if (v.ValueKind != JsonValueKind.Number)
+        { error = $"'{key}' must be a JSON number, not {v.ValueKind.ToString().ToLowerInvariant()}"; return false; }
+        if (!v.TryGetInt64(out long n)) { error = $"'{key}' must be a whole number"; return false; }
+        value = n;
+        return true;
+    }
+
+    /// <summary>32-bit <see cref="TryNum(JsonElement, string, long, out long, ref string?)"/>.</summary>
+    private static bool TryNum(JsonElement el, string key, int def, out int value, ref string? error)
+    {
+        value = def;
+        if (!TryNum(el, key, (long)def, out long n, ref error)) return false;
+        if (n < int.MinValue || n > int.MaxValue) { error = $"'{key}' is out of range for a 32-bit integer"; return false; }
+        value = (int)n;
+        return true;
     }
 
     private static readonly string? _perfLog = Environment.GetEnvironmentVariable("AGWINTERM_PERF");

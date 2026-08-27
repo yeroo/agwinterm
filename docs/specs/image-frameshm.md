@@ -179,9 +179,19 @@ an int into `cargs`.
 | `width`, `height`, `stride`, `format` | must agree with the slot descriptor; both are validated |
 | `row`, `col` | placement origin in cells |
 | `cols`, `rows` | placement size in cells; `0` means "natural size" |
+| `sx`, `sy`, `sw`, `sh` | optional source crop in pixels, same as `image.frame`; `0` means "the whole image" |
+
+Every field except `name` is optional. `id` defaults to the entry's 1-based position in `images`,
+and every other number defaults to `0`.
 
 The reply mirrors `image.frame`: `frame:<count>/<transmits>`, so a caller can tell whether a frame
-actually moved.
+actually moved. `transmits` counts the entries whose pixels were actually copied; the rest were
+served from the `(id, seq)` cache.
+
+**A frame is all-or-nothing.** If any entry in `images` is rejected — a bad number, a name outside
+the prefix, a slot that overruns the view — the whole request answers `{"ok":false,...}` and
+*nothing* is applied, not even the entries that validated. The pane keeps showing the previous
+frame rather than a half-updated one.
 
 ## Format
 
