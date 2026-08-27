@@ -12,11 +12,13 @@ PROMPT_FILE="${1:-}"
 NEW_LOG=""
 REPORT_JSON=""
 PROGRESS_LOG=""
+TASK_META_TMP=""
 
 cleanup() {
   [ -z "$NEW_LOG" ] || rm -f -- "$NEW_LOG"
   [ -z "$REPORT_JSON" ] || rm -f -- "$REPORT_JSON"
   [ -z "$PROGRESS_LOG" ] || rm -f -- "$PROGRESS_LOG"
+  [ -z "$TASK_META_TMP" ] || rm -f -- "$TASK_META_TMP"
 }
 trap cleanup EXIT
 
@@ -50,10 +52,12 @@ HARD_TIMEOUT="${RALPHEX_REVMUX_HARD_TIMEOUT:-40m}"
 GOAL="$(sed -n 's/^You are reviewing code changes for: //p' "$PROMPT_FILE" | head -1)"
 DIFF_INSTRUCTION="$(awk '/^Run this command to see the changes:$/ { getline; print; exit }' "$PROMPT_FILE")"
 PLAN_PATH="$(sed -n 's/^#   \(.*\) - path to the plan file being executed$/\1/p' "$PROMPT_FILE" | head -1)"
+DEFAULT_BRANCH="$(sed -n 's/^#   \(.*\) - default branch name$/\1/p' "$PROMPT_FILE" | head -1)"
 
 [ -n "$GOAL" ] || fail "could not extract goal from custom-review prompt"
 [ -n "$DIFF_INSTRUCTION" ] || fail "could not extract diff command from custom-review prompt"
 [ -n "$PLAN_PATH" ] || fail "could not extract plan path from custom-review prompt"
+[ -n "$DEFAULT_BRANCH" ] || fail "could not extract review base from custom-review prompt"
 
 normalize_plan_path() {
   local raw unix_path relative
@@ -106,13 +110,11 @@ SCOPE="$(pluck scope)" || fail "could not read scope path from revmux new"
 TASK_FILE="$(pluck task_file)" || fail "could not read task-file path from revmux new"
 [ -n "$SCOPE" ] || fail "revmux new returned an empty scope path"
 [ -n "$TASK_FILE" ] || fail "revmux new returned an empty task-file path"
-TASK_FILE_CREATED="$(printf '%s' "$PATHS_JSON" \
-  | jq -er '
-      if (.created | type) != "array" or any(.created[]; type != "string") then
-        error("created must be an array of strings")
-      else
-        (.created | index("task_file") != null) | tostring
-      end')" \
+printf '%s' "$PATHS_JSON" \
+  | jq -e '
+      (.created | type) == "array" and
+      all(.created[]; type == "string")
+    ' >/dev/null \
   || fail "revmux new returned an incompatible paths payload"
 
 {
@@ -125,27 +127,58 @@ TASK_FILE_CREATED="$(printf '%s' "$PATHS_JSON" \
   printf '%s\n' '- Ignore generated .ralphex/progress and .revmux/tasks artifacts.'
 } > "$SCOPE" || fail "could not write scope"
 
-TASK_FILE_IS_TEMPLATE=false
-if [ -f "$TASK_FILE" ] \
-   && grep -Eq '^# description:' "$TASK_FILE" \
-   && grep -Eq '^# branch:' "$TASK_FILE" \
-   && grep -Eq '^# base:' "$TASK_FILE" \
-   && ! grep -Eq '^(description|branch|base):' "$TASK_FILE"; then
-  TASK_FILE_IS_TEMPLATE=true
-fi
 [ -f "$TASK_FILE" ] || fail "revmux task file does not exist: $TASK_FILE"
 
-if [ "$TASK_FILE_CREATED" = "true" ] || [ "$TASK_FILE_IS_TEMPLATE" = "true" ]; then
-  BRANCH="$(git branch --show-current 2>/dev/null || true)"
-  DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
-  [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="main"
-  {
-    printf '%s\n' '---'
-    printf 'description: Ralphex review loop for %s\n' "$PLAN_REL"
-    printf 'branch: %s\n' "$BRANCH"
-    printf 'base: %s\n' "$DEFAULT_BRANCH"
-    printf '%s\n' '---' '' "- Plan: $PLAN_REL"
-  } > "$TASK_FILE" || fail "could not initialize revmux task metadata"
+BRANCH="$(git branch --show-current 2>/dev/null || true)"
+if [ -z "$BRANCH" ]; then
+  BRANCH="detached-$(git rev-parse --short HEAD 2>/dev/null)" \
+    || fail "could not identify detached review checkout"
+fi
+
+yaml_quote() {
+  printf '%s' "$1" | jq -Rs .
+}
+
+DESCRIPTION_YAML="$(yaml_quote "Ralphex review loop for $PLAN_REL")" \
+  || fail "could not encode task description"
+BRANCH_YAML="$(yaml_quote "$BRANCH")" || fail "could not encode task branch"
+BASE_YAML="$(yaml_quote "$DEFAULT_BRANCH")" || fail "could not encode task base"
+TASK_META_TMP="$(mktemp)" || fail "could not allocate task metadata file"
+
+# Revmux creates a commented template, but task.md belongs to the user after
+# that. Insert only missing active keys inside its front matter; never truncate
+# a URL, notes, or other metadata added between review rounds.
+if ! DESCRIPTION_LINE="description: $DESCRIPTION_YAML" \
+     BRANCH_LINE="branch: $BRANCH_YAML" \
+     BASE_LINE="base: $BASE_YAML" \
+     awk '
+       NR == 1 {
+         if ($0 != "---") exit 41
+         in_front = 1
+         print
+         next
+       }
+       in_front && $0 == "---" {
+         if (!description) print ENVIRON["DESCRIPTION_LINE"]
+         if (!branch) print ENVIRON["BRANCH_LINE"]
+         if (!base) print ENVIRON["BASE_LINE"]
+         in_front = 0
+         closed = 1
+         print
+         next
+       }
+       in_front && /^description:[[:space:]]*/ { description = 1 }
+       in_front && /^branch:[[:space:]]*/ { branch = 1 }
+       in_front && /^base:[[:space:]]*/ { base = 1 }
+       { print }
+       END { if (!closed) exit 42 }
+     ' "$TASK_FILE" > "$TASK_META_TMP"; then
+  fail "revmux task file has incompatible front matter: $TASK_FILE"
+fi
+if ! cmp -s -- "$TASK_FILE" "$TASK_META_TMP"; then
+  mv -f -- "$TASK_META_TMP" "$TASK_FILE" \
+    || fail "could not initialize revmux task metadata"
+  TASK_META_TMP=""
 fi
 
 printf 'ralphex-revmux: running revmux (profile=%s, task=%s, run=%s)\n' \

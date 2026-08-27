@@ -17,10 +17,10 @@ executor =
 external_review_tool = custom
 
 # Ralphex 1.6.1 launches this value directly, so a .cmd or .sh file cannot be
-# the entry point on Windows. Git Bash is the native executable; the tracked
-# custom_review.txt is a safe shell wrapper that hands itself to the bridge.
-# Adjust this path if Git for Windows was installed outside its default location.
-custom_review_script = C:\Program Files\Git\bin\bash.exe
+# the entry point on Windows. Build the small native launcher once; it resolves
+# Git Bash from PATH, standard system/per-user installs, or RALPHEX_GIT_BASH:
+#   go build -o "$(go env GOPATH)\bin\ralphex-revmux.exe" .\tools\ralphex-revmux-launcher.go
+custom_review_script = ralphex-revmux.exe
 
 # ---- convergence -------------------------------------------------------------
 # The point of these: an unbounded review loop is how a run quietly spends a day's

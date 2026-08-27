@@ -1,7 +1,7 @@
 @echo off
 REM Windows entry point for the ralphex -> revmux review bridge.
 REM Ralphex 1.6.1 cannot execute a .cmd directly, so project configuration uses
-REM Git Bash plus a shell-safe prompt. This remains a convenient manual wrapper.
+REM the native Go launcher. This remains a convenient manual wrapper.
 REM %~dp0 is this file's directory, so the pair stays relocatable.
 setlocal
 set "BASH=%ProgramFiles%\Git\bin\bash.exe"
