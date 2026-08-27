@@ -233,30 +233,8 @@ internal partial class Program
             finally { gdi.UnlockBits(data); }
         }
 
-        return (ToPremultipliedBgra(img), img.Width, img.Height);
-    }
-
-    private static byte[] ToPremultipliedBgra(KittyImage img)
-    {
-        var d = img.Data;
-        var outb = new byte[img.Width * img.Height * 4];
-        if (img.Format == KittyFormat.Rgba)
-        {
-            for (int i = 0, j = 0; i + 3 < d.Length && j + 3 < outb.Length; i += 4, j += 4)
-            {
-                byte r = d[i], g = d[i + 1], b = d[i + 2], a = d[i + 3];
-                outb[j] = (byte)(b * a / 255); outb[j + 1] = (byte)(g * a / 255);
-                outb[j + 2] = (byte)(r * a / 255); outb[j + 3] = a;
-            }
-        }
-        else // Rgb: opaque
-        {
-            for (int i = 0, j = 0; i + 2 < d.Length && j + 3 < outb.Length; i += 3, j += 4)
-            {
-                outb[j] = d[i + 2]; outb[j + 1] = d[i + 1]; outb[j + 2] = d[i]; outb[j + 3] = 255;
-            }
-        }
-        return outb;
+        // Raw pixels: KittyPixels picks the swizzle (Rgb/Rgba) or no-swizzle (Bgra) route.
+        return (KittyPixels.ToPremultipliedBgra(img), img.Width, img.Height);
     }
 
     /// <summary>Dispose the device-bound render target + textures and rebuild them (after a device/GPU reset).</summary>

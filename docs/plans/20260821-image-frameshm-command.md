@@ -146,16 +146,31 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 
 ### Task 2: Add BGRA as an internal pixel format
 
-- [ ] add `Bgra` to `KittyFormat` in `src/Agwinterm.Core/KittyGraphics.cs` with a value **outside**
+- [x] add `Bgra` to `KittyFormat` in `src/Agwinterm.Core/KittyGraphics.cs` with a value **outside**
       the Kitty wire range (24/32/100 are the protocol's; pick e.g. 132) so it can never be produced
-      by parsing a real APC sequence
-- [ ] document in the enum why it exists: Direct2D wants `B8G8R8A8_UNORM` and Electron hands out
+      by parsing a real APC sequence — `Bgra = 132`, as the spec already committed to
+- [x] document in the enum why it exists: Direct2D wants `B8G8R8A8_UNORM` and Electron hands out
       BGRA, so carrying BGRA end to end removes a full-frame channel swizzle per frame
-- [ ] handle the new format in the renderer's texture upload path, taking the no-swizzle route
-- [ ] verify the emulator's APC parser cannot yield the new value — add a guard if it can
-- [ ] write tests for the renderer path selecting no-swizzle for `Bgra` and swizzle for `Rgba`
-- [ ] write a test asserting a crafted APC sequence declaring `f=132` does not produce `Bgra`
-- [ ] run tests — must pass before Task 3
+- [x] handle the new format in the renderer's texture upload path, taking the no-swizzle route
+- [x] verify the emulator's APC parser cannot yield the new value — add a guard if it can
+      — ⚠️ **it could, in both cores.** `TerminalEmulator.FinalizeKittyImage` cast `f=` straight to
+      the enum (`(KittyFormat)GetKittyInt(keys, "f", 32)`) and `finalize_kitty_image` stored the raw
+      int, so terminal output saying `f=132` minted `Bgra` and would have rendered RGBA bytes down
+      the no-swizzle path with red and blue exchanged. Both now clamp to the wire range via
+      `KittyFormats.ParseWireFormat` / `parse_wire_format`, falling back to `Rgba`.
+- [x] write tests for the renderer path selecting no-swizzle for `Bgra` and swizzle for `Rgba`
+- [x] write a test asserting a crafted APC sequence declaring `f=132` does not produce `Bgra`
+- [x] run tests — must pass before Task 3 — 369 pass (211 Core, 158 Pty); `dotnet format` and
+      `cargo clippy` report nothing new on the touched files
+- ➕ **scope note:** the conversion moved from the renderer into
+      `src/Agwinterm.Core/KittyPixels.cs`. `ToPremultipliedBgra` was a private static in
+      `Agwinterm.Win32/Program.Render.cs`, and that project is in no test project, so the
+      format-selection branch this task adds would have been untestable where it lived.
+      `Program.Render.cs` now calls `KittyPixels.ToPremultipliedBgra`; the PNG arm stays in the
+      renderer, since decoding it needs an imaging stack.
+- ➕ spec: `docs/specs/image-frameshm.md`'s Format section now states that BGRA alpha is
+      **straight, not premultiplied** (agwinterm premultiplies on upload, as it does for `Rgba`),
+      and names the two clamp functions. The spec was silent on alpha, which a producer must know.
 
 ### Task 3: Open and validate a producer's mapping safely
 

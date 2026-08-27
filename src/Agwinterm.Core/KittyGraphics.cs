@@ -6,6 +6,42 @@ public enum KittyFormat
     Rgb = 24,
     Rgba = 32,
     Png = 100,
+
+    /// <summary>
+    /// Raw BGRA8, straight (non-premultiplied) alpha. Not a Kitty wire format: the protocol
+    /// defines only 24/32/100, so this value sits deliberately outside that range and can never
+    /// be produced by parsing an APC sequence (<see cref="KittyFormats.ParseWireFormat"/> gates
+    /// both parsers). It exists because the pixels arriving through <c>image.frameshm</c> are
+    /// already BGRA at both ends of the pipe - Chromium's <c>paint</c> callback hands out BGRA
+    /// and Direct2D wants <c>B8G8R8A8_UNORM</c> - so carrying BGRA end to end removes a
+    /// full-frame channel swizzle per frame, which at 1920x1080x30fps is not free.
+    /// </summary>
+    Bgra = 132,
+}
+
+/// <summary>Format helpers shared by the APC parsers and the renderer's upload path.</summary>
+public static class KittyFormats
+{
+    /// <summary>
+    /// True only for the three formats the Kitty graphics protocol can carry on the wire.
+    /// The APC parsers take <c>f=</c> from untrusted terminal output, so anything else - including
+    /// the host-only <see cref="KittyFormat.Bgra"/> - must not be reachable that way.
+    /// </summary>
+    public static bool IsWireFormat(int f) => f is 24 or 32 or 100;
+
+    /// <summary>
+    /// Map an APC <c>f=</c> value to a format, falling back to <see cref="KittyFormat.Rgba"/>
+    /// (the protocol default) for anything outside the wire range.
+    /// </summary>
+    public static KittyFormat ParseWireFormat(int f)
+        => IsWireFormat(f) ? (KittyFormat)f : KittyFormat.Rgba;
+
+    /// <summary>
+    /// True when converting this format to the renderer's BGRA target has to swap the red and
+    /// blue channels. <see cref="KittyFormat.Bgra"/> is already in target order, so it takes the
+    /// no-swizzle route.
+    /// </summary>
+    public static bool NeedsChannelSwap(KittyFormat format) => format != KittyFormat.Bgra;
 }
 
 /// <summary>

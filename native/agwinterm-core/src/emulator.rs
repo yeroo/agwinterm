@@ -1198,6 +1198,18 @@ fn parse_kitty_keys(control: &str) -> HashMap<String, String> {
     d
 }
 
+/// Clamp an APC `f=` value to the three formats the Kitty protocol can carry on the wire
+/// (24 RGB / 32 RGBA / 100 PNG), falling back to RGBA. `f=` is untrusted terminal output, and
+/// the host-only `KittyFormat.Bgra` (132) must not be reachable from it: it would send the
+/// renderer down the no-swizzle upload path with RGBA bytes. Mirrors C#
+/// `KittyFormats.ParseWireFormat`.
+fn parse_wire_format(f: i32) -> i32 {
+    match f {
+        24 | 32 | 100 => f,
+        _ => 32,
+    }
+}
+
 fn kitty_int(d: &HashMap<String, String>, key: &str, def: i32) -> i32 {
     d.get(key).and_then(|v| v.parse::<i32>().ok()).unwrap_or(def)
 }
@@ -1243,7 +1255,7 @@ impl Emulator {
         let b64 = core::mem::take(&mut self.kitty_chunks);
 
         let id = kitty_int(&keys, "i", 0);
-        let format = kitty_int(&keys, "f", 32);
+        let format = parse_wire_format(kitty_int(&keys, "f", 32));
         let w = kitty_int(&keys, "s", 0);
         let h = kitty_int(&keys, "v", 0);
         let action = keys.get("a").map(String::as_str).unwrap_or("t");

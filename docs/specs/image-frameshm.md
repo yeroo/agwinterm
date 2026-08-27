@@ -150,7 +150,14 @@ actually moved.
 
 BGRA end to end (`KittyFormat.Bgra = 132`). Chromium's `paint` hands out BGRA and Direct2D wants
 `B8G8R8A8_UNORM`, so a swizzle at either end would be pure loss. `132` sits outside the Kitty wire
-range (24/32/100), so it can never be produced by parsing a real APC graphics sequence.
+range (24/32/100), and both APC parsers clamp `f=` to that range
+(`KittyFormats.ParseWireFormat`, and `parse_wire_format` in `native/agwinterm-core/src/emulator.rs`),
+so the value can never be produced by parsing a real graphics sequence — only a host path such as
+this verb can mint it.
+
+**Alpha is straight, not premultiplied.** Byte order within a pixel is `B, G, R, A`, and the colour
+channels are *not* scaled by alpha; agwinterm premultiplies during upload, exactly as it does for
+`KittyFormat.Rgba`. A producer with no transparency writes `A = 255` and need not think about it.
 
 ## Why copy at all
 

@@ -537,7 +537,10 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         _kittyKeys = null;
 
         int id = GetKittyInt(keys, "i", 0);
-        var format = (KittyFormat)GetKittyInt(keys, "f", 32);
+        // f= arrives from untrusted terminal output; clamp it to the three wire formats so a
+        // crafted "f=132" cannot mint the host-only KittyFormat.Bgra and send the renderer down
+        // the no-swizzle path with RGBA bytes.
+        var format = KittyFormats.ParseWireFormat(GetKittyInt(keys, "f", 32));
         int w = GetKittyInt(keys, "s", 0);
         int h = GetKittyInt(keys, "v", 0);
         string action = keys.TryGetValue("a", out var a) ? a : "t";

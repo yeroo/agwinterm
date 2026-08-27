@@ -344,6 +344,33 @@ public class RustEmulatorCoreTests
     }
 
     [Fact]
+    public void Adapter_CraftedApcF132_DoesNotProduceBgra()
+    {
+        if (!Available) return;
+        // Both cores clamp an APC f= to the Kitty wire range, so terminal output cannot name the
+        // host-only KittyFormat.Bgra and send the renderer down the no-swizzle path with RGBA
+        // bytes. The two must agree, or `emulator-core = rust` changes what a sequence means.
+        const string esc = "";
+        var bytes = System.Text.Encoding.ASCII.GetBytes($"{esc}_Ga=T,i=11,f=132,s=1,v=1;AAECAw=={esc}\\");
+        var cs = new TerminalEmulator(10, 4);
+        using var rust = new RustTerminalCore(10, 4);
+        cs.Feed(bytes); rust.Feed(bytes);
+        Assert.Equal(KittyFormat.Rgba, cs.Images[11].Format);
+        Assert.Equal(KittyFormat.Rgba, rust.Images[11].Format);
+    }
+
+    [Fact]
+    public void Adapter_BgraFromTheHostApi_SurvivesTheRoundTrip()
+    {
+        if (!Available) return;
+        // The clamp is on the parser only: image.frameshm sets BGRA through the host API and the
+        // format must come back out of the core unchanged.
+        using var rust = new RustTerminalCore(10, 4);
+        rust.SetImageData(9, KittyFormat.Bgra, 1, 1, new byte[] { 1, 2, 3, 255 });
+        Assert.Equal(KittyFormat.Bgra, rust.Images[9].Format);
+    }
+
+    [Fact]
     public void Adapter_ScrollbackMax_ReachesTheCore()
     {
         if (!Available) return;
