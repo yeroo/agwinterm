@@ -3,20 +3,24 @@
 # Deliberately minimal. Precedence is CLI flags > this file > ~/.config/ralphex/
 # > embedded defaults, so every key set here SHADOWS the global config —
 # including ones copied in by `ralphex --init` that you never meant to pin. Only
-# the two lines below are this project's own decision; everything else is left
+# the lines below are this project's own decision; everything else is left
 # to inherit. (This file WAS the full commented template, which meant the hook
 # beside it had never once been reached.)
 
+# An inherited `executor = codex` disables external review in ralphex 1.6.1.
+# An explicitly empty value selects the default Claude executor and keeps the
+# custom revmux gate enabled.
+executor =
+
 # revmux is this project's review harness, so ralphex's external review phase is
-# delegated to it rather than to codex directly. See tools\ralphex-revmux.cmd,
-# which is the spelling below and the only one that runs.
+# delegated to it rather than to codex directly.
 external_review_tool = custom
 
-# MUST use backslashes. ralphex runs this with exec.Command(script, promptFile),
-# and for a .cmd that goes through cmd.exe, which reads a leading "/" as a switch
-# prefix: "./tools/..." fails with "'.' is not recognized as an internal or
-# external command" and takes the whole review phase down with it.
-custom_review_script = .\tools\ralphex-revmux.cmd
+# Ralphex 1.6.1 launches this value directly, so a .cmd or .sh file cannot be
+# the entry point on Windows. Git Bash is the native executable; the tracked
+# custom_review.txt is a safe shell wrapper that hands itself to the bridge.
+# Adjust this path if Git for Windows was installed outside its default location.
+custom_review_script = C:\Program Files\Git\bin\bash.exe
 
 # ---- convergence -------------------------------------------------------------
 # The point of these: an unbounded review loop is how a run quietly spends a day's

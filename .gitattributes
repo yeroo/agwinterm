@@ -8,6 +8,8 @@
 *.cmd text eol=crlf
 *.bat text eol=crlf
 
-# ralphex reads this as key = value; a CRLF checkout would carry the CR into
-# the value, so custom_review_script would name a path ending in \r.
+# Keep the project-local automation configuration stable across checkouts and
+# easy to compare with its generated defaults.
 .ralphex/config text eol=lf
+.ralphex/prompts/*.txt text eol=lf
+.revmux/*.md text eol=lf
