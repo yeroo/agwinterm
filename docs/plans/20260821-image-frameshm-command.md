@@ -36,11 +36,21 @@ Revision 1 had one. The triage panel found two more, and correctly separated the
 | task | what | consumer impact if absent |
 |---|---|---|
 | 1–6 | `image.frameshm` | **none.** winterm-browser's Tasks 1–10 have zero dependency on this plan; the file-based `image.frame` already ships every capability its milestone needs. This is an optimisation with a self-guarding precondition and an automatic fallback. |
-| **6b** | **cell pixel metrics** | **blocking.** The consumer has no other source, and its own fallback is a hardcoded `(16, 32)` guess that silently produces wrong click targets. |
+| **6b** | **cell pixel metrics** | ~~blocking~~ → **degrades**, see below. The consumer has no other source, but a wrong-but-consistent guess costs sharpness, not correctness. |
 | 6c | `?1016` SGR-Pixels mouse | degrades. The browser works with pointer resolution quantised to one character cell. |
 
 That ordering is worth holding onto: the piece that looked like the critical path is the one nothing
 waits on, and the blocking piece was not in the plan at all.
+
+**Correction (winterm-browser Task 6, 2026-08-21).** 6b is no longer blocking, and the reason
+revision 2 thought it was — "a hardcoded `(16, 32)` guess silently produces wrong click targets" —
+is wrong as argued. The consumer derives *both* the canvas size (`engine/mod.rs:43-55`) and the
+pointer position (`mouse_position_px`) from the same cell size, so a click on a cell lands in that
+cell at any scale. A wrong scale costs a resampled image (`Program.Render.cs:77-87` draws the
+placement into `Cols * cw` with linear interpolation) and a mis-sized CSS viewport. What *would*
+move click targets is the two consumers disagreeing, which was a defect in the consumer and is
+fixed there. 6b is now an upgrade from "works, resampled" to "works, sharp", and the consumer has
+shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use meanwhile.
 
 ## Context (from discovery)
 
@@ -225,17 +235,49 @@ them into the emulator as `CellPixelWidth`/`CellPixelHeight` (`ITerminalCore.cs:
 `TerminalEmulator.cs:479`), and they are used for sixel cell-span at `TerminalEmulator.cs:502`. They
 are simply not published.
 
-- [ ] choose one: add `CSI 16 t` (and probably `14t`/`18t`) to `csi_dispatch`, or add cell metrics to
+- [x] choose one: add `CSI 16 t` (and probably `14t`/`18t`) to `csi_dispatch`, or add cell metrics to
       a control-pipe response. XTWINOPS is the standard answer and costs the consumer nothing to
       adopt, since `pixel-core` already queries it at `terminal.rs:880`; a control verb is easier to
       version. Record the reasoning either way.
-- [ ] implement the chosen mechanism, reading the live `_cellW`/`_cellH`, not a constant
+      — **Chosen by the consumer: a control verb, `session.metrics`.** winterm-browser's Task 6
+      settled this and recorded the reasoning in
+      `C:\Users\boris\source\winterm-browser\docs\design\04-cell-metrics.md`. Three reasons, all
+      specific to that consumer: it builds a control-pipe client for the frame path anyway, so one
+      more verb is a method rather than a mechanism; its Windows console backend reads input on a
+      reader thread through an inbox, and layering a second deadline-bounded write-then-read-the-
+      reply parse on that (for a value wanted at construction *and* on every resize) is the part
+      most likely to fail intermittently; and one round trip answers `cols`, `rows`, the cell size
+      **and** the pane's pixel box, where `GetConsoleScreenBufferInfo` gives cells only and nothing
+      gives the pixel box. This is not an argument against also adding XTWINOPS — it would help
+      every other client — only that this consumer neither needs it nor should be blocked on it.
+- [ ] implement the chosen mechanism, reading the live `_cellW`/`_cellH`, not a constant.
+      **The wire shape the consumer already codes against** (`pixel-core/src/agwinterm.rs`,
+      `ControlClient::pane_metrics`):
+      request `{"cmd":"session.metrics","target":"<pane id>"}`, reply via `OkRaw` — the way `tree`
+      and `window.state` answer, not `Ok` —
+      `{"ok":true,"result":{"cols":132,"rows":37,"cellWidth":9,"cellHeight":19,"widthPx":1188,"heightPx":703}}`.
+      camelCase, matching `window.state`'s `sidebarVisible`. `cellWidth`/`cellHeight` are the live
+      values in device pixels and are the only two fields that matter; the consumer reads a reply
+      missing either, or with either zero, as "no metrics" rather than as an error, and reads
+      `unknown command 'session.metrics'` as a capability gap it latches and stops asking about.
+      `cols`/`rows`/`widthPx`/`heightPx` are optional and default to zero.
 - [ ] note that `Agwinterm.App/MainWindow.xaml.cs` is **dead code** — absent from `Agwinterm.slnx`.
       The live values are in `Agwinterm.Win32`. Do not implement against the dead project.
 - [ ] write tests for the response carrying the live metrics, and for it tracking a font-size change
 - [ ] if XTWINOPS: write tests that the new `t` arm does not swallow sequences previously `Unhandled`
 - [ ] document the mechanism in `docs/specs/image-frameshm.md` or its own spec, and tell
       winterm-browser's Task 6, which is where it is consumed
+      — ➕ the telling has already happened in the other direction: winterm-browser's Task 6 shipped
+      the client, fixed the wire shape above, and recorded it in its own
+      `docs/design/04-cell-metrics.md`. What is left here is agwinterm's own spec page.
+      ⚠️ **The consumer is no longer blocked.** Its Task 6 established that a wrong-but-*consistent*
+      cell size does not move click targets — the canvas (`engine/mod.rs:43-55`) and the pointer
+      (`mouse_position_px`) are both derived from the same number, so a click on a cell lands in
+      that cell whatever the scale. What it costs is resolution (agwinterm resamples the placement
+      with `BitmapInterpolationMode.Linear` at `Program.Render.cs:77-87`) and a mis-sized CSS
+      viewport. The consumer therefore ships with `TERMINAL_BROWSER_CELL_PX` as an explicit
+      override and a logged fallback, and this task upgrades it from "works, resampled" to "works,
+      sharp" rather than unblocking it.
 - [ ] run tests — must pass before Task 7
 
 ### Task 6c: `?1016` SGR-Pixels mouse — optional, lifts a product ceiling
