@@ -33,96 +33,17 @@ public class ControlServerFrameShmTests : IDisposable
         return (new ControlServer(session), session);
     }
 
-    /// <summary>
-    /// A minimal in-process stand-in for a real producer: it owns a mapping, writes whole frames
-    /// into the slot the sequence names, and publishes with the release store the spec requires.
-    /// Nothing here is production code — it exists so the tests exercise the same bytes a
-    /// Chromium-side producer would write.
-    /// </summary>
-    private sealed class Producer : IDisposable
-    {
-        private readonly MemoryMappedFile _mmf;
-        private readonly MemoryMappedViewAccessor _view;
-        private readonly int _slotCount;
-        private long _seq;
-
-        public string Name { get; }
-        public int SlotCount => _slotCount;
-        public long Seq => _seq;
-        public int Slot => ShmFrameLayout.SlotForSequence(_seq, _slotCount);
-
-        public Producer(int slotCount = 2, int width = Width, int height = Height, int stride = Stride)
-        {
-            _slotCount = slotCount;
-            Name = ShmFrameReader.NamePrefix + "ctl-" + Guid.NewGuid().ToString("N");
-
-            long slotStride = (long)height * stride;
-            long size = ShmFrameLayout.HeaderSize + slotStride * slotCount;
-            _mmf = MemoryMappedFile.CreateNew(Name, size);
-            _view = _mmf.CreateViewAccessor(0, size, MemoryMappedFileAccess.ReadWrite);
-
-            var header = new ShmFrameHeader(
-                ShmFrameLayout.Version, slotCount, Flags: 0, slotStride,
-                ShmFrameLayout.HeaderSize, Ready: 0,
-                Enumerable.Range(0, slotCount)
-                    .Select(_ => new ShmSlotDescriptor(width, height, stride, (int)KittyFormat.Bgra))
-                    .ToArray());
-            var bytes = new byte[ShmFrameLayout.HeaderSize];
-            ShmFrameLayout.Write(bytes, header);
-            _view.WriteArray(0, bytes, 0, bytes.Length);
-
-            Geometry = (width, height, stride);
-        }
-
-        public (int Width, int Height, int Stride) Geometry { get; }
-
-        /// <summary>
-        /// Fills the next sequence's slot with <see cref="Frame"/>'s pattern and publishes it,
-        /// returning the sequence number. Fill first, release fence, then store `ready` — the
-        /// order the spec makes normative.
-        /// </summary>
-        public long Publish(byte tag)
-        {
-            long seq = _seq + 1;
-            int slot = ShmFrameLayout.SlotForSequence(seq, _slotCount);
-            var (w, h, stride) = Geometry;
-            byte[] pixels = Frame(tag, w, h, stride);
-            _view.WriteArray(ShmFrameLayout.HeaderSize + slot * (long)h * stride, pixels, 0, pixels.Length);
-
-            var ready = new byte[ShmFrameLayout.HeaderSize];
-            _view.ReadArray(0, ready, 0, ready.Length);
-            ShmFrameLayout.WriteReadyRelease(ready, seq);
-            _view.WriteArray(0, ready, 0, ready.Length);
-            _seq = seq;
-            return seq;
-        }
-
-        public void Dispose() { _view.Dispose(); _mmf.Dispose(); }
-    }
-
     /// <summary>Padded BGRA whose every pixel carries the frame's tag, so a copy is identifiable.</summary>
     private static byte[] Frame(byte tag, int width = Width, int height = Height, int stride = Stride)
-    {
-        var buf = new byte[height * stride];
-        for (int y = 0; y < height; y++)
-            for (int x = 0; x < width; x++)
-            {
-                int p = y * stride + x * 4;
-                buf[p] = (byte)x;        // B
-                buf[p + 1] = (byte)y;    // G
-                buf[p + 2] = tag;        // R — the frame identity
-                buf[p + 3] = 255;        // A
-            }
-        return buf;
-    }
+        => ShmTestProducer.Frame(tag, width, height, stride);
 
     /// <summary>The tightly-packed bytes the reader is expected to hand the emulator.</summary>
     private static byte[] Packed(byte tag, int width = Width, int height = Height)
-        => Frame(tag, width, height, width * 4);
+        => ShmTestProducer.Packed(tag, width, height);
 
-    private Producer NewProducer(int slotCount = 2)
+    private ShmTestProducer NewProducer(int slotCount = 2)
     {
-        var p = new Producer(slotCount);
+        var p = new ShmTestProducer(slotCount);
         _open.Add(p);
         return p;
     }
@@ -142,7 +63,7 @@ public class ControlServerFrameShmTests : IDisposable
     }
 
     private static string Image(
-        Producer p, long seq, int slot, int id = 1, int row = 0, int col = 0, int cols = 0, int rows = 0)
+        ShmTestProducer p, long seq, int slot, int id = 1, int row = 0, int col = 0, int cols = 0, int rows = 0)
         => "{\"id\":" + id + ",\"name\":" + JsonSerializer.Serialize(p.Name) +
            ",\"slot\":" + slot + ",\"seq\":" + seq +
            ",\"row\":" + row + ",\"col\":" + col + ",\"cols\":" + cols + ",\"rows\":" + rows + "}";

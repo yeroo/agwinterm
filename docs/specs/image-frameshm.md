@@ -244,5 +244,30 @@ separate, later work.
 
 ## Measured throughput
 
-_To be filled in by Task 6 of `docs/plans/20260821-image-frameshm-command.md`: sustained frames per
-second and bytes copied per frame for a full-pane 1920×1080 BGRA frame._
+Measured 2026-08-27 against a live dev instance (a Debug build under instance id `agwinterm-dev`),
+on a Ryzen 9 7940HS / Windows 11. The producer was a PowerShell script holding one persistent
+control-pipe connection, writing a full-pane **1920×1080 BGRA** frame into the mapping and
+serialising on each reply — the obligation stated above, so never more than one frame outstanding
+over two slots. Six passes of 120 frames each, after a warm-up frame.
+
+**Bytes copied per frame: 8,294,400** (`1080 × 7680`, i.e. 7.9 MiB), exactly once, on the request
+thread and off the render lock. There is no second copy: the reader packs straight from the mapped
+view into the `KittyImage` the emulator keeps, and the placement swap moves references only.
+
+| | per frame | rate |
+|---|---|---|
+| agwinterm's share (request written → reply read) | **6.0–8.4 ms** | **~120–165 fps**, ≈1.0–1.4 GB/s |
+| end to end, including the producer's own 8 MB write into the mapping | 8.5–18.2 ms | 55–117 fps, 435–927 MB/s |
+| a repeat of an already-accepted `(id, seq)` — no copy, re-place only | **0.10–0.13 ms** | reply is `frame:1/0` |
+
+Two things a consumer should take from this. First, **the terminal is not the bottleneck at 60fps**:
+a full-pane 1080p frame costs agwinterm about 6 ms, so a 16.7 ms budget has roughly 10 ms left for
+the producer to paint in. Second, the producer's own write into the mapping is the same order of
+cost as the whole transport — the 2.5–11.2 ms spread above is a PowerShell `WriteArray`, and a
+producer that already has its pixels in shared memory (Chromium painting straight into the slot)
+skips it entirely, which is the whole point of the mapping.
+
+The numbers are a Debug build's, so they are a floor rather than a ceiling. What they establish is
+that the frame budget is dominated by the memcpy, and that a frame the producer knows is unchanged
+costs about a tenth of a millisecond — cheap enough to re-place on every tick rather than tracking
+whether a re-place is needed.

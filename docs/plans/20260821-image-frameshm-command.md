@@ -298,16 +298,45 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 
 ### Task 6: Prove it end to end against a live dev instance
 
-- [ ] close any running dev instance, then `dotnet build src/Agwinterm.Win32` explicitly
-- [ ] launch the Debug build (instance id `agwinterm-dev`, its own pipe and data dir)
-- [ ] write an integration test that creates a mapping, fills a slot with a recognisable pattern,
+- [x] close any running dev instance, then `dotnet build src/Agwinterm.Win32` explicitly
+      — no dev instance was running; the only live `Agwinterm.Win32` was the installed **release**
+      build under `%LOCALAPPDATA%\Programs\agwinterm`, which is a different instance id, a different
+      pipe and (very likely) the terminal this work is being done in. It was left alone.
+- [x] launch the Debug build (instance id `agwinterm-dev`, its own pipe and data dir)
+- [x] write an integration test that creates a mapping, fills a slot with a recognisable pattern,
       publishes it via the control pipe and asserts the emulator's image and placement state
-- [ ] confirm `--pipe agwinterm-dev tree` shows the fresh dev tree, not the real sessions, before
-      trusting any result
-- [ ] measure and record: frames per second sustained, and bytes copied per frame, for a full-pane
+      — `tests/Agwinterm.Pty.Tests/FrameShmPipeIntegrationTests.cs`, 6 tests over a real
+      `NamedPipeServerStream`/`NamedPipeClientStream` pair
+- [x] confirm `--pipe agwinterm-dev tree` shows the fresh dev tree, not the real sessions, before
+      trusting any result — one workspace, one idle `session 1`, before and after ~800 frames
+- [x] measure and record: frames per second sustained, and bytes copied per frame, for a full-pane
       1920x1080 BGRA frame — the winterm-browser plan needs this number to size its frame budget
-- [ ] write the measurement into `docs/specs/image-frameshm.md`
-- [ ] run tests — must pass before Task 7
+- [x] write the measurement into `docs/specs/image-frameshm.md`
+- [x] run tests — must pass before Task 7
+
+- ➕ **the integration test goes through the pipe *and* through `FrameShmCli`.** Building the
+      request line with the ctl's own arg builder puts the CLI's number parsing inside the
+      integration path instead of re-implementing it beside it, so a regression that quotes a
+      numeric field fails here as well as in `FrameShmCliTests`.
+- ➕ **the producer stand-in moved to `tests/Agwinterm.Pty.Tests/ShmTestProducer.cs`**, shared by
+      the in-process verb tests and the new pipe tests. A second copy would have been free to drift
+      out of agreement with the spec's publish order, which is the one thing both files rely on.
+- ➕ **a dead producer's last frame stays re-placeable.** `AProducerThatDiesBetweenFramesIs…`
+      first asserted a failure after `Dispose` and got `ok:true`: the `(id, seq)` cache answers
+      before the mapping is opened, so re-sending the accepted sequence still succeeds with
+      `frame:1/0`. That is correct and worth having — the test now pins both it and the genuine
+      failure a *bumped* sequence produces.
+- ➕ **measured with a persistent pipe client, not the ctl.** Spawning `agwintermctl.exe` per frame
+      caps the loop at ~9fps on process start alone, which measures Windows, not the transport. The
+      recorded numbers come from one connection held open across 120 frames; the harness is
+      `.ralphex/tmp/bench-frameshm.ps1` (throwaway, not committed).
+- ➕ **the number that matters is 6.0–8.4 ms per full-pane 1080p frame** — agwinterm's own share of
+      the round trip, ~120–165fps, against 8,294,400 bytes copied once per frame. A cached
+      `(id, seq)` re-place costs 0.10–0.13 ms. The full table, its caveats (Debug build, PowerShell
+      producer) and what a consumer should conclude are in the spec's "Measured throughput".
+- ⚠️ **no screenshot, deliberately.** The Testing Strategy says visual confirmation belongs to the
+      consuming project and not to build a throwaway pixel producer to look at; the live evidence
+      here is the dev instance accepting ~800 8 MB frames and still answering `ping` and `tree`.
 
 ### Task 6b: Publish cell pixel metrics — **blocking for winterm-browser**
 
