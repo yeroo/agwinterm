@@ -434,15 +434,33 @@ already probes for it — `pixel-core` requests `\x1b[?1016h` at `terminal.rs:36
 for mode 2026, so the probe times out and `reports_pixel_mouse()` is false. That flag gates real
 behaviour in the consumer: hover and pairing get no position at all (`engine/pointer.rs:61`).
 
-- [ ] add `1016` to the mode handlers in **both** cores, keeping them in agreement
-- [ ] answer DECRQM for `?1016$p` so a client can discover support instead of timing out
-- [ ] add a pixel-coordinate branch to `SendMouse` that emits pixel values when `?1016` is active,
+- [x] add `1016` to the mode handlers in **both** cores, keeping them in agreement
+- [x] answer DECRQM for `?1016$p` so a client can discover support instead of timing out
+- [x] add a pixel-coordinate branch to `SendMouse` that emits pixel values when `?1016` is active,
       leaving the cell path untouched when it is not
-- [ ] write tests for mode set/reset, the DECRQM reply, and the encoder emitting pixel coordinates
+- [x] write tests for mode set/reset, the DECRQM reply, and the encoder emitting pixel coordinates
       only when the mode is on
-- [ ] write a test that sub-cell movement produces distinct reports under `?1016` and identical ones
+- [x] write a test that sub-cell movement produces distinct reports under `?1016` and identical ones
       without it — the whole point of the change
-- [ ] run tests — must pass before Task 7
+- [x] run tests — must pass before Task 7
+      — 485 pass in Release (219 Core, 266 Pty), including the C#/Rust differential adapter;
+        the Rust crate's 29 unit tests pass, the explicit `Agwinterm.Win32` Release build is clean,
+        and the ABI declarations agree at v17. Targeted `dotnet format` passes. `cargo clippy --lib`
+        completes with only the repository's pre-existing warnings outside the added ranges.
+
+- ➕ **`?1016` is persisted across a pty-host reattach.** Both cores include it in `DumpModes`, just
+      like `?1006`; otherwise a surviving browser would silently fall back to cell coordinates after
+      the UI reconnects while still believing its pixel-mode request was active.
+- ➕ **pixel reports use device pixels, not DIPs.** The Win32 renderer lays out in DIPs but
+      `session.metrics` and the browser bitmap contract are device-pixel values. `SendMouse` keeps
+      the old DIP-to-cell calculation byte-for-byte, while its new branch retains the raw Windows
+      device coordinates and subtracts the pane origin in the same coordinate space.
+- ➕ **the encoder moved into `Agwinterm.Core/MouseReport.cs`.** The Win32 executable has no test
+      reference, so isolating the wire encoding is what lets tests prove that two points within one
+      cell differ under `?1016` and remain identical without it.
+- ⚠️ **surfacing the Rust mode requires a C ABI change.** `FfiEmuInfo` gained `mouse_sgr_pixels`, so
+      both ABI declarations advance from 16 to 17; the ABI agreement check and adapter tests guard
+      the layout rather than leaving a mismatched struct to corrupt later fields.
 
 ### Task 7: Verify acceptance criteria
 

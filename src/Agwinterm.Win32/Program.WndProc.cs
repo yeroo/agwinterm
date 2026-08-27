@@ -527,6 +527,7 @@ internal partial class Program
                     if (_setOpen) { SettingsWheel(HiWord(wParam) > 0 ? 1 : -1); return IntPtr.Zero; }
                     var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
                     ScreenToClient(_hwnd, ref pt);
+                    int deviceX = pt.x, deviceY = pt.y;
                     pt.x = ToDip(pt.x); pt.y = ToDip(pt.y);   // ...and they are compared against DIP layout
                     // Ctrl+wheel: font zoom (Windows-wide convention), on the active surface.
                     if (KeyDown(VK_CONTROL) && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
@@ -538,7 +539,7 @@ internal partial class Program
                     if (em is not null && em.MouseReporting) // app wants the wheel (forward to the active pane)
                     {
                         if (pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
-                            SendMouse(HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, true);
+                            SendMouse(HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, deviceX, deviceY, true);
                         return IntPtr.Zero;
                     }
                     // Otherwise scroll the pane under the cursor through its scrollback history.

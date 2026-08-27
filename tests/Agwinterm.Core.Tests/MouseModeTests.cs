@@ -20,6 +20,7 @@ public class MouseModeTests
         var t = new TerminalEmulator(80, 24);
         Assert.False(t.MouseReporting);
         Assert.False(t.MouseSgr);
+        Assert.False(t.MouseSgrPixels);
         Assert.False(t.MouseReportsMotion);
     }
 
@@ -56,5 +57,29 @@ public class MouseModeTests
         Assert.True(t.MouseReporting);
         Assert.True(t.MouseReportsMotion);
         Assert.True(t.MouseSgr);
+    }
+
+    [Fact]
+    public void SgrPixels1016_SetResetAndDumpModes()
+    {
+        var t = Feed($"{ESC}[?1016h");
+        Assert.True(t.MouseSgrPixels);
+        Assert.Contains($"{ESC}[?1016h", t.DumpModes());
+
+        t.Feed(Encoding.ASCII.GetBytes($"{ESC}[?1016l"));
+        Assert.False(t.MouseSgrPixels);
+        Assert.DoesNotContain($"{ESC}[?1016h", t.DumpModes());
+    }
+
+    [Fact]
+    public void SgrPixels1016_DecrqmReportsResetThenSet()
+    {
+        var host = new RecordingHost();
+        var t = new TerminalEmulator(80, 24) { Host = host };
+
+        t.Feed(Encoding.ASCII.GetBytes($"{ESC}[?1016$p{ESC}[?1016h{ESC}[?1016$p"));
+
+        Assert.Equal(new[] { $"{ESC}[?1016;2$y", $"{ESC}[?1016;1$y" }, host.Responses);
+        Assert.Empty(host.Unhandleds);
     }
 }

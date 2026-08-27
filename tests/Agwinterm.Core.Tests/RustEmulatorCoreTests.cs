@@ -46,6 +46,7 @@ public class RustEmulatorCoreTests
         Assert.Equal(cs.ScrollGeneration, info.ScrollGeneration);
         Assert.Equal(cs.BracketedPaste, info.BracketedPaste != 0);
         Assert.Equal(cs.MouseSgr, info.MouseSgr != 0);
+        Assert.Equal(cs.MouseSgrPixels, info.MouseSgrPixels != 0);
         Assert.Equal(cs.KeyboardFlags, info.KeyboardFlags);
         Assert.Equal(cs.Title, rust.Title);
         Assert.Equal(cs.Cwd, rust.Cwd);
@@ -233,6 +234,33 @@ public class RustEmulatorCoreTests
         // Same DECRPM replies, same order, through both cores.
         Assert.Equal(mgHost.Log, rsHost.Log);
         Assert.Equal(new[] { "Respond|\x1b[?2026;2$y", "Respond|\x1b[?2026;1$y" }, rsHost.Log);
+    }
+
+    [Fact]
+    public void Adapter_SgrPixels_ModeAndDecrqm_MatchManagedCore()
+    {
+        if (!Available) return;
+        var mgHost = new RecordingHost();
+        var rsHost = new RecordingHost();
+        var cs = new TerminalEmulator(20, 5) { Host = mgHost };
+        using var rust = new RustTerminalCore(20, 5) { Host = rsHost };
+        void Feed(string s) { var b = System.Text.Encoding.ASCII.GetBytes(s); cs.Feed(b); rust.Feed(b); }
+
+        Feed("\x1b[?1016$p");
+        Assert.False(cs.MouseSgrPixels);
+        Assert.False(rust.MouseSgrPixels);
+
+        Feed("\x1b[?1016h\x1b[?1016$p");
+        Assert.True(cs.MouseSgrPixels);
+        Assert.True(rust.MouseSgrPixels);
+        Assert.Contains("\x1b[?1016h", rust.DumpModes());
+        Assert.Equal(cs.DumpModes(), rust.DumpModes());
+
+        Feed("\x1b[?1016l");
+        Assert.False(cs.MouseSgrPixels);
+        Assert.False(rust.MouseSgrPixels);
+        Assert.Equal(mgHost.Log, rsHost.Log);
+        Assert.Equal(new[] { "Respond|\x1b[?1016;2$y", "Respond|\x1b[?1016;1$y" }, rsHost.Log);
     }
 
     [Fact]

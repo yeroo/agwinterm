@@ -128,6 +128,7 @@ pub struct Emulator {
     mouse_drag: bool,
     mouse_motion: bool,
     mouse_sgr: bool,
+    mouse_sgr_pixels: bool,
     pub bracketed_paste: bool,
     pub focus_reporting: bool,
     pub synchronized_output: bool,
@@ -196,6 +197,7 @@ impl Emulator {
             mouse_drag: false,
             mouse_motion: false,
             mouse_sgr: false,
+            mouse_sgr_pixels: false,
             bracketed_paste: false,
             focus_reporting: false,
             synchronized_output: false,
@@ -293,8 +295,8 @@ impl Emulator {
     pub fn keyboard_flags(&self) -> i32 {
         *self.kbd_stack.last().unwrap_or(&0)
     }
-    pub fn mouse_flags(&self) -> (bool, bool, bool, bool) {
-        (self.mouse_click, self.mouse_drag, self.mouse_motion, self.mouse_sgr)
+    pub fn mouse_flags(&self) -> (bool, bool, bool, bool, bool) {
+        (self.mouse_click, self.mouse_drag, self.mouse_motion, self.mouse_sgr, self.mouse_sgr_pixels)
     }
     pub fn scroll_top(&self) -> usize {
         self.scroll_top
@@ -640,6 +642,7 @@ impl Emulator {
                 1002 => self.mouse_drag = set,
                 1003 => self.mouse_motion = set,
                 1006 => self.mouse_sgr = set,
+                1016 => self.mouse_sgr_pixels = set,
                 1004 => self.focus_reporting = set,
                 2026 => self.synchronized_output = set,
                 9001 => self.win32_input_mode = set,
@@ -866,6 +869,7 @@ impl Emulator {
         if self.mouse_drag { s.push_str("\u{1b}[?1002h"); }
         if self.mouse_motion { s.push_str("\u{1b}[?1003h"); }
         if self.mouse_sgr { s.push_str("\u{1b}[?1006h"); }
+        if self.mouse_sgr_pixels { s.push_str("\u{1b}[?1016h"); }
         if self.bracketed_paste { s.push_str("\u{1b}[?2004h"); }
         if self.focus_reporting { s.push_str("\u{1b}[?1004h"); }
         if self.win32_input_mode { s.push_str("\u{1b}[?9001h"); }
@@ -996,10 +1000,13 @@ impl Performer for Emulator {
         if prefix == b'?' {
             if ch == b'h' || ch == b'l' {
                 self.set_private_mode(params, ch == b'h');
-            } else if ch == b'p' && params.first() == Some(&2026) {
-                // DECRQM ?2026$p — report synchronized-output support (1 set, 2 reset).
-                let reply = format!("\u{1b}[?2026;{}$y", if self.synchronized_output { 1 } else { 2 });
-                self.push_action(HostAction::Respond { reply });
+            } else if ch == b'p' && matches!(params.first(), Some(1016 | 2026)) {
+                let mode = params[0];
+                let set = if mode == 1016 { self.mouse_sgr_pixels } else { self.synchronized_output };
+                // DECRQM — 1 means set, 2 means reset. Both modes are supported in either state.
+                self.push_action(HostAction::Respond {
+                    reply: format!("\u{1b}[?{mode};{}$y", if set { 1 } else { 2 }),
+                });
             } else {
                 self.push_action(HostAction::Unhandled {
                     kind: "CSI".into(),
@@ -1451,5 +1458,28 @@ mod tests {
         // A REAL size change still resets the margins (xterm behaviour).
         t.emu.resize(20, 12);
         assert_eq!((t.emu.scroll_top(), t.emu.scroll_bottom()), (0, 11));
+    }
+
+    #[test]
+    fn sgr_pixels_mode_and_decrqm_track_set_and_reset() {
+        let mut t = Terminal::new(20, 5);
+        t.feed(b"\x1b[?1016$p");
+        assert!(!t.emu.mouse_sgr_pixels);
+        assert_eq!(
+            t.emu.take_host_actions(),
+            vec![HostAction::Respond { reply: "\x1b[?1016;2$y".into() }]
+        );
+
+        t.feed(b"\x1b[?1016h\x1b[?1016$p");
+        assert!(t.emu.mouse_sgr_pixels);
+        assert!(t.emu.dump_modes().contains("\x1b[?1016h"));
+        assert_eq!(
+            t.emu.take_host_actions(),
+            vec![HostAction::Respond { reply: "\x1b[?1016;1$y".into() }]
+        );
+
+        t.feed(b"\x1b[?1016l");
+        assert!(!t.emu.mouse_sgr_pixels);
+        assert!(!t.emu.dump_modes().contains("\x1b[?1016h"));
     }
 }

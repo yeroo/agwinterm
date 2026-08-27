@@ -27,7 +27,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 16;
+pub const ABI_VERSION: u32 = 17;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -355,11 +355,11 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
     }
     let e = &t.emu;
     let mut s = String::new();
-    let (mc, md, mm, ms) = e.mouse_flags();
+    let (mc, md, mm, ms, mp) = e.mouse_flags();
     let _ = writeln!(s, "cursor:{},{},{}", e.cursor_row, e.cursor_col, e.cursor_visible as u8);
     let _ = writeln!(s, "region:{},{}", e.scroll_top(), e.scroll_bottom());
     let _ = writeln!(s, "alt:{}", e.is_alt_screen() as u8);
-    let _ = writeln!(s, "mouse:{}{}{}{}", mc as u8, md as u8, mm as u8, ms as u8);
+    let _ = writeln!(s, "mouse:{}{}{}{}{}", mc as u8, md as u8, mm as u8, ms as u8, mp as u8);
     let _ = writeln!(s, "paste:{}", e.bracketed_paste as u8);
     let _ = writeln!(s, "focus:{}", e.focus_reporting as u8);
     let _ = writeln!(s, "sync:{}", e.synchronized_output as u8);
@@ -498,6 +498,7 @@ pub struct FfiEmuInfo {
     pub mouse_drag: u32,
     pub mouse_motion: u32,
     pub mouse_sgr: u32,
+    pub mouse_sgr_pixels: u32,
     pub bracketed_paste: u32,
     pub keyboard_flags: i32,
     pub scroll_top: u32,
@@ -519,7 +520,7 @@ pub unsafe extern "C" fn agwcore_emu_info(p: *mut Terminal, out: *mut FfiEmuInfo
         return false;
     }
     let e = &t.emu;
-    let (mc, md, mm, ms) = e.mouse_flags();
+    let (mc, md, mm, ms, mp) = e.mouse_flags();
     unsafe {
         *out = FfiEmuInfo {
             cols: e.screen().cols() as u32,
@@ -534,6 +535,7 @@ pub unsafe extern "C" fn agwcore_emu_info(p: *mut Terminal, out: *mut FfiEmuInfo
             mouse_drag: md as u32,
             mouse_motion: mm as u32,
             mouse_sgr: ms as u32,
+            mouse_sgr_pixels: mp as u32,
             bracketed_paste: e.bracketed_paste as u32,
             keyboard_flags: e.keyboard_flags(),
             scroll_top: e.scroll_top() as u32,

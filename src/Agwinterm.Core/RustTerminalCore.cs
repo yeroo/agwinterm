@@ -86,6 +86,7 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     public bool MouseDrag => _info.MouseDrag != 0;
     public bool MouseMotion => _info.MouseMotion != 0;
     public bool MouseSgr => _info.MouseSgr != 0;
+    public bool MouseSgrPixels => _info.MouseSgrPixels != 0;
     public bool MouseReporting => MouseClick || MouseDrag || MouseMotion;
     public bool MouseReportsMotion => MouseDrag || MouseMotion;
     public bool BracketedPaste => _info.BracketedPaste != 0;

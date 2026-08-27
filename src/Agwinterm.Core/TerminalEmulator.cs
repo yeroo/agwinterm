@@ -28,6 +28,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     private bool _mouseDrag;    // ?1002 button-event (motion while pressed)
     private bool _mouseMotion;  // ?1003 any-motion
     private bool _mouseSgr;     // ?1006 SGR extended encoding
+    private bool _mouseSgrPixels; // ?1016 SGR encoding with pixel coordinates
 
     /// <summary>True if the app requested mouse reporting (any of ?1000/?1002/?1003).</summary>
     public bool MouseReporting => _mouseClick || _mouseDrag || _mouseMotion;
@@ -37,6 +38,9 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
 
     /// <summary>True if the app requested SGR (?1006) mouse encoding.</summary>
     public bool MouseSgr => _mouseSgr;
+
+    /// <summary>True if the app requested SGR-Pixels (?1016) mouse encoding.</summary>
+    public bool MouseSgrPixels => _mouseSgrPixels;
 
     /// <summary>Individual mouse-mode flags (?1000/?1002/?1003) — for state diffing/tests.</summary>
     public bool MouseClick => _mouseClick;
@@ -322,9 +326,13 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         {
             if (final is 'h' or 'l')
                 SetPrivateMode(parameters, set: final == 'h');
-            else if (final == 'p' && parameters.Count > 0 && parameters[0] == 2026)
-                // DECRQM ?2026$p — report synchronized-output support so apps enable it (1 set, 2 reset).
-                Host?.Respond($"\x1b[?2026;{(SynchronizedOutput ? 1 : 2)}$y");
+            else if (final == 'p' && parameters.Count > 0 && parameters[0] is 1016 or 2026)
+            {
+                int mode = parameters[0];
+                bool set = mode == 1016 ? MouseSgrPixels : SynchronizedOutput;
+                // DECRQM — 1 means set, 2 means reset. Both modes are supported in either state.
+                Host?.Respond($"\x1b[?{mode};{(set ? 1 : 2)}$y");
+            }
             else
                 Host?.Unhandled("CSI", $"? {string.Join(';', parameters)} {final}"); // e.g. DECRQM ?…$p
             return;
@@ -403,6 +411,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 case 1002: _mouseDrag = set; break;    // button-event (drag) tracking
                 case 1003: _mouseMotion = set; break;  // any-motion tracking
                 case 1006: _mouseSgr = set; break;     // SGR extended mouse encoding
+                case 1016: _mouseSgrPixels = set; break; // SGR encoding with pixel coordinates
                 case 1004: FocusReporting = set; break; // focus in/out reporting
                 case 2026: SynchronizedOutput = set; break; // synchronized output (atomic frames)
                 case 9001: Win32InputMode = set; break; // ConPTY win32-input-mode
@@ -952,6 +961,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         if (_mouseDrag) sb.Append("\x1b[?1002h");
         if (_mouseMotion) sb.Append("\x1b[?1003h");
         if (_mouseSgr) sb.Append("\x1b[?1006h");
+        if (_mouseSgrPixels) sb.Append("\x1b[?1016h");
         if (BracketedPaste) sb.Append("\x1b[?2004h");
         if (FocusReporting) sb.Append("\x1b[?1004h");
         if (Win32InputMode) sb.Append("\x1b[?9001h");

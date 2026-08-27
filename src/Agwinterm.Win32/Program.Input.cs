@@ -386,9 +386,9 @@ internal partial class Program
 
     /// <summary>Report a mouse event given raw client pixels packed in lParam (button code already encoded).</summary>
     private void SendMousePx(int btn, IntPtr lParam, bool press)
-        => SendMouse(btn, DipX(lParam), DipY(lParam), press);   // cell mapping uses DIP metrics
+        => SendMouse(btn, DipX(lParam), DipY(lParam), LoWord(lParam), HiWord(lParam), press);
 
-    /// <summary>Origin (px) + metrics of the ACTIVE pane, for mouse→cell mapping.</summary>
+    /// <summary>Origin + metrics of the active pane in DIPs, for mouse-to-cell mapping.</summary>
     private (float ox, float oy, float cw, float ch) ActivePaneView()
     {
         if (_active is not null)
@@ -438,17 +438,24 @@ internal partial class Program
         RequestRedraw();
     }
 
-    /// <summary>Encode a mouse event (SGR or legacy) and send it to the child. Mirrors the WinUI shell.</summary>
-    private void SendMouse(int btn, int pxX, int pxY, bool press)
+    /// <summary>Encode a cell or SGR-Pixels mouse event and send it to the child.</summary>
+    private void SendMouse(int btn, int dipX, int dipY, int deviceX, int deviceY, bool press)
     {
         var em = _session?.Emulator;
         if (em is null || !em.MouseReporting) return;
         var (ox, oy, cw, ch) = ActivePaneView();
-        int col = Math.Clamp((int)((pxX - ox) / cw), 0, em.Screen.Cols - 1);
-        int row = Math.Clamp((int)((pxY - oy) / ch), 0, em.Screen.Rows - 1);
-        string seq = em.MouseSgr
-            ? $"\x1b[<{btn};{col + 1};{row + 1}{(press ? 'M' : 'm')}"
-            : "\x1b[M" + (char)(32 + (press ? btn : 3)) + (char)(33 + col) + (char)(33 + row);
+        // Keep the pre-1016 cell mapping exactly as it was: input and layout are both DIPs.
+        int col = Math.Clamp((int)((dipX - ox) / cw), 0, em.Screen.Cols - 1);
+        int row = Math.Clamp((int)((dipY - oy) / ch), 0, em.Screen.Rows - 1);
+
+        // SGR-Pixels is in DEVICE pixels, matching session.metrics and the producer's bitmap.
+        int paneX = (int)MathF.Round(ox * Scale), paneY = (int)MathF.Round(oy * Scale);
+        int maxX = Math.Max(0, (int)MathF.Round(em.Screen.Cols * cw * Scale) - 1);
+        int maxY = Math.Max(0, (int)MathF.Round(em.Screen.Rows * ch * Scale) - 1);
+        int pixelX = Math.Clamp(deviceX - paneX, 0, maxX);
+        int pixelY = Math.Clamp(deviceY - paneY, 0, maxY);
+
+        string seq = MouseReport.Encode(btn, col, row, pixelX, pixelY, press, em.MouseSgr, em.MouseSgrPixels);
         _session?.Write(Encoding.UTF8.GetBytes(seq));
     }
 

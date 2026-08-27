@@ -307,7 +307,7 @@ public class RustParityTests
         sb.Append($"cursor:{e.CursorRow},{e.CursorCol},{(e.CursorVisible ? 1 : 0)}\n");
         sb.Append($"region:{e.ScrollTop},{e.ScrollBottom}\n");
         sb.Append($"alt:{(e.IsAltScreen ? 1 : 0)}\n");
-        sb.Append($"mouse:{(e.MouseClick ? 1 : 0)}{(e.MouseDrag ? 1 : 0)}{(e.MouseMotion ? 1 : 0)}{(e.MouseSgr ? 1 : 0)}\n");
+        sb.Append($"mouse:{(e.MouseClick ? 1 : 0)}{(e.MouseDrag ? 1 : 0)}{(e.MouseMotion ? 1 : 0)}{(e.MouseSgr ? 1 : 0)}{(e.MouseSgrPixels ? 1 : 0)}\n");
         sb.Append($"paste:{(e.BracketedPaste ? 1 : 0)}\n");
         sb.Append($"focus:{(e.FocusReporting ? 1 : 0)}\n");
         sb.Append($"sync:{(e.SynchronizedOutput ? 1 : 0)}\n");
@@ -424,7 +424,7 @@ public class RustParityTests
             ("alt-screen", new[] { "main1\r\nmain2", "\x1b[?1049h", "ALT", "\x1b[?1049l", "\x1b[?47h", "x",
                                    "\x1b[?47l", "\x1b[?1047h", "\x1b[?1047l" }),
             ("save-restore", new[] { "\x1b[5;5H\x1b7", "\x1b[1;1Hmoved", "\x1b8*", "\x1bE!" }),
-            ("modes", new[] { "\x1b[?25l", "\x1b[?1000;1002;1006h", "\x1b[?1003h", "\x1b[?2004h",
+            ("modes", new[] { "\x1b[?25l", "\x1b[?1000;1002;1006;1016h", "\x1b[?1003h", "\x1b[?2004h",
                               "\x1b[?1002l", "\x1b[?12;7727h", "\x1b[?25h" }),
             ("osc", new[] { "\x1b]0;my title 🚀\x07", "\x1b]2;other\x1b\\", "\x1b]7;file://h/c/x\x07",
                             "\x1b]0;ctrlchars!\x07", "\x1b]777;notify;t;b\x07", "\x1b]52;c;aGk=\x07" }),
