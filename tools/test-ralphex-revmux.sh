@@ -220,7 +220,9 @@ FAKE_GIT_MODE=branch FAKE_GIT_BRANCH='{topic}' \
   run_bridge "$TMP/metadata.txt" "$TMP/clean.json" \
   > "$TMP/metadata-crlf.out" 2> "$TMP/metadata-crlf.err"
 assert_contains "$metadata_task_file" 'branch: "{topic}"'
-awk 'sub(/\r$/, "") == 0 { exit 1 }' "$metadata_task_file" \
+metadata_bytes="$(od -An -tu1 -v "$metadata_task_file")"
+printf '%s\n' "$metadata_bytes" \
+  | awk '{ for (i = 1; i <= NF; i++) { if ($i == 10 && previous != 13) exit 1; previous = $i } }' \
   || { echo 'task metadata rewrite introduced bare LF into a CRLF file' >&2; exit 1; }
 
 write_prompt "$TMP/legacy-auth.txt" 'docs/plans/legacy/auth.md'

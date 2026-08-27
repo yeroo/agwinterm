@@ -145,6 +145,12 @@ DESCRIPTION_YAML="$(yaml_quote "Ralphex review loop for $PLAN_REL")" \
 BRANCH_YAML="$(yaml_quote "$BRANCH")" || fail "could not encode task branch"
 BASE_YAML="$(yaml_quote "$DEFAULT_BRANCH")" || fail "could not encode task base"
 TASK_META_TMP="$(mktemp)" || fail "could not allocate task metadata file"
+TASK_CR=""
+TASK_HEX="$(od -An -tx1 -v "$TASK_FILE" | tr '\n' ' ')" \
+  || fail "could not inspect revmux task-file line endings"
+if [[ " $TASK_HEX " == *" 0d 0a "* ]]; then
+  TASK_CR=$'\r'
+fi
 
 # Revmux creates a commented template, but task.md belongs to the user after
 # that. Insert only missing active keys inside its front matter; never truncate
@@ -152,18 +158,18 @@ TASK_META_TMP="$(mktemp)" || fail "could not allocate task metadata file"
 if ! DESCRIPTION_LINE="description: $DESCRIPTION_YAML" \
      BRANCH_LINE="branch: $BRANCH_YAML" \
      BASE_LINE="base: $BASE_YAML" \
+     TASK_CR="$TASK_CR" \
      awk '
-       NR == 1 {
-         line = $0
-         cr = (sub(/\r$/, "", line) ? "\r" : "")
-         if (line != "---") exit 41
-         in_front = 1
-         print
-         next
-       }
-       in_front {
+       BEGIN { cr = ENVIRON["TASK_CR"] }
+       {
          line = $0
          sub(/\r$/, "", line)
+       }
+       NR == 1 {
+         if (line != "---") exit 41
+         in_front = 1
+         print line cr
+         next
        }
        in_front && line == "---" {
          if (!description) print ENVIRON["DESCRIPTION_LINE"] cr
@@ -171,13 +177,13 @@ if ! DESCRIPTION_LINE="description: $DESCRIPTION_YAML" \
          if (!base) print ENVIRON["BASE_LINE"] cr
          in_front = 0
          closed = 1
-         print
+         print line cr
          next
        }
        in_front && line ~ /^description:[[:space:]]*/ { description = 1 }
        in_front && line ~ /^branch:[[:space:]]*/ { branch = 1 }
        in_front && line ~ /^base:[[:space:]]*/ { base = 1 }
-       { print }
+       { print line cr }
        END { if (!closed) exit 42 }
      ' "$TASK_FILE" > "$TASK_META_TMP"; then
   fail "revmux task file has incompatible front matter: $TASK_FILE"
