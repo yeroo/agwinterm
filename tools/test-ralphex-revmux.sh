@@ -211,6 +211,18 @@ assert_contains "$metadata_task_file" 'Keep this user-authored note.'
 assert_contains "$metadata_task_file" 'branch: "#123-fix"'
 assert_contains "$metadata_task_file" 'base: "trunk"'
 
+# Windows editors commonly rewrite ignored review archives with CRLF. Delimiter
+# recognition must accept that without converting the user-owned file to LF.
+printf '%s\r\n' '---' '# description: one line naming what this task reviews' \
+  '# branch: feature/oauth' '# base: 4ed3259' '---' '' \
+  'Keep CRLF in this note.' > "$metadata_task_file"
+FAKE_GIT_MODE=branch FAKE_GIT_BRANCH='{topic}' \
+  run_bridge "$TMP/metadata.txt" "$TMP/clean.json" \
+  > "$TMP/metadata-crlf.out" 2> "$TMP/metadata-crlf.err"
+assert_contains "$metadata_task_file" 'branch: "{topic}"'
+awk 'sub(/\r$/, "") == 0 { exit 1 }' "$metadata_task_file" \
+  || { echo 'task metadata rewrite introduced bare LF into a CRLF file' >&2; exit 1; }
+
 write_prompt "$TMP/legacy-auth.txt" 'docs/plans/legacy/auth.md'
 run_bridge "$TMP/legacy-auth.txt" "$TMP/clean.json" \
   > "$TMP/legacy.out" 2> "$TMP/legacy.err"
@@ -323,11 +335,15 @@ assert_not_contains "$TMP/rendered-wrapper.txt" 'powershell -NoProfile -Command 
 
 configured_launcher="$(sed -n 's/^custom_review_script[[:space:]]*=[[:space:]]*//p' "$ROOT/.ralphex/config")"
 configured_executor="$(sed -n 's/^executor[[:space:]]*=[[:space:]]*//p' "$ROOT/.ralphex/config")"
+configured_review_tool="$(sed -n 's/^external_review_tool[[:space:]]*=[[:space:]]*//p' "$ROOT/.ralphex/config")"
 [ "$configured_launcher" = 'ralphex-revmux.exe' ] \
   || { echo "unexpected configured launcher: $configured_launcher" >&2; exit 1; }
 [ -z "$configured_executor" ] \
   || { echo "project executor must stay empty, got: $configured_executor" >&2; exit 1; }
+[ "$configured_review_tool" = 'custom' ] \
+  || { echo "project external review tool must be custom, got: $configured_review_tool" >&2; exit 1; }
 go build -o "$TMP/bin/ralphex-revmux.exe" "$ROOT/tools/ralphex-revmux-launcher.go"
+go test "$ROOT/tools/ralphex-revmux-launcher.go" "$ROOT/tools/ralphex-revmux-launcher_test.go"
 git_bash="$(cygpath -w "$(command -v bash)")"
 PATH="$TMP/bin:$PATH" REAL_GIT_BIN="$REAL_GIT" FAKE_ROOT="$TMP" \
   FAKE_REPORT="$TMP/clean.json" RALPHEX_GIT_BASH="$git_bash" \
@@ -359,32 +375,35 @@ case "$planless_detached_task" in
   *) echo "detached task was not normalized exactly: $planless_detached_task" >&2; exit 1 ;;
 esac
 
-# When Ralphex is installed, exercise its real config loader and CustomExecutor
-# too. CI still has deterministic coverage above without downloading Ralphex.
-if command -v ralphex >/dev/null 2>&1; then
-  launcher_plan_name="launcher-reachability-$$-$RANDOM"
-  RALPHEX_FIXTURE_PROGRESS="$ROOT/.ralphex/progress/progress-$launcher_plan_name-codex.txt"
-  printf '%s\n' '# Launcher reachability fixture' '' '- [x] No implementation work.' \
-    > "$TMP/$launcher_plan_name.md"
-  launcher_plan_windows="$(cygpath -w "$TMP/$launcher_plan_name.md")"
-  tasks_before="$(wc -l < "$TMP/tasks.log" | tr -d ' ')"
-  set +e
-  PATH="$TMP/bin:$PATH" REAL_GIT_BIN="$REAL_GIT" FAKE_ROOT="$TMP" \
-    FAKE_REPORT="$TMP/clean.json" FAKE_STATUS=0 RALPHEX_GIT_BASH="$git_bash" \
-    MSYS2_ARG_CONV_EXCL='*' \
-    ralphex /external-only /skip-finalize /max-external-iterations:1 \
-      /base-ref:main "$launcher_plan_windows" \
-      > "$TMP/ralphex.out" 2> "$TMP/ralphex.err"
-  ralphex_status=$?
-  set -e
-  if [ "$ralphex_status" -ne 0 ]; then
-    cat "$TMP/ralphex.out" "$TMP/ralphex.err" >&2
-    echo "Ralphex launch fixture exited $ralphex_status" >&2
-    exit 1
-  fi
-  tasks_after="$(wc -l < "$TMP/tasks.log" | tr -d ' ')"
-  [ "$tasks_after" -gt "$tasks_before" ] \
-    || { echo 'Ralphex did not reach the configured review launcher' >&2; exit 1; }
+# Exercise Ralphex's real config loader and CustomExecutor. The fake evaluator
+# emits the completion signal, so require a clean worktree: Ralphex's normal
+# clean-review path commits pending changes by design.
+command -v ralphex >/dev/null 2>&1 \
+  || { echo 'ralphex is required for the configured-launch fixture' >&2; exit 1; }
+[ -z "$(git status --porcelain --untracked-files=normal)" ] \
+  || { echo 'Ralphex configured-launch fixture requires a clean worktree' >&2; exit 1; }
+launcher_plan_name="launcher-reachability-$$-$RANDOM"
+RALPHEX_FIXTURE_PROGRESS="$ROOT/.ralphex/progress/progress-$launcher_plan_name-codex.txt"
+printf '%s\n' '# Launcher reachability fixture' '' '- [x] No implementation work.' \
+  > "$TMP/$launcher_plan_name.md"
+launcher_plan_windows="$(cygpath -w "$TMP/$launcher_plan_name.md")"
+tasks_before="$(wc -l < "$TMP/tasks.log" | tr -d ' ')"
+set +e
+PATH="$TMP/bin:$PATH" REAL_GIT_BIN="$REAL_GIT" FAKE_ROOT="$TMP" \
+  FAKE_REPORT="$TMP/clean.json" FAKE_STATUS=0 RALPHEX_GIT_BASH="$git_bash" \
+  MSYS2_ARG_CONV_EXCL='*' \
+  ralphex /external-only /skip-finalize /max-external-iterations:1 \
+    /base-ref:main "$launcher_plan_windows" \
+    > "$TMP/ralphex.out" 2> "$TMP/ralphex.err"
+ralphex_status=$?
+set -e
+if [ "$ralphex_status" -ne 0 ]; then
+  cat "$TMP/ralphex.out" "$TMP/ralphex.err" >&2
+  echo "Ralphex launch fixture exited $ralphex_status" >&2
+  exit 1
 fi
+tasks_after="$(wc -l < "$TMP/tasks.log" | tr -d ' ')"
+[ "$tasks_after" -gt "$tasks_before" ] \
+  || { echo 'Ralphex did not reach the configured review launcher' >&2; exit 1; }
 
 echo 'ralphex-revmux bridge tests passed'

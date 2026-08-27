@@ -3,8 +3,9 @@
 #
 # Ralphex writes its rendered custom_review.txt to a temporary .txt file and
 # launches the configured executable with that path as the only argument. On
-# Windows the executable is Git Bash; the project-local prompt is itself a safe
-# shell wrapper which calls this script and passes its own path through.
+# Windows the configured executable is the native launcher, which locates Git
+# Bash and executes the project-local prompt; that safe shell wrapper then calls
+# this script and passes its own path through.
 
 set -uo pipefail
 
@@ -153,23 +154,29 @@ if ! DESCRIPTION_LINE="description: $DESCRIPTION_YAML" \
      BASE_LINE="base: $BASE_YAML" \
      awk '
        NR == 1 {
-         if ($0 != "---") exit 41
+         line = $0
+         cr = (sub(/\r$/, "", line) ? "\r" : "")
+         if (line != "---") exit 41
          in_front = 1
          print
          next
        }
-       in_front && $0 == "---" {
-         if (!description) print ENVIRON["DESCRIPTION_LINE"]
-         if (!branch) print ENVIRON["BRANCH_LINE"]
-         if (!base) print ENVIRON["BASE_LINE"]
+       in_front {
+         line = $0
+         sub(/\r$/, "", line)
+       }
+       in_front && line == "---" {
+         if (!description) print ENVIRON["DESCRIPTION_LINE"] cr
+         if (!branch) print ENVIRON["BRANCH_LINE"] cr
+         if (!base) print ENVIRON["BASE_LINE"] cr
          in_front = 0
          closed = 1
          print
          next
        }
-       in_front && /^description:[[:space:]]*/ { description = 1 }
-       in_front && /^branch:[[:space:]]*/ { branch = 1 }
-       in_front && /^base:[[:space:]]*/ { base = 1 }
+       in_front && line ~ /^description:[[:space:]]*/ { description = 1 }
+       in_front && line ~ /^branch:[[:space:]]*/ { branch = 1 }
+       in_front && line ~ /^base:[[:space:]]*/ { base = 1 }
        { print }
        END { if (!closed) exit 42 }
      ' "$TASK_FILE" > "$TASK_META_TMP"; then
