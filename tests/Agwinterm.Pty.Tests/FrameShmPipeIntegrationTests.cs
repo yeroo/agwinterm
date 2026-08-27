@@ -213,7 +213,7 @@ public class FrameShmPipeIntegrationTests : IDisposable
     }
 
     [Fact]
-    public void AProducerThatDiesBetweenFramesIsAnOrdinaryFailureNotACrash()
+    public void AProducerKilledMidFrameIsAnOrdinaryFailureNotACrash()
     {
         var (session, pipeName) = StartServer();
         var client = Connect(pipeName);
@@ -223,7 +223,9 @@ public class FrameShmPipeIntegrationTests : IDisposable
         string request = CtlRequest(p, seq, p.Slot);
         Assert.True(ReplyOf(client.Send(request)).GetProperty("ok").GetBoolean());
 
-        // The producer exits: its mapping goes with it.
+        // Begin the next frame, then die before the slot is complete or ready is published. The
+        // half-written bytes must never replace the accepted frame.
+        var interrupted = p.WritePartialUnpublishedFrame(0x88);
         p.Dispose();
         _open.Remove(p);
 
@@ -234,9 +236,9 @@ public class FrameShmPipeIntegrationTests : IDisposable
         Assert.True(cached.GetProperty("ok").GetBoolean(), request);
         Assert.Equal("frame:1/0", cached.GetProperty("result").GetString());
 
-        // A new sequence has to read the mapping, which is gone. An ordinary failure: the terminal
-        // keeps the last good frame and stays answerable.
-        var gone = ReplyOf(client.Send(CtlRequest(p, seq + 1, p.Slot)));
+        // A request that would have named the interrupted paint finds no mapping and is an ordinary
+        // error reply on this connection. The accepted pixels stay in the emulator.
+        var gone = ReplyOf(client.Send(CtlRequest(p, interrupted.Seq, interrupted.Slot)));
         Assert.False(gone.GetProperty("ok").GetBoolean());
         Assert.Equal(ShmTestProducer.Packed(0x77, p.Geometry.Width, p.Geometry.Height),
                      session.Emulator.Images[1].Data);

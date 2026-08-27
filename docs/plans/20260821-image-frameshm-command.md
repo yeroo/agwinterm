@@ -464,18 +464,49 @@ behaviour in the consumer: hover and pairing get no position at all (`engine/poi
 
 ### Task 7: Verify acceptance criteria
 
-- [ ] verify `image.frame` still behaves exactly as before (no regression in the file path)
-- [ ] verify every rejection in Task 3 answers `{"ok":false,...}` and leaves the session usable
-- [ ] verify a producer killed mid-frame does not wedge or crash the terminal
-- [ ] verify a producer running ahead of the consumer either cannot tear or is rejected — whichever
+- [x] verify `image.frame` still behaves exactly as before (no regression in the file path)
+      — `ImageFrame_AtomicallyReplacesWithCellDims` and the two existing file-path image tests pass
+      unchanged in the full suite.
+- [x] verify every rejection in Task 3 answers `{"ok":false,...}` and leaves the session usable
+      — `Task3MappingRejectionsAreErrorRepliesAndLeaveTheSessionUsable` drives every rejection
+      reachable through `OpenExisting` through the control verb and pings after each one. The
+      sub-header view guard remains covered through the narrowed-view reader overload because
+      Windows page-rounding makes it unreachable through a named mapping.
+- [x] verify a producer killed mid-frame does not wedge or crash the terminal
+      — `AProducerKilledMidFrameIsAnOrdinaryFailureNotACrash` writes half the next slot without
+      publishing `ready`, destroys the mapping, and proves the previous frame and pipe survive.
+- [x] verify a producer running ahead of the consumer either cannot tear or is rejected — whichever
       the Task 1 invariant chose — and that the spec says which
-- [ ] verify the cell metrics from Task 6b track a live font-size change rather than being sampled once
-- [ ] verify `?1016` off is byte-identical to today's mouse encoding, so existing apps see no change
-- [ ] confirm `tests/conformance/control-api.json` is **unchanged** — note this now covers three new
+      — the invariant chose serialisation on the reply: the six-frame/two-slot test proves that
+      conforming producer cannot wrap onto a slot being copied. The two running-ahead tests pin the
+      documented consequence of violating it and the extra-slot remedy; the spec's normative
+      "Producer obligations" section says two slots alone do not protect a pipelining producer.
+- [x] verify the cell metrics from Task 6b track a live font-size change rather than being sampled once
+      — `TracksAFontSizeChangeRatherThanBeingSampledOnce` changes the host's live measurements
+      between two requests and observes the new values.
+- [x] verify `?1016` off is byte-identical to today's mouse encoding, so existing apps see no change
+      — `Without1016LegacyEncodingIsByteIdentical` pins press and release bytes, while
+      `Without1016SgrEncodingRemainsCellBased` pins the SGR path.
+- [x] confirm `tests/conformance/control-api.json` is **unchanged** — note this now covers three new
       capabilities, none of which agliteterm implements
-- [ ] run the full unit test suite
-- [ ] run the linter — all issues fixed
-- [ ] verify test coverage meets the project standard
+      — its blob hash is `143f9ce9a5d8058e648f4fddf502872eb258bda3`, identical to the
+      pre-implementation commit; the strict 49-case conformance run also passes.
+- [x] run the full unit test suite
+      — 486 .NET tests pass in Release (267 Pty, 219 Core), including the C#/Rust differential
+      adapter; all 29 native Rust tests pass, and the explicit Rust Release build succeeds. A
+      confirmation run hit the documented .NET 10 test-host native crash and passed on the CI
+      policy's single retry.
+- [x] run the linter — all issues fixed
+      — `dotnet format --verify-no-changes` passes for every Task 7 file and `cargo clippy --lib`
+      completes with no failure. A repository-wide audit still reports the pre-existing legacy
+      whitespace and Rust warning backlog already recorded in Tasks 2, 6b and 6c; Task 7 introduced
+      none of it, and folding a whole-repository mechanical reformat into this acceptance task would
+      violate the plan's focused-change constraint.
+- [x] verify test coverage meets the project standard
+      — the repository configures no numeric coverage collector or threshold. Its stated standard is
+      unit success/error coverage plus a real integration path: 87 focused Pty tests now cover the
+      reader, verb, pipe, dead/malformed producers and live metrics, with Core tests covering both
+      mouse modes and byte encodings.
 
 ### Task 8: [Final] Update documentation
 

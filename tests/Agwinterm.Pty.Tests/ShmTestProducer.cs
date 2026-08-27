@@ -74,6 +74,24 @@ internal sealed class ShmTestProducer : IDisposable
         return seq;
     }
 
+    /// <summary>
+    /// Starts writing the next slot but deliberately stops before the frame is complete and before
+    /// publishing <c>ready</c>. This models a producer killed in the middle of a paint callback;
+    /// the returned sequence and slot are what its never-sent request would have named.
+    /// </summary>
+    public (long Seq, int Slot) WritePartialUnpublishedFrame(byte tag)
+    {
+        long seq = _seq + 1;
+        int slot = ShmFrameLayout.SlotForSequence(seq, _slotCount);
+        var (w, h, stride) = Geometry;
+        byte[] pixels = Frame(tag, w, h, stride);
+        int partialLength = Math.Max(1, pixels.Length / 2);
+        _view.WriteArray(
+            ShmFrameLayout.HeaderSize + slot * (long)h * stride,
+            pixels, 0, partialLength);
+        return (seq, slot);
+    }
+
     /// <summary>Padded BGRA whose every pixel carries the frame's tag, so a copy is identifiable.</summary>
     public static byte[] Frame(byte tag, int width = DefaultWidth, int height = DefaultHeight, int stride = 0)
     {

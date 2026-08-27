@@ -48,6 +48,32 @@ public class ControlServerFrameShmTests : IDisposable
         return p;
     }
 
+    private string NewRawMapping(ShmFrameHeader header, long capacity = 4096)
+    {
+        string name = ShmFrameReader.NamePrefix + "acceptance-" + Guid.NewGuid().ToString("N");
+        var mmf = MemoryMappedFile.CreateNew(name, capacity);
+        _open.Add(mmf);
+        using var view = mmf.CreateViewAccessor(0, capacity, MemoryMappedFileAccess.ReadWrite);
+        var bytes = new byte[ShmFrameLayout.HeaderSize];
+        ShmFrameLayout.Write(bytes, header);
+        view.WriteArray(0, bytes, 0, bytes.Length);
+        return name;
+    }
+
+    private static ShmFrameHeader RawHeader(
+        long ready = 1,
+        long slotStride = Stride * Height,
+        int width = Width,
+        int height = Height,
+        int stride = Stride,
+        int format = (int)KittyFormat.Bgra) => new(
+            ShmFrameLayout.Version, SlotCount: 2, Flags: 0, slotStride,
+            ShmFrameLayout.HeaderSize, ready,
+            [
+                new ShmSlotDescriptor(width, height, stride, format),
+                new ShmSlotDescriptor(width, height, stride, format),
+            ]);
+
     private static string Request(string json) => "{\"cmd\":\"image.frameshm\",\"args\":" + json + "}";
 
     /// <summary>
@@ -336,6 +362,54 @@ public class ControlServerFrameShmTests : IDisposable
         string resp = server.Dispatch(Request(
             "{\"images\":[" + Image(p, seq + 1, ShmFrameLayout.SlotForSequence(seq + 1, p.SlotCount)) + "]}"));
         Assert.Contains("newer than the mapping's ready sequence", ErrorOf(resp));
+    }
+
+    [Fact]
+    public void Task3MappingRejectionsAreErrorRepliesAndLeaveTheSessionUsable()
+    {
+        var (server, session) = New();
+
+        string RequestFor(string name, int slot = 0, long seq = 0, string extra = "") => Request(
+            "{\"images\":[{\"id\":1,\"name\":" + JsonSerializer.Serialize(name) +
+            ",\"slot\":" + slot + ",\"seq\":" + seq + extra + "}]}");
+
+        string valid = NewRawMapping(RawHeader());
+        string smallStride = NewRawMapping(RawHeader(
+            slotStride: (Stride - 4) * Height, stride: Stride - 4));
+        string overlappingSlots = NewRawMapping(RawHeader(
+            slotStride: Stride * (Height - 1)));
+        string outsideView = NewRawMapping(RawHeader(slotStride: 1L << 20));
+        string negativeDimensions = NewRawMapping(RawHeader(width: -1));
+        string overflowingDimensions = NewRawMapping(RawHeader(
+            slotStride: 1L << 20, width: 0x10000, height: 0x10000, stride: 0x40000));
+        string unsupportedFormat = NewRawMapping(RawHeader(format: (int)KittyFormat.Png));
+
+        var rejected = new[]
+        {
+            RequestFor(@"Global\anything"),
+            RequestFor(ShmFrameReader.NamePrefix + "missing-" + Guid.NewGuid().ToString("N")),
+            RequestFor(valid, slot: 2),
+            RequestFor(smallStride),
+            RequestFor(overlappingSlots),
+            RequestFor(outsideView, slot: 1),
+            RequestFor(negativeDimensions),
+            RequestFor(overflowingDimensions),
+            RequestFor(unsupportedFormat),
+            RequestFor(valid, seq: 2),
+            RequestFor(valid, extra: ",\"width\":" + (Width + 1)),
+        };
+
+        foreach (string request in rejected)
+        {
+            Assert.NotEmpty(ErrorOf(server.Dispatch(request)));
+            Assert.Empty(session.Emulator.Images);
+            Assert.Empty(session.Emulator.Placements);
+            Assert.Contains("\"ok\":true", server.Dispatch("{\"cmd\":\"ping\"}"));
+        }
+
+        // Windows rounds named sections to a page, so a view shorter than the 256-byte header is
+        // unreachable through OpenExisting. RejectsAViewShorterThanTheHeader drives that guard via
+        // the reader's narrowed-view overload; all reachable Task 3 failures go through JSON above.
     }
 
     // ---- a producer running ahead of the consumer ---------------------------------------------
