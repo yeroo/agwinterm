@@ -57,10 +57,12 @@ public sealed class ControlServer : IDisposable
     private readonly ConditionalWeakTable<ISession, Dictionary<int, FrameCacheEntry>> _frameState = new();
 
     // Cache entries may be discarded when another image path replaces their image reference, but
-    // accepted-sequence ordering must survive that invalidation. Keep the newest positive shared
-    // sequence independently, one current mapping identity per image id.
-    private readonly ConditionalWeakTable<ISession, Dictionary<int, (string Identity, long Token)>>
+    // accepted-sequence ordering must survive that invalidation. The request generation also keeps
+    // a delayed request from an old mapping incarnation from resurfacing after a newer identity has
+    // committed; unlike retaining every historical mapping name, this remains bounded per image id.
+    private readonly ConditionalWeakTable<ISession, Dictionary<int, (string Identity, long Token, long Generation)>>
         _acceptedSharedFrameSequences = new();
+    private long _sharedFrameRequestGeneration;
 
     public ControlServer(ISessionHost host, string pipeName = "agwinterm")
     {
@@ -618,12 +620,14 @@ public sealed class ControlServer : IDisposable
     /// </summary>
     private string HandleImageFrameShm(ISession s, JsonElement args)
     {
+        long requestGeneration = Interlocked.Increment(ref _sharedFrameRequestGeneration);
         _sharedFrameReaders.Wait();
-        try { return HandleImageFrameShm(s, args, retryInvalidCache: true); }
+        try { return HandleImageFrameShm(s, args, retryInvalidCache: true, requestGeneration); }
         finally { _sharedFrameReaders.Release(); }
     }
 
-    private string HandleImageFrameShm(ISession s, JsonElement args, bool retryInvalidCache)
+    private string HandleImageFrameShm(
+        ISession s, JsonElement args, bool retryInvalidCache, long requestGeneration)
     {
         if (args.ValueKind != JsonValueKind.Object ||
             !args.TryGetProperty("images", out var images) || images.ValueKind != JsonValueKind.Array)
@@ -713,9 +717,16 @@ public sealed class ControlServer : IDisposable
                 {
                     var key = (op.id, op.identity);
                     long latest = requestLatest.GetValueOrDefault(key);
-                    if (latest == 0 && acceptedSequences.TryGetValue(op.id, out var accepted) &&
-                        accepted.Identity == op.identity)
-                        latest = accepted.Token;
+                    if (latest == 0 && acceptedSequences.TryGetValue(op.id, out var accepted))
+                    {
+                        if (accepted.Identity == op.identity)
+                            latest = accepted.Token;
+                        else if (requestGeneration < accepted.Generation)
+                        {
+                            commitError = $"image.frameshm: request for id {op.id} was superseded by a newer mapping";
+                            return;
+                        }
+                    }
                     if (op.token < latest)
                     {
                         commitError = $"image.frameshm: sequence {op.token} for id {op.id} was superseded by {latest}";
@@ -756,13 +767,19 @@ public sealed class ControlServer : IDisposable
                 foreach (var update in updates) state[update.id] = update.entry;
             lock (acceptedSequences)
                 foreach (var op in ops.Where(op => op.token > 0))
-                    acceptedSequences[op.id] = (op.identity, op.token);
+                {
+                    long generation = requestGeneration;
+                    if (acceptedSequences.TryGetValue(op.id, out var accepted) &&
+                        accepted.Identity == op.identity)
+                        generation = Math.Max(generation, accepted.Generation);
+                    acceptedSequences[op.id] = (op.identity, op.token, generation);
+                }
         });
         if (invalidCache)
         {
             RemoveInvalidCacheEntries(state, ops.Select(op => (op.id, op.cached)));
             return retryInvalidCache
-                ? HandleImageFrameShm(s, args, retryInvalidCache: false)
+                ? HandleImageFrameShm(s, args, retryInvalidCache: false, requestGeneration)
                 : Err("image.frameshm cache changed while the frame was prepared; retry");
         }
         if (commitError is not null) return Err(commitError);

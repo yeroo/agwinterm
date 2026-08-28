@@ -34,6 +34,8 @@ pub struct KittyImage {
     pub width: i32,
     pub height: i32,
     pub data: Vec<u8>,
+    /// Monotonic content generation for stable-id replacements across the C ABI.
+    pub revision: u64,
 }
 
 /// Mirror of C# ImagePlacement.
@@ -260,6 +262,7 @@ impl Emulator {
         self.images.contains_key(&id)
     }
     pub fn set_image_data(&mut self, id: i32, format: i32, width: i32, height: i32, data: Vec<u8>) {
+        let revision = self.next_image_revision(id);
         self.images.insert(
             id,
             KittyImage {
@@ -268,8 +271,14 @@ impl Emulator {
                 width,
                 height,
                 data,
+                revision,
             },
         );
+    }
+    fn next_image_revision(&self, id: i32) -> u64 {
+        self.images
+            .get(&id)
+            .map_or(1, |image| image.revision.wrapping_add(1))
     }
     #[allow(clippy::too_many_arguments)]
     pub fn place_image(
@@ -1427,6 +1436,7 @@ impl Emulator {
             let Some(bytes) = base64_decode(&b64) else {
                 return;
             }; // malformed → drop, like the C# catch
+            let revision = self.next_image_revision(id);
             self.images.insert(
                 id,
                 KittyImage {
@@ -1435,6 +1445,7 @@ impl Emulator {
                     width: w,
                     height: h,
                     data: bytes,
+                    revision,
                 },
             );
         }
@@ -1466,6 +1477,7 @@ impl Emulator {
         }
         let id = self.sixel_seq;
         self.sixel_seq -= 1;
+        let revision = self.next_image_revision(id);
         self.images.insert(
             id,
             KittyImage {
@@ -1474,6 +1486,7 @@ impl Emulator {
                 width: s.width as i32,
                 height: s.height as i32,
                 data: s.rgba,
+                revision,
             },
         );
         let cols = (((s.width as i32) + self.cell_pixel_width - 1) / self.cell_pixel_width).max(1);
@@ -1580,6 +1593,19 @@ mod tests {
         t.feed(b"\x1b[?1049l");
         assert!(!t.emu.is_alt_screen());
         assert_eq!(row_text(&t, 0), "main");
+    }
+
+    #[test]
+    fn stable_image_id_replacements_advance_the_content_revision() {
+        let mut t = Terminal::new(6, 2);
+        t.emu.set_image_data(7, 132, 1, 1, vec![]);
+        let host_revision = t.emu.images().get(&7).unwrap().revision;
+
+        t.feed(b"\x1b_Ga=t,i=7,f=32,s=1,v=1;CQgHBg==\x1b\\");
+
+        let terminal_image = t.emu.images().get(&7).unwrap();
+        assert!(terminal_image.revision > host_revision);
+        assert_eq!(terminal_image.data, vec![9, 8, 7, 6]);
     }
 
     #[test]

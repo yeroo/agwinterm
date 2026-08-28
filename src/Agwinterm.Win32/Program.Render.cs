@@ -36,11 +36,23 @@ internal partial class Program
     {
         if (_rt is null) return;
 
+        // Publish the newest object for each stable image id before touching completed work.
+        // Background conversions use reference identity to abandon frames superseded in flight.
+        var live = new HashSet<KittyImage>(em.Images.Values);
+        var liveIds = new HashSet<int>();
+        foreach (var img in live)
+        {
+            liveIds.Add(img.Id);
+            _latestDecodeImages[img.Id] = img;
+        }
+        foreach (int id in _latestDecodeImages.Keys)
+            if (!liveIds.Contains(id)) _latestDecodeImages.TryRemove(id, out _);
+
         // 1) Upload any pixels decoded on background threads (cheap; UI thread only).
         while (_decoded.TryDequeue(out var d))
         {
             _decoding.Remove(d.img);
-            if (d.bgra is null || _imageCache.ContainsKey(d.img)) continue;
+            if (d.bgra is null || !IsLatestDecodeImage(d.img) || _imageCache.ContainsKey(d.img)) continue;
             try
             {
                 long t0 = Stopwatch.GetTimestamp();
@@ -56,7 +68,6 @@ internal partial class Program
         // 2) Prune textures whose image was retransmitted or deleted (bounds memory during scroll).
         if (_imageCache.Count > 0)
         {
-            var live = new HashSet<KittyImage>(em.Images.Values);
             foreach (var stale in _imageCache.Keys.Where(k => !live.Contains(k)).ToList())
             {
                 _imageCache[stale].Dispose();
@@ -70,7 +81,10 @@ internal partial class Program
             if (!em.Images.TryGetValue(p.ImageId, out var img)) continue;
             if (!_imageCache.TryGetValue(img, out var bmp))
             {
-                if (_decoding.Add(img)) // not already decoding
+                // A frame stream may replace the same id faster than conversion/upload. Bound the
+                // retained sources and output buffers; a later draw schedules only the then-current
+                // object, naturally coalescing any intermediate frames that never got a slot.
+                if (_decoding.Count < MaxConcurrentImageDecodes && _decoding.Add(img))
                     _ = Task.Run(() => DecodePixelsAsync(img));
                 continue; // will render on a later frame once uploaded
             }
@@ -197,8 +211,15 @@ internal partial class Program
     {
         try
         {
+            if (!IsLatestDecodeImage(img))
+            {
+                _decoded.Enqueue((img, null, 0, 0));
+                return;
+            }
             var (bgra, w, h) = DecodePixels(img);
-            _decoded.Enqueue((img, bgra, w, h));
+            _decoded.Enqueue(IsLatestDecodeImage(img)
+                ? (img, bgra, w, h)
+                : (img, null, 0, 0));
         }
         catch (Exception ex)
         {
@@ -207,6 +228,9 @@ internal partial class Program
         }
         finally { RequestRedraw(); }
     }
+
+    private bool IsLatestDecodeImage(KittyImage img)
+        => _latestDecodeImages.TryGetValue(img.Id, out var latest) && ReferenceEquals(latest, img);
 
     /// <summary>Thread-safe decode (PNG via System.Drawing, or raw RGB/RGBA) to a premultiplied-BGRA buffer.</summary>
     private static (byte[] bgra, int w, int h) DecodePixels(KittyImage img)
@@ -242,8 +266,8 @@ internal partial class Program
     {
         foreach (var b in _imageCache.Values) { try { b.Dispose(); } catch { } }
         _imageCache.Clear();
-        _decoding.Clear();
-        while (_decoded.TryDequeue(out _)) { }
+        // CPU decode work is device-independent. Keep its bounded in-flight/completed state so a
+        // run of device resets cannot clear the accounting and launch another batch over it.
         foreach (var b in _bgCache.Values) { try { b.Dispose(); } catch { } } // watermark textures are device-bound too
         _bgCache.Clear();
         _bgDecoding.Clear();

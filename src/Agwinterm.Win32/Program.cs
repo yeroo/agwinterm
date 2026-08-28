@@ -363,8 +363,13 @@ internal partial class Program : ISessionHost, IWindowHost
 
     // Decoded Kitty images, keyed by the current KittyImage instance so a retransmit
     // (new bytes, same id) re-decodes and the stale texture is pruned/disposed.
+    private const int MaxConcurrentImageDecodes = 2;
     private readonly Dictionary<KittyImage, ID2D1Bitmap> _imageCache = new();
     private readonly HashSet<KittyImage> _decoding = new();               // decode in flight (UI-thread set)
+    // Background jobs consult this before and after conversion, so stable-id frame streams drop
+    // superseded work instead of allocating and queueing every intermediate full-frame buffer.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, KittyImage>
+        _latestDecodeImages = new();
     // Background-decoded pixels waiting to be uploaded to a GPU texture on the UI thread.
     // bgra == null signals a decode failure (so we can drop it from _decoding without retrying forever).
     private readonly System.Collections.Concurrent.ConcurrentQueue<(KittyImage img, byte[]? bgra, int w, int h)> _decoded = new();

@@ -77,10 +77,12 @@ namespace: with no backslash available, a suffix cannot walk back out of `Local\
 1. Pick the slot for the frame's sequence number: `slot = seq % slotCount`. Sequences start at `1`;
    `ready == 0` means no frame has ever been published.
 2. Write the slot's descriptor (`width`, `height`, `stride`, `format`) and then its pixels.
-3. Issue a **release** fence, then store `seq` into `ready`.
+3. Atomically store `seq` into the aligned `ready` field with **release** semantics.
 4. Send the `image.frameshm` request naming `slot` and `seq`.
 
-The reader loads `ready` with an **acquire** fence before touching pixels. A producer that dies
+The reader atomically loads `ready` with **acquire** semantics directly from the mapped field before
+touching pixels. Copying the header and fencing a load from that private copy is not equivalent: the
+copy could tear the 64-bit value and cannot acquire the producer's pixel writes. A producer that dies
 mid-write therefore leaves a half-written slot that was never published, and the reader either sees
 the previous frame or nothing.
 
@@ -149,10 +151,16 @@ shared-frame commit may not increase retained payload beyond 268,435,456 bytes o
 beyond 256. Replacing an existing id is allowed; a request that would grow past either limit is
 rejected atomically and leaves the previous composition visible.
 
+The renderer admits at most two image conversions at once. Stable-id replacements publish the newest
+image reference to those jobs; superseded work is discarded before conversion when possible and
+always before upload. Intermediate frames that never receive a decode slot are coalesced away.
+
 Two pipe connections may complete their off-lock copies out of order. For a positive sequence, the
-commit step compares `(id, name, seq)` with the newest frame already accepted: a delayed older request
-is rejected rather than replacing a newer displayed frame. This makes pipelining distinct slots safe
-with respect to display order as well as slot reuse.
+commit step compares `seq` with the newest frame accepted for the same `(id, name)`. A request
+generation captured before the off-lock copy also orders mapping-identity switches, so an earlier
+request from mapping A cannot resurface after a later request from mapping B commits. Delayed older
+work is rejected rather than replacing a newer displayed frame. This makes pipelining distinct slots
+safe with respect to display order as well as slot reuse.
 
 Note the format restriction: only the **4-bytes-per-pixel** formats are carried, `132` (`Bgra`) and
 `32` (`Rgba`). `24` (`Rgb`) and `100` (`Png`) are valid `KittyFormat` values but not valid here —

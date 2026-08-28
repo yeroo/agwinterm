@@ -27,7 +27,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 17;
+pub const ABI_VERSION: u32 = 18;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -748,6 +748,7 @@ pub struct FfiImageMeta {
     pub format: i32,
     pub width: i32,
     pub height: i32,
+    pub revision: u64,
     pub data_len: u32,
 }
 
@@ -819,6 +820,7 @@ pub unsafe extern "C" fn agwcore_emu_image_metas(
             format: img.format,
             width: img.width,
             height: img.height,
+            revision: img.revision,
             data_len: img.data.len() as u32,
         };
     }

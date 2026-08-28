@@ -771,6 +771,54 @@ public class ControlServerFrameShmTests : IDisposable
     }
 
     [Fact]
+    public async Task AnOlderMappingRequestCannotResurfaceAfterAnotherMappingCommits()
+    {
+        using var session = new TerminalSession(80, 24);
+        var server = new ControlServer(session);
+        var producerA = NewProducer(slotCount: 2);
+        var producerB = NewProducer(slotCount: 2);
+        long olderA = producerA.Publish(0xC1);
+        int olderASlot = producerA.Slot;
+        long newerA = producerA.Publish(0xC2);
+        int newerASlot = producerA.Slot;
+        long sequenceB = producerB.Publish(0xC3);
+
+        Assert.Contains("frame:1/1", server.Dispatch(Request(
+            "{\"images\":[" + Image(producerA, newerA, newerASlot, id: 1) + "]}")));
+
+        using var olderPrepared = new ManualResetEventSlim();
+        using var releaseOlder = new ManualResetEventSlim();
+        int preparedCalls = 0;
+        server.SharedFramePrepared = () =>
+        {
+            if (Interlocked.Increment(ref preparedCalls) != 1) return;
+            olderPrepared.Set();
+            if (!releaseOlder.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("test did not release the old mapping request");
+        };
+
+        Task<string> delayedA = Task.Run(() => server.Dispatch(Request(
+            "{\"images\":[" + Image(producerA, olderA, olderASlot, id: 1) + "]}")));
+        string responseB;
+        try
+        {
+            Assert.True(olderPrepared.Wait(TimeSpan.FromSeconds(10)),
+                "old mapping request did not finish phase 1");
+            responseB = server.Dispatch(Request(
+                "{\"images\":[" + Image(producerB, sequenceB, producerB.Slot, id: 1) + "]}"));
+        }
+        finally
+        {
+            releaseOlder.Set();
+        }
+
+        string responseA = await delayedA.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("frame:1/1", responseB);
+        Assert.Contains("was superseded", ErrorOf(responseA));
+        Assert.Equal(Packed(0xC3), session.Emulator.Images[1].Data);
+    }
+
+    [Fact]
     public void SequentialUniqueIdsCannotExceedTheRetainedImageLimit()
     {
         using var session = new TerminalSession(80, 24);

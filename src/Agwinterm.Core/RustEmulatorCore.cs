@@ -16,7 +16,7 @@ namespace Agwinterm.Core;
 /// </summary>
 public sealed unsafe class RustEmulatorCore : IDisposable
 {
-    public const uint RequiredAbi = 17;
+    public const uint RequiredAbi = 18;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Info
@@ -227,6 +227,7 @@ public sealed unsafe class RustEmulatorCore : IDisposable
     public struct NativeImageMeta
     {
         public int Id, Format, Width, Height;
+        public ulong Revision;
         public uint DataLen;
     }
 

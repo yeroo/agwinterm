@@ -191,9 +191,9 @@ public static class ShmFrameReader
 
         if (request.Seq < 0) { error = ShmFrameError.BadSequence; return false; }
 
-        // Centralize the acquire load in the wire-layout helper so tests and production exercise
-        // one synchronization path rather than two implementations that can drift.
-        long ready = ShmFrameLayout.ReadReadyAcquire(headerBytes);
+        // This must be an atomic acquire load directly from shared memory. Reading ready from the
+        // bulk-copied header above would neither prevent a torn int64 nor acquire the pixel writes.
+        long ready = ShmFrameLayout.ReadReadyAcquire(view);
         if (request.Seq > 0 && ready < request.Seq)
         { error = ShmFrameError.FrameNotPublished; return false; }
 

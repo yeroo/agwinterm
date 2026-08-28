@@ -544,6 +544,12 @@ behaviour in the consumer: hover and pairing get no position at all (`engine/poi
 - ➕ **second-review validation:** 509 .NET tests and 29 native Rust tests pass; repository-wide
       `dotnet format`, Rust formatting, strict all-target clippy, zero-warning Release builds, ABI
       agreement, `git diff --check`, and the live strict control-API conformance suite all pass.
+- ➕ **later review validation:** publication now uses an atomic acquire load directly from the
+      mapping, renderer conversions are bounded and coalesced, mapping switches cannot resurrect an
+      older request, and Rust stable-id replacements carry a native content revision. The latter
+      advances the C ABI from v17 to v18. All 517 .NET tests and 30 native Rust tests pass, along with
+      repository-wide formatting, warnings-as-errors clippy, a zero-warning Release build, ABI
+      agreement, `git diff --check`, and the live strict control-API conformance suite.
 
 ### Task 8: [Final] Update documentation
 
@@ -566,10 +572,10 @@ behaviour in the consumer: hover and pairing get no position at all (`engine/poi
 
 ## Technical Details
 
-**Why two slots and a sequence number.** The producer fills a slot completely, then publishes by
-writing `ready = seq` with a release barrier; the renderer reads `ready` with an acquire barrier and
-copies from the slot it names. No lock is shared across the process boundary, and a producer that
-dies mid-write leaves a half-written slot that is simply never published.
+**Why two slots and a sequence number.** The producer fills a slot completely, then publishes with
+an atomic release store of `ready = seq`; the renderer performs an atomic acquire load directly from
+that mapped field and copies from the slot it names. No lock is shared across the process boundary,
+and a producer that dies mid-write leaves a half-written slot that is simply never published.
 
 **What that alternation does and does not guarantee** — an earlier draft of this paragraph claimed
 "a frame in flight is therefore never the frame being read", and that does not follow.

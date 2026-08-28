@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO.MemoryMappedFiles;
 using Agwinterm.Pty;
 
 namespace Agwinterm.Pty.Tests;
@@ -234,6 +235,21 @@ public class ShmFrameLayoutTests
         Assert.Equal(42, ShmFrameLayout.ReadReadyAcquire(buf));
         Assert.True(ShmFrameLayout.TryRead(buf, out var read, out _));
         Assert.Equal(42, read!.Ready);
+    }
+
+    [Fact]
+    public void ReadyRoundTripsThroughTheMappedAtomicReleaseAcquirePair()
+    {
+        string name = ShmFrameReader.NamePrefix + "layout-" + Guid.NewGuid().ToString("N");
+        using var mmf = MemoryMappedFile.CreateNew(name, ShmFrameLayout.HeaderSize);
+        using var view = mmf.CreateViewAccessor(
+            0, ShmFrameLayout.HeaderSize, MemoryMappedFileAccess.ReadWrite);
+        byte[] header = Encode(SampleHeader());
+        view.WriteArray(0, header, 0, header.Length);
+
+        Assert.Equal(0, ShmFrameLayout.ReadReadyAcquire(view));
+        ShmFrameLayout.WriteReadyRelease(view, 42);
+        Assert.Equal(42, ShmFrameLayout.ReadReadyAcquire(view));
     }
 
     [Fact]

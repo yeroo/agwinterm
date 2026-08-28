@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO.MemoryMappedFiles;
 
 namespace Agwinterm.Pty;
 
@@ -257,9 +258,9 @@ public static class ShmFrameLayout
     }
 
     /// <summary>
-    /// Loads <c>ready</c> with acquire semantics: the fence after the load stops the pixel
-    /// reads that follow from being hoisted above it, so the slot contents seen are at least
-    /// as new as the sequence number that named them.
+    /// Reads <c>ready</c> from an ordinary header buffer. This is an encode/decode helper only:
+    /// interprocess publication must use the mapped-view overload so the load is atomic and
+    /// performed directly against shared memory.
     /// </summary>
     public static long ReadReadyAcquire(ReadOnlySpan<byte> view)
     {
@@ -270,9 +271,33 @@ public static class ShmFrameLayout
     }
 
     /// <summary>
-    /// Stores <c>ready</c> with release semantics: the fence before the store keeps the pixel
-    /// writes from sinking below it, so a reader that sees the sequence sees the whole slot.
-    /// Test producers use this; real producers implement the same fence in their own language.
+    /// Atomically loads the aligned mapped <c>ready</c> field with acquire semantics. Reading an
+    /// already-copied header is not equivalent: the bulk copy itself may tear the 64-bit field and
+    /// cannot synchronize the pixel reads that follow with another process's release store.
+    /// </summary>
+    public static unsafe long ReadReadyAcquire(MemoryMappedViewAccessor view)
+    {
+        ArgumentNullException.ThrowIfNull(view);
+        if (view.Capacity < HeaderSize) return 0;
+
+        byte* pointer = null;
+        bool acquired = false;
+        try
+        {
+            view.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
+            acquired = true;
+            ref long ready = ref *(long*)(pointer + view.PointerOffset + ReadyOffset);
+            return Volatile.Read(ref ready);
+        }
+        finally
+        {
+            if (acquired) view.SafeMemoryMappedViewHandle.ReleasePointer();
+        }
+    }
+
+    /// <summary>
+    /// Writes <c>ready</c> into an ordinary header buffer. This is an encode/decode helper only;
+    /// interprocess producers use the mapped-view overload or an equivalent atomic release store.
     /// </summary>
     public static void WriteReadyRelease(Span<byte> view, long seq)
     {
@@ -280,5 +305,30 @@ public static class ShmFrameLayout
             throw new ArgumentException($"header needs {HeaderSize} bytes, got {view.Length}", nameof(view));
         Interlocked.MemoryBarrier();
         BinaryPrimitives.WriteInt64LittleEndian(view[ReadyOffset..], seq);
+    }
+
+    /// <summary>
+    /// Atomically stores <c>ready</c> directly into the aligned mapped field with release
+    /// semantics, publishing every descriptor and pixel write that preceded it.
+    /// </summary>
+    public static unsafe void WriteReadyRelease(MemoryMappedViewAccessor view, long seq)
+    {
+        ArgumentNullException.ThrowIfNull(view);
+        if (view.Capacity < HeaderSize)
+            throw new ArgumentException($"header needs {HeaderSize} bytes, got {view.Capacity}", nameof(view));
+
+        byte* pointer = null;
+        bool acquired = false;
+        try
+        {
+            view.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
+            acquired = true;
+            ref long ready = ref *(long*)(pointer + view.PointerOffset + ReadyOffset);
+            Volatile.Write(ref ready, seq);
+        }
+        finally
+        {
+            if (acquired) view.SafeMemoryMappedViewHandle.ReleasePointer();
+        }
     }
 }

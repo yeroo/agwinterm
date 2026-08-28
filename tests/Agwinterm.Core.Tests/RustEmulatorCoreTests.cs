@@ -402,6 +402,23 @@ public class RustEmulatorCoreTests
     }
 
     [Fact]
+    public void Adapter_TerminalImageReplacesAHostImageWithTheSameId()
+    {
+        if (!Available) return;
+        using var rust = new RustTerminalCore(10, 4);
+        rust.SetImageData(7, KittyFormat.Bgra, 1, 1, new byte[] { 1, 2, 3, 255 });
+        KittyImage hostImage = rust.Images[7];
+
+        const string esc = "\x1b";
+        rust.Feed(System.Text.Encoding.ASCII.GetBytes(
+            $"{esc}_Ga=t,i=7,f=32,s=1,v=1;CQgHBg=={esc}\\"));
+
+        Assert.NotSame(hostImage, rust.Images[7]);
+        Assert.Equal(KittyFormat.Rgba, rust.Images[7].Format);
+        Assert.Equal(new byte[] { 9, 8, 7, 6 }, rust.Images[7].Data);
+    }
+
+    [Fact]
     public void Adapter_CraftedApcF132_DoesNotProduceBgra()
     {
         if (!Available) return;

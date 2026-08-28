@@ -66,10 +66,7 @@ internal sealed class ShmTestProducer : IDisposable
         byte[] pixels = Frame(tag, w, h, stride);
         _view.WriteArray(ShmFrameLayout.HeaderSize + slot * (long)h * stride, pixels, 0, pixels.Length);
 
-        var ready = new byte[ShmFrameLayout.HeaderSize];
-        _view.ReadArray(0, ready, 0, ready.Length);
-        ShmFrameLayout.WriteReadyRelease(ready, seq);
-        _view.WriteArray(0, ready, 0, ready.Length);
+        ShmFrameLayout.WriteReadyRelease(_view, seq);
         _seq = seq;
         return seq;
     }
