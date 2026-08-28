@@ -465,7 +465,7 @@ public class RustParityTests
         {
             ("sixel-basic", new[] { "\x1bP0;0;8q#1~~~\x1b\\", "after", "\x1bPq#0;2;100;0;0!5~-~~\x07" }),
             ("sixel-scrolloff", new[] { "\x1b[24;1H", "\x1bPq#2~~~~\x1b\\", "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n" }),
-            ("sixel-hostile", new[] { "\x1bP\"1;1;2000000000;2000000000q#1~\x1b\\", "\x1bPq!2000000000?\x1b\\", "\x1bPnotasixel\x1b\\" }),
+            ("sixel-hostile", new[] { "\x1bPq\"1;1;2000000000;2000000000#1~\x1b\\", "\x1bPq!2000000000?\x1b\\", "\x1bPnotasixel\x1b\\" }),
             ("kitty-basic", new[] { "\x1b_Ga=T,i=5,f=32,s=1,v=1,c=2,r=1;AAAA\x1b\\", "\x1b_Ga=p,i=5;\x1b\\", "\x1b_Ga=d,i=5;\x1b\\" }),
             ("kitty-chunked", new[] { "\x1b_Ga=T,i=9,f=24,m=1;AAAA\x1b\\", "\x1b_Gm=1;BBBB\x1b\\", "\x1b_Gm=0;CCCC\x1b\\" }),
             ("kitty-edge", new[] { "\x1b_Ga=T,i=7;!!!\x1b\\", "\x1b_Gx=1\x1b\\", "\x1b_notG\x1b\\", "\x1b_Ga=d;\x1b\\", "\x1b_Ga=q,i=3;AAAA\x1b\\" }),

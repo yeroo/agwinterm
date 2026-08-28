@@ -709,30 +709,36 @@ public sealed class ControlServer : IDisposable
         {
             // Two pipe connections may finish their off-lock copies in either order. Once a newer
             // positive sequence for this id and mapping has committed, an older request must not
-            // replace it. Check under the same session/cache lock used for the eventual update.
+            // replace it. Mapping switches are generation-ordered even when seq is zero (the
+            // uncached "current slot" form), otherwise a delayed old mapping could resurface after
+            // a producer restart. Check under the same session/cache lock used for the update.
             lock (acceptedSequences)
             {
                 var requestLatest = new Dictionary<(int id, string identity), long>();
-                foreach (var op in ops.Where(op => op.token > 0))
+                foreach (var op in ops)
                 {
                     var key = (op.id, op.identity);
                     long latest = requestLatest.GetValueOrDefault(key);
-                    if (latest == 0 && acceptedSequences.TryGetValue(op.id, out var accepted))
+                    if (acceptedSequences.TryGetValue(op.id, out var accepted))
                     {
                         if (accepted.Identity == op.identity)
-                            latest = accepted.Token;
+                        {
+                            if (op.token > 0 && latest == 0)
+                                latest = accepted.Token;
+                        }
                         else if (requestGeneration < accepted.Generation)
                         {
                             commitError = $"image.frameshm: request for id {op.id} was superseded by a newer mapping";
                             return;
                         }
                     }
-                    if (op.token < latest)
+                    if (op.token > 0 && op.token < latest)
                     {
                         commitError = $"image.frameshm: sequence {op.token} for id {op.id} was superseded by {latest}";
                         return;
                     }
-                    requestLatest[key] = op.token;
+                    if (op.token > 0)
+                        requestLatest[key] = op.token;
                 }
             }
 
@@ -766,13 +772,17 @@ public sealed class ControlServer : IDisposable
             lock (state)
                 foreach (var update in updates) state[update.id] = update.entry;
             lock (acceptedSequences)
-                foreach (var op in ops.Where(op => op.token > 0))
+                foreach (var op in ops)
                 {
                     long generation = requestGeneration;
+                    long token = op.token;
                     if (acceptedSequences.TryGetValue(op.id, out var accepted) &&
                         accepted.Identity == op.identity)
+                    {
                         generation = Math.Max(generation, accepted.Generation);
-                    acceptedSequences[op.id] = (op.identity, op.token, generation);
+                        if (token == 0) token = accepted.Token;
+                    }
+                    acceptedSequences[op.id] = (op.identity, token, generation);
                 }
         });
         if (invalidCache)

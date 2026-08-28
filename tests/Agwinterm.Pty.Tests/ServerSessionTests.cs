@@ -132,6 +132,11 @@ public class ServerSessionTests : IDisposable
         // The host still runs the child, unattached.
         using (var probe = PtyHostClient.Connect(_appId))
         {
+            Assert.True(WaitFor(() =>
+            {
+                var listed = probe.List();
+                return listed.Count == 1 && !listed[0].HasExited && !listed[0].Attached;
+            }, 5000), "detach must leave the session running, unattached");
             var info = Assert.Single(probe.List());
             Assert.False(info.HasExited);
             Assert.False(info.Attached);
