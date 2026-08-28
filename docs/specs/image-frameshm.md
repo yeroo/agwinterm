@@ -144,6 +144,16 @@ The control server also rejects more than 64 entries or more than 268,435,456 ag
 bytes in one `images` array. At most two shared-frame requests copy concurrently, so independent pipe
 clients cannot multiply staging without bound.
 
+Before committing, the server also checks the session's retained source pixels and image ids. A
+shared-frame commit may not increase retained payload beyond 268,435,456 bytes or retained image ids
+beyond 256. Replacing an existing id is allowed; a request that would grow past either limit is
+rejected atomically and leaves the previous composition visible.
+
+Two pipe connections may complete their off-lock copies out of order. For a positive sequence, the
+commit step compares `(id, name, seq)` with the newest frame already accepted: a delayed older request
+is rejected rather than replacing a newer displayed frame. This makes pipelining distinct slots safe
+with respect to display order as well as slot reuse.
+
 Note the format restriction: only the **4-bytes-per-pixel** formats are carried, `132` (`Bgra`) and
 `32` (`Rgba`). `24` (`Rgb`) and `100` (`Png`) are valid `KittyFormat` values but not valid here —
 every stride and size bound above assumes 4 bpp. Send PNG through `image.frame`, which is the path

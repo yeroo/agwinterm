@@ -679,6 +679,145 @@ public class ControlServerFrameShmTests : IDisposable
     }
 
     [Fact]
+    public async Task AnOlderConcurrentSequenceCannotReplaceANewerCommittedFrame()
+    {
+        using var session = new TerminalSession(80, 24);
+        var server = new ControlServer(session);
+        var p = NewProducer(slotCount: 2);
+        long olderSeq = p.Publish(0xA1);
+        int olderSlot = p.Slot;
+        long newerSeq = p.Publish(0xA2);
+        int newerSlot = p.Slot;
+
+        using var olderPrepared = new ManualResetEventSlim();
+        using var releaseOlder = new ManualResetEventSlim();
+        int preparedCalls = 0;
+        server.SharedFramePrepared = () =>
+        {
+            if (Interlocked.Increment(ref preparedCalls) != 1) return;
+            olderPrepared.Set();
+            if (!releaseOlder.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("test did not release the older prepared frame");
+        };
+
+        Task<string> older = Task.Run(() => server.Dispatch(Request(
+            "{\"images\":[" + Image(p, olderSeq, olderSlot, id: 1) + "]}")));
+        string newerResponse;
+        try
+        {
+            Assert.True(olderPrepared.Wait(TimeSpan.FromSeconds(10)),
+                "older request did not finish phase 1");
+            newerResponse = server.Dispatch(Request(
+                "{\"images\":[" + Image(p, newerSeq, newerSlot, id: 1) + "]}"));
+        }
+        finally
+        {
+            releaseOlder.Set();
+        }
+
+        string olderResponse = await older.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("frame:1/1", newerResponse);
+        Assert.Contains("was superseded", ErrorOf(olderResponse));
+        Assert.Equal(Packed(0xA2), session.Emulator.Images[1].Data);
+        Assert.Single(session.Emulator.Placements);
+    }
+
+    [Fact]
+    public async Task AcceptedSequenceOrderingSurvivesPixelCacheInvalidation()
+    {
+        using var session = new TerminalSession(80, 24);
+        var server = new ControlServer(session);
+        var p = NewProducer(slotCount: 2);
+        long olderSeq = p.Publish(0xB1);
+        int olderSlot = p.Slot;
+        long newerSeq = p.Publish(0xB2);
+        int newerSlot = p.Slot;
+        string newerRequest = Request(
+            "{\"images\":[" + Image(p, newerSeq, newerSlot, id: 1) + "]}");
+        Assert.Contains("frame:1/1", server.Dispatch(newerRequest));
+
+        // Replacing the image invalidates and removes the retransmit-cache entry during the next
+        // phase 1. Accepted sequence order is separate state and must remain authoritative.
+        session.MutateLocked(em =>
+            em.SetImageData(1, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 }));
+        using var newerPrepared = new ManualResetEventSlim();
+        using var releaseNewer = new ManualResetEventSlim();
+        int preparedCalls = 0;
+        server.SharedFramePrepared = () =>
+        {
+            if (Interlocked.Increment(ref preparedCalls) != 1) return;
+            newerPrepared.Set();
+            if (!releaseNewer.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("test did not release the cache-invalidated frame");
+        };
+
+        Task<string> retransmit = Task.Run(() => server.Dispatch(newerRequest));
+        string olderResponse;
+        try
+        {
+            Assert.True(newerPrepared.Wait(TimeSpan.FromSeconds(10)),
+                "newer request did not finish cache invalidation and phase 1");
+            olderResponse = server.Dispatch(Request(
+                "{\"images\":[" + Image(p, olderSeq, olderSlot, id: 1) + "]}"));
+        }
+        finally
+        {
+            releaseNewer.Set();
+        }
+
+        Assert.Contains("was superseded", ErrorOf(olderResponse));
+        Assert.Contains("frame:1/1", await retransmit.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal(Packed(0xB2), session.Emulator.Images[1].Data);
+    }
+
+    [Fact]
+    public void SequentialUniqueIdsCannotExceedTheRetainedImageLimit()
+    {
+        using var session = new TerminalSession(80, 24);
+        var server = new ControlServer(
+            session,
+            ControlServer.MaxSharedFrameRequestBytes,
+            ControlServer.MaxRetainedSharedFrameBytes,
+            retainedSharedFrameImageLimit: 2);
+        var p = NewProducer();
+        long seq = p.Publish(0xA3);
+
+        Assert.Contains("frame:1/1", server.Dispatch(Request(
+            "{\"images\":[" + Image(p, seq, p.Slot, id: 1) + "]}")));
+        Assert.Contains("frame:1/1", server.Dispatch(Request(
+            "{\"images\":[" + Image(p, seq, p.Slot, id: 2) + "]}")));
+
+        string rejected = server.Dispatch(Request(
+            "{\"images\":[" + Image(p, seq, p.Slot, id: 3) + "]}"));
+        Assert.Contains("retained image limit", ErrorOf(rejected));
+        Assert.Equal(2, session.Emulator.Images.Count);
+        Assert.Equal(2, Assert.Single(session.Emulator.Placements).ImageId);
+    }
+
+    [Fact]
+    public void SequentialUniqueIdsCannotExceedTheRetainedPixelBudget()
+    {
+        using var session = new TerminalSession(80, 24);
+        long oneFrameBytes = Packed(0).LongLength;
+        var server = new ControlServer(
+            session,
+            ControlServer.MaxSharedFrameRequestBytes,
+            retainedSharedFrameByteLimit: oneFrameBytes,
+            ControlServer.MaxRetainedSharedFrameImages);
+        var p = NewProducer();
+        long seq = p.Publish(0xA4);
+
+        Assert.Contains("frame:1/1", server.Dispatch(Request(
+            "{\"images\":[" + Image(p, seq, p.Slot, id: 1) + "]}")));
+        string rejected = server.Dispatch(Request(
+            "{\"images\":[" + Image(p, seq, p.Slot, id: 2) + "]}"));
+
+        Assert.Contains("retained pixel budget", ErrorOf(rejected));
+        Assert.Single(session.Emulator.Images);
+        Assert.Equal(1, Assert.Single(session.Emulator.Placements).ImageId);
+    }
+
+    [Fact]
     public void ASeqAheadOfTheProducersReadyIsRejected()
     {
         var (server, _) = New();

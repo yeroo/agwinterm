@@ -31,6 +31,12 @@ public sealed class ControlServer : IDisposable
     /// <summary>Most shared-frame phase-1 copies allowed to run at once.</summary>
     internal const int MaxConcurrentSharedFrameRequests = 2;
 
+    /// <summary>Largest number of images a shared-frame commit may leave retained in a session.</summary>
+    internal const int MaxRetainedSharedFrameImages = 256;
+
+    /// <summary>Largest aggregate source-pixel payload a shared-frame commit may leave retained.</summary>
+    internal const long MaxRetainedSharedFrameBytes = ShmFrameReader.MaxFrameBytes;
+
     // Named-pipe clients run concurrently. Bounding the number of phase-1 readers makes the
     // per-request byte limit a process-wide bound too, rather than letting an arbitrary number of
     // individually valid requests allocate their full allowance at the same time. Two preserves
@@ -39,11 +45,22 @@ public sealed class ControlServer : IDisposable
         initialCount: MaxConcurrentSharedFrameRequests,
         maxCount: MaxConcurrentSharedFrameRequests);
     private readonly long _sharedFrameRequestByteLimit = MaxSharedFrameRequestBytes;
+    private readonly long _retainedSharedFrameByteLimit = MaxRetainedSharedFrameBytes;
+    private readonly int _retainedSharedFrameImageLimit = MaxRetainedSharedFrameImages;
+
+    /// <summary>Test scheduling seam: invoked after phase 1 and before the render lock.</summary>
+    internal Action? SharedFramePrepared { get; set; }
 
     // One cache covers both frame transports. The source and identity prevent unrelated file
     // signatures or producer sequences from aliasing, while the image reference detects
     // replacement through image.show or terminal Kitty output before a nominal hit is trusted.
     private readonly ConditionalWeakTable<ISession, Dictionary<int, FrameCacheEntry>> _frameState = new();
+
+    // Cache entries may be discarded when another image path replaces their image reference, but
+    // accepted-sequence ordering must survive that invalidation. Keep the newest positive shared
+    // sequence independently, one current mapping identity per image id.
+    private readonly ConditionalWeakTable<ISession, Dictionary<int, (string Identity, long Token)>>
+        _acceptedSharedFrameSequences = new();
 
     public ControlServer(ISessionHost host, string pipeName = "agwinterm")
     {
@@ -70,6 +87,23 @@ public sealed class ControlServer : IDisposable
         if (sharedFrameRequestByteLimit < 0 || sharedFrameRequestByteLimit > MaxSharedFrameRequestBytes)
             throw new ArgumentOutOfRangeException(nameof(sharedFrameRequestByteLimit));
         _sharedFrameRequestByteLimit = sharedFrameRequestByteLimit;
+    }
+
+    /// <summary>Test seam for exercising retained-image limits without large allocations.</summary>
+    internal ControlServer(
+        ISession session,
+        long sharedFrameRequestByteLimit,
+        long retainedSharedFrameByteLimit,
+        int retainedSharedFrameImageLimit,
+        string pipeName = "agwinterm")
+        : this(session, sharedFrameRequestByteLimit, pipeName)
+    {
+        if (retainedSharedFrameByteLimit < 0 || retainedSharedFrameByteLimit > MaxRetainedSharedFrameBytes)
+            throw new ArgumentOutOfRangeException(nameof(retainedSharedFrameByteLimit));
+        if (retainedSharedFrameImageLimit < 0 || retainedSharedFrameImageLimit > MaxRetainedSharedFrameImages)
+            throw new ArgumentOutOfRangeException(nameof(retainedSharedFrameImageLimit));
+        _retainedSharedFrameByteLimit = retainedSharedFrameByteLimit;
+        _retainedSharedFrameImageLimit = retainedSharedFrameImageLimit;
     }
 
     public string PipeName => _pipeName;
@@ -598,6 +632,7 @@ public sealed class ControlServer : IDisposable
             return Err($"image.frameshm accepts at most {MaxSharedFrameImages} images per request");
 
         var state = _frameState.GetOrCreateValue(s);
+        var acceptedSequences = _acceptedSharedFrameSequences.GetOrCreateValue(s);
 
         // Phase 1 (OFF the render lock): validate, then copy each changed frame out of its mapping.
         // Nothing is applied yet - a failure anywhere below returns before phase 2 runs, so a
@@ -659,15 +694,47 @@ public sealed class ControlServer : IDisposable
             count++;
         }
 
+        SharedFramePrepared?.Invoke();
+
         // Phase 2 (BRIEF lock): dictionary/list swaps only, exactly as image.frame does - the
         // megabytes were already copied above, so the paint thread stalls for microseconds.
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         bool invalidCache = false;
+        string? commitError = null;
         s.MutateLocked(em =>
         {
+            // Two pipe connections may finish their off-lock copies in either order. Once a newer
+            // positive sequence for this id and mapping has committed, an older request must not
+            // replace it. Check under the same session/cache lock used for the eventual update.
+            lock (acceptedSequences)
+            {
+                var requestLatest = new Dictionary<(int id, string identity), long>();
+                foreach (var op in ops.Where(op => op.token > 0))
+                {
+                    var key = (op.id, op.identity);
+                    long latest = requestLatest.GetValueOrDefault(key);
+                    if (latest == 0 && acceptedSequences.TryGetValue(op.id, out var accepted) &&
+                        accepted.Identity == op.identity)
+                        latest = accepted.Token;
+                    if (op.token < latest)
+                    {
+                        commitError = $"image.frameshm: sequence {op.token} for id {op.id} was superseded by {latest}";
+                        return;
+                    }
+                    requestLatest[key] = op.token;
+                }
+            }
+
             foreach (var op in ops.Where(op => op.frame is null && op.cached is not null))
                 if (!em.Images.TryGetValue(op.id, out var image) || !ReferenceEquals(image, op.cached!.Image))
                 { invalidCache = true; return; }
+
+            if (!FitsRetainedSharedFrameBudget(
+                em,
+                ops.Where(op => op.frame is not null)
+                    .Select(op => (op.id, bytes: op.frame!.Pixels.LongLength)),
+                out commitError))
+                return;
 
             em.ClearPlacements();
             var updates = new List<(int id, FrameCacheEntry entry)>();
@@ -687,6 +754,9 @@ public sealed class ControlServer : IDisposable
             // Commit cache state only after the whole all-or-nothing frame has validated and applied.
             lock (state)
                 foreach (var update in updates) state[update.id] = update.entry;
+            lock (acceptedSequences)
+                foreach (var op in ops.Where(op => op.token > 0))
+                    acceptedSequences[op.id] = (op.identity, op.token);
         });
         if (invalidCache)
         {
@@ -695,9 +765,52 @@ public sealed class ControlServer : IDisposable
                 ? HandleImageFrameShm(s, args, retryInvalidCache: false)
                 : Err("image.frameshm cache changed while the frame was prepared; retry");
         }
+        if (commitError is not null) return Err(commitError);
         if (_perfLog is not null)
             Perf($"frameshm images={count} transmits={transmits} readKB={readBytes / 1024} lockMs={System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds:F2}");
         return Ok($"frame:{count}/{transmits}");
+    }
+
+    private bool FitsRetainedSharedFrameBudget(
+        ITerminalCore em,
+        IEnumerable<(int id, long bytes)> replacements,
+        out string? error)
+    {
+        error = null;
+        var finalReplacements = new Dictionary<int, long>();
+        foreach (var replacement in replacements)
+            finalReplacements[replacement.id] = replacement.bytes;
+        if (finalReplacements.Count == 0) return true;
+
+        int currentCount = em.Images.Count;
+        long currentBytes = 0;
+        foreach (var image in em.Images.Values)
+            currentBytes = checked(currentBytes + image.Data.LongLength);
+
+        int projectedCount = currentCount;
+        long projectedBytes = currentBytes;
+        foreach (var (id, bytes) in finalReplacements)
+        {
+            if (em.Images.TryGetValue(id, out var existing))
+                projectedBytes -= existing.Data.LongLength;
+            else
+                projectedCount++;
+            projectedBytes = checked(projectedBytes + bytes);
+        }
+
+        // A session already over a limit through another image path may still replace an existing
+        // frame without making the situation worse. Shared frames may never increase the excess.
+        if (projectedCount > _retainedSharedFrameImageLimit && projectedCount > currentCount)
+        {
+            error = $"image.frameshm: retained image limit of {_retainedSharedFrameImageLimit} would be exceeded";
+            return false;
+        }
+        if (projectedBytes > _retainedSharedFrameByteLimit && projectedBytes > currentBytes)
+        {
+            error = $"image.frameshm: retained pixel budget of {_retainedSharedFrameByteLimit} bytes would be exceeded";
+            return false;
+        }
+        return true;
     }
 
     private static bool IsCurrentFrameCacheHit(

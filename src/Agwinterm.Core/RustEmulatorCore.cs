@@ -283,6 +283,9 @@ public sealed unsafe class RustEmulatorCore : IDisposable
     {
         fixed (byte* p = data.Length == 0 ? new byte[1] : data) _setImageData(_handle, id, format, width, height, p, (uint)data.Length);
     }
+    /// <summary>Register an image for native placement bookkeeping without retaining its pixels.</summary>
+    public void SetImageMetadata(int id, int format, int width, int height)
+        => _setImageData(_handle, id, format, width, height, null, 0);
     public void PlaceImage(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh)
         => _placeImage(_handle, id, row, col, cols, rows, sx, sy, sw, sh);
     public bool PlaceSixel(byte[] data)

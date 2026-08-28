@@ -372,6 +372,21 @@ public class RustEmulatorCoreTests
     }
 
     [Fact]
+    public void Native_DirectImageMetadata_DoesNotRetainAPixelPayload()
+    {
+        if (!Available) return;
+        using var rust = new RustEmulatorCore(10, 4);
+
+        rust.SetImageMetadata(7, (int)KittyFormat.Bgra, 1920, 1080);
+
+        var image = Assert.Single(rust.GetImageMetas());
+        Assert.Equal((7, (int)KittyFormat.Bgra, 1920, 1080),
+            (image.Id, image.Format, image.Width, image.Height));
+        Assert.Equal(0u, image.DataLen);
+        Assert.True(rust.HasImage(7));
+    }
+
+    [Fact]
     public void Adapter_DirectImageApi_RefreshesPixelsWhenAnIdIsReused()
     {
         if (!Available) return;

@@ -203,7 +203,10 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     public bool HasImage(int id) => _rust.HasImage(id);
     public void SetImageData(int id, KittyFormat format, int width, int height, byte[] data)
     {
-        _rust.SetImageData(id, (int)format, width, height, data);
+        // The renderer consumes the managed cache below. Native needs only image presence and
+        // geometry for placement bookkeeping; copying the payload there would duplicate every raw
+        // frame while the caller holds the render lock.
+        _rust.SetImageMetadata(id, (int)format, width, height);
         // SyncImages fetches native pixels only for ids not already cached. Direct image APIs reuse
         // stable ids for successive frames, so refresh this entry from the bytes we already own.
         _imageCache[id] = new KittyImage(id, format, width, height, data);

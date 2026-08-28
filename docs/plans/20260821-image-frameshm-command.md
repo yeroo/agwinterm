@@ -256,6 +256,17 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
       copied pixels before phase 2, and permits at most two shared-frame readers concurrently. The
       reader accepts the remaining request budget and checks it before allocating the next pixel
       array, so a repeated ordinary mapping cannot accumulate an unbounded `ops` list.
+- ➕ **committed storage is bounded too.** Before phase 2 mutates the pane, the server projects the
+      retained image count and source-pixel bytes after every replacement. A shared-frame request
+      cannot grow a session beyond 256 ids or 256 MiB, so sequential requests with fresh ids cannot
+      evade the per-request staging limit and exhaust managed/GPU memory.
+- ➕ **concurrent positive sequences commit monotonically.** Two allowed readers can finish their
+      off-lock copies in either order; under the session/cache lock, a delayed `(id, name, seq)` is
+      rejected if a greater sequence already committed. A deterministic test pauses the older
+      request after phase 1, commits the newer request, and proves the older pixels cannot replace it.
+- ➕ **the Rust-backed core registers direct-image metadata only.** The renderer-facing managed
+      cache already owns the copied frame bytes; phase 2 now gives native only id/format/geometry for
+      placement bookkeeping instead of duplicating the whole payload under the render lock.
 - ⚠️ **assert on the parsed `error` string, not on the raw reply.** `JsonSerializer` escapes an
       apostrophe to `'`, so `Assert.Contains("'seq' must be…", resp)` fails against a reply
       that does contain the message. The tests parse the JSON and read `error`.
