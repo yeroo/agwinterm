@@ -446,6 +446,19 @@ public class ShmFrameReaderTests : IDisposable
         Assert.Equal(ShmFrameError.FrameTooLarge, aboveLimitError);
     }
 
+    [Fact]
+    public void EnforcesTheCallersCopyBudgetBeforeAllocatingPixels()
+    {
+        string name = CreateFrameMapping(Header());
+        long frameBytes = Width * Height * 4L;
+
+        Assert.False(ShmFrameReader.TryReadFrame(
+            new ShmFrameRequest(name, 0), frameBytes - 1, out var frame, out var error));
+
+        Assert.Null(frame);
+        Assert.Equal(ShmFrameError.CopyBudgetExceeded, error);
+    }
+
     // ---- a producer that is gone --------------------------------------------------------------
 
     [Fact]

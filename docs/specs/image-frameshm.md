@@ -86,27 +86,31 @@ the previous frame or nothing.
 
 ## Producer obligations
 
-These are normative. Two slots are sufficient **only** because of the first one.
+These are normative. Any slot count is safe **only** because of the first one.
 
-- **Do not begin filling a slot until the reply for the frame two back has returned.** The control
-  pipe is request/response; `image.frameshm` answers only after it has copied the pixels out. A
-  producer that serialises on the reply can never have two unacknowledged frames outstanding, so it
-  can never wrap back onto the slot being copied.
+- **Once `seq > slotCount`, do not begin filling its slot until the reply for `seq - slotCount` has
+  returned.** That is the preceding sequence which occupied the same slot. For the minimum
+  `slotCount == 2`, this is the reply for the frame two back. The control pipe is request/response;
+  `image.frameshm` answers only after it has copied the pixels out. The simplest conforming producer
+  serialises on every reply and therefore never has a slot reuse outstanding.
 
-  A producer that *pipelines* requests to hide pipe latency will wrap, and it will tear — the
-  release/acquire pair orders the producer's publish, not the terminal's copy, and an 8 MB copy for
-  a 1920×1080 BGRA frame is not a narrow window. Nothing in the layout prevents this; only this
-  rule does. If you need pipelining, raise `slotCount` above the number of frames you keep in
-  flight, or ask for an in-use protocol — do not assume two slots cover it.
+  A producer that *pipelines* requests must track the outstanding reply for each slot. Merely
+  raising `slotCount` above the current number of in-flight frames is not sufficient when requests
+  use multiple pipe connections, because later replies can complete before an earlier request for
+  the slot being reused. Reusing that slot early can tear: the release/acquire pair orders the
+  producer's publish, not the terminal's copy, and an 8 MB copy for a 1920×1080 BGRA frame is not a
+  narrow window. Nothing in the layout prevents this; only the per-slot reply rule does.
 
   The failure mode is a visibly torn frame, not a crash: the reader's bounds validation keeps the
   copy inside the view either way.
 - **Never shrink the mapping or close it while a request is outstanding.** The reader copies out of
   the view during the call. A vanished mapping between calls is fine and reports as an ordinary
   failure.
-- **Bump `seq` on every published frame, monotonically.** The terminal skips re-transmitting a slot
-  whose `(id, seq)` matches the last one it accepted, so a repeated `seq` means "nothing changed,
-  just re-place it".
+- **Bump `seq` on every published frame, monotonically for the lifetime of a mapping name.** The
+  terminal skips the pixel copy when `(id, name, seq)` matches the last frame it accepted, so a
+  repeated sequence from the same mapping means "nothing changed, just re-place it". If a producer
+  restarts its counter, it must choose a fresh mapping-name suffix for that incarnation. Recreating
+  a mapping under the same name is supported only when the sequence continues monotonically.
 - **Store `ready` before sending the request, never after.** A request whose `seq` is greater than
   the header's `ready` names a frame the producer has not published, and is rejected — the reader
   will not copy a slot the release fence has not covered. Send `seq: 0` (or omit it) to mean "read
@@ -132,6 +136,13 @@ error condition for the terminal; they are all ordinary input from another proce
 | `width`/`height`/`stride`/`format` in the args disagree with the slot descriptor | one of the two is stale; guessing which is worse than saying so |
 | `seq` greater than the header's `ready` | the frame has not been published |
 | positive `seq` with `slot != seq % slotCount` | the request names a slot that sequence did not publish |
+
+Cache hits still open the named mapping and apply every header check above; they skip only the pixel
+copy. A vanished or malformed mapping therefore cannot be hidden by repeating an accepted sequence.
+
+The control server also rejects more than 64 entries or more than 268,435,456 aggregate copied pixel
+bytes in one `images` array. At most two shared-frame requests copy concurrently, so independent pipe
+clients cannot multiply staging without bound.
 
 Note the format restriction: only the **4-bytes-per-pixel** formats are carried, `132` (`Bgra`) and
 `32` (`Rgba`). `24` (`Rgb`) and `100` (`Png`) are valid `KittyFormat` values but not valid here —
@@ -176,9 +187,9 @@ string and names the offending field, so a CLI producer must `int.TryParse` and 
 | field | meaning |
 |---|---|
 | `id` | image id, same semantics as `image.frame` — the key the terminal caches pixels under |
-| `name` | mapping name, `Local\agwinterm-frame-` prefix required |
+| `name` | mapping/cache identity; `Local\agwinterm-frame-` prefix required, and a fresh suffix is required when `seq` resets |
 | `slot` | slot index to read, `0 <= slot < slotCount` |
-| `seq` | the non-negative publish sequence; `0` means current/uncached, positive values drive the `(id, seq)` re-transmit cache |
+| `seq` | the non-negative publish sequence; `0` means current/uncached, positive values drive the `(id, name, seq)` re-transmit cache |
 | `width`, `height`, `stride`, `format` | must agree with the slot descriptor; both are validated |
 | `row`, `col` | placement origin in cells |
 | `cols`, `rows` | placement size in cells; `0` means "natural size" |
@@ -189,10 +200,11 @@ and every other number defaults to `0`.
 
 The reply mirrors `image.frame`: `frame:<count>/<transmits>`, so a caller can tell whether a frame
 actually moved. `transmits` counts the entries whose pixels were actually copied; the rest were
-served from the `(id, seq)` cache.
+served from the `(id, name, seq)` cache after their live mapping and header were revalidated.
 
 **A frame is all-or-nothing.** If any entry in `images` is rejected — a bad number, a name outside
-the prefix, a slot that overruns the view — the whole request answers `{"ok":false,...}` and
+the prefix, a slot that overruns the view, or a request limit being exceeded — the whole request
+answers `{"ok":false,...}` and
 *nothing* is applied, not even the entries that validated. The pane keeps showing the previous
 frame rather than a half-updated one.
 
@@ -306,7 +318,6 @@ runs asynchronously and is not awaited by the control reply, so it is outside th
 |---|---|---|
 | control transport (request written → reply read; async conversion/upload excluded) | **6.0–8.4 ms** | **~120–165 replies/s**, ≈1.0–1.4 GB/s |
 | producer write + control round trip (rendering still excluded) | 8.5–18.2 ms | 55–117 cycles/s, 435–927 MB/s |
-| a repeat of an already-accepted `(id, seq)` — no copy, re-place only | **0.10–0.13 ms** | reply is `frame:1/0` |
 
 Two things a consumer should take from this. First, the control transport fits comfortably inside a
 60fps frame budget, but this benchmark does **not** establish end-to-end displayed frame rate because

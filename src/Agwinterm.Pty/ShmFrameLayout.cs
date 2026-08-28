@@ -46,6 +46,8 @@ public enum ShmFrameError
     UnsupportedFormat,
     /// <summary>The tightly-packed frame exceeds <see cref="ShmFrameReader.MaxFrameBytes"/>.</summary>
     FrameTooLarge,
+    /// <summary>The frame would exceed the remaining copy budget for its control request.</summary>
+    CopyBudgetExceeded,
     /// <summary>The request sequence is negative; only zero has the "current slot" meaning.</summary>
     BadSequence,
     /// <summary>The requested sequence is ahead of the header's published <c>ready</c>.</summary>
@@ -94,9 +96,9 @@ public sealed record ShmFrameHeader(
 /// <c>ready</c> with a release barrier; the reader loads <c>ready</c> with an acquire barrier
 /// and copies from the slot it names, so a half-written slot is never published.
 ///
-/// Two slots are only sufficient because the control pipe is request/response and the spec
-/// requires a producer to hold a frame until the reply two frames back has returned. That is
-/// a property of the producer, not of this layout — see the spec's "Producer obligations".
+/// A slot may only be reused after the request for the preceding sequence in that same slot has
+/// returned. That is a property of the producer, not of this layout — see the spec's
+/// "Producer obligations".
 ///
 /// All fields are little-endian, matching every platform this ships on.
 /// </summary>

@@ -138,9 +138,10 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
       runtime with a validation error that reads like a bug. Neither document currently contains the
       string a producer must actually use. [triage: major]
 - [x] **state the producer slot-reuse invariant explicitly**: a producer must not begin filling a
-      slot until the reply for the frame two back has returned. This is what actually makes two slots
-      sufficient — see Technical Details. Without it in the spec, a producer that pipelines requests
-      to hide pipe latency tears, and nothing forbids that. [triage: major]
+      slot until the reply for the previous sequence in that slot (`seq - slotCount`) has returned.
+      For two slots that is the frame two back. Without the general rule, a producer using three or
+      more slots and out-of-order replies can follow the narrower wording and still tear. [triage:
+      major; corrected in second review]
 - [x] write tests for header encode/decode round-trip
 - [x] write tests for rejecting a bad magic, an unknown version and an out-of-range slot index
 - [x] run tests — must pass before Task 2
@@ -200,7 +201,8 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
       copies a slot the producer's release fence has not covered. All three are now in the spec.
 - ➕ **the mapping is opened per call, not cached.** A producer may tear down and recreate a mapping
       under the same name between frames, and a cached handle would keep the dead section alive and
-      read it forever. The open is a syscall; the copy is megabytes.
+      read it forever. Reuse of the name must continue its sequence; a restarted sequence uses a
+      fresh name. The open is a syscall; the copy is megabytes.
 - ⚠️ **`ShmFrameError.ShortView` is unreachable through the open path.** Windows rounds a section up
       to a page, so `MemoryMappedFile.CreateNew(name, 64)` yields a 4096-byte view. The guard still
       has to hold — it is what makes the 256-byte header read in-bounds — so its test drives the
@@ -218,12 +220,14 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 - [x] implement `HandleImageFrameShm` mirroring `HandleImageFrame`'s two-phase structure: resolve
       placements and copy pixel bytes out of the mapping **off** the render lock, then take the
       brief lock for `ClearPlacements` and the placement/image swap
-- [x] skip re-transmitting a slot whose `(id, seq)` matches what was last accepted, the shm analogue
-      of `image.frame`'s content-signature cache
+- [x] skip re-transmitting a slot whose `(id, name, seq)` matches what was last accepted, the shm
+      analogue of `image.frame`'s content-signature cache; revalidate the live mapping/header on a
+      hit so cached pixels cannot bypass name, lifetime, slot or geometry checks
 - [x] return `frame:<count>/<transmits>` like `image.frame` so a caller can tell whether a frame
       actually moved; record bytes read only in the optional performance log
 - [x] write tests for a single frame producing the expected `KittyImage` and `ImagePlacement`
-- [x] write tests for the `(id, seq)` cache skipping a repeat and accepting a bumped seq
+- [x] write tests for the `(id, name, seq)` cache skipping a repeat, accepting a bumped seq and
+      retransmitting the same id/sequence from a different producer
 - [x] write tests for malformed args: missing `images`, missing `name`, a string where a number
       belongs, an id that is not an int
 - [x] **write a test where the producer publishes frames faster than the consumer drains them** —
@@ -242,11 +246,16 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
       into its default, and the outer `catch` turns a string where a number belongs into
       `"requires an element of type 'Number'"` — which does not say *which* field was wrong. `TryNum`
       names the field and distinguishes "not a number", "not whole" and "out of 32-bit range".
-- ➕ **the `(id, seq)` cache lives in its own `_shmState` table**, not in `_txState`. A file content
+- ➕ **the frame cache records its source and identity as well as its token.** A file content
       signature and a producer's frame counter are unrelated number spaces keyed by the same image
-      id, and letting them alias would make a signature collide with a sequence.
+      id, and two mappings can publish the same sequence. Source, path/name, token and live image
+      identity must all agree before a hit is trusted.
 - ➕ **`seq: 0` is never cached.** It means "read whatever is in the slot", which by definition
       cannot be memoised; only a positive seq enters the cache.
+- ➕ **request staging is bounded.** The server rejects more than 64 entries or 256 MiB of aggregate
+      copied pixels before phase 2, and permits at most two shared-frame readers concurrently. The
+      reader accepts the remaining request budget and checks it before allocating the next pixel
+      array, so a repeated ordinary mapping cannot accumulate an unbounded `ops` list.
 - ⚠️ **assert on the parsed `error` string, not on the raw reply.** `JsonSerializer` escapes an
       apostrophe to `'`, so `Assert.Contains("'seq' must be…", resp)` fails against a reply
       that does contain the message. The tests parse the JSON and read `error`.
@@ -255,7 +264,8 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
       slots, all intact), `AProducerRunningAheadOnTwoSlotsSubstitutesANewerFrameRatherThanTearing`
       (the obligation broken — the reply carries frame 3's whole pixels under frame 1's request,
       which is substitution, not tearing) and
-      `AProducerRunningAheadWithEnoughSlotsDeliversEveryFrameIntact` (the prescribed fix).
+      `AProducerRunningAheadWithEnoughSlotsDeliversEveryFrameIntact` (frames are drained before any
+      slot is reused; extra slots alone are not the invariant).
 
 ### Task 5: Expose the verb on `agwintermctl`
 
@@ -322,21 +332,24 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 - ➕ **the producer stand-in moved to `tests/Agwinterm.Pty.Tests/ShmTestProducer.cs`**, shared by
       the in-process verb tests and the new pipe tests. A second copy would have been free to drift
       out of agreement with the spec's publish order, which is the one thing both files rely on.
-- ➕ **a dead producer's last frame stays re-placeable.** `AProducerThatDiesBetweenFramesIs…`
-      first asserted a failure after `Dispose` and got `ok:true`: the `(id, seq)` cache answers
-      before the mapping is opened, so re-sending the accepted sequence still succeeds with
-      `frame:1/0`. That is correct and worth having — the test now pins both it and the genuine
-      failure a *bumped* sequence produces.
+- ➕ **cache hits revalidate the live mapping.** The original integration test allowed a dead
+      producer's last frame to remain re-placeable because the old two-field cache key answered
+      before `OpenExisting`.
+      Second review found that this also let another mapping/incarnation reuse stale pixels and let
+      cached requests bypass header validation. Hits are now `(id, name, seq)`, open and validate the
+      current header, and skip only the pixel copy; a vanished producer consistently returns an
+      ordinary error while the already displayed frame remains unchanged.
 - ➕ **measured with a persistent pipe client, not the ctl.** Spawning `agwintermctl.exe` per frame
       caps the loop at ~9fps on process start alone, which measures Windows, not the transport. The
       recorded numbers come from one connection held open across 120 frames; the harness is
       `.ralphex/tmp/bench-frameshm.ps1` (throwaway, not committed).
 - ➕ **the measured control-transport time is 6.0–8.4 ms per full-pane 1080p frame** — ~120–165
-      request/reply cycles per second against 8,294,400 bytes copied once by the transport. A cached
-      `(id, seq)` re-place costs 0.10–0.13 ms. The asynchronous premultiplication and GPU upload are
-      outside that round trip, so the figure is not an end-to-end display-fps claim. The full table,
-      its caveats (Debug build, PowerShell producer) and what a consumer should conclude are in the
-      spec's "Measured throughput".
+      request/reply cycles per second against 8,294,400 bytes copied once by the transport. The
+      asynchronous premultiplication and GPU upload are outside that round trip, so the figure is not
+      an end-to-end display-fps claim. The earlier 0.10–0.13 ms cache-hit number is no longer quoted:
+      it predated the required live mapping/header validation. The full table, its caveats (Debug
+      build, PowerShell producer) and what a consumer should conclude are in the spec's "Measured
+      throughput".
 - ⚠️ **no screenshot, deliberately.** The Testing Strategy says visual confirmation belongs to the
       consuming project and not to build a throwaway pixel producer to look at; the live evidence
       here is the dev instance accepting ~800 8 MB frames and still answering `ping` and `tree`.
@@ -488,8 +501,9 @@ behaviour in the consumer: hover and pairing get no position at all (`engine/poi
       the Task 1 invariant chose — and that the spec says which
       — the invariant chose serialisation on the reply: the six-frame/two-slot test proves that
       conforming producer cannot wrap onto a slot being copied. The two running-ahead tests pin the
-      documented consequence of violating it and the extra-slot remedy; the spec's normative
-      "Producer obligations" section says two slots alone do not protect a pipelining producer.
+      documented consequence of violating it; the spec's normative "Producer obligations" section
+      now generalises the rule to waiting for `seq - slotCount`, including out-of-order replies on
+      multiple pipe connections.
 - [x] verify the cell metrics from Task 6b track a live font-size change rather than being sampled once
       — `TracksAFontSizeChangeRatherThanBeingSampledOnce` changes the host's live measurements
       between two requests and observes the new values.
@@ -516,6 +530,9 @@ behaviour in the consumer: hover and pairing get no position at all (`engine/poi
       unit success/error coverage plus a real integration path: 87 focused Pty tests now cover the
       reader, verb, pipe, dead/malformed producers and live metrics, with Core tests covering both
       mouse modes and byte encodings.
+- ➕ **second-review validation:** 509 .NET tests and 29 native Rust tests pass; repository-wide
+      `dotnet format`, Rust formatting, strict all-target clippy, zero-warning Release builds, ABI
+      agreement, `git diff --check`, and the live strict control-API conformance suite all pass.
 
 ### Task 8: [Final] Update documentation
 
@@ -556,12 +573,12 @@ the locked swap at `:467-478`. A producer that serializes on the reply can never
 unacknowledged frames outstanding, so for that producer two slots are sufficient and tearing is
 genuinely impossible.
 
-That makes the invariant a **property of the producer, not of the layout** — which is exactly why it
-has to be written into the spec rather than left implicit. The verb is advertised here as
-general-purpose beyond the browser; a future producer that pipelines to hide pipe latency is doing
-something no document forbids, and it tears. If the verb should be safe for pipelining producers,
-that is a larger design: an in-use word per slot that the reader sets and clears, or more slots plus
-a consumer-published released-sequence. Decide which before the layout is a published contract.
+For a pipelined producer, the general invariant is per slot: sequence `seq` may reuse its slot only
+after the reply for `seq - slotCount`. A larger ring reduces how often a producer waits, but counting
+total in-flight frames is not enough when multiple pipe connections allow replies to finish out of
+order. This remains a **property of the producer, not of the layout** — which is exactly why it has
+to be written into the spec rather than left implicit. A layout that enforces it itself would need
+an in-use word per slot or a consumer-published released sequence.
 
 The consequence of getting it wrong is a visibly torn frame, not a crash — Task 3's bounds validation
 keeps the copy inside the view either way.

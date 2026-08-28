@@ -20,11 +20,29 @@ public sealed class ControlServer : IDisposable
     private CancellationTokenSource? _cts;
 
     private enum FrameSource { File, SharedMemory }
-    private sealed record FrameCacheEntry(FrameSource Source, long Token, KittyImage Image);
+    private sealed record FrameCacheEntry(FrameSource Source, string Identity, long Token, KittyImage Image);
 
-    // One cache covers both frame transports. The source tag prevents unrelated file signatures
-    // and shm sequences from aliasing, while the image reference detects replacement through
-    // image.show or terminal Kitty output before a nominal cache hit is trusted.
+    /// <summary>Largest composition accepted by one <c>image.frameshm</c> request.</summary>
+    internal const int MaxSharedFrameImages = 64;
+
+    /// <summary>Largest aggregate pixel copy staged by one <c>image.frameshm</c> request.</summary>
+    internal const long MaxSharedFrameRequestBytes = ShmFrameReader.MaxFrameBytes;
+
+    /// <summary>Most shared-frame phase-1 copies allowed to run at once.</summary>
+    internal const int MaxConcurrentSharedFrameRequests = 2;
+
+    // Named-pipe clients run concurrently. Bounding the number of phase-1 readers makes the
+    // per-request byte limit a process-wide bound too, rather than letting an arbitrary number of
+    // individually valid requests allocate their full allowance at the same time. Two preserves
+    // independent clients and the cache-race checks while putting a finite ceiling on staging.
+    private readonly SemaphoreSlim _sharedFrameReaders = new(
+        initialCount: MaxConcurrentSharedFrameRequests,
+        maxCount: MaxConcurrentSharedFrameRequests);
+    private readonly long _sharedFrameRequestByteLimit = MaxSharedFrameRequestBytes;
+
+    // One cache covers both frame transports. The source and identity prevent unrelated file
+    // signatures or producer sequences from aliasing, while the image reference detects
+    // replacement through image.show or terminal Kitty output before a nominal hit is trusted.
     private readonly ConditionalWeakTable<ISession, Dictionary<int, FrameCacheEntry>> _frameState = new();
 
     public ControlServer(ISessionHost host, string pipeName = "agwinterm")
@@ -44,6 +62,15 @@ public sealed class ControlServer : IDisposable
     /// <summary>Convenience: serve a single fixed session (tests / simple hosts).</summary>
     public ControlServer(ISession session, string pipeName = "agwinterm")
         : this(new SingleSessionHost(session), pipeName) { }
+
+    /// <summary>Test seam for exercising the aggregate staging limit without allocating it.</summary>
+    internal ControlServer(ISession session, long sharedFrameRequestByteLimit, string pipeName = "agwinterm")
+        : this(new SingleSessionHost(session), pipeName)
+    {
+        if (sharedFrameRequestByteLimit < 0 || sharedFrameRequestByteLimit > MaxSharedFrameRequestBytes)
+            throw new ArgumentOutOfRangeException(nameof(sharedFrameRequestByteLimit));
+        _sharedFrameRequestByteLimit = sharedFrameRequestByteLimit;
+    }
 
     public string PipeName => _pipeName;
 
@@ -474,7 +501,7 @@ public sealed class ControlServer : IDisposable
         // raw PNG bytes straight to the emulator — no base64 encode here and no base64 decode under
         // the lock (the renderer decodes PNG asynchronously on its own thread).
         var ops = new List<(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh,
-                            long token, byte[]? data, FrameCacheEntry? cached)>();
+                            string identity, long token, byte[]? data, FrameCacheEntry? cached)>();
         int count = 0, transmits = 0;
         long readBytes = 0;
         foreach (var img in images.EnumerateArray())
@@ -489,7 +516,8 @@ public sealed class ControlServer : IDisposable
 
             long sig = ContentSignature(path);
             FrameCacheEntry? cacheEntry = null;
-            bool cached = sig != 0 && IsCurrentFrameCacheHit(s, state, id, FrameSource.File, sig, out cacheEntry);
+            bool cached = sig != 0 && IsCurrentFrameCacheHit(
+                s, state, id, FrameSource.File, path, sig, out cacheEntry);
 
             byte[]? data = null;
             if (!cached)
@@ -497,7 +525,7 @@ public sealed class ControlServer : IDisposable
                 try { data = File.ReadAllBytes(path); } catch { data = null; }
                 if (data is not null) { transmits++; readBytes += data.Length; }
             }
-            ops.Add((id, row, col, cols, rows, sx, sy, sw, sh, sig, data, cacheEntry));
+            ops.Add((id, row, col, cols, rows, sx, sy, sw, sh, path, sig, data, cacheEntry));
             count++;
         }
 
@@ -521,7 +549,7 @@ public sealed class ControlServer : IDisposable
                 {
                     em.SetImageData(op.id, KittyFormat.Png, 0, 0, op.data);
                     if (op.token != 0 && em.Images.TryGetValue(op.id, out var image))
-                        updates.Add((op.id, new FrameCacheEntry(FrameSource.File, op.token, image)));
+                        updates.Add((op.id, new FrameCacheEntry(FrameSource.File, op.identity, op.token, image)));
                 }
                 else if (!em.HasImage(op.id))
                     continue; // never transmitted and no cached copy -> nothing to place
@@ -555,13 +583,19 @@ public sealed class ControlServer : IDisposable
     /// See <c>docs/specs/image-frameshm.md</c> for the normative contract.
     /// </summary>
     private string HandleImageFrameShm(ISession s, JsonElement args)
-        => HandleImageFrameShm(s, args, retryInvalidCache: true);
+    {
+        _sharedFrameReaders.Wait();
+        try { return HandleImageFrameShm(s, args, retryInvalidCache: true); }
+        finally { _sharedFrameReaders.Release(); }
+    }
 
     private string HandleImageFrameShm(ISession s, JsonElement args, bool retryInvalidCache)
     {
         if (args.ValueKind != JsonValueKind.Object ||
             !args.TryGetProperty("images", out var images) || images.ValueKind != JsonValueKind.Array)
             return Err("image.frameshm requires args.images array");
+        if (images.GetArrayLength() > MaxSharedFrameImages)
+            return Err($"image.frameshm accepts at most {MaxSharedFrameImages} images per request");
 
         var state = _frameState.GetOrCreateValue(s);
 
@@ -569,7 +603,7 @@ public sealed class ControlServer : IDisposable
         // Nothing is applied yet - a failure anywhere below returns before phase 2 runs, so a
         // rejected request never leaves the pane holding half a frame.
         var ops = new List<(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh,
-                            long token, ShmFrame? frame, FrameCacheEntry? cached)>();
+                            string identity, long token, ShmFrame? frame, FrameCacheEntry? cached)>();
         int count = 0, transmits = 0;
         long readBytes = 0;
         foreach (var img in images.EnumerateArray())
@@ -598,23 +632,30 @@ public sealed class ControlServer : IDisposable
                 !TryNum(img, "sh", 0, out int sh, ref bad))
                 return Err("image.frameshm: " + bad);
 
-            // The (id, seq) cache, the shm analogue of image.frame's content signature: a repeated
-            // seq means "nothing changed, just re-place it", and skipping it saves the whole copy.
-            // seq 0 is the producer's "read whatever is in the slot", which is never cacheable.
+            // The (id, name, seq) cache, the shm analogue of image.frame's content signature: a
+            // repeated sequence from the same producer means "nothing changed, just re-place it".
+            // Cache hits still validate the live mapping and header below; only the pixel copy is
+            // skipped. Seq 0 means "read whatever is in the slot" and is never cacheable.
             FrameCacheEntry? cacheEntry = null;
             bool cached = seq > 0 && IsCurrentFrameCacheHit(
-                s, state, id, FrameSource.SharedMemory, seq, out cacheEntry);
+                s, state, id, FrameSource.SharedMemory, name, seq, out cacheEntry);
 
             ShmFrame? frame = null;
-            if (!cached)
+            var request = new ShmFrameRequest(name, slot, seq, width, height, stride, format);
+            if (cached)
             {
-                var request = new ShmFrameRequest(name, slot, seq, width, height, stride, format);
-                if (!ShmFrameReader.TryReadFrame(request, out frame, out var error))
+                if (!ShmFrameReader.TryValidateFrame(request, out var error))
+                    return Err("image.frameshm: " + ShmFrameReader.Describe(error));
+            }
+            else
+            {
+                long remainingBytes = _sharedFrameRequestByteLimit - readBytes;
+                if (!ShmFrameReader.TryReadFrame(request, remainingBytes, out frame, out var error))
                     return Err("image.frameshm: " + ShmFrameReader.Describe(error));
                 transmits++;
                 readBytes += frame.Pixels.Length;
             }
-            ops.Add((id, row, col, cols, rows, sx, sy, sw, sh, seq, frame, cacheEntry));
+            ops.Add((id, row, col, cols, rows, sx, sy, sw, sh, name, seq, frame, cacheEntry));
             count++;
         }
 
@@ -636,7 +677,8 @@ public sealed class ControlServer : IDisposable
                 {
                     em.SetImageData(op.id, (KittyFormat)op.frame.Format, op.frame.Width, op.frame.Height, op.frame.Pixels);
                     if (op.token > 0 && em.Images.TryGetValue(op.id, out var image))
-                        updates.Add((op.id, new FrameCacheEntry(FrameSource.SharedMemory, op.token, image)));
+                        updates.Add((op.id, new FrameCacheEntry(
+                            FrameSource.SharedMemory, op.identity, op.token, image)));
                 }
                 else if (!em.HasImage(op.id))
                     continue; // cache said "unchanged" but nothing was ever transmitted -> nothing to place
@@ -663,13 +705,15 @@ public sealed class ControlServer : IDisposable
         Dictionary<int, FrameCacheEntry> state,
         int id,
         FrameSource source,
+        string identity,
         long token,
         out FrameCacheEntry? entry)
     {
         FrameCacheEntry candidate;
         lock (state)
         {
-            if (!state.TryGetValue(id, out var cached) || cached.Source != source || cached.Token != token)
+            if (!state.TryGetValue(id, out var cached) || cached.Source != source ||
+                cached.Identity != identity || cached.Token != token)
             { entry = null; return false; }
             candidate = cached;
         }

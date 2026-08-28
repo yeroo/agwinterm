@@ -231,7 +231,8 @@ public class FrameShmPipeIntegrationTests : IDisposable
 
         long seq = p.Publish(0x5C);
         Assert.Equal("frame:1/1", ReplyOf(client.Send(CtlRequest(p, seq, p.Slot))).GetProperty("result").GetString());
-        // Same (id, seq): the megabyte copy is skipped and only the placement is redone.
+        // Same (id, name, seq): the live header is checked, the megabyte copy is skipped and only
+        // the placement is redone.
         Assert.Equal("frame:1/0", ReplyOf(client.Send(CtlRequest(p, seq, p.Slot, ("row", "4"))))
                                       .GetProperty("result").GetString());
     }
@@ -278,15 +279,14 @@ public class FrameShmPipeIntegrationTests : IDisposable
         p.Dispose();
         _open.Remove(p);
 
-        // Re-sending the *same* (id, seq) still succeeds — the cache answers before anything is
-        // opened, so a dead producer's last frame stays re-placeable. Worth pinning: it is the
-        // reason the failing case below has to bump the sequence.
+        // Re-sending the same (id, name, seq) still validates the live mapping. A cache hit skips
+        // only the pixel copy, so the vanished producer is an ordinary error here too.
         var cached = ReplyOf(client.Send(request));
-        Assert.True(cached.GetProperty("ok").GetBoolean(), request);
-        Assert.Equal("frame:1/0", cached.GetProperty("result").GetString());
+        Assert.False(cached.GetProperty("ok").GetBoolean(), request);
+        Assert.Contains("producer gone", cached.GetProperty("error").GetString());
 
-        // A request that would have named the interrupted paint finds no mapping and is an ordinary
-        // error reply on this connection. The accepted pixels stay in the emulator.
+        // A request that would have named the interrupted paint has the same result. Neither error
+        // changes the accepted pixels, and the control connection remains usable.
         var gone = ReplyOf(client.Send(CtlRequest(p, interrupted.Seq, interrupted.Slot)));
         Assert.False(gone.GetProperty("ok").GetBoolean());
         Assert.Equal(ShmTestProducer.Packed(0x77, p.Geometry.Width, p.Geometry.Height),

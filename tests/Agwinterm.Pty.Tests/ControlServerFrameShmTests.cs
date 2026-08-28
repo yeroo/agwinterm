@@ -9,7 +9,8 @@ namespace Agwinterm.Pty.Tests;
 /// <summary>
 /// The <c>image.frameshm</c> control verb, end to end from JSON args through a real
 /// <see cref="MemoryMappedFile"/> into the emulator's image table. Two things are being pinned
-/// here: that a well-behaved producer's pixels arrive intact and are cached by <c>(id, seq)</c>,
+/// here: that a well-behaved producer's pixels arrive intact and are cached by
+/// <c>(id, mapping name, seq)</c>,
 /// and that every way a producer can lie answers <c>{"ok":false,...}</c> with the session
 /// untouched — a rejected frame must not half-apply. See docs/specs/image-frameshm.md.
 /// </summary>
@@ -28,10 +29,13 @@ public class ControlServerFrameShmTests : IDisposable
         GC.SuppressFinalize(this);
     }
 
-    private static (ControlServer server, TerminalSession session) New()
+    private static (ControlServer server, TerminalSession session) New(long? sharedFrameRequestByteLimit = null)
     {
         var session = new TerminalSession(80, 24);
-        return (new ControlServer(session), session);
+        var server = sharedFrameRequestByteLimit is { } limit
+            ? new ControlServer(session, limit)
+            : new ControlServer(session);
+        return (server, session);
     }
 
     /// <summary>
@@ -238,7 +242,7 @@ public class ControlServerFrameShmTests : IDisposable
         Assert.Equal(2, session.Emulator.Placements[1].ImageId);
     }
 
-    // ---- the (id, seq) re-transmit cache ------------------------------------------------------
+    // ---- the (id, mapping name, seq) re-transmit cache ----------------------------------------
 
     [Fact]
     public void ARepeatedSeqSkipsTheCopyButStillPlaces()
@@ -249,8 +253,8 @@ public class ControlServerFrameShmTests : IDisposable
 
         Assert.Contains("frame:1/1", server.Dispatch(Request("{\"images\":[" + Image(p, seq, p.Slot) + "]}")));
 
-        // Same (id, seq): the producer is saying "nothing changed". The copy is skipped, but the
-        // placement still happens, so re-placing a cached texture stays free.
+        // Same (id, name, seq): the producer is saying "nothing changed". The mapping/header is
+        // validated and the pixel copy is skipped, but the placement still happens.
         string resp = server.Dispatch(Request("{\"images\":[" + Image(p, seq, p.Slot, row: 4) + "]}"));
         Assert.Contains("\"ok\":true", resp);
         Assert.Contains("frame:1/0", resp);
@@ -288,6 +292,60 @@ public class ControlServerFrameShmTests : IDisposable
             "{\"images\":[" + Image(p, seq, p.Slot, id: 1) + "," + Image(p, seq, p.Slot, id: 2) + "]}"));
         Assert.Contains("frame:2/0", resp);
         Assert.Equal(2, session.Emulator.Images.Count);
+    }
+
+    [Fact]
+    public void TheCacheIsKeyedByMappingNameSoAnotherProducerCannotReuseIt()
+    {
+        var (server, session) = New();
+        var first = NewProducer();
+        var second = NewProducer();
+        long firstSeq = first.Publish(0x67);
+        long secondSeq = second.Publish(0x68);
+        Assert.Equal(firstSeq, secondSeq);
+
+        Assert.Contains("frame:1/1", server.Dispatch(Request(
+            "{\"images\":[" + Image(first, firstSeq, first.Slot) + "]}")));
+        string resp = server.Dispatch(Request(
+            "{\"images\":[" + Image(second, secondSeq, second.Slot) + "]}"));
+
+        Assert.Contains("frame:1/1", resp);
+        Assert.Equal(Packed(0x68), session.Emulator.Images[1].Data);
+    }
+
+    [Fact]
+    public void ACacheHitStillValidatesThatTheMappingIsAlive()
+    {
+        var (server, session) = New();
+        var p = NewProducer();
+        long seq = p.Publish(0x69);
+        string request = Request("{\"images\":[" + Image(p, seq, p.Slot) + "]}");
+        Assert.Contains("frame:1/1", server.Dispatch(request));
+
+        p.Dispose();
+        _open.Remove(p);
+
+        Assert.Contains("producer gone", ErrorOf(server.Dispatch(request)));
+        Assert.Equal(Packed(0x69), session.Emulator.Images[1].Data);
+        Assert.Single(session.Emulator.Placements);
+    }
+
+    [Fact]
+    public void ACacheHitStillValidatesRequestGeometry()
+    {
+        var (server, session) = New();
+        var p = NewProducer();
+        long seq = p.Publish(0x6A);
+        Assert.Contains("frame:1/1", server.Dispatch(Request(
+            "{\"images\":[" + Image(p, seq, p.Slot) + "]}")));
+
+        string resp = server.Dispatch(Request(
+            "{\"images\":[" + Image(p, seq, p.Slot).TrimEnd('}') +
+            ",\"width\":" + (Width + 1) + "}]}"));
+
+        Assert.Contains("disagrees with the slot descriptor", ErrorOf(resp));
+        Assert.Equal(Packed(0x6A), session.Emulator.Images[1].Data);
+        Assert.Single(session.Emulator.Placements);
     }
 
     [Fact]
@@ -376,6 +434,39 @@ public class ControlServerFrameShmTests : IDisposable
             "{\"images\":[{\"name\":" + JsonSerializer.Serialize(p.Name) +
             ",\"slot\":0,\"seq\":1,\"id\":9999999999}]}"));
         Assert.Contains("out of range for a 32-bit integer", ErrorOf(resp));
+    }
+
+    [Fact]
+    public void TooManyImagesAreRejectedBeforeAnyMappingIsRead()
+    {
+        var (server, session) = New();
+        var p = NewProducer();
+        long seq = p.Publish(0xAB);
+        string entries = string.Join(",", Enumerable.Repeat(
+            Image(p, seq, p.Slot), ControlServer.MaxSharedFrameImages + 1));
+
+        string resp = server.Dispatch(Request("{\"images\":[" + entries + "]}"));
+
+        Assert.Contains($"at most {ControlServer.MaxSharedFrameImages}", ErrorOf(resp));
+        Assert.Empty(session.Emulator.Images);
+        Assert.Empty(session.Emulator.Placements);
+    }
+
+    [Fact]
+    public void AggregateCopyBudgetRejectsRepeatedEntriesWithoutHalfApplying()
+    {
+        long oneFrame = Width * Height * 4L;
+        var (server, session) = New(sharedFrameRequestByteLimit: oneFrame);
+        var p = NewProducer();
+        p.Publish(0xAC);
+
+        string resp = server.Dispatch(Request(
+            "{\"images\":[" + Image(p, 0, p.Slot, id: 1) + "," +
+                               Image(p, 0, p.Slot, id: 2) + "]}"));
+
+        Assert.Contains("request byte budget", ErrorOf(resp));
+        Assert.Empty(session.Emulator.Images);
+        Assert.Empty(session.Emulator.Placements);
     }
 
     // ---- rejections from the reader, surfaced through the verb --------------------------------
@@ -690,7 +781,7 @@ public class ControlServerFrameShmTests : IDisposable
         // any reply, so seq 3 has already overwritten the slot seq 1 lived in. What comes back is
         // frame 3's pixels under frame 1's request — a whole, self-consistent frame, just not the
         // one asked for. That is the documented cost of breaking the serialise-on-reply rule, and
-        // it is why a pipelining producer must raise slotCount instead.
+        // it is why a pipelining producer must wait for the previous reply for each slot.
         var (server, session) = New();
         var p = NewProducer(slotCount: 2);
 
@@ -714,8 +805,8 @@ public class ControlServerFrameShmTests : IDisposable
     [Fact]
     public void AProducerRunningAheadWithEnoughSlotsDeliversEveryFrameIntact()
     {
-        // The fix the spec prescribes for a pipelining producer: more slots than frames in flight.
-        // Three frames are published before any is drained, and each request still gets its own.
+        // Three frames are published into distinct slots before any is drained. No slot is reused,
+        // so this batch satisfies the spec's per-slot reply rule and every request gets its own.
         var (server, session) = New();
         var p = NewProducer(slotCount: 4);
 

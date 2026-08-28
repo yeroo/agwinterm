@@ -95,6 +95,34 @@ public static class ShmFrameReader
         in ShmFrameRequest request,
         [NotNullWhen(true)] out ShmFrame? frame,
         out ShmFrameError error)
+        => TryReadFrame(request, MaxFrameBytes, out frame, out error);
+
+    /// <summary>
+    /// Opens, validates and copies a frame provided it also fits within
+    /// <paramref name="copyBudgetBytes"/>. The control server passes the bytes remaining in the
+    /// current composition so a request is rejected before an over-budget array is allocated.
+    /// </summary>
+    public static bool TryReadFrame(
+        in ShmFrameRequest request,
+        long copyBudgetBytes,
+        [NotNullWhen(true)] out ShmFrame? frame,
+        out ShmFrameError error)
+        => TryAccessFrame(request, copyPixels: true, copyBudgetBytes, out frame, out error);
+
+    /// <summary>
+    /// Validates the live mapping and requested header fields without copying pixel bytes. Cache
+    /// hits use this path so a dead or malformed mapping cannot bypass the reader's checks merely
+    /// by repeating an accepted sequence.
+    /// </summary>
+    public static bool TryValidateFrame(in ShmFrameRequest request, out ShmFrameError error)
+        => TryAccessFrame(request, copyPixels: false, copyBudgetBytes: 0, out _, out error);
+
+    private static bool TryAccessFrame(
+        in ShmFrameRequest request,
+        bool copyPixels,
+        long copyBudgetBytes,
+        out ShmFrame? frame,
+        out ShmFrameError error)
     {
         frame = null;
         if (!IsAllowedName(request.Name)) { error = ShmFrameError.NameRejected; return false; }
@@ -113,7 +141,7 @@ public static class ShmFrameReader
             catch (ArgumentException) { error = ShmFrameError.NameRejected; return false; }
             catch (IOException) { error = ShmFrameError.MappingUnreadable; return false; }
 
-            return TryReadFrame(view, request, out frame, out error);
+            return TryAccessFrame(view, request, copyPixels, copyBudgetBytes, out frame, out error);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -139,6 +167,15 @@ public static class ShmFrameReader
         MemoryMappedViewAccessor view,
         in ShmFrameRequest request,
         [NotNullWhen(true)] out ShmFrame? frame,
+        out ShmFrameError error)
+        => TryAccessFrame(view, request, copyPixels: true, MaxFrameBytes, out frame, out error);
+
+    private static bool TryAccessFrame(
+        MemoryMappedViewAccessor view,
+        in ShmFrameRequest request,
+        bool copyPixels,
+        long copyBudgetBytes,
+        out ShmFrame? frame,
         out ShmFrameError error)
     {
         ArgumentNullException.ThrowIfNull(view);
@@ -176,6 +213,8 @@ public static class ShmFrameReader
 
         long frameBytes = rowBytes * slot.Height;
         if (frameBytes > MaxFrameBytes) { error = ShmFrameError.FrameTooLarge; return false; }
+        if (copyPixels && (copyBudgetBytes < 0 || frameBytes > copyBudgetBytes))
+        { error = ShmFrameError.CopyBudgetExceeded; return false; }
 
         long slotBytes = (long)slot.Height * slot.Stride;
         if (slotBytes > header.SlotStride) { error = ShmFrameError.SlotOverflow; return false; }
@@ -191,11 +230,15 @@ public static class ShmFrameReader
             (request.Format != 0 && request.Format != slot.Format))
         { error = ShmFrameError.GeometryMismatch; return false; }
 
+        if (!copyPixels)
+        {
+            error = ShmFrameError.None;
+            return true;
+        }
+
         var pixels = new byte[frameBytes];
         if (slot.Stride == rowBytes)
-        {
             handle.ReadSpan((ulong)slotOffset, pixels.AsSpan());
-        }
         else
         {
             // Padded rows: copy row by row and drop the padding, so the emulator never has to
@@ -238,6 +281,7 @@ public static class ShmFrameReader
         ShmFrameError.OutOfView => "slot pixels lie outside the mapped view",
         ShmFrameError.UnsupportedFormat => "format must be 132 (BGRA) or 32 (RGBA)",
         ShmFrameError.FrameTooLarge => $"frame exceeds {MaxFrameBytes} bytes",
+        ShmFrameError.CopyBudgetExceeded => "images exceed the image.frameshm request byte budget",
         ShmFrameError.BadSequence => "requested seq must be zero or positive",
         ShmFrameError.FrameNotPublished => "requested seq is newer than the mapping's ready sequence",
         ShmFrameError.SequenceSlotMismatch => "requested slot does not match seq % slotCount",
