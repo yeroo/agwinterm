@@ -510,11 +510,22 @@ behaviour in the consumer: hover and pairing get no position at all (`engine/poi
 
 ### Task 8: [Final] Update documentation
 
-- [ ] update `docs/agterm-gap-analysis.md:41`, whose "Image protocols / graphics" line currently
+- [x] update `docs/agterm-gap-analysis.md:41`, whose "Image protocols / graphics" line currently
       reads *Partial* and describes only the out-of-band file path
-- [ ] update the agent skill's image section (`src/Agwinterm.Pty/AgentSkill.cs`) if the verb should
+      - ? it remains *Partial* because iTerm2 is absent, but now names the Kitty-compatible and
+        sixel paths, the file-backed image/frame verbs and the raw BGRA/RGBA shared-memory verb.
+- [x] update the agent skill's image section (`src/Agwinterm.Pty/AgentSkill.cs`) if the verb should
       be discoverable to agents
-- [ ] cross-link `docs/specs/image-frameshm.md` from the winterm-browser brief
+      - ? it should be discoverable as a specialised producer path, with the exact mapping-name
+        prefix, a pointer to the versioned contract and explicit guidance to keep ordinary files on
+        `image show`. `AgentSkillTests` pins those details.
+- [x] cross-link `docs/specs/image-frameshm.md` from the winterm-browser brief
+      - ? `winterm-browser/docs/design/00-port-brief.md` now links to the portable GitHub location
+        and adds a dated host update without rewriting its historical account of the PNG fallback
+        that winterm-browser actually shipped.
+- ? validation: 487 .NET tests pass in Release (268 Pty, 219 Core), all 29 native Rust tests pass,
+    the explicit `Agwinterm.Win32` Release build succeeds, targeted `dotnet format` passes and both
+    repositories pass `git diff --check` plus the local cross-link target check.
 
 ## Technical Details
 
