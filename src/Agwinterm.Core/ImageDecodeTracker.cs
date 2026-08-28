@@ -15,6 +15,7 @@ internal sealed class ImageDecodeTracker
 {
     private readonly ConcurrentDictionary<OwnerImageId, KittyImage> _latest = new();
     private readonly HashSet<OwnedImage> _inFlight = [];
+    private readonly HashSet<OwnedImage> _failed = [];
 
     /// <summary>Publish one terminal core's current images without disturbing any other core.</summary>
     public void Publish(ITerminalCore owner, IEnumerable<KittyImage> images)
@@ -32,6 +33,8 @@ internal sealed class ImageDecodeTracker
         foreach (OwnerImageId key in _latest.Keys)
             if (ReferenceEquals(key.Owner, owner) && !liveIds.Contains(key.ImageId))
                 _latest.TryRemove(key, out _);
+
+        _failed.RemoveWhere(item => ReferenceEquals(item.Owner, owner) && !IsLatest(owner, item.Image));
     }
 
     /// <summary>Forget image identities belonging to terminal cores not rendered this frame.</summary>
@@ -41,6 +44,7 @@ internal sealed class ImageDecodeTracker
         var liveOwners = new HashSet<ITerminalCore>(owners, ReferenceEqualityComparer.Instance);
         foreach (OwnerImageId key in _latest.Keys)
             if (!liveOwners.Contains(key.Owner)) _latest.TryRemove(key, out _);
+        _failed.RemoveWhere(item => !liveOwners.Contains(item.Owner));
     }
 
     public bool IsLatest(ITerminalCore owner, KittyImage image)
@@ -54,13 +58,22 @@ internal sealed class ImageDecodeTracker
     /// </summary>
     public bool TryStart(ITerminalCore owner, KittyImage image, int limit)
     {
-        if (limit <= 0 || _inFlight.Count >= limit || !IsLatest(owner, image)) return false;
-        return _inFlight.Add(new OwnedImage(owner, image));
+        var owned = new OwnedImage(owner, image);
+        if (limit <= 0 || _inFlight.Count >= limit || _failed.Contains(owned) || !IsLatest(owner, image))
+            return false;
+        return _inFlight.Add(owned);
     }
 
     /// <summary>Release a conversion slot after its completion has returned to the renderer.</summary>
     public void Complete(ITerminalCore owner, KittyImage image)
         => _inFlight.Remove(new OwnedImage(owner, image));
+
+    /// <summary>Suppress retries for this exact image object until it is replaced or removed.</summary>
+    public void Fail(ITerminalCore owner, KittyImage image)
+        => _failed.Add(new OwnedImage(owner, image));
+
+    /// <summary>Allow failed images to retry after the renderer recreates its device resources.</summary>
+    public void RetryFailures() => _failed.Clear();
 
     internal int InFlightCount => _inFlight.Count;
 
@@ -78,8 +91,8 @@ internal sealed class ImageDecodeTracker
 
     private readonly struct OwnedImage(ITerminalCore owner, KittyImage image) : IEquatable<OwnedImage>
     {
-        private ITerminalCore Owner { get; } = owner;
-        private KittyImage Image { get; } = image;
+        public ITerminalCore Owner { get; } = owner;
+        public KittyImage Image { get; } = image;
 
         public bool Equals(OwnedImage other)
             => ReferenceEquals(Owner, other.Owner) && ReferenceEquals(Image, other.Image);

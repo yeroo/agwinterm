@@ -4,7 +4,7 @@
 //!    because the C# performer contract is char-based.
 //!  - CSI params accumulate with UNCHECKED i32 overflow (C# unchecked wrap).
 //!  - APC payload accumulates bytes-as-chars (latin1), OSC decodes UTF-8 with
-//!    U+FFFD replacement, DCS is raw bytes capped at 8 MB.
+//!    U+FFFD replacement, and OSC/APC/DCS payload storage is capped at 8 MB.
 //!  - Controls inside CsiEntry/CsiParam Execute mid-sequence; CsiIgnore
 //!    swallows them; Escape state Executes controls WITHOUT leaving Escape.
 //!  - Overlong UTF-8 encodings are NOT rejected (they decode and print).
@@ -13,6 +13,7 @@
 //! compares the full recorded event streams.
 
 const REPLACEMENT: u16 = 0xFFFD;
+const MAX_STRING_PAYLOAD_BYTES: usize = 8_000_000;
 
 pub trait Performer {
     fn print(&mut self, ch: u16);
@@ -53,6 +54,9 @@ pub struct VtParser {
     osc: Vec<u8>,
     dcs: Vec<u8>,
     apc: String, // C# accumulates (char)b — latin1 byte-as-char
+    osc_discarding: bool,
+    apc_discarding: bool,
+    apc_payload_bytes: usize,
 }
 
 impl Default for VtParser {
@@ -74,6 +78,9 @@ impl VtParser {
             osc: Vec::new(),
             dcs: Vec::new(),
             apc: String::new(),
+            osc_discarding: false,
+            apc_discarding: false,
+            apc_payload_bytes: 0,
         }
     }
 
@@ -116,9 +123,12 @@ impl VtParser {
                 } else if b == b']' {
                     self.state = State::OscString;
                     self.osc.clear();
+                    self.osc_discarding = false;
                 } else if b == b'_' {
                     self.state = State::ApcString;
                     self.apc.clear();
+                    self.apc_discarding = false;
+                    self.apc_payload_bytes = 0;
                 } else if b == b'P' {
                     self.state = State::DcsString;
                     self.dcs.clear();
@@ -136,15 +146,18 @@ impl VtParser {
 
             State::OscString => {
                 if b == 0x07 {
-                    self.dispatch_osc(p);
+                    self.finish_osc(p);
                     self.state = State::Ground;
-                } else {
+                } else if !self.osc_discarding && self.osc.len() < MAX_STRING_PAYLOAD_BYTES {
                     self.osc.push(b);
+                } else if !self.osc_discarding {
+                    self.osc.clear();
+                    self.osc_discarding = true;
                 }
             }
 
             State::OscEsc => {
-                self.dispatch_osc(p);
+                self.finish_osc(p);
                 self.state = State::Ground;
                 if b != b'\\' {
                     self.step(b, p);
@@ -153,15 +166,21 @@ impl VtParser {
 
             State::ApcString => {
                 if b == 0x07 {
-                    self.dispatch_apc(p);
+                    self.finish_apc(p);
                     self.state = State::Ground;
-                } else {
+                } else if !self.apc_discarding && self.apc_payload_bytes < MAX_STRING_PAYLOAD_BYTES
+                {
                     self.apc.push(b as char);
-                } // byte-as-char, matching (char)b
+                    self.apc_payload_bytes += 1;
+                } else if !self.apc_discarding {
+                    self.apc.clear();
+                    self.apc_payload_bytes = 0;
+                    self.apc_discarding = true;
+                }
             }
 
             State::ApcEsc => {
-                self.dispatch_apc(p);
+                self.finish_apc(p);
                 self.state = State::Ground;
                 if b != b'\\' {
                     self.step(b, p);
@@ -284,11 +303,30 @@ impl VtParser {
         self.osc.clear();
     }
 
+    fn finish_osc(&mut self, p: &mut impl Performer) {
+        if !self.osc_discarding {
+            self.dispatch_osc(p);
+        } else {
+            self.osc.clear();
+        }
+        self.osc_discarding = false;
+    }
+
     fn dispatch_apc(&mut self, p: &mut impl Performer) {
         if !self.apc.is_empty() {
             let s = core::mem::take(&mut self.apc);
             p.apc_dispatch(&s);
         }
+    }
+
+    fn finish_apc(&mut self, p: &mut impl Performer) {
+        if !self.apc_discarding {
+            self.dispatch_apc(p);
+        } else {
+            self.apc.clear();
+        }
+        self.apc_discarding = false;
+        self.apc_payload_bytes = 0;
     }
 
     fn dispatch_dcs(&mut self, p: &mut impl Performer) {
@@ -410,5 +448,27 @@ mod tests {
             run(b"\x1b[1;\r2H"),
             vec!["E:0D".to_string(), format!("CSI:H:{}:1,2", 0)]
         );
+    }
+
+    #[test]
+    fn oversized_osc_is_discarded_and_parser_recovers() {
+        let mut parser = VtParser::new();
+        let mut rec = Rec::default();
+        parser.feed(b"\x1b]0;", &mut rec);
+        parser.feed(&vec![0; MAX_STRING_PAYLOAD_BYTES + 1], &mut rec);
+        parser.feed(b"\x07X\x1b]0;ok\x07", &mut rec);
+
+        assert_eq!(rec.0, vec!["P:0058", "OSC:0:ok"]);
+    }
+
+    #[test]
+    fn oversized_apc_is_discarded_and_parser_recovers() {
+        let mut parser = VtParser::new();
+        let mut rec = Rec::default();
+        parser.feed(b"\x1b_", &mut rec);
+        parser.feed(&vec![0; MAX_STRING_PAYLOAD_BYTES + 1], &mut rec);
+        parser.feed(b"\x1b\\X\x1b_Gok\x1b\\", &mut rec);
+
+        assert_eq!(rec.0, vec!["P:0058", "APC:Gok"]);
     }
 }

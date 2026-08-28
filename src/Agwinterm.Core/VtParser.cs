@@ -2,6 +2,7 @@ namespace Agwinterm.Core;
 
 public sealed class VtParser(IParserPerformer performer)
 {
+    internal const int MaxStringPayloadBytes = 8_000_000;
     private const char Replacement = '�';
 
     private ParserState _state = ParserState.Ground;
@@ -18,6 +19,8 @@ public sealed class VtParser(IParserPerformer performer)
     private readonly List<byte> _osc = new();   // raw payload bytes; UTF-8-decoded at dispatch
     private readonly List<byte> _dcs = new();   // DCS payload bytes (sixel etc.)
     private readonly System.Text.StringBuilder _apc = new();
+    private bool _oscDiscarding;
+    private bool _apcDiscarding;
 
     public void Feed(ReadOnlySpan<byte> bytes)
     {
@@ -43,8 +46,8 @@ public sealed class VtParser(IParserPerformer performer)
 
             case ParserState.Escape:
                 if (b == (byte)'[') { _state = ParserState.CsiEntry; ResetParams(); }
-                else if (b == (byte)']') { _state = ParserState.OscString; _osc.Clear(); }
-                else if (b == (byte)'_') { _state = ParserState.ApcString; _apc.Clear(); }
+                else if (b == (byte)']') { _state = ParserState.OscString; _osc.Clear(); _oscDiscarding = false; }
+                else if (b == (byte)'_') { _state = ParserState.ApcString; _apc.Clear(); _apcDiscarding = false; }
                 else if (b == (byte)'P') { _state = ParserState.DcsString; _dcs.Clear(); }   // DCS (sixel etc.)
                 else if (b is >= 0x30 and <= 0x7e) { performer.EscDispatch((char)b); _state = ParserState.Ground; }
                 else if (IsControl(b)) performer.Execute(b);
@@ -52,23 +55,31 @@ public sealed class VtParser(IParserPerformer performer)
                 break;
 
             case ParserState.OscString:
-                if (b == 0x07) { DispatchOsc(); _state = ParserState.Ground; } // BEL terminator
-                else _osc.Add(b);
+                if (b == 0x07) { FinishOsc(); _state = ParserState.Ground; } // BEL terminator
+                else if (!_oscDiscarding)
+                {
+                    if (_osc.Count < MaxStringPayloadBytes) _osc.Add(b);
+                    else { _osc.Clear(); _oscDiscarding = true; }
+                }
                 break;
 
             case ParserState.OscEsc:
-                DispatchOsc();
+                FinishOsc();
                 _state = ParserState.Ground;
                 if (b != (byte)'\\') Step(b); // not ST: reprocess this byte
                 break;
 
             case ParserState.ApcString:
-                if (b == 0x07) { DispatchApc(); _state = ParserState.Ground; } // BEL terminator
-                else _apc.Append((char)b);
+                if (b == 0x07) { FinishApc(); _state = ParserState.Ground; } // BEL terminator
+                else if (!_apcDiscarding)
+                {
+                    if (_apc.Length < MaxStringPayloadBytes) _apc.Append((char)b);
+                    else { _apc.Clear(); _apcDiscarding = true; }
+                }
                 break;
 
             case ParserState.ApcEsc:
-                DispatchApc();
+                FinishApc();
                 _state = ParserState.Ground;
                 if (b != (byte)'\\') Step(b);
                 break;
@@ -145,10 +156,24 @@ public sealed class VtParser(IParserPerformer performer)
             performer.OscDispatch(command, text);
     }
 
+    private void FinishOsc()
+    {
+        if (!_oscDiscarding) DispatchOsc();
+        _osc.Clear();
+        _oscDiscarding = false;
+    }
+
     private void DispatchApc()
     {
         if (_apc.Length > 0)
             performer.ApcDispatch(_apc.ToString());
+    }
+
+    private void FinishApc()
+    {
+        if (!_apcDiscarding) DispatchApc();
+        _apc.Clear();
+        _apcDiscarding = false;
     }
 
     private void DispatchDcs()

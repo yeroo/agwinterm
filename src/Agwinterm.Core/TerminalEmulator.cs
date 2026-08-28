@@ -4,6 +4,7 @@ namespace Agwinterm.Core;
 
 public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
 {
+    internal const int MaxKittyEncodedChars = 8_000_000;
     private readonly VtParser _parser;
     private readonly ScreenBuffer _main;
     private readonly ScreenBuffer _alt;
@@ -450,6 +451,8 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     private readonly List<ImagePlacement> _placements = new();
     private readonly System.Text.StringBuilder _kittyChunks = new();
     private Dictionary<string, string>? _kittyKeys;
+    private bool _kittyDiscarding;
+    internal int KittyEncodedPayloadLimit { get; set; } = MaxKittyEncodedChars;
 
     /// <summary>Transmitted Kitty images, keyed by image id.</summary>
     public IReadOnlyDictionary<int, KittyImage> Images => _images;
@@ -529,10 +532,27 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         string payload = semi >= 0 ? body[(semi + 1)..] : string.Empty;
 
         var keys = ParseKittyKeys(control);
+        bool more = keys.TryGetValue("m", out var mv) && mv == "1";
+        if (_kittyDiscarding)
+        {
+            if (!more)
+            {
+                _kittyDiscarding = false;
+                _kittyKeys = null;
+            }
+            return;
+        }
+
         if (_kittyChunks.Length == 0) _kittyKeys = keys; // first chunk carries the metadata
+        if ((long)_kittyChunks.Length + payload.Length > KittyEncodedPayloadLimit)
+        {
+            _kittyChunks.Clear();
+            _kittyKeys = null;
+            _kittyDiscarding = more;
+            return;
+        }
         _kittyChunks.Append(payload);
 
-        bool more = keys.TryGetValue("m", out var mv) && mv == "1";
         if (more) return; // accumulate until the final chunk (m=0 / absent)
 
         FinalizeKittyImage();

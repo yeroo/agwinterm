@@ -113,6 +113,30 @@ public class VtParserTests
     }
 
     [Fact]
+    public void OversizedOscIsDiscardedAndParserRecovers()
+    {
+        var rec = new Recorder();
+        var parser = new VtParser(rec);
+        parser.Feed("\x1b]0;"u8);
+        parser.Feed(new byte[VtParser.MaxStringPayloadBytes + 1]);
+        parser.Feed("\x07X\x1b]0;ok\x07"u8);
+
+        Assert.Equal(new[] { "print:X", "osc:0:ok" }, rec.Events);
+    }
+
+    [Fact]
+    public void OversizedApcIsDiscardedAndParserRecovers()
+    {
+        var rec = new Recorder();
+        var parser = new VtParser(rec);
+        parser.Feed("\x1b_"u8);
+        parser.Feed(new byte[VtParser.MaxStringPayloadBytes + 1]);
+        parser.Feed("\x1b\\X\x1b_Gok\x1b\\"u8);
+
+        Assert.Equal(new[] { "print:X", "apc:Gok" }, rec.Events);
+    }
+
+    [Fact]
     public void CsiPrivateMarkerCaptured()
     {
         var rec = Run("\x1b[?1049h");

@@ -370,9 +370,9 @@ internal partial class Program : ISessionHost, IWindowHost
         = new(ReferenceEqualityComparer.Instance);
     private readonly ImageDecodeTracker _imageDecodes = new();
     // Background-decoded pixels waiting to be uploaded to a GPU texture on the UI thread.
-    // bgra == null signals a decode failure or superseded frame so its conversion slot is released.
+    // bgra == null releases the conversion slot; failed distinguishes a bad image from stale work.
     private readonly System.Collections.Concurrent.ConcurrentQueue<
-        (ITerminalCore owner, KittyImage img, byte[]? bgra, int w, int h)> _decoded = new();
+        (ITerminalCore owner, KittyImage img, byte[]? bgra, int w, int h, bool failed)> _decoded = new();
     private static readonly bool _noImages = Environment.GetEnvironmentVariable("AGWINTERM_NOIMG") == "1";
 
     // Wave F2: session background watermarks. A separate cache keyed by the copied file path

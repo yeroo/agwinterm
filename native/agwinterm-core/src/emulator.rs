@@ -25,6 +25,7 @@ use crate::wcwidth;
 use std::collections::{BTreeMap, HashMap};
 
 const TRIM_SLACK: usize = 512;
+const MAX_KITTY_ENCODED_CHARS: usize = 8_000_000;
 
 /// Mirror of C# KittyImage (format kept as the raw transmitted int — the C# enum
 /// cast stores arbitrary values unchanged).
@@ -163,6 +164,8 @@ pub struct Emulator {
     placements: Vec<ImagePlacement>,
     kitty_chunks: String,
     kitty_keys: Option<HashMap<String, String>>,
+    kitty_discarding: bool,
+    kitty_encoded_limit: usize,
     sixel_seq: i32,
     pub cell_pixel_width: i32,
     pub cell_pixel_height: i32,
@@ -225,6 +228,8 @@ impl Emulator {
             placements: Vec::new(),
             kitty_chunks: String::new(),
             kitty_keys: None,
+            kitty_discarding: false,
+            kitty_encoded_limit: MAX_KITTY_ENCODED_CHARS,
             sixel_seq: -1,
             cell_pixel_width: 8,
             cell_pixel_height: 18,
@@ -1318,11 +1323,24 @@ impl Performer for Emulator {
             None => (body, ""),
         };
         let keys = parse_kitty_keys(control);
+        let more = keys.get("m").map(|v| v == "1").unwrap_or(false);
+        if self.kitty_discarding {
+            if !more {
+                self.kitty_discarding = false;
+                self.kitty_keys = None;
+            }
+            return;
+        }
         if self.kitty_chunks.is_empty() {
             self.kitty_keys = Some(keys.clone()); // first chunk carries the metadata
         }
+        if self.kitty_chunks.len().saturating_add(payload.len()) > self.kitty_encoded_limit {
+            self.kitty_chunks.clear();
+            self.kitty_keys = None;
+            self.kitty_discarding = more;
+            return;
+        }
         self.kitty_chunks.push_str(payload);
-        let more = keys.get("m").map(|v| v == "1").unwrap_or(false);
         if more {
             return; // accumulate until the final chunk (m=0 / absent)
         }
@@ -1606,6 +1624,22 @@ mod tests {
         let terminal_image = t.emu.images().get(&7).unwrap();
         assert!(terminal_image.revision > host_revision);
         assert_eq!(terminal_image.data, vec![9, 8, 7, 6]);
+    }
+
+    #[test]
+    fn oversized_chunked_kitty_transmission_is_discarded_and_recovers() {
+        let mut t = Terminal::new(6, 2);
+        t.emu.kitty_encoded_limit = 8;
+
+        t.feed(
+            b"\x1b_Ga=T,i=9,f=24,m=1;AAAAAA\x1b\\\
+              \x1b_Gm=1;BBBB\x1b\\\
+              \x1b_Gm=0;CCCC\x1b\\\
+              \x1b_Ga=t,i=10,f=24;AAEC\x1b\\",
+        );
+
+        assert!(!t.emu.images().contains_key(&9));
+        assert_eq!(t.emu.images().get(&10).unwrap().data, vec![0, 1, 2]);
     }
 
     #[test]

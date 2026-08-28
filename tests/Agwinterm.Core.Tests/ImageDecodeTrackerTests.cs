@@ -99,4 +99,52 @@ public class ImageDecodeTrackerTests
         Assert.True(tracker.IsLatest(visible, visibleImage));
         Assert.False(tracker.IsLatest(hidden, hiddenImage));
     }
+
+    [Fact]
+    public void FailedImageCannotRestartUntilItIsReplaced()
+    {
+        var tracker = new ImageDecodeTracker();
+        var owner = new TerminalEmulator(10, 2);
+        KittyImage failed = Image(1, 1);
+        KittyImage replacement = Image(1, 2);
+
+        tracker.Publish(owner, [failed]);
+        Assert.True(tracker.TryStart(owner, failed, 2));
+        tracker.Complete(owner, failed);
+        tracker.Fail(owner, failed);
+
+        Assert.False(tracker.TryStart(owner, failed, 2));
+
+        tracker.Publish(owner, [replacement]);
+        Assert.True(tracker.TryStart(owner, replacement, 2));
+    }
+
+    [Fact]
+    public void RemovingFailedImagePrunesItsFailureMarker()
+    {
+        var tracker = new ImageDecodeTracker();
+        var owner = new TerminalEmulator(10, 2);
+        KittyImage image = Image(1, 1);
+
+        tracker.Publish(owner, [image]);
+        tracker.Fail(owner, image);
+        tracker.Publish(owner, []);
+        tracker.Publish(owner, [image]);
+
+        Assert.True(tracker.TryStart(owner, image, 2));
+    }
+
+    [Fact]
+    public void DeviceRecoveryAllowsFailedImageToRetry()
+    {
+        var tracker = new ImageDecodeTracker();
+        var owner = new TerminalEmulator(10, 2);
+        KittyImage image = Image(1, 1);
+
+        tracker.Publish(owner, [image]);
+        tracker.Fail(owner, image);
+        tracker.RetryFailures();
+
+        Assert.True(tracker.TryStart(owner, image, 2));
+    }
 }

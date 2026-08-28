@@ -49,6 +49,7 @@ internal partial class Program
         while (_decoded.TryDequeue(out var d))
         {
             _imageDecodes.Complete(d.owner, d.img);
+            if (d.failed) _imageDecodes.Fail(d.owner, d.img);
             if (d.bgra is null || !_imageDecodes.IsLatest(d.owner, d.img)) continue;
             if (!_imageCaches.TryGetValue(d.owner, out var ownerCache))
             {
@@ -65,7 +66,11 @@ internal partial class Program
                 _uploadCount++; _uploadMs += Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
                 Log($"uploaded id={d.img.Id} {d.w}x{d.h}");
             }
-            catch (Exception ex) { Log($"upload FAILED id={d.img.Id}: {ex.GetType().Name} {ex.Message}"); }
+            catch (Exception ex)
+            {
+                _imageDecodes.Fail(d.owner, d.img);
+                Log($"upload FAILED id={d.img.Id}: {ex.GetType().Name} {ex.Message}");
+            }
         }
 
         // 2) Prune textures whose image was retransmitted or deleted, but only for this pane.
@@ -233,18 +238,18 @@ internal partial class Program
         {
             if (!_imageDecodes.IsLatest(owner, img))
             {
-                _decoded.Enqueue((owner, img, null, 0, 0));
+                _decoded.Enqueue((owner, img, null, 0, 0, false));
                 return;
             }
             var (bgra, w, h) = DecodePixels(img);
             _decoded.Enqueue(_imageDecodes.IsLatest(owner, img)
-                ? (owner, img, bgra, w, h)
-                : (owner, img, null, 0, 0));
+                ? (owner, img, bgra, w, h, false)
+                : (owner, img, null, 0, 0, false));
         }
         catch (Exception ex)
         {
             Log($"decode FAILED id={img.Id} fmt={img.Format}: {ex.GetType().Name} {ex.Message}");
-            _decoded.Enqueue((owner, img, null, 0, 0)); // signal failure so we stop retrying
+            _decoded.Enqueue((owner, img, null, 0, 0, true));
         }
         finally { RequestRedraw(); }
     }
@@ -284,8 +289,10 @@ internal partial class Program
         foreach (var cache in _imageCaches.Values)
             foreach (var b in cache.Values) { try { b.Dispose(); } catch { } }
         _imageCaches.Clear();
+        _imageDecodes.RetryFailures();
         // CPU decode work is device-independent. Keep its bounded in-flight/completed state so a
-        // run of device resets cannot clear the accounting and launch another batch over it.
+        // run of device resets cannot clear in-flight accounting and launch another batch over it.
+        // Failed uploads may have been caused by the old device, so those exact images may retry.
         foreach (var b in _bgCache.Values) { try { b.Dispose(); } catch { } } // watermark textures are device-bound too
         _bgCache.Clear();
         _bgDecoding.Clear();
