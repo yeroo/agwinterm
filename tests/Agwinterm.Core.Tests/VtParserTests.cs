@@ -137,6 +137,19 @@ public class VtParserTests
     }
 
     [Fact]
+    public void OversizedCsiParameterListIsDiscardedAcrossChunksAndParserRecovers()
+    {
+        var rec = new Recorder();
+        var parser = new VtParser(rec);
+        parser.Feed("\x1b["u8);
+        parser.Feed(Enumerable.Repeat((byte)';', VtParser.MaxCsiParameters).ToArray());
+        parser.Feed(new[] { (byte)';' }); // overflow arrives in a later terminal read
+        parser.Feed("mX\x1b[31m"u8);
+
+        Assert.Equal(new[] { "print:X", "csi:m:31" }, rec.Events);
+    }
+
+    [Fact]
     public void CsiPrivateMarkerCaptured()
     {
         var rec = Run("\x1b[?1049h");

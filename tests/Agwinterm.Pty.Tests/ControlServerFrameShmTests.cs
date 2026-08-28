@@ -723,6 +723,92 @@ public class ControlServerFrameShmTests : IDisposable
     }
 
     [Fact]
+    public async Task ADelayedSeqZeroRequestCannotReplaceANewerPositiveSequenceFromTheSameMapping()
+    {
+        using var session = new TerminalSession(80, 24);
+        var server = new ControlServer(session);
+        var p = NewProducer(slotCount: 2);
+        p.Publish(0xA3);
+        int olderSlot = p.Slot;
+        long newerSeq = p.Publish(0xA4);
+        int newerSlot = p.Slot;
+
+        using var olderPrepared = new ManualResetEventSlim();
+        using var releaseOlder = new ManualResetEventSlim();
+        int preparedCalls = 0;
+        server.SharedFramePrepared = () =>
+        {
+            if (Interlocked.Increment(ref preparedCalls) != 1) return;
+            olderPrepared.Set();
+            if (!releaseOlder.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("test did not release the seq-zero prepared frame");
+        };
+
+        Task<string> older = Task.Run(() => server.Dispatch(Request(
+            "{\"images\":[" + Image(p, 0, olderSlot, id: 1) + "]}")));
+        string newerResponse;
+        try
+        {
+            Assert.True(olderPrepared.Wait(TimeSpan.FromSeconds(10)),
+                "seq-zero request did not finish phase 1");
+            newerResponse = server.Dispatch(Request(
+                "{\"images\":[" + Image(p, newerSeq, newerSlot, id: 1) + "]}"));
+        }
+        finally
+        {
+            releaseOlder.Set();
+        }
+
+        string olderResponse = await older.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("frame:1/1", newerResponse);
+        Assert.Contains("was superseded", ErrorOf(olderResponse));
+        Assert.Equal(Packed(0xA4), session.Emulator.Images[1].Data);
+    }
+
+    [Fact]
+    public async Task ADelayedPositiveSequenceCannotReplaceANewerSeqZeroRequestFromTheSameMapping()
+    {
+        using var session = new TerminalSession(80, 24);
+        var server = new ControlServer(session);
+        var p = NewProducer(slotCount: 2);
+        long olderSeq = p.Publish(0xA5);
+        int olderSlot = p.Slot;
+        p.Publish(0xA6);
+        int newerSlot = p.Slot;
+
+        using var olderPrepared = new ManualResetEventSlim();
+        using var releaseOlder = new ManualResetEventSlim();
+        int preparedCalls = 0;
+        server.SharedFramePrepared = () =>
+        {
+            if (Interlocked.Increment(ref preparedCalls) != 1) return;
+            olderPrepared.Set();
+            if (!releaseOlder.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("test did not release the positive-sequence prepared frame");
+        };
+
+        Task<string> older = Task.Run(() => server.Dispatch(Request(
+            "{\"images\":[" + Image(p, olderSeq, olderSlot, id: 1) + "]}")));
+        string newerResponse;
+        try
+        {
+            Assert.True(olderPrepared.Wait(TimeSpan.FromSeconds(10)),
+                "positive-sequence request did not finish phase 1");
+            newerResponse = server.Dispatch(Request(
+                "{\"images\":[" + Image(p, 0, newerSlot, id: 1) + "]}"));
+        }
+        finally
+        {
+            releaseOlder.Set();
+        }
+
+        string olderResponse = await older.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("frame:1/1", newerResponse);
+        Assert.Contains("was superseded", ErrorOf(olderResponse));
+        Assert.Equal(Packed(0xA6), session.Emulator.Images[1].Data);
+    }
+
+    [Fact]
     public async Task AcceptedSequenceOrderingSurvivesPixelCacheInvalidation()
     {
         using var session = new TerminalSession(80, 24);

@@ -2,7 +2,8 @@
 //! machine. Event-for-event identical to the C# parser, including its quirks:
 //!  - Print emits UTF-16 CODE UNITS (astral scalars arrive as a surrogate pair),
 //!    because the C# performer contract is char-based.
-//!  - CSI params accumulate with UNCHECKED i32 overflow (C# unchecked wrap).
+//!  - CSI numeric values use UNCHECKED i32 overflow (C# unchecked wrap), while parameter count is
+//!    capped so a child cannot retain an unbounded list across feeds.
 //!  - APC payload accumulates bytes-as-chars (latin1), OSC decodes UTF-8 with
 //!    U+FFFD replacement, and OSC/APC/DCS payload storage is capped at 8 MB.
 //!  - Controls inside CsiEntry/CsiParam Execute mid-sequence; CsiIgnore
@@ -14,6 +15,7 @@
 
 const REPLACEMENT: u16 = 0xFFFD;
 const MAX_STRING_PAYLOAD_BYTES: usize = 8_000_000;
+const MAX_CSI_PARAMETERS: usize = 256;
 
 pub trait Performer {
     fn print(&mut self, ch: u16);
@@ -214,16 +216,17 @@ impl VtParser {
                     self.has_current = true;
                     self.state = State::CsiParam;
                 } else if b == b';' {
-                    self.push_param();
-                    self.state = State::CsiParam;
+                    if self.try_push_param() {
+                        self.state = State::CsiParam;
+                    } else {
+                        self.discard_csi();
+                    }
                 } else if (0x3c..=0x3f).contains(&b) {
                     self.csi_prefix = b;
                 }
                 // private marker < = > ?
                 else if (0x40..=0x7e).contains(&b) {
-                    self.push_param_if_any();
-                    p.csi_dispatch(b, &self.params, self.csi_prefix);
-                    self.state = State::Ground;
+                    self.finish_csi(b, p);
                 } else if (0x20..=0x2f).contains(&b) {
                     self.state = State::CsiIntermediate;
                 } else if is_control(b) {
@@ -235,9 +238,7 @@ impl VtParser {
 
             State::CsiIntermediate => {
                 if (0x40..=0x7e).contains(&b) {
-                    self.push_param_if_any();
-                    p.csi_dispatch(b, &self.params, self.csi_prefix);
-                    self.state = State::Ground;
+                    self.finish_csi(b, p);
                 } else if (0x20..=0x2f).contains(&b) { /* collect intermediates: ignored for now */
                 } else {
                     self.state = State::CsiIgnore;
@@ -365,18 +366,38 @@ impl VtParser {
         self.csi_prefix = 0;
     }
 
-    fn push_param(&mut self) {
+    fn try_push_param(&mut self) -> bool {
+        if self.params.len() >= MAX_CSI_PARAMETERS {
+            return false;
+        }
         let v = if self.has_current { self.current } else { 0 };
         self.params.push(v);
         self.current = 0;
         self.has_current = false;
+        true
     }
 
-    fn push_param_if_any(&mut self) {
+    fn try_push_param_if_any(&mut self) -> bool {
         if self.has_current || !self.params.is_empty() {
-            let v = if self.has_current { self.current } else { 0 };
-            self.params.push(v);
+            return self.try_push_param();
         }
+        true
+    }
+
+    fn finish_csi(&mut self, final_byte: u8, p: &mut impl Performer) {
+        if self.try_push_param_if_any() {
+            p.csi_dispatch(final_byte, &self.params, self.csi_prefix);
+        } else {
+            self.reset_params();
+        }
+        self.state = State::Ground;
+    }
+
+    fn discard_csi(&mut self) {
+        // A child can leave a CSI split across arbitrarily many reads. Drop the retained list as
+        // soon as it exceeds the bound, then ignore through the final byte (or a restarting ESC).
+        self.reset_params();
+        self.state = State::CsiIgnore;
     }
 }
 
@@ -470,5 +491,17 @@ mod tests {
         parser.feed(b"\x1b\\X\x1b_Gok\x1b\\", &mut rec);
 
         assert_eq!(rec.0, vec!["P:0058", "APC:Gok"]);
+    }
+
+    #[test]
+    fn oversized_csi_parameter_list_is_discarded_across_chunks_and_parser_recovers() {
+        let mut parser = VtParser::new();
+        let mut rec = Rec::default();
+        parser.feed(b"\x1b[", &mut rec);
+        parser.feed(&vec![b';'; MAX_CSI_PARAMETERS], &mut rec);
+        parser.feed(b";", &mut rec); // overflow arrives in a later terminal read
+        parser.feed(b"mX\x1b[31m", &mut rec);
+
+        assert_eq!(rec.0, vec!["P:0058", "CSI:m:0:31"]);
     }
 }

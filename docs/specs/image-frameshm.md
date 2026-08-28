@@ -155,12 +155,13 @@ The renderer admits at most two image conversions at once. Stable-id replacement
 image reference to those jobs; superseded work is discarded before conversion when possible and
 always before upload. Intermediate frames that never receive a decode slot are coalesced away.
 
-Two pipe connections may complete their off-lock copies out of order. For a positive sequence, the
-commit step compares `seq` with the newest frame accepted for the same `(id, name)`. A request
-generation captured before the off-lock copy also orders mapping-identity switches, so an earlier
-request from mapping A cannot resurface after a later request from mapping B commits. Delayed older
-work is rejected rather than replacing a newer displayed frame. This makes pipelining distinct slots
-safe with respect to display order as well as slot reuse.
+Two pipe connections may complete their off-lock copies out of order. When both requests carry a
+positive sequence, the commit step compares `seq` with the newest frame accepted for the same
+`(id, name)`. Sequence zero has no producer ordering token, so a request generation captured before
+the off-lock copy orders any pair involving `seq: 0`, including requests for the same mapping.
+Mapping-identity switches are generation-ordered too. Delayed older work is rejected rather than
+replacing a newer displayed frame. This makes pipelining distinct slots safe with respect to display
+order as well as slot reuse.
 
 Note the format restriction: only the **4-bytes-per-pixel** formats are carried, `132` (`Bgra`) and
 `32` (`Rgba`). `24` (`Rgb`) and `100` (`Png`) are valid `KittyFormat` values but not valid here —

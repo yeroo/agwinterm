@@ -21,6 +21,8 @@ public sealed class ControlServer : IDisposable
 
     private enum FrameSource { File, SharedMemory }
     private sealed record FrameCacheEntry(FrameSource Source, string Identity, long Token, KittyImage Image);
+    private readonly record struct SharedFrameCommitState(
+        string Identity, long LatestPositiveSequence, long Generation, bool Sequenced);
 
     /// <summary>Largest composition accepted by one <c>image.frameshm</c> request.</summary>
     internal const int MaxSharedFrameImages = 64;
@@ -57,10 +59,10 @@ public sealed class ControlServer : IDisposable
     private readonly ConditionalWeakTable<ISession, Dictionary<int, FrameCacheEntry>> _frameState = new();
 
     // Cache entries may be discarded when another image path replaces their image reference, but
-    // accepted-sequence ordering must survive that invalidation. The request generation also keeps
-    // a delayed request from an old mapping incarnation from resurfacing after a newer identity has
-    // committed; unlike retaining every historical mapping name, this remains bounded per image id.
-    private readonly ConditionalWeakTable<ISession, Dictionary<int, (string Identity, long Token, long Generation)>>
+    // accepted-sequence ordering must survive that invalidation. Request generation orders mapping
+    // switches and any pair involving the unsequenced seq-zero form; positive-only pairs use the
+    // producer's sequence. Unlike retaining every historical name, this remains bounded per id.
+    private readonly ConditionalWeakTable<ISession, Dictionary<int, SharedFrameCommitState>>
         _acceptedSharedFrameSequences = new();
     private long _sharedFrameRequestGeneration;
 
@@ -708,10 +710,10 @@ public sealed class ControlServer : IDisposable
         s.MutateLocked(em =>
         {
             // Two pipe connections may finish their off-lock copies in either order. Once a newer
-            // positive sequence for this id and mapping has committed, an older request must not
-            // replace it. Mapping switches are generation-ordered even when seq is zero (the
-            // uncached "current slot" form), otherwise a delayed old mapping could resurface after
-            // a producer restart. Check under the same session/cache lock used for the update.
+            // positive sequence for this id and mapping has committed, an older positive request
+            // must not replace it. Sequence zero has no producer ordering token, so generation
+            // orders any pair involving that uncached form as well as mapping switches. Check under
+            // the same session/cache lock used for the update.
             lock (acceptedSequences)
             {
                 var requestLatest = new Dictionary<(int id, string identity), long>();
@@ -723,8 +725,14 @@ public sealed class ControlServer : IDisposable
                     {
                         if (accepted.Identity == op.identity)
                         {
+                            if ((op.token == 0 || !accepted.Sequenced) &&
+                                requestGeneration < accepted.Generation)
+                            {
+                                commitError = $"image.frameshm: request for id {op.id} was superseded by a newer request";
+                                return;
+                            }
                             if (op.token > 0 && latest == 0)
-                                latest = accepted.Token;
+                                latest = accepted.LatestPositiveSequence;
                         }
                         else if (requestGeneration < accepted.Generation)
                         {
@@ -775,14 +783,16 @@ public sealed class ControlServer : IDisposable
                 foreach (var op in ops)
                 {
                     long generation = requestGeneration;
-                    long token = op.token;
+                    long latestPositiveSequence = op.token;
                     if (acceptedSequences.TryGetValue(op.id, out var accepted) &&
                         accepted.Identity == op.identity)
                     {
                         generation = Math.Max(generation, accepted.Generation);
-                        if (token == 0) token = accepted.Token;
+                        latestPositiveSequence = Math.Max(
+                            latestPositiveSequence, accepted.LatestPositiveSequence);
                     }
-                    acceptedSequences[op.id] = (op.identity, token, generation);
+                    acceptedSequences[op.id] = new SharedFrameCommitState(
+                        op.identity, latestPositiveSequence, generation, Sequenced: op.token > 0);
                 }
         });
         if (invalidCache)

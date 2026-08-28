@@ -264,6 +264,10 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
       off-lock copies in either order; under the session/cache lock, a delayed `(id, name, seq)` is
       rejected if a greater sequence already committed. A deterministic test pauses the older
       request after phase 1, commits the newer request, and proves the older pixels cannot replace it.
+- ➕ **mixed sequenced/unsequenced commits follow request generation.** `seq: 0` has no producer
+      ordering token, so any same-mapping pair involving it is ordered by the generation captured
+      before phase 1. Regressions cover both delayed-zero/newer-positive and
+      delayed-positive/newer-zero completion order.
 - ➕ **the Rust-backed core registers direct-image metadata only.** The renderer-facing managed
       cache already owns the copied frame bytes; phase 2 now gives native only id/format/geometry for
       placement bookkeeping instead of duplicating the whole payload under the render lock.

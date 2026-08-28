@@ -3,6 +3,7 @@ namespace Agwinterm.Core;
 public sealed class VtParser(IParserPerformer performer)
 {
     internal const int MaxStringPayloadBytes = 8_000_000;
+    internal const int MaxCsiParameters = 256;
     private const char Replacement = '�';
 
     private ParserState _state = ParserState.Ground;
@@ -98,16 +99,20 @@ public sealed class VtParser(IParserPerformer performer)
             case ParserState.CsiEntry:
             case ParserState.CsiParam:
                 if (b is >= (byte)'0' and <= (byte)'9') { _current = _current * 10 + (b - '0'); _hasCurrent = true; _state = ParserState.CsiParam; }
-                else if (b == (byte)';') { PushParam(); _state = ParserState.CsiParam; }
+                else if (b == (byte)';')
+                {
+                    if (TryPushParam()) _state = ParserState.CsiParam;
+                    else DiscardCsi();
+                }
                 else if (b is >= 0x3c and <= 0x3f) { _csiPrefix = (char)b; } // private marker < = > ?
-                else if (b is >= 0x40 and <= 0x7e) { PushParamIfAny(); performer.CsiDispatch((char)b, _params, _csiPrefix); _state = ParserState.Ground; }
+                else if (b is >= 0x40 and <= 0x7e) FinishCsi(b);
                 else if (b is >= 0x20 and <= 0x2f) { _state = ParserState.CsiIntermediate; }
                 else if (IsControl(b)) performer.Execute(b);
                 else _state = ParserState.CsiIgnore;
                 break;
 
             case ParserState.CsiIntermediate:
-                if (b is >= 0x40 and <= 0x7e) { PushParamIfAny(); performer.CsiDispatch((char)b, _params, _csiPrefix); _state = ParserState.Ground; }
+                if (b is >= 0x40 and <= 0x7e) FinishCsi(b);
                 else if (b is >= 0x20 and <= 0x2f) { /* collect intermediates: ignored for now */ }
                 else _state = ParserState.CsiIgnore;
                 break;
@@ -226,16 +231,36 @@ public sealed class VtParser(IParserPerformer performer)
         _csiPrefix = '\0';
     }
 
-    private void PushParam()
+    private bool TryPushParam()
     {
+        if (_params.Count >= MaxCsiParameters) return false;
         _params.Add(_hasCurrent ? _current : 0);
         _current = 0;
         _hasCurrent = false;
+        return true;
     }
 
-    private void PushParamIfAny()
+    private bool TryPushParamIfAny()
     {
         if (_hasCurrent || _params.Count > 0)
-            _params.Add(_hasCurrent ? _current : 0);
+            return TryPushParam();
+        return true;
+    }
+
+    private void FinishCsi(byte final)
+    {
+        if (TryPushParamIfAny())
+            performer.CsiDispatch((char)final, _params, _csiPrefix);
+        else
+            ResetParams();
+        _state = ParserState.Ground;
+    }
+
+    private void DiscardCsi()
+    {
+        // A child can leave a CSI split across arbitrarily many reads. Drop the retained list as
+        // soon as it exceeds the bound, then ignore through the final byte (or a restarting ESC).
+        ResetParams();
+        _state = ParserState.CsiIgnore;
     }
 }
