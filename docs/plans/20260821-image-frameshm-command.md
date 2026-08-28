@@ -79,9 +79,9 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 - **A dead or lying producer must not take the terminal down.** The name, dimensions, stride and
   offsets all arrive from another process and every one of them is untrusted input into a pointer
   computation. Validate against the actual mapped view length before any copy.
-- **`ControlServer` int args must be JSON numbers, not strings** — `GetInt` throws
-  `"requires an element of type 'Number'"` otherwise. The ctl serializes `cargs` by type, so parse
-  with `int.TryParse` on the CLI side.
+- **`ControlServer` numeric args must be JSON numbers, not strings** — its typed readers reject
+  strings. The ctl parses tokens as signed 64-bit integers, preserves non-negative `seq` as the
+  publish counter, and range-checks/casts every other numeric field to signed 32-bit.
 - Backward compatibility: `image.frame` keeps working unchanged. This is an additional verb.
 - Build discipline (these have cost hours before): close the running dev instance before building;
   build `src/Agwinterm.Win32` **explicitly** so its copy of `Agwinterm.Pty.dll` is not stale;
@@ -283,7 +283,8 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 - [x] add the CLI surface in `src/Agwinterm.Ctl` alongside the existing `image` verbs —
       `agwintermctl image frameshm <Local\agwinterm-frame-NAME> [--slot N] [--seq N] ...`, dispatched
       from `Program.cs` next to `image show`/`image sixel`
-- [x] parse numeric options with `int.TryParse` and place **ints** into `cargs`, never strings
+- [x] parse numeric options as JSON numbers, preserving `seq` as Int64 and range-checking/casting
+      every other numeric field to Int32; never place numeric strings into `cargs`
 - [x] keep the CLI shape close to `image frame` so the two read as siblings
 - [x] write tests for arg parsing, especially that numerics serialize as JSON numbers —
       `tests/Agwinterm.Pty.Tests/FrameShmCliTests.cs`, 22 tests
@@ -550,6 +551,13 @@ behaviour in the consumer: hover and pairing get no position at all (`engine/poi
       advances the C ABI from v17 to v18. All 517 .NET tests and 30 native Rust tests pass, along with
       repository-wide formatting, warnings-as-errors clippy, a zero-warning Release build, ABI
       agreement, `git diff --check`, and the live strict control-API conformance suite.
+- ➕ **final all-findings review validation:** the acquire now also precedes the published slot
+      descriptor read, renderer decode and texture identities are scoped by terminal core for split
+      panes, the release/acquire pair has a 10,000-publication concurrent mapped-view regression, and
+      the CLI/spec consistently preserve `seq` as Int64. All 523 .NET tests and 30 native Rust tests
+      pass, together with repository-wide .NET/Rust formatting, strict all-target clippy, a
+      zero-warning Release build, ABI v18 agreement, `git diff --check`, and strict live control-API
+      conformance.
 
 ### Task 8: [Final] Update documentation
 

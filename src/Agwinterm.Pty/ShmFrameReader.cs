@@ -27,7 +27,7 @@ public readonly record struct ShmFrameRequest(
 /// shape <c>ITerminalCore.SetImageData</c> wants. It is owned by the caller and aliases nothing
 /// in the mapped view, so the producer may exit the moment the call returns.
 /// </summary>
-public sealed record ShmFrame(int Width, int Height, int Format, long Seq, byte[] Pixels);
+public sealed record ShmFrame(int Width, int Height, int Format, byte[] Pixels);
 
 /// <summary>
 /// Opens a producer's named shared-memory mapping and copies one published frame out of it.
@@ -185,15 +185,18 @@ public static class ShmFrameReader
         var handle = view.SafeMemoryMappedViewHandle;
         if (viewLength < ShmFrameLayout.HeaderSize) { error = ShmFrameError.ShortView; return false; }
 
+        if (request.Seq < 0) { error = ShmFrameError.BadSequence; return false; }
+
+        // This must be an atomic acquire load directly from shared memory. Reading ready from the
+        // copied header would neither prevent a torn int64 nor acquire the descriptor/pixel writes.
+        long ready = ShmFrameLayout.ReadReadyAcquire(view);
+
+        // Descriptor and pixel reads must follow the acquire. The producer publishes both before
+        // its release store, and an acquire cannot retroactively order a header copy made earlier.
         Span<byte> headerBytes = stackalloc byte[ShmFrameLayout.HeaderSize];
         handle.ReadSpan(0, headerBytes);
         if (!ShmFrameLayout.TryRead(headerBytes, out var header, out error) || header is null) return false;
 
-        if (request.Seq < 0) { error = ShmFrameError.BadSequence; return false; }
-
-        // This must be an atomic acquire load directly from shared memory. Reading ready from the
-        // bulk-copied header above would neither prevent a torn int64 nor acquire the pixel writes.
-        long ready = ShmFrameLayout.ReadReadyAcquire(view);
         if (request.Seq > 0 && ready < request.Seq)
         { error = ShmFrameError.FrameNotPublished; return false; }
 
@@ -249,7 +252,7 @@ public static class ShmFrameReader
                     pixels.AsSpan((int)(y * rowBytes), (int)rowBytes));
         }
 
-        frame = new ShmFrame(slot.Width, slot.Height, slot.Format, ready, pixels);
+        frame = new ShmFrame(slot.Width, slot.Height, slot.Format, pixels);
         error = ShmFrameError.None;
         return true;
     }

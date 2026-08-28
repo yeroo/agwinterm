@@ -8,14 +8,16 @@ namespace Agwinterm.Ctl;
 /// Builds the <c>image.frameshm</c> control args from parsed CLI positionals and options.
 /// Split out of <c>Program.cs</c> (top-level statements, so not directly testable) because the
 /// numeric handling is the part that has to be right: <c>ControlServer</c> rejects a string where
-/// a number belongs, so every option is parsed here and placed into <c>cargs</c> as an int.
+/// a number belongs, so every option is parsed here and placed into <c>cargs</c> as a number.
+/// The publish counter <c>seq</c> stays 64-bit; every other numeric field is range-checked to int.
 /// The wire shape is <c>docs/specs/image-frameshm.md</c>.
 /// </summary>
 public static class FrameShmCli
 {
     /// <summary>
     /// Every numeric field of an <c>images[]</c> entry, in the order the spec lists them. All are
-    /// optional; an omitted one is left out entirely so the server applies its own default.
+    /// optional; <c>seq</c> is Int64 and the rest are Int32. An omitted field is left out entirely
+    /// so the server applies its own default.
     /// </summary>
     public static readonly string[] NumericFields =
     [

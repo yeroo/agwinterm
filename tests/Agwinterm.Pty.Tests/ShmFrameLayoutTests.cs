@@ -253,6 +253,58 @@ public class ShmFrameLayoutTests
     }
 
     [Fact]
+    public async Task ReadyPublishesPayloadAcrossConcurrentMappedViews()
+    {
+        const int iterations = 10_000;
+        const long firstSequence = 1L << 40;
+        const long payloadOffset = ShmFrameLayout.HeaderSize;
+        string name = ShmFrameReader.NamePrefix + "publication-" + Guid.NewGuid().ToString("N");
+        using var producerMmf = MemoryMappedFile.CreateNew(name, ShmFrameLayout.HeaderSize + sizeof(long));
+        using var producerView = producerMmf.CreateViewAccessor(
+            0, ShmFrameLayout.HeaderSize + sizeof(long), MemoryMappedFileAccess.ReadWrite);
+        byte[] header = Encode(SampleHeader());
+        producerView.WriteArray(0, header, 0, header.Length);
+        using var consumerMmf = MemoryMappedFile.OpenExisting(name, MemoryMappedFileRights.Read);
+        using var consumerView = consumerMmf.CreateViewAccessor(
+            0, ShmFrameLayout.HeaderSize + sizeof(long), MemoryMappedFileAccess.Read);
+        int acknowledged = 0;
+
+        Task producer = Task.Run(() =>
+        {
+            for (int iteration = 1; iteration <= iterations; iteration++)
+            {
+                long sequence = firstSequence + iteration;
+                long sentinel = sequence ^ (iteration % 2 == 0
+                    ? unchecked((long)0x55AA55AA55AA55AA)
+                    : unchecked((long)0xAA55AA55AA55AA55));
+                producerView.Write(payloadOffset, sentinel);
+                ShmFrameLayout.WriteReadyRelease(producerView, sequence);
+                Assert.True(SpinWait.SpinUntil(
+                    () => Volatile.Read(ref acknowledged) == iteration, TimeSpan.FromSeconds(5)),
+                    $"consumer did not acknowledge sequence {sequence}");
+            }
+        });
+
+        Task consumer = Task.Run(() =>
+        {
+            for (int iteration = 1; iteration <= iterations; iteration++)
+            {
+                long expected = firstSequence + iteration;
+                Assert.True(SpinWait.SpinUntil(
+                    () => ShmFrameLayout.ReadReadyAcquire(consumerView) == expected,
+                    TimeSpan.FromSeconds(5)), $"producer did not publish sequence {expected}");
+                long expectedSentinel = expected ^ (iteration % 2 == 0
+                    ? unchecked((long)0x55AA55AA55AA55AA)
+                    : unchecked((long)0xAA55AA55AA55AA55));
+                Assert.Equal(expectedSentinel, consumerView.ReadInt64(payloadOffset));
+                Volatile.Write(ref acknowledged, iteration);
+            }
+        });
+
+        await Task.WhenAll(producer, consumer);
+    }
+
+    [Fact]
     public void ReadReadyOnAShortViewIsZeroRatherThanAnException()
         => Assert.Equal(0, ShmFrameLayout.ReadReadyAcquire(new byte[ShmFrameLayout.HeaderSize - 1]));
 

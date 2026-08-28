@@ -151,7 +151,6 @@ public class ShmFrameReaderTests : IDisposable
         Assert.Equal(Width, frame.Width);
         Assert.Equal(Height, frame.Height);
         Assert.Equal((int)KittyFormat.Bgra, frame.Format);
-        Assert.Equal(1, frame.Seq);
         Assert.Equal(Width * Height * 4, frame.Pixels.Length);
         // Slot 1's tag, and the (x, y) pattern, byte for byte.
         Assert.Equal(Pattern(Width, Height, Stride, 0x80), frame.Pixels);
@@ -200,14 +199,11 @@ public class ShmFrameReaderTests : IDisposable
         {
             var pixels = Pattern(Width, Height, Stride, 0xAB);
             view.WriteArray(PixelOffset, pixels, 0, pixels.Length);
-            var seq = new byte[8];
-            BinaryPrimitives.WriteInt64LittleEndian(seq, 2);
-            view.WriteArray(ShmFrameLayout.ReadyOffset, seq, 0, seq.Length);
+            ShmFrameLayout.WriteReadyRelease(view, 2);
         }
 
         Assert.True(ShmFrameReader.TryReadFrame(new ShmFrameRequest(name, Slot: 0, Seq: 2), out var frame, out _));
-        Assert.Equal(2, frame!.Seq);
-        Assert.Equal(0xAB, frame.Pixels[2]);
+        Assert.Equal(0xAB, frame!.Pixels[2]);
     }
 
     // ---- header rejections, through a real mapping ------------------------------------------

@@ -361,18 +361,18 @@ internal partial class Program : ISessionHost, IWindowHost
     private long _lastPaintTick;                      // Environment.TickCount64 of the last WM_PAINT render
     private bool _redrawTimerArmed;
 
-    // Decoded Kitty images, keyed by the current KittyImage instance so a retransmit
-    // (new bytes, same id) re-decodes and the stale texture is pruned/disposed.
+    // Decoded Kitty images are scoped by terminal core as well as KittyImage instance: image ids
+    // are pane-local, and visible split panes must not prune or supersede one another's work.
     private const int MaxConcurrentImageDecodes = 2;
-    private readonly Dictionary<KittyImage, ID2D1Bitmap> _imageCache = new();
-    private readonly HashSet<KittyImage> _decoding = new();               // decode in flight (UI-thread set)
-    // Background jobs consult this before and after conversion, so stable-id frame streams drop
-    // superseded work instead of allocating and queueing every intermediate full-frame buffer.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, KittyImage>
-        _latestDecodeImages = new();
+    private readonly Dictionary<ITerminalCore, Dictionary<KittyImage, ID2D1Bitmap>> _imageCaches
+        = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<ITerminalCore> _imageOwnersThisFrame
+        = new(ReferenceEqualityComparer.Instance);
+    private readonly ImageDecodeTracker _imageDecodes = new();
     // Background-decoded pixels waiting to be uploaded to a GPU texture on the UI thread.
-    // bgra == null signals a decode failure (so we can drop it from _decoding without retrying forever).
-    private readonly System.Collections.Concurrent.ConcurrentQueue<(KittyImage img, byte[]? bgra, int w, int h)> _decoded = new();
+    // bgra == null signals a decode failure or superseded frame so its conversion slot is released.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<
+        (ITerminalCore owner, KittyImage img, byte[]? bgra, int w, int h)> _decoded = new();
     private static readonly bool _noImages = Environment.GetEnvironmentVariable("AGWINTERM_NOIMG") == "1";
 
     // Wave F2: session background watermarks. A separate cache keyed by the copied file path

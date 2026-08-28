@@ -198,16 +198,17 @@ the header gets a free consistency check; one that would rather not repeat itsel
 }
 ```
 
-Every numeric field is a **JSON number, never a string**. `ControlServer`'s typed parser rejects a
-string and names the offending field, so a CLI producer must `int.TryParse` and put an int into
-`cargs`.
+Every numeric field is a **JSON number, never a string**. `seq` is a non-negative signed 64-bit JSON
+integer; every other numeric field is a signed 32-bit integer. `ControlServer`'s typed parser rejects
+a string and names the offending field. The CLI parses numeric tokens as `Int64`, preserves `seq`,
+and range-checks/casts the remaining fields to `Int32` before putting them into `cargs`.
 
 | field | meaning |
 |---|---|
 | `id` | image id, same semantics as `image.frame` — the key the terminal caches pixels under |
 | `name` | mapping/cache identity; `Local\agwinterm-frame-` prefix required, and a fresh suffix is required when `seq` resets |
 | `slot` | slot index to read, `0 <= slot < slotCount` |
-| `seq` | the non-negative publish sequence; `0` means current/uncached, positive values drive the `(id, name, seq)` re-transmit cache |
+| `seq` | the non-negative signed 64-bit publish sequence; `0` means current/uncached, positive values drive the `(id, name, seq)` re-transmit cache |
 | `width`, `height`, `stride`, `format` | must agree with the slot descriptor; both are validated |
 | `row`, `col` | placement origin in cells |
 | `cols`, `rows` | placement size in cells; `0` means "natural size" |
