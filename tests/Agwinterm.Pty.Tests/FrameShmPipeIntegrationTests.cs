@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
@@ -117,6 +118,29 @@ public class FrameShmPipeIntegrationTests : IDisposable
         return doc.RootElement.Clone();
     }
 
+    private static (int ExitCode, string StdOut, string StdErr) RunCtl(params string[] args)
+    {
+        string exe = Path.Combine(AppContext.BaseDirectory, "agwintermctl.exe");
+        Assert.True(File.Exists(exe), $"agwintermctl apphost was not copied to {AppContext.BaseDirectory}");
+
+        var start = new ProcessStartInfo(exe)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (string arg in args) start.ArgumentList.Add(arg);
+
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("could not start agwintermctl");
+        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+        Task<string> stderr = process.StandardError.ReadToEndAsync();
+        bool exited = process.WaitForExit(10_000);
+        if (!exited) process.Kill(entireProcessTree: true);
+        Assert.True(exited, "agwintermctl did not exit within 10 seconds");
+        return (process.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult());
+    }
+
     // ---- the frame arrives ---------------------------------------------------------------------
 
     [Fact]
@@ -147,6 +171,31 @@ public class FrameShmPipeIntegrationTests : IDisposable
         Assert.Equal(3, placement.Col);
         Assert.Equal(10, placement.Cols);
         Assert.Equal(5, placement.Rows);
+    }
+
+    [Fact]
+    public void TheRealCtlCommandRoutesAFrameThroughThePipe()
+    {
+        var (session, pipeName) = StartServer();
+        var p = NewProducer();
+        long seq = p.Publish(0xA8);
+
+        var result = RunCtl(
+            "image", "frameshm", p.Name,
+            "--slot", p.Slot.ToString(), "--seq", seq.ToString(),
+            "--width", p.Geometry.Width.ToString(), "--height", p.Geometry.Height.ToString(),
+            "--stride", p.Geometry.Stride.ToString(), "--format", ((int)KittyFormat.Bgra).ToString(),
+            "--id", "7", "--row", "2", "--col", "3", "--cols", "10", "--rows", "5",
+            "--pipe", pipeName);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("frame:1/1", result.StdOut.Trim());
+        Assert.Equal("", result.StdErr);
+        Assert.Equal(ShmTestProducer.Packed(0xA8, p.Geometry.Width, p.Geometry.Height),
+                     session.Emulator.Images[7].Data);
+        var placement = Assert.Single(session.Emulator.Placements);
+        Assert.Equal((7, 2, 3, 10, 5),
+                     (placement.ImageId, placement.Row, placement.Col, placement.Cols, placement.Rows));
     }
 
     [Fact]

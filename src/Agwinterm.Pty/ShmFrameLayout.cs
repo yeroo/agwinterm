@@ -50,6 +50,8 @@ public enum ShmFrameError
     BadSequence,
     /// <summary>The requested sequence is ahead of the header's published <c>ready</c>.</summary>
     FrameNotPublished,
+    /// <summary>A positive sequence names a different slot than <c>seq % slotCount</c>.</summary>
+    SequenceSlotMismatch,
     /// <summary>The request's geometry contradicts the slot descriptor's.</summary>
     GeometryMismatch,
 }

@@ -2,6 +2,7 @@ using System.IO.MemoryMappedFiles;
 using System.Text.Json;
 using Agwinterm.Core;
 using Agwinterm.Pty;
+using Microsoft.Win32.SafeHandles;
 
 namespace Agwinterm.Pty.Tests;
 
@@ -31,6 +32,83 @@ public class ControlServerFrameShmTests : IDisposable
     {
         var session = new TerminalSession(80, 24);
         return (new ControlServer(session), session);
+    }
+
+    /// <summary>
+    /// Delegates a real session while exposing the narrow scheduling seam needed to put an image
+    /// replacement between the cache's phase-1 validation and phase-2 commit. The callback runs
+    /// after the inner render lock is released, so another request can make progress while one is
+    /// deliberately paused there.
+    /// </summary>
+    private sealed class InterceptSession : ISession
+    {
+        private readonly TerminalSession _inner = new(80, 24);
+        private int _mutateCalls;
+
+        public Action<int>? AfterMutate { get; set; }
+        public ITerminalCore Emulator => _inner.Emulator;
+        public int Cols => _inner.Cols;
+        public int Rows => _inner.Rows;
+        public int? ChildProcessId => _inner.ChildProcessId;
+        public object SyncRoot => _inner.SyncRoot;
+        public AgentStatus Status => _inner.Status;
+        public bool Blink => _inner.Blink;
+        public bool AutoReset => _inner.AutoReset;
+        public int? ExitCode => _inner.ExitCode;
+        public bool HasExited => _inner.HasExited;
+
+        public event Action? OutputReceived
+        {
+            add => _inner.OutputReceived += value;
+            remove => _inner.OutputReceived -= value;
+        }
+
+        public event Action? StatusChanged
+        {
+            add => _inner.StatusChanged += value;
+            remove => _inner.StatusChanged -= value;
+        }
+
+        public event Action<string?>? SoundRequested
+        {
+            add => _inner.SoundRequested += value;
+            remove => _inner.SoundRequested -= value;
+        }
+
+        public event Action<int>? Exited
+        {
+            add => _inner.Exited += value;
+            remove => _inner.Exited -= value;
+        }
+
+        public void SetStatus(AgentStatus status, bool blink = false, bool autoReset = false,
+            bool sound = false, string? soundName = null)
+            => _inner.SetStatus(status, blink, autoReset, sound, soundName);
+
+        public void NotifyActivity() => _inner.NotifyActivity();
+        public Task<int> RunAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
+            CancellationToken ct = default) => _inner.RunAsync(app, commandLine, verbatimCommandLine, ct);
+        public Task StartAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
+            IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null,
+            bool deElevate = false, bool freshEnv = true, CancellationToken ct = default)
+            => _inner.StartAsync(app, commandLine, verbatimCommandLine, extraEnv, cwd, deElevate, freshEnv, ct);
+        public void Attach(SafeFileHandle conOut, SafeFileHandle conIn, SafeFileHandle signal,
+            IntPtr clientProcess, int pid) => _inner.Attach(conOut, conIn, signal, clientProcess, pid);
+        public void Inject(ReadOnlySpan<byte> bytes) => _inner.Inject(bytes);
+
+        public void MutateLocked(Action<ITerminalCore> mutate)
+        {
+            int call = Interlocked.Increment(ref _mutateCalls);
+            _inner.MutateLocked(mutate);
+            AfterMutate?.Invoke(call);
+        }
+
+        public void MutateInner(Action<ITerminalCore> mutate) => _inner.MutateLocked(mutate);
+        public void Write(ReadOnlySpan<byte> bytes) => _inner.Write(bytes);
+        public void Resize(int cols, int rows) => _inner.Resize(cols, rows);
+        public string SnapshotRow(int row) => _inner.SnapshotRow(row);
+        public void Detach() => _inner.Detach();
+        public void Dispose() => _inner.Dispose();
     }
 
     /// <summary>Padded BGRA whose every pixel carries the frame's tag, so a copy is identifiable.</summary>
@@ -434,6 +512,82 @@ public class ControlServerFrameShmTests : IDisposable
     }
 
     [Fact]
+    public void ACacheReplacementBetweenValidationAndCommitRetransmitsOnce()
+    {
+        using var session = new InterceptSession();
+        var server = new ControlServer(session);
+        var p = NewProducer();
+        long seq = p.Publish(0xE1);
+        string request = Request("{\"images\":[" + Image(p, seq, p.Slot, id: 1) + "]}");
+        Assert.Contains("frame:1/1", server.Dispatch(request));
+
+        session.AfterMutate = call =>
+        {
+            if (call == 2)
+                session.MutateInner(em =>
+                    em.SetImageData(1, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 }));
+        };
+
+        string resp = server.Dispatch(request);
+
+        Assert.Contains("frame:1/1", resp);
+        Assert.Equal(Packed(0xE1), session.Emulator.Images[1].Data);
+        Assert.Single(session.Emulator.Placements);
+    }
+
+    [Fact]
+    public async Task ASecondCacheReplacementDuringTheRetryReturnsAnErrorWithoutChangingPlacements()
+    {
+        using var session = new InterceptSession();
+        var server = new ControlServer(session);
+        var p = NewProducer();
+        long seq = p.Publish(0xE2);
+        string request = Request("{\"images\":[" + Image(p, seq, p.Slot, id: 1, row: 3) + "]}");
+        Assert.Contains("frame:1/1", server.Dispatch(request));
+
+        using var firstValidationDone = new ManualResetEventSlim();
+        using var resumeFirstRequest = new ManualResetEventSlim();
+        byte[] finalExternalPixels = { 9, 8, 7, 6 };
+        session.AfterMutate = call =>
+        {
+            if (call == 2)
+            {
+                firstValidationDone.Set();
+                if (!resumeFirstRequest.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("test did not release the first cache validation");
+            }
+            else if (call == 6)
+            {
+                session.MutateInner(em =>
+                    em.SetImageData(1, KittyFormat.Rgba, 1, 1, finalExternalPixels));
+            }
+        };
+
+        Task<string> firstRequest = Task.Run(() => server.Dispatch(request));
+        try
+        {
+            Assert.True(firstValidationDone.Wait(TimeSpan.FromSeconds(10)),
+                "first request did not reach cache validation");
+            session.MutateInner(em =>
+                em.SetImageData(1, KittyFormat.Rgba, 1, 1, new byte[] { 5, 6, 7, 8 }));
+
+            // Re-cache the same sequence with a new image while the first request is paused. Its
+            // retry will accept this entry in phase 1, then the call-6 hook replaces it once more.
+            Assert.Contains("frame:1/1", server.Dispatch(request));
+        }
+        finally
+        {
+            resumeFirstRequest.Set();
+        }
+
+        string resp = await firstRequest.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Contains("cache changed while the frame was prepared", ErrorOf(resp));
+        Assert.Equal(finalExternalPixels, session.Emulator.Images[1].Data);
+        var placement = Assert.Single(session.Emulator.Placements);
+        Assert.Equal(3, placement.Row);
+    }
+
+    [Fact]
     public void ASeqAheadOfTheProducersReadyIsRejected()
     {
         var (server, _) = New();
@@ -443,6 +597,22 @@ public class ControlServerFrameShmTests : IDisposable
         string resp = server.Dispatch(Request(
             "{\"images\":[" + Image(p, seq + 1, ShmFrameLayout.SlotForSequence(seq + 1, p.SlotCount)) + "]}"));
         Assert.Contains("newer than the mapping's ready sequence", ErrorOf(resp));
+    }
+
+    [Fact]
+    public void APositiveSeqNamingAnotherValidSlotIsRejected()
+    {
+        var (server, session) = New();
+        var p = NewProducer(slotCount: 3);
+        long seq = p.Publish(0xEF);
+        int wrongSlot = (p.Slot + 1) % p.SlotCount;
+
+        string resp = server.Dispatch(Request(
+            "{\"images\":[" + Image(p, seq, wrongSlot) + "]}"));
+
+        Assert.Contains("does not match seq % slotCount", ErrorOf(resp));
+        Assert.Empty(session.Emulator.Images);
+        Assert.Empty(session.Emulator.Placements);
     }
 
     [Fact]

@@ -131,6 +131,7 @@ error condition for the terminal; they are all ordinary input from another proce
 | `format` is not `132` or `32` | see below |
 | `width`/`height`/`stride`/`format` in the args disagree with the slot descriptor | one of the two is stale; guessing which is worse than saying so |
 | `seq` greater than the header's `ready` | the frame has not been published |
+| positive `seq` with `slot != seq % slotCount` | the request names a slot that sequence did not publish |
 
 Note the format restriction: only the **4-bytes-per-pixel** formats are carried, `132` (`Bgra`) and
 `32` (`Rgba`). `24` (`Rgb`) and `100` (`Png`) are valid `KittyFormat` values but not valid here —
@@ -199,8 +200,8 @@ frame rather than a half-updated one.
 
 `agwintermctl image frameshm` is the manual and scripting surface, a sibling of `image show`:
 
-```
-agwintermctl image frameshm Local\agwinterm-frame-browser-1 --slot 1 --seq 4 \
+```powershell
+agwintermctl image frameshm Local\agwinterm-frame-browser-1 --slot 0 --seq 4 `
     --width 1920 --height 1080 --stride 7680 --format 132 --cols 120 --rows 30
 ```
 
@@ -218,7 +219,7 @@ slot descriptor — is the reader's business and reports through the reply.
 For the multi-entry, all-or-nothing case there is no flag shape, so pass the array directly:
 
 ```
-agwintermctl image frameshm --images '[{"name":"Local\\agwinterm-frame-a","slot":0,"seq":3},
+agwintermctl image frameshm --images '[{"name":"Local\\agwinterm-frame-a","slot":0,"seq":4},
                                        {"name":"Local\\agwinterm-frame-b","slot":1,"seq":3}]'
 ```
 
@@ -295,24 +296,26 @@ control-pipe connection, writing a full-pane **1920×1080 BGRA** frame into the 
 serialising on each reply — the obligation stated above, so never more than one frame outstanding
 over two slots. Six passes of 120 frames each, after a warm-up frame.
 
-**Bytes copied per frame: 8,294,400** (`1080 × 7680`, i.e. 7.9 MiB), exactly once, on the request
-thread and off the render lock. There is no second copy: the reader packs straight from the mapped
-view into the `KittyImage` the emulator keeps, and the placement swap moves references only.
+**Transport bytes copied per frame: 8,294,400** (`1080 × 7680`, i.e. 7.9 MiB), exactly once, on the
+request thread and off the render lock. The reader packs straight from the mapped view into the
+`KittyImage` the emulator keeps, and the placement swap moves references only. Rendering later
+allocates and fills a second full-size premultiplied-BGRA buffer and uploads it to Direct2D. That work
+runs asynchronously and is not awaited by the control reply, so it is outside these measurements.
 
 | | per frame | rate |
 |---|---|---|
-| agwinterm's share (request written → reply read) | **6.0–8.4 ms** | **~120–165 fps**, ≈1.0–1.4 GB/s |
-| end to end, including the producer's own 8 MB write into the mapping | 8.5–18.2 ms | 55–117 fps, 435–927 MB/s |
+| control transport (request written → reply read; async conversion/upload excluded) | **6.0–8.4 ms** | **~120–165 replies/s**, ≈1.0–1.4 GB/s |
+| producer write + control round trip (rendering still excluded) | 8.5–18.2 ms | 55–117 cycles/s, 435–927 MB/s |
 | a repeat of an already-accepted `(id, seq)` — no copy, re-place only | **0.10–0.13 ms** | reply is `frame:1/0` |
 
-Two things a consumer should take from this. First, **the terminal is not the bottleneck at 60fps**:
-a full-pane 1080p frame costs agwinterm about 6 ms, so a 16.7 ms budget has roughly 10 ms left for
-the producer to paint in. Second, the producer's own write into the mapping is the same order of
-cost as the whole transport — the 2.5–11.2 ms spread above is a PowerShell `WriteArray`, and a
-producer that already has its pixels in shared memory (Chromium painting straight into the slot)
-skips it entirely, which is the whole point of the mapping.
+Two things a consumer should take from this. First, the control transport fits comfortably inside a
+60fps frame budget, but this benchmark does **not** establish end-to-end displayed frame rate because
+it excludes the asynchronous conversion and GPU upload. Second, the producer's own write into the
+mapping is the same order of cost as the measured transport — the 2.5–11.2 ms spread above is a
+PowerShell `WriteArray`, and a producer that already has its pixels in shared memory (Chromium
+painting straight into the slot) skips it entirely, which is the whole point of the mapping.
 
 The numbers are a Debug build's, so they are a floor rather than a ceiling. What they establish is
-that the frame budget is dominated by the memcpy, and that a frame the producer knows is unchanged
-costs about a tenth of a millisecond — cheap enough to re-place on every tick rather than tracking
-whether a re-place is needed.
+that the transport budget is dominated by the shared-memory copy, and that a frame the producer
+knows is unchanged costs about a tenth of a millisecond — cheap enough to re-place on every tick
+rather than tracking whether a re-place is needed. Rendering throughput needs a separate measurement.

@@ -161,6 +161,8 @@ public static class ShmFrameReader
         { error = ShmFrameError.FrameNotPublished; return false; }
 
         if (!ShmFrameLayout.TryGetSlot(header, request.Slot, out var slot, out error)) return false;
+        if (request.Seq > 0 && request.Slot != ShmFrameLayout.SlotForSequence(request.Seq, header.SlotCount))
+        { error = ShmFrameError.SequenceSlotMismatch; return false; }
         if (!ShmFrameLayout.TryGetSlotOffset(header, request.Slot, out long slotOffset, out error)) return false;
 
         if (slot.Width <= 0 || slot.Height <= 0 ||
@@ -172,13 +174,13 @@ public static class ShmFrameReader
         long rowBytes = (long)slot.Width * BytesPerPixel;
         if (slot.Stride < rowBytes) { error = ShmFrameError.StrideTooSmall; return false; }
 
+        long frameBytes = rowBytes * slot.Height;
+        if (frameBytes > MaxFrameBytes) { error = ShmFrameError.FrameTooLarge; return false; }
+
         long slotBytes = (long)slot.Height * slot.Stride;
         if (slotBytes > header.SlotStride) { error = ShmFrameError.SlotOverflow; return false; }
         if (slotOffset < ShmFrameLayout.HeaderSize || slotBytes > viewLength - slotOffset)
         { error = ShmFrameError.OutOfView; return false; }
-
-        long frameBytes = rowBytes * slot.Height;
-        if (frameBytes > MaxFrameBytes) { error = ShmFrameError.FrameTooLarge; return false; }
 
         // Args and header must agree. They are two statements of the same fact by the same
         // producer; a disagreement means one of them is stale, and guessing which is worse than
@@ -238,6 +240,7 @@ public static class ShmFrameReader
         ShmFrameError.FrameTooLarge => $"frame exceeds {MaxFrameBytes} bytes",
         ShmFrameError.BadSequence => "requested seq must be zero or positive",
         ShmFrameError.FrameNotPublished => "requested seq is newer than the mapping's ready sequence",
+        ShmFrameError.SequenceSlotMismatch => "requested slot does not match seq % slotCount",
         ShmFrameError.GeometryMismatch => "request geometry disagrees with the slot descriptor",
         _ => "invalid shared frame",
     };

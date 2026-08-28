@@ -1,10 +1,11 @@
 # Host-side support for winterm-browser (`image.frameshm`, cell metrics, `?1016`)
 
-> **Revision 2**, after a revmux triage panel run against the consuming plan
-> (`winterm-browser/.revmux/tasks/plan-windows-port/01-initial`). Three changes: the two-slot
-> tear-proof claim was wrong as argued and the real invariant is now stated and tested; two further
-> host capabilities the consumer cannot work around were found, and one of them **blocks** it.
-> Findings cited inline as `[triage: …]`.
+> **Revision 3**, after implementation and consumer validation. Revision 2 corrected the two-slot
+> tear-proof claim and added two host capabilities found by a revmux triage panel
+> (`winterm-browser/.revmux/tasks/plan-windows-port/01-initial`). Later consumer work established
+> that all three deliverables are optional upgrades rather than blockers: shared memory improves
+> throughput, live metrics improve sharpness, and `?1016` improves pointer resolution. Findings are
+> cited inline as `[triage: …]`.
 
 ## Overview
 
@@ -14,9 +15,9 @@ disk round-trip on every frame.
 
 The consumer is [winterm-browser](file:///C:/Users/boris/source/winterm-browser), a Windows-native
 port of terminal-browser that renders Chromium into an agwinterm pane. Its design brief is
-`C:\Users\boris\source\winterm-browser\docs\design\00-port-brief.md`. That project is blocked on
-this command, and this plan defines the contract it codes against — so the wire shape here is the
-deliverable, not just the implementation.
+`C:\Users\boris\source\winterm-browser\docs\design\00-port-brief.md`. It can use this command as an
+optional fast path while retaining the file-frame fallback. This plan defines the contract it codes
+against — so the wire shape here is the deliverable, not just the implementation.
 
 **Problem it solves.** `image.frame` (`ControlServer.cs:249`) is already a frame path: it takes an
 `images[]` array, content-signature-caches each id to skip re-transmits, reads pixel bytes off the
@@ -29,7 +30,7 @@ placement machinery, which is already good — it is the format and the transpor
 generates pixels rather than loading them (a video preview, a plot that animates, a remote frame
 buffer) hits the same wall.
 
-## Three deliverables, and only one of them blocks the consumer
+## Three optional host upgrades
 
 Revision 1 had one. The triage panel found two more, and correctly separated them by urgency:
 
@@ -39,8 +40,8 @@ Revision 1 had one. The triage panel found two more, and correctly separated the
 | **6b** | **cell pixel metrics** | ~~blocking~~ → **degrades**, see below. The consumer has no other source, but a wrong-but-consistent guess costs sharpness, not correctness. |
 | 6c | `?1016` SGR-Pixels mouse | degrades. The browser works with pointer resolution quantised to one character cell. |
 
-That ordering is worth holding onto: the piece that looked like the critical path is the one nothing
-waits on, and the blocking piece was not in the plan at all.
+None is a consumer blocker: shared memory replaces a slower working transport, metrics replace a
+consistent-but-resampled fallback, and SGR-Pixels replaces cell-quantised pointer coordinates.
 
 **Correction (winterm-browser Task 6, 2026-08-21).** 6b is no longer blocking, and the reason
 revision 2 thought it was — "a hardcoded `(16, 32)` guess silently produces wrong click targets" —
@@ -219,8 +220,8 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
       brief lock for `ClearPlacements` and the placement/image swap
 - [x] skip re-transmitting a slot whose `(id, seq)` matches what was last accepted, the shm analogue
       of `image.frame`'s content-signature cache
-- [x] return the same result shape as `image.frame` (count, transmits, bytes read) so a caller can
-      tell whether a frame actually moved
+- [x] return `frame:<count>/<transmits>` like `image.frame` so a caller can tell whether a frame
+      actually moved; record bytes read only in the optional performance log
 - [x] write tests for a single frame producing the expected `KittyImage` and `ImagePlacement`
 - [x] write tests for the `(id, seq)` cache skipping a repeat and accepting a bumped seq
 - [x] write tests for malformed args: missing `images`, missing `name`, a string where a number
@@ -330,20 +331,23 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
       caps the loop at ~9fps on process start alone, which measures Windows, not the transport. The
       recorded numbers come from one connection held open across 120 frames; the harness is
       `.ralphex/tmp/bench-frameshm.ps1` (throwaway, not committed).
-- ➕ **the number that matters is 6.0–8.4 ms per full-pane 1080p frame** — agwinterm's own share of
-      the round trip, ~120–165fps, against 8,294,400 bytes copied once per frame. A cached
-      `(id, seq)` re-place costs 0.10–0.13 ms. The full table, its caveats (Debug build, PowerShell
-      producer) and what a consumer should conclude are in the spec's "Measured throughput".
+- ➕ **the measured control-transport time is 6.0–8.4 ms per full-pane 1080p frame** — ~120–165
+      request/reply cycles per second against 8,294,400 bytes copied once by the transport. A cached
+      `(id, seq)` re-place costs 0.10–0.13 ms. The asynchronous premultiplication and GPU upload are
+      outside that round trip, so the figure is not an end-to-end display-fps claim. The full table,
+      its caveats (Debug build, PowerShell producer) and what a consumer should conclude are in the
+      spec's "Measured throughput".
 - ⚠️ **no screenshot, deliberately.** The Testing Strategy says visual confirmation belongs to the
       consuming project and not to build a throwaway pixel producer to look at; the live evidence
       here is the dev instance accepting ~800 8 MB frames and still answering `ping` and `tree`.
 
-### Task 6b: Publish cell pixel metrics — **blocking for winterm-browser**
+### Task 6b: Publish cell pixel metrics — optional, removes resampling
 
-A revmux triage panel on the consuming plan found that nothing in agwinterm publishes cell metrics,
-and that the consumer has no other way to get them. This is a second cross-repo dependency, and
-unlike `image.frameshm` it is not an optimisation — the port stalls without an answer.
-[triage: major, verified exhaustively against the full verb dispatch]
+A revmux triage panel on the consuming plan found that nothing in agwinterm publishes cell metrics
+and initially treated that absence as blocking. Consumer Task 6 later established that its consistent
+fallback preserves click correctness; live metrics improve viewport sizing and sharpness by avoiding
+resampling, but the port does not stall without them.
+[triage: major, original absence verified exhaustively against the full verb dispatch; urgency later corrected]
 
 Established by that review, so do not re-derive it: the global switch (`ControlServer.cs:140-234`)
 and the session-targeted switch (`:241-250`) contain no verb reporting pane geometry, pixel size or

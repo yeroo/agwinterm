@@ -408,8 +408,42 @@ public class ShmFrameReaderTests : IDisposable
         Assert.Equal(ShmFrameError.FrameNotPublished, error);
 
         // Anything already published, or no sequence at all, is fine.
-        Assert.True(ShmFrameReader.TryReadFrame(new ShmFrameRequest(name, 0, Seq: 3), out _, out _));
+        Assert.True(ShmFrameReader.TryReadFrame(new ShmFrameRequest(name, 1, Seq: 3), out _, out _));
         Assert.True(ShmFrameReader.TryReadFrame(new ShmFrameRequest(name, 0), out _, out _));
+    }
+
+    [Fact]
+    public void RejectsAPositiveSequencePairedWithAnotherValidSlot()
+    {
+        string name = CreateFrameMapping(Header(slotCount: 3, ready: 4));
+
+        Assert.False(ShmFrameReader.TryReadFrame(new ShmFrameRequest(name, Slot: 2, Seq: 4), out _, out var error));
+        Assert.Equal(ShmFrameError.SequenceSlotMismatch, error);
+
+        Assert.True(ShmFrameReader.TryReadFrame(new ShmFrameRequest(name, Slot: 1, Seq: 4), out _, out error));
+        Assert.Equal(ShmFrameError.None, error);
+    }
+
+    [Fact]
+    public void EnforcesThePackedFrameLimitBeforeTrustingTheMappedExtent()
+    {
+        const int width = ShmFrameReader.MaxDimension;
+        const int heightAtLimit = (int)(ShmFrameReader.MaxFrameBytes / (width * 4L));
+        const int stride = width * 4;
+
+        string atLimit = CreateFrameMapping(
+            Header(ready: 0, width: width, height: heightAtLimit, stride: stride,
+                   slotStride: (long)heightAtLimit * stride),
+            capacity: 4096);
+        Assert.False(ShmFrameReader.TryReadFrame(new ShmFrameRequest(atLimit, 0), out _, out var atLimitError));
+        Assert.Equal(ShmFrameError.OutOfView, atLimitError);
+
+        string aboveLimit = CreateFrameMapping(
+            Header(ready: 0, width: width, height: heightAtLimit + 1, stride: stride,
+                   slotStride: (long)(heightAtLimit + 1) * stride),
+            capacity: 4096);
+        Assert.False(ShmFrameReader.TryReadFrame(new ShmFrameRequest(aboveLimit, 0), out _, out var aboveLimitError));
+        Assert.Equal(ShmFrameError.FrameTooLarge, aboveLimitError);
     }
 
     // ---- a producer that is gone --------------------------------------------------------------

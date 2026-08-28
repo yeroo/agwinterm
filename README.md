@@ -95,10 +95,11 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
   opens as an agwinterm session via the ConPTY handoff, titled by the app.
 - **Fast**: sustained output at **~33k lines/s** (~87 % of a bare conhost window), 0.4 s cold start,
   ~0 % idle CPU, and a leak-hunted session lifecycle (`tools/profile-memory.ps1` keeps it honest).
-- Sixel + Kitty graphics, win32-input-mode + Kitty keyboard protocol, ligatures (toggleable),
-  builtin box-drawing glyphs, buffer restore, block selection + keyboard mark mode, read-only panes,
-  elevated & de-elevated sessions side by side (⚡ marker), FTCS/OSC-133 prompt marks with
-  jump-to-prompt, taskbar progress (OSC 9;4).
+- Sixel + Kitty graphics, win32-input-mode + Kitty keyboard protocol, SGR and SGR-Pixels mouse
+  reporting (`?1006`/`?1016`, including DECRQM discovery and device-pixel coordinates), ligatures
+  (toggleable), builtin box-drawing glyphs, buffer restore, block selection + keyboard mark mode,
+  read-only panes, elevated & de-elevated sessions side by side (⚡ marker), FTCS/OSC-133 prompt
+  marks with jump-to-prompt, taskbar progress (OSC 9;4).
 - Shells are launched with `TERM_PROGRAM=agwinterm` (+ the usual `AGWINTERM_*` vars), so prompt
   engines, tmux and scripts can detect the host terminal.
 
