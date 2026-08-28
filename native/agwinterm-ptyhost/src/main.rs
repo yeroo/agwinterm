@@ -22,9 +22,11 @@ use std::sync::{Arc, Mutex};
 
 use agwinterm_core::emulator::Terminal;
 use conpty::ConPty;
-use pipes::{OverlappedPipeServer, OvStream, PipeServer};
+use pipes::{OvStream, OverlappedPipeServer, PipeServer};
 use prost::Message;
-use proto::{reply, request, AttachReply, CreateReply, HelloReply, ListReply, Reply, Request, SessionInfo};
+use proto::{
+    AttachReply, CreateReply, HelloReply, ListReply, Reply, Request, SessionInfo, reply, request,
+};
 
 const PROTOCOL_VERSION: u32 = 2;
 
@@ -116,7 +118,8 @@ fn handle_control_client(host: Arc<Host>, stream: File) {
         if shutdown && reply.ok {
             // Ack flushed; tear down after a beat (same grace as v1).
             std::thread::sleep(std::time::Duration::from_millis(100));
-            let sessions: Vec<Arc<Hosted>> = host.sessions.lock().unwrap().values().cloned().collect();
+            let sessions: Vec<Arc<Hosted>> =
+                host.sessions.lock().unwrap().values().cloned().collect();
             for s in sessions {
                 s.pty.lock().unwrap().kill();
             }
@@ -126,11 +129,19 @@ fn handle_control_client(host: Arc<Host>, stream: File) {
 }
 
 fn ok_reply(body: Option<reply::Body>) -> Reply {
-    Reply { ok: true, error: String::new(), body }
+    Reply {
+        ok: true,
+        error: String::new(),
+        body,
+    }
 }
 
 fn err_reply(msg: impl Into<String>) -> Reply {
-    Reply { ok: false, error: msg.into(), body: None }
+    Reply {
+        ok: false,
+        error: msg.into(),
+        body: None,
+    }
 }
 
 fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
@@ -142,7 +153,10 @@ fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
                     pid: std::process::id(),
                 })))
             } else {
-                err_reply(format!("protocol mismatch: host={PROTOCOL_VERSION} client={}", h.protocol))
+                err_reply(format!(
+                    "protocol mismatch: host={PROTOCOL_VERSION} client={}",
+                    h.protocol
+                ))
             }
         }
         Some(request::Cmd::Create(c)) => handle_create(host, c),
@@ -155,23 +169,27 @@ fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
             if r.cols == 0 || r.rows == 0 {
                 return err_reply("resize needs cols/rows");
             }
-            h.term.lock().unwrap().emu.resize(r.cols as usize, r.rows as usize);
+            h.term
+                .lock()
+                .unwrap()
+                .emu
+                .resize(r.cols as usize, r.rows as usize);
             h.pty.lock().unwrap().resize(r.cols as i16, r.rows as i16);
             ok_reply(None)
         }),
-        Some(request::Cmd::Kill(k)) => {
-            match host.sessions.lock().unwrap().remove(&k.id) {
-                Some(h) => {
-                    detach(&h);
-                    h.pty.lock().unwrap().kill();
-                    ok_reply(None)
-                }
-                None => err_reply(format!("no session '{}'", k.id)),
+        Some(request::Cmd::Kill(k)) => match host.sessions.lock().unwrap().remove(&k.id) {
+            Some(h) => {
+                detach(&h);
+                h.pty.lock().unwrap().kill();
+                ok_reply(None)
             }
-        }
+            None => err_reply(format!("no session '{}'", k.id)),
+        },
         Some(request::Cmd::List(_)) => {
             let sessions = host.sessions.lock().unwrap();
-            let mut list = ListReply { sessions: Vec::new() };
+            let mut list = ListReply {
+                sessions: Vec::new(),
+            };
             for h in sessions.values() {
                 let (cols, rows) = h.pty.lock().unwrap().size();
                 list.sessions.push(SessionInfo {
@@ -228,7 +246,11 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
 
     let fresh_env = !c.fresh_env_off;
     let env: Option<Vec<(String, String)>> = if fresh_env || !c.env.is_empty() {
-        let mut base = if fresh_env { freshenv::fresh_environment() } else { std::env::vars().collect() };
+        let mut base = if fresh_env {
+            freshenv::fresh_environment()
+        } else {
+            std::env::vars().collect()
+        };
         for (k, v) in &c.env {
             if let Some(slot) = base.iter_mut().find(|(bk, _)| bk.eq_ignore_ascii_case(k)) {
                 slot.1 = v.clone();
@@ -241,8 +263,20 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         None
     };
 
-    let cwd = if c.cwd.is_empty() { None } else { Some(c.cwd.as_str()) };
-    let pty = match ConPty::spawn(&c.app, &c.args, c.verbatim, cwd, env.as_deref(), cols as i16, rows as i16) {
+    let cwd = if c.cwd.is_empty() {
+        None
+    } else {
+        Some(c.cwd.as_str())
+    };
+    let pty = match ConPty::spawn(
+        &c.app,
+        &c.args,
+        c.verbatim,
+        cwd,
+        env.as_deref(),
+        cols as i16,
+        rows as i16,
+    ) {
         Ok(p) => p,
         Err(e) => return err_reply(format!("spawn failed: {e}")),
     };
@@ -255,7 +289,10 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         exited: AtomicBool::new(false),
         exit_code: AtomicI32::new(0),
     });
-    host.sessions.lock().unwrap().insert(c.id.clone(), hosted.clone());
+    host.sessions
+        .lock()
+        .unwrap()
+        .insert(c.id.clone(), hosted.clone());
     let hosted2 = hosted.clone();
 
     // Output pump: ConPTY → emulator (+ forward raw to the attached client).
@@ -270,10 +307,10 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
             }
             hosted.term.lock().unwrap().feed(&buf[..n]);
             let mut data = hosted.data.lock().unwrap();
-            if let Some(d) = data.as_ref() {
-                if !d.write_all(&buf[..n]) {
-                    *data = None; // client vanished mid-write -> plain detach
-                }
+            if let Some(d) = data.as_ref()
+                && !d.write_all(&buf[..n])
+            {
+                *data = None; // client vanished mid-write -> plain detach
             }
         }
     });
@@ -331,7 +368,11 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
         }
         if repaint {
             let (c, r) = h2.pty.lock().unwrap().size();
-            h2.term.lock().unwrap().emu.resize(c as usize, (r as usize).saturating_sub(1).max(2));
+            h2.term
+                .lock()
+                .unwrap()
+                .emu
+                .resize(c as usize, (r as usize).saturating_sub(1).max(2));
             h2.pty.lock().unwrap().resize(c, (r - 1).max(2));
             std::thread::sleep(std::time::Duration::from_millis(60));
             h2.term.lock().unwrap().emu.resize(c as usize, r as usize);
@@ -362,7 +403,7 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
         exit_code: hosted.exit_code.load(Ordering::SeqCst),
         modes,
         scrollback,
-        scrollback_blob,   // attributed history (full colour on reattach), byte-identical to the C# host
+        scrollback_blob, // attributed history (full colour on reattach), byte-identical to the C# host
     })))
 }
 
@@ -374,13 +415,19 @@ fn serialize_history(emu: &agwinterm_core::emulator::Emulator) -> Vec<u8> {
     use prost::Message;
     let pack = |c: Color| ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
     let cols = emu.screen().cols();
-    let mut buf = persist::PBuffer { version: 1, cols: cols as u32, rows: Vec::new() };
+    let mut buf = persist::PBuffer {
+        version: 1,
+        cols: cols as u32,
+        rows: Vec::new(),
+    };
     for h in 0..emu.history_count() {
         let mut len = cols;
         while len > 0 && emu.get_history_cell(h, len - 1) == Cell::EMPTY {
             len -= 1;
         }
-        let mut row = persist::PRow { cells: Vec::with_capacity(len) };
+        let mut row = persist::PRow {
+            cells: Vec::with_capacity(len),
+        };
         for col in 0..len {
             let c = emu.get_history_cell(h, col);
             row.cells.push(persist::PCell {

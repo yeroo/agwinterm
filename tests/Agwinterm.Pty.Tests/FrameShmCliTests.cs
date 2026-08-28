@@ -145,7 +145,7 @@ public class FrameShmCliTests
     public void ANameOutsideThePrefixIsRejectedBeforeThePipeIsOpened(string name)
     {
         Assert.False(FrameShmCli.TryBuildArgs([name], Opts(), out _, out var err));
-        Assert.Contains(FrameShmCli.NamePrefix, err);
+        Assert.Contains(ShmFrameReader.NamePrefix, err);
     }
 
     [Fact]

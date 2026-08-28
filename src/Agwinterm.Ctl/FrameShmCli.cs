@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using Agwinterm.Pty;
 
 namespace Agwinterm.Ctl;
 
@@ -12,9 +13,6 @@ namespace Agwinterm.Ctl;
 /// </summary>
 public static class FrameShmCli
 {
-    /// <summary>Literal prefix every mapping name must carry; see the spec's "Mapping name".</summary>
-    public const string NamePrefix = @"Local\agwinterm-frame-";
-
     /// <summary>
     /// Every numeric field of an <c>images[]</c> entry, in the order the spec lists them. All are
     /// optional; an omitted one is left out entirely so the server applies its own default.
@@ -54,8 +52,8 @@ public static class FrameShmCli
         if (rest.Count > 1) { error = $"takes one mapping name (got {rest.Count}); use --images for several"; return false; }
 
         string name = rest[0];
-        if (!name.StartsWith(NamePrefix, StringComparison.Ordinal))
-        { error = $"mapping name must start with '{NamePrefix}' (got '{name}')"; return false; }
+        if (!name.StartsWith(ShmFrameReader.NamePrefix, StringComparison.Ordinal))
+        { error = $"mapping name must start with '{ShmFrameReader.NamePrefix}' (got '{name}')"; return false; }
 
         var img = new Dictionary<string, object?> { ["name"] = name };
         foreach (string field in NumericFields)

@@ -147,35 +147,37 @@ the header gets a free consistency check; one that would rather not repeat itsel
 {
   "cmd": "image.frameshm",
   "target": "<pane id>",
-  "images": [
-    {
-      "id": 1,
-      "name": "Local\\agwinterm-frame-browser-1",
-      "slot": 1,
-      "seq": 1,
-      "width": 1920,
-      "height": 1080,
-      "stride": 7680,
-      "format": 132,
-      "row": 0,
-      "col": 0,
-      "cols": 120,
-      "rows": 30
-    }
-  ]
+  "args": {
+    "images": [
+      {
+        "id": 1,
+        "name": "Local\\agwinterm-frame-browser-1",
+        "slot": 1,
+        "seq": 1,
+        "width": 1920,
+        "height": 1080,
+        "stride": 7680,
+        "format": 132,
+        "row": 0,
+        "col": 0,
+        "cols": 120,
+        "rows": 30
+      }
+    ]
+  }
 }
 ```
 
-Every numeric field is a **JSON number, never a string**. `ControlServer`'s `GetInt` throws
-`"requires an element of type 'Number'"` on a string, so a CLI producer must `int.TryParse` and put
-an int into `cargs`.
+Every numeric field is a **JSON number, never a string**. `ControlServer`'s typed parser rejects a
+string and names the offending field, so a CLI producer must `int.TryParse` and put an int into
+`cargs`.
 
 | field | meaning |
 |---|---|
 | `id` | image id, same semantics as `image.frame` — the key the terminal caches pixels under |
 | `name` | mapping name, `Local\agwinterm-frame-` prefix required |
 | `slot` | slot index to read, `0 <= slot < slotCount` |
-| `seq` | the frame's publish sequence; drives the `(id, seq)` re-transmit cache |
+| `seq` | the non-negative publish sequence; `0` means current/uncached, positive values drive the `(id, seq)` re-transmit cache |
 | `width`, `height`, `stride`, `format` | must agree with the slot descriptor; both are validated |
 | `row`, `col` | placement origin in cells |
 | `cols`, `rows` | placement size in cells; `0` means "natural size" |
@@ -216,8 +218,8 @@ slot descriptor — is the reader's business and reports through the reply.
 For the multi-entry, all-or-nothing case there is no flag shape, so pass the array directly:
 
 ```
-agwintermctl image frameshm --images '[{"name":"Local\agwinterm-frame-a","slot":0,"seq":3},
-                                       {"name":"Local\agwinterm-frame-b","slot":1,"seq":3}]'
+agwintermctl image frameshm --images '[{"name":"Local\\agwinterm-frame-a","slot":0,"seq":3},
+                                       {"name":"Local\\agwinterm-frame-b","slot":1,"seq":3}]'
 ```
 
 `--images` is forwarded verbatim and is mutually exclusive with the positional name.
@@ -241,18 +243,19 @@ The successful reply has an object-valued `result` (not a string containing JSON
     "rows": 37,
     "cellWidth": 9,
     "cellHeight": 19,
-    "widthPx": 1188,
+    "widthPx": 1221,
     "heightPx": 703
   }
 }
 ```
 
-All pixel fields are **device pixels**, the same coordinate space as a BGRA frame. `cellWidth` and
-`cellHeight` are the required capability: multiply them by the terminal grid dimensions to size the
-producer's pixel viewport. `cols`, `rows`, `widthPx` and `heightPx` are included to avoid another
-query but may be zero on a host that cannot measure them. A zero cell dimension means "metrics are
-unavailable" and the producer should use its configured fallback. An older terminal reports
-`unknown command 'session.metrics'`; a client may latch that capability miss and stop probing.
+All pixel fields are **device pixels**, the same coordinate space as a BGRA frame. `widthPx` and
+`heightPx` are the exact rendered grid extent and should size a sharp producer viewport. They are
+computed by accumulating the renderer's fractional DIP cell advance across `cols`/`rows` before the
+single device-pixel rounding step. `cellWidth` and `cellHeight` are rounded integer compatibility
+hints; multiplying either by the grid can accumulate error and cause resampling. A zero exact extent
+means metrics are unavailable and the producer should use its configured fallback. An older terminal
+reports `unknown command 'session.metrics'`; a client may latch that capability miss and stop probing.
 
 The Win32 host measures on every request from the target pane's current font size, layout and DPI.
 It uses the same per-pane `Metrics(pane.FontSize)` values as rendering and regridding, so a font-size

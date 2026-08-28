@@ -373,6 +373,33 @@ public class ShmFrameReaderTests : IDisposable
     }
 
     [Fact]
+    public void RejectsNegativeOptionalGeometryRatherThanTreatingItAsOmitted()
+    {
+        string name = CreateFrameMapping(Header());
+
+        foreach (var request in new[]
+        {
+            new ShmFrameRequest(name, 0, Width: -1),
+            new ShmFrameRequest(name, 0, Height: -1),
+            new ShmFrameRequest(name, 0, Stride: -1),
+            new ShmFrameRequest(name, 0, Format: -1),
+        })
+        {
+            Assert.False(ShmFrameReader.TryReadFrame(request, out _, out var error));
+            Assert.Equal(ShmFrameError.GeometryMismatch, error);
+        }
+    }
+
+    [Fact]
+    public void RejectsANegativeSequenceRatherThanTreatingItLikeCurrent()
+    {
+        string name = CreateFrameMapping(Header());
+
+        Assert.False(ShmFrameReader.TryReadFrame(new ShmFrameRequest(name, 0, Seq: -1), out _, out var error));
+        Assert.Equal(ShmFrameError.BadSequence, error);
+    }
+
+    [Fact]
     public void RejectsASequenceTheProducerHasNotPublishedYet()
     {
         string name = CreateFrameMapping(Header(ready: 3));

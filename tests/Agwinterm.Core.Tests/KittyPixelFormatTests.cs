@@ -42,14 +42,6 @@ public class KittyPixelFormatTests
         => Assert.Equal(expected, KittyFormats.ParseWireFormat(f));
 
     [Fact]
-    public void NeedsChannelSwap_IsFalseOnlyForBgra()
-    {
-        Assert.False(KittyFormats.NeedsChannelSwap(KittyFormat.Bgra));
-        Assert.True(KittyFormats.NeedsChannelSwap(KittyFormat.Rgba));
-        Assert.True(KittyFormats.NeedsChannelSwap(KittyFormat.Rgb));
-    }
-
-    [Fact]
     public void Upload_Bgra_TakesTheNoSwizzleRoute()
     {
         // One opaque pixel, already in target order: B=10, G=20, R=30, A=255. It must come out

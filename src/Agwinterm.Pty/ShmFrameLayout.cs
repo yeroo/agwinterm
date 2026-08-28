@@ -46,6 +46,8 @@ public enum ShmFrameError
     UnsupportedFormat,
     /// <summary>The tightly-packed frame exceeds <see cref="ShmFrameReader.MaxFrameBytes"/>.</summary>
     FrameTooLarge,
+    /// <summary>The request sequence is negative; only zero has the "current slot" meaning.</summary>
+    BadSequence,
     /// <summary>The requested sequence is ahead of the header's published <c>ready</c>.</summary>
     FrameNotPublished,
     /// <summary>The request's geometry contradicts the slot descriptor's.</summary>

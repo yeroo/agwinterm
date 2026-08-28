@@ -125,6 +125,23 @@ public class ControlServerFrameShmTests : IDisposable
     }
 
     [Fact]
+    public void FullDocumentedRequestEnvelopePlacesImagesInsideArgs()
+    {
+        var (server, session) = New();
+        var p = NewProducer();
+        long seq = p.Publish(0x12);
+        string request = "{\"cmd\":\"image.frameshm\",\"target\":\"active\",\"args\":{\"images\":[{" +
+            "\"id\":1,\"name\":" + JsonSerializer.Serialize(p.Name) +
+            ",\"slot\":" + p.Slot + ",\"seq\":" + seq +
+            ",\"width\":" + Width + ",\"height\":" + Height + ",\"stride\":" + Stride +
+            ",\"format\":" + (int)KittyFormat.Bgra +
+            ",\"row\":0,\"col\":0,\"cols\":8,\"rows\":4}]}}";
+
+        Assert.Contains("frame:1/1", server.Dispatch(request));
+        Assert.Equal(Packed(0x12), session.Emulator.Images[1].Data);
+    }
+
+    [Fact]
     public void AFrameClearsStalePlacementsJustLikeImageFrame()
     {
         var (server, session) = New();
@@ -350,6 +367,70 @@ public class ControlServerFrameShmTests : IDisposable
         ErrorOf(resp);
         Assert.Empty(session.Emulator.Placements);
         Assert.Empty(session.Emulator.Images);
+    }
+
+    [Fact]
+    public void RetryingAnAllOrNothingFrameRetransmitsEntriesStagedBeforeTheFailure()
+    {
+        var (server, session) = New();
+        var p = NewProducer();
+        long seq = p.Publish(0xDE);
+
+        string rejected = server.Dispatch(Request(
+            "{\"images\":[" + Image(p, seq, p.Slot, id: 1) +
+            ",{\"id\":2,\"name\":\"Local\\\\nope\",\"slot\":0,\"seq\":1}]}"));
+        ErrorOf(rejected);
+
+        string retried = server.Dispatch(Request(
+            "{\"images\":[" + Image(p, seq, p.Slot, id: 1) + "," +
+                               Image(p, seq, p.Slot, id: 2) + "]}"));
+
+        Assert.Contains("frame:2/2", retried);
+        Assert.Equal(new[] { 1, 2 }, session.Emulator.Images.Keys.Order().ToArray());
+        Assert.Equal(2, session.Emulator.Placements.Count);
+    }
+
+    [Fact]
+    public void SwitchingBetweenFileAndSharedMemoryFramesInvalidatesTheOtherTransportCache()
+    {
+        var (server, session) = New();
+        var p = NewProducer();
+        long seq = p.Publish(0xDF);
+        string file = Path.GetTempFileName();
+        byte[] fileBytes = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A };
+        File.WriteAllBytes(file, fileBytes);
+        try
+        {
+            string fileRequest = "{\"cmd\":\"image.frame\",\"args\":{\"images\":[{\"id\":1,\"path\":" +
+                                 JsonSerializer.Serialize(file) + "}]}}";
+            string shmRequest = Request("{\"images\":[" + Image(p, seq, p.Slot, id: 1) + "]}");
+
+            Assert.Contains("frame:1/1", server.Dispatch(fileRequest));
+            Assert.Equal(fileBytes, session.Emulator.Images[1].Data);
+            Assert.Contains("frame:1/1", server.Dispatch(shmRequest));
+            Assert.Equal(Packed(0xDF), session.Emulator.Images[1].Data);
+
+            Assert.Contains("frame:1/1", server.Dispatch(fileRequest));
+            Assert.Equal(fileBytes, session.Emulator.Images[1].Data);
+            Assert.Contains("frame:1/1", server.Dispatch(shmRequest));
+            Assert.Equal(Packed(0xDF), session.Emulator.Images[1].Data);
+        }
+        finally { File.Delete(file); }
+    }
+
+    [Fact]
+    public void ACacheHitRetransmitsAfterTheImageIdWasReplacedOutsideTheFrameVerb()
+    {
+        var (server, session) = New();
+        var p = NewProducer();
+        long seq = p.Publish(0xE0);
+        string request = Request("{\"images\":[" + Image(p, seq, p.Slot, id: 1) + "]}");
+        Assert.Contains("frame:1/1", server.Dispatch(request));
+
+        session.MutateLocked(em => em.SetImageData(1, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 }));
+
+        Assert.Contains("frame:1/1", server.Dispatch(request));
+        Assert.Equal(Packed(0xE0), session.Emulator.Images[1].Data);
     }
 
     [Fact]

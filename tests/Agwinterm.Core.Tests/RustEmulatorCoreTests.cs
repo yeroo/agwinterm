@@ -372,6 +372,21 @@ public class RustEmulatorCoreTests
     }
 
     [Fact]
+    public void Adapter_DirectImageApi_RefreshesPixelsWhenAnIdIsReused()
+    {
+        if (!Available) return;
+        using var rust = new RustTerminalCore(10, 4);
+        byte[] first = { 1, 2, 3, 4 };
+        byte[] second = { 9, 8, 7, 6 };
+
+        rust.SetImageData(7, KittyFormat.Rgba, 1, 1, first);
+        Assert.Equal(first, rust.Images[7].Data);
+
+        rust.SetImageData(7, KittyFormat.Rgba, 1, 1, second);
+        Assert.Equal(second, rust.Images[7].Data);
+    }
+
+    [Fact]
     public void Adapter_CraftedApcF132_DoesNotProduceBgra()
     {
         if (!Available) return;

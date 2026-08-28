@@ -17,7 +17,7 @@
 //!  - Invalid DECSTBM resets to full screen; any DECSTBM homes the cursor.
 //!  - Zero-width codepoints are dropped (v1 semantics).
 
-use crate::cell::{attrs, Cell, Color, ColorSpec};
+use crate::cell::{Cell, Color, ColorSpec, attrs};
 use crate::screen::ScreenBuffer;
 use crate::sixel;
 use crate::vtparser::{Performer, VtParser};
@@ -59,7 +59,7 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
             chars.push(c);
         }
     }
-    if chars.len() % 4 != 0 {
+    if !chars.len().is_multiple_of(4) {
         return None;
     }
     if chars.is_empty() {
@@ -260,13 +260,42 @@ impl Emulator {
         self.images.contains_key(&id)
     }
     pub fn set_image_data(&mut self, id: i32, format: i32, width: i32, height: i32, data: Vec<u8>) {
-        self.images.insert(id, KittyImage { id, format, width, height, data });
+        self.images.insert(
+            id,
+            KittyImage {
+                id,
+                format,
+                width,
+                height,
+                data,
+            },
+        );
     }
     #[allow(clippy::too_many_arguments)]
-    pub fn place_image(&mut self, id: i32, row: i64, col: i64, cols: i32, rows: i32,
-                       src_x: i32, src_y: i32, src_w: i32, src_h: i32) {
+    pub fn place_image(
+        &mut self,
+        id: i32,
+        row: i64,
+        col: i64,
+        cols: i32,
+        rows: i32,
+        src_x: i32,
+        src_y: i32,
+        src_w: i32,
+        src_h: i32,
+    ) {
         self.placements.retain(|p| p.image_id != id);
-        self.placements.push(ImagePlacement { image_id: id, row, col, cols, rows, src_x, src_y, src_w, src_h });
+        self.placements.push(ImagePlacement {
+            image_id: id,
+            row,
+            col,
+            cols,
+            rows,
+            src_x,
+            src_y,
+            src_w,
+            src_h,
+        });
     }
     /// Decode a sixel payload and place it at the cursor (advancing below). Public wrapper.
     pub fn place_sixel_public(&mut self, data: &[u8]) -> bool {
@@ -277,7 +306,11 @@ impl Emulator {
         if self.on_alt { &self.alt } else { &self.main }
     }
     fn scr(&mut self) -> &mut ScreenBuffer {
-        if self.on_alt { &mut self.alt } else { &mut self.main }
+        if self.on_alt {
+            &mut self.alt
+        } else {
+            &mut self.main
+        }
     }
     pub fn is_alt_screen(&self) -> bool {
         self.on_alt
@@ -296,7 +329,13 @@ impl Emulator {
         *self.kbd_stack.last().unwrap_or(&0)
     }
     pub fn mouse_flags(&self) -> (bool, bool, bool, bool, bool) {
-        (self.mouse_click, self.mouse_drag, self.mouse_motion, self.mouse_sgr, self.mouse_sgr_pixels)
+        (
+            self.mouse_click,
+            self.mouse_drag,
+            self.mouse_motion,
+            self.mouse_sgr,
+            self.mouse_sgr_pixels,
+        )
     }
     pub fn scroll_top(&self) -> usize {
         self.scroll_top
@@ -366,7 +405,11 @@ impl Emulator {
         let (r, c) = (self.cursor_row, self.cursor_col);
         self.scr().set(r, c, cell);
         if w == 2 {
-            let spacer = Cell { rune: 0, width: 0, ..cell };
+            let spacer = Cell {
+                rune: 0,
+                width: 0,
+                ..cell
+            };
             self.scr().set(r, c + 1, spacer);
         }
         self.cursor_col += w;
@@ -418,9 +461,15 @@ impl Emulator {
         self.history.drain(0..trim as usize);
         self.marks.retain_mut(|m| {
             m.prompt_line -= trim;
-            if m.command_line >= 0 { m.command_line -= trim; }
-            if m.output_line >= 0 { m.output_line -= trim; }
-            if m.end_line >= 0 { m.end_line -= trim; }
+            if m.command_line >= 0 {
+                m.command_line -= trim;
+            }
+            if m.output_line >= 0 {
+                m.output_line -= trim;
+            }
+            if m.end_line >= 0 {
+                m.end_line -= trim;
+            }
             m.prompt_line >= 0
         });
     }
@@ -429,7 +478,7 @@ impl Emulator {
     /// stored is dropped, so the setting means the same thing whenever it is applied.
     pub fn set_scrollback_max(&mut self, max: usize) {
         self.scrollback_max = max;
-        self.trim_history();   // a LOWER cap must take effect now, not at the next scroll
+        self.trim_history(); // a LOWER cap must take effect now, not at the next scroll
     }
 
     fn index(&mut self) {
@@ -504,7 +553,9 @@ impl Emulator {
         if self.cursor_row < self.scroll_top || self.cursor_row > self.scroll_bottom {
             return;
         }
-        let n = n.min((self.scroll_bottom - self.cursor_row + 1) as i64).max(0) as usize;
+        let n = n
+            .min((self.scroll_bottom - self.cursor_row + 1) as i64)
+            .max(0) as usize;
         let shift = self.scroll_bottom - self.cursor_row + 1 - n;
         let row = self.cursor_row;
         let b = self.blank();
@@ -520,7 +571,9 @@ impl Emulator {
         if self.cursor_row < self.scroll_top || self.cursor_row > self.scroll_bottom {
             return;
         }
-        let n = n.min((self.scroll_bottom - self.cursor_row + 1) as i64).max(0) as usize;
+        let n = n
+            .min((self.scroll_bottom - self.cursor_row + 1) as i64)
+            .max(0) as usize;
         let shift = self.scroll_bottom - self.cursor_row + 1 - n;
         let row = self.cursor_row;
         let bottom = self.scroll_bottom;
@@ -556,7 +609,11 @@ impl Emulator {
         let b = self.blank();
         let (row, cur) = (self.cursor_row, self.cursor_col as i64);
         for c in cur..cols {
-            let cell = if c + n < cols { self.screen().get(row, (c + n) as usize) } else { b };
+            let cell = if c + n < cols {
+                self.screen().get(row, (c + n) as usize)
+            } else {
+                b
+            };
             self.scr().set(row, c as usize, cell);
         }
     }
@@ -575,7 +632,11 @@ impl Emulator {
 
     fn erase_line(&mut self, mode: i32) {
         let from = if mode == 0 { self.cursor_col } else { 0 };
-        let to = if mode == 1 { self.cursor_col } else { self.screen().cols() - 1 };
+        let to = if mode == 1 {
+            self.cursor_col
+        } else {
+            self.screen().cols() - 1
+        };
         let b = self.blank();
         let row = self.cursor_row;
         let mut c = from;
@@ -749,15 +810,31 @@ impl Emulator {
             // Out-of-range index: consume params, change nothing (matches the guarded C#).
             if (0..=255).contains(&idx) {
                 let (c, s) = (Color::from_index(idx as u8), ColorSpec::indexed(idx as u8));
-                if is_fg { self.fg = c; self.fg_spec = s; } else { self.bg = c; self.bg_spec = s; }
+                if is_fg {
+                    self.fg = c;
+                    self.fg_spec = s;
+                } else {
+                    self.bg = c;
+                    self.bg_spec = s;
+                }
             }
             return i + 2;
         }
         if mode == 2 && i + 4 < p.len() {
             // Wrapping byte casts, matching C#'s unchecked (byte) conversion.
-            let c = Color { r: p[i + 2] as u8, g: p[i + 3] as u8, b: p[i + 4] as u8 };
+            let c = Color {
+                r: p[i + 2] as u8,
+                g: p[i + 3] as u8,
+                b: p[i + 4] as u8,
+            };
             let s = ColorSpec::from_rgb(c);
-            if is_fg { self.fg = c; self.fg_spec = s; } else { self.bg = c; self.bg_spec = s; }
+            if is_fg {
+                self.fg = c;
+                self.fg_spec = s;
+            } else {
+                self.bg = c;
+                self.bg_spec = s;
+            }
             return i + 4;
         }
         i + 1
@@ -797,24 +874,28 @@ impl Emulator {
                 }
             }
             'B' => {
-                if let Some(m) = self.marks.last_mut() {
-                    if m.command_line < 0 { m.command_line = abs; }
+                if let Some(m) = self.marks.last_mut()
+                    && m.command_line < 0
+                {
+                    m.command_line = abs;
                 }
             }
             'C' => {
-                if let Some(m) = self.marks.last_mut() {
-                    if m.output_line < 0 { m.output_line = abs; }
+                if let Some(m) = self.marks.last_mut()
+                    && m.output_line < 0
+                {
+                    m.output_line = abs;
                 }
             }
             'D' => {
-                if let Some(m) = self.marks.last_mut() {
-                    if m.end_line < 0 {
-                        m.end_line = abs;
-                        if let Some(semi) = text.find(';') {
-                            if let Ok(ec) = text[semi + 1..].parse::<i32>() {
-                                m.exit_code = Some(ec);
-                            }
-                        }
+                if let Some(m) = self.marks.last_mut()
+                    && m.end_line < 0
+                {
+                    m.end_line = abs;
+                    if let Some(semi) = text.find(';')
+                        && let Ok(ec) = text[semi + 1..].parse::<i32>()
+                    {
+                        m.exit_code = Some(ec);
                     }
                 }
             }
@@ -863,19 +944,49 @@ impl Emulator {
 
     pub fn dump_modes(&self) -> String {
         let mut s = String::new();
-        if self.on_alt { s.push_str("\u{1b}[?1049h"); }
-        if !self.cursor_visible { s.push_str("\u{1b}[?25l"); }
-        if self.mouse_click { s.push_str("\u{1b}[?1000h"); }
-        if self.mouse_drag { s.push_str("\u{1b}[?1002h"); }
-        if self.mouse_motion { s.push_str("\u{1b}[?1003h"); }
-        if self.mouse_sgr { s.push_str("\u{1b}[?1006h"); }
-        if self.mouse_sgr_pixels { s.push_str("\u{1b}[?1016h"); }
-        if self.bracketed_paste { s.push_str("\u{1b}[?2004h"); }
-        if self.focus_reporting { s.push_str("\u{1b}[?1004h"); }
-        if self.win32_input_mode { s.push_str("\u{1b}[?9001h"); }
-        if self.cursor_shape != 0 { s.push_str(&format!("\u{1b}[{} q", self.cursor_shape)); }
-        if !self.title.is_empty() { s.push_str("\u{1b}]0;"); s.push_str(&self.title); s.push('\u{7}'); }
-        if !self.cwd.is_empty() { s.push_str("\u{1b}]7;"); s.push_str(&self.cwd); s.push('\u{7}'); }
+        if self.on_alt {
+            s.push_str("\u{1b}[?1049h");
+        }
+        if !self.cursor_visible {
+            s.push_str("\u{1b}[?25l");
+        }
+        if self.mouse_click {
+            s.push_str("\u{1b}[?1000h");
+        }
+        if self.mouse_drag {
+            s.push_str("\u{1b}[?1002h");
+        }
+        if self.mouse_motion {
+            s.push_str("\u{1b}[?1003h");
+        }
+        if self.mouse_sgr {
+            s.push_str("\u{1b}[?1006h");
+        }
+        if self.mouse_sgr_pixels {
+            s.push_str("\u{1b}[?1016h");
+        }
+        if self.bracketed_paste {
+            s.push_str("\u{1b}[?2004h");
+        }
+        if self.focus_reporting {
+            s.push_str("\u{1b}[?1004h");
+        }
+        if self.win32_input_mode {
+            s.push_str("\u{1b}[?9001h");
+        }
+        if self.cursor_shape != 0 {
+            s.push_str(&format!("\u{1b}[{} q", self.cursor_shape));
+        }
+        if !self.title.is_empty() {
+            s.push_str("\u{1b}]0;");
+            s.push_str(&self.title);
+            s.push('\u{7}');
+        }
+        if !self.cwd.is_empty() {
+            s.push_str("\u{1b}]7;");
+            s.push_str(&self.cwd);
+            s.push('\u{7}');
+        }
         s
     }
 
@@ -917,7 +1028,10 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(cols: usize, rows: usize) -> Terminal {
-        Terminal { emu: Emulator::new(cols, rows), parser: VtParser::new() }
+        Terminal {
+            emu: Emulator::new(cols, rows),
+            parser: VtParser::new(),
+        }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -1002,7 +1116,11 @@ impl Performer for Emulator {
                 self.set_private_mode(params, ch == b'h');
             } else if ch == b'p' && matches!(params.first(), Some(1016 | 2026)) {
                 let mode = params[0];
-                let set = if mode == 1016 { self.mouse_sgr_pixels } else { self.synchronized_output };
+                let set = if mode == 1016 {
+                    self.mouse_sgr_pixels
+                } else {
+                    self.synchronized_output
+                };
                 // DECRQM — 1 means set, 2 means reset. Both modes are supported in either state.
                 self.push_action(HostAction::Respond {
                     reply: format!("\u{1b}[?{mode};{}$y", if set { 1 } else { 2 }),
@@ -1062,7 +1180,11 @@ impl Performer for Emulator {
                 }
             }
             _ => {
-                let pfx = if prefix == 0 { String::new() } else { format!("{} ", prefix as char) };
+                let pfx = if prefix == 0 {
+                    String::new()
+                } else {
+                    format!("{} ", prefix as char)
+                };
                 self.push_action(HostAction::Unhandled {
                     kind: "CSI".into(),
                     detail: format!("{pfx}{} {}", join_params(params), ch as char),
@@ -1085,8 +1207,14 @@ impl Performer for Emulator {
             11 => {
                 // OSC 11 — set/query the terminal background color (per-pane dynamic bg, agterm #240).
                 if text.trim() == "?" {
-                    let (r, g, b) = ((self.dynamic_bg >> 16) & 0xFF, (self.dynamic_bg >> 8) & 0xFF, self.dynamic_bg & 0xFF);
-                    let reply = format!("\u{1b}]11;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\u{1b}\\");
+                    let (r, g, b) = (
+                        (self.dynamic_bg >> 16) & 0xFF,
+                        (self.dynamic_bg >> 8) & 0xFF,
+                        self.dynamic_bg & 0xFF,
+                    );
+                    let reply = format!(
+                        "\u{1b}]11;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\u{1b}\\"
+                    );
                     self.push_action(HostAction::Respond { reply });
                 } else if let Some(rgb) = parse_osc_color(&text) {
                     self.dynamic_bg = 0xFF00_0000 | rgb;
@@ -1105,7 +1233,10 @@ impl Performer for Emulator {
                         .unwrap_or(0);
                     self.push_action(HostAction::Progress { state, value });
                 } else {
-                    self.push_action(HostAction::Notify { title: String::new(), body: text });
+                    self.push_action(HostAction::Notify {
+                        title: String::new(),
+                        body: text,
+                    });
                 }
             }
             777 => {
@@ -1113,7 +1244,11 @@ impl Performer for Emulator {
                 let parts: Vec<&str> = text.split(';').collect();
                 if parts.len() >= 2 && parts[0] == "notify" {
                     let title = parts[1].to_string();
-                    let body = if parts.len() >= 3 { parts[2..].join(";") } else { String::new() };
+                    let body = if parts.len() >= 3 {
+                        parts[2..].join(";")
+                    } else {
+                        String::new()
+                    };
                     self.push_action(HostAction::Notify { title, body });
                 }
             }
@@ -1126,7 +1261,7 @@ impl Performer for Emulator {
                         // Tolerate unpadded base64 (some emitters strip '='), like the managed
                         // core's PadRight before Convert.FromBase64String.
                         let mut padded = data.to_string();
-                        while padded.len() % 4 != 0 {
+                        while !padded.len().is_multiple_of(4) {
                             padded.push('=');
                         }
                         if let Some(bytes) = base64_decode(&padded) {
@@ -1145,7 +1280,10 @@ impl Performer for Emulator {
                 } else {
                     format!("{command};{text}")
                 };
-                self.push_action(HostAction::Unhandled { kind: "OSC".into(), detail });
+                self.push_action(HostAction::Unhandled {
+                    kind: "OSC".into(),
+                    detail,
+                });
             }
         }
     }
@@ -1159,7 +1297,10 @@ impl Performer for Emulator {
             } else {
                 data.to_string()
             };
-            self.push_action(HostAction::Unhandled { kind: "APC".into(), detail });
+            self.push_action(HostAction::Unhandled {
+                kind: "APC".into(),
+                detail,
+            });
             return;
         }
         let body = &data[1..];
@@ -1196,10 +1337,10 @@ impl Performer for Emulator {
 fn parse_kitty_keys(control: &str) -> HashMap<String, String> {
     let mut d = HashMap::new();
     for pair in control.split(',') {
-        if let Some(eq) = pair.find('=') {
-            if eq > 0 {
-                d.insert(pair[..eq].to_string(), pair[eq + 1..].to_string());
-            }
+        if let Some(eq) = pair.find('=')
+            && eq > 0
+        {
+            d.insert(pair[..eq].to_string(), pair[eq + 1..].to_string());
         }
     }
     d
@@ -1218,7 +1359,9 @@ fn parse_wire_format(f: i32) -> i32 {
 }
 
 fn kitty_int(d: &HashMap<String, String>, key: &str, def: i32) -> i32 {
-    d.get(key).and_then(|v| v.parse::<i32>().ok()).unwrap_or(def)
+    d.get(key)
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(def)
 }
 
 /// Parse an OSC color spec (rgb:RR/GG/BB[BB…], #RRGGBB, #RGB) into 0x00RRGGBB. (agterm #240)
@@ -1253,7 +1396,11 @@ fn parse_osc_color(s: &str) -> Option<u32> {
 
 /// Semicolon-join CSI parameters for the Unhandled debug tap (mirrors C#'s `string.Join(';', …)`).
 fn join_params(params: &[i32]) -> String {
-    params.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(";")
+    params
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 impl Emulator {
@@ -1277,8 +1424,19 @@ impl Emulator {
         }
 
         if !b64.is_empty() {
-            let Some(bytes) = base64_decode(&b64) else { return }; // malformed → drop, like the C# catch
-            self.images.insert(id, KittyImage { id, format, width: w, height: h, data: bytes });
+            let Some(bytes) = base64_decode(&b64) else {
+                return;
+            }; // malformed → drop, like the C# catch
+            self.images.insert(
+                id,
+                KittyImage {
+                    id,
+                    format,
+                    width: w,
+                    height: h,
+                    data: bytes,
+                },
+            );
         }
 
         if action == "T" || action == "p" {
@@ -1300,21 +1458,27 @@ impl Emulator {
     }
 
     fn place_sixel(&mut self, data: &[u8]) -> bool {
-        let Some(s) = sixel::decode(data) else { return false };
+        let Some(s) = sixel::decode(data) else {
+            return false;
+        };
         if s.width == 0 || s.height == 0 {
             return false;
         }
         let id = self.sixel_seq;
         self.sixel_seq -= 1;
-        self.images.insert(id, KittyImage {
+        self.images.insert(
             id,
-            format: 32, // KittyFormat.Rgba
-            width: s.width as i32,
-            height: s.height as i32,
-            data: s.rgba,
-        });
+            KittyImage {
+                id,
+                format: 32, // KittyFormat.Rgba
+                width: s.width as i32,
+                height: s.height as i32,
+                data: s.rgba,
+            },
+        );
         let cols = (((s.width as i32) + self.cell_pixel_width - 1) / self.cell_pixel_width).max(1);
-        let rows = (((s.height as i32) + self.cell_pixel_height - 1) / self.cell_pixel_height).max(1);
+        let rows =
+            (((s.height as i32) + self.cell_pixel_height - 1) / self.cell_pixel_height).max(1);
         self.placements.push(ImagePlacement {
             image_id: id,
             row: self.cursor_row as i64,
@@ -1389,7 +1553,7 @@ mod tests {
     #[test]
     fn scrollback_rows_are_trimmed() {
         let mut t = Terminal::new(80, 3);
-        t.feed(b"hi\r\n\r\n\r\n\r\n");   // "hi" then blank rows scroll into history
+        t.feed(b"hi\r\n\r\n\r\n\r\n"); // "hi" then blank rows scroll into history
         assert!(t.emu.history_count() >= 1);
         // The "hi" row stores 2 cells, not 80; a blank row stores 0.
         assert_eq!(t.emu.history_row_stored_len(0), 2);
@@ -1467,7 +1631,9 @@ mod tests {
         assert!(!t.emu.mouse_sgr_pixels);
         assert_eq!(
             t.emu.take_host_actions(),
-            vec![HostAction::Respond { reply: "\x1b[?1016;2$y".into() }]
+            vec![HostAction::Respond {
+                reply: "\x1b[?1016;2$y".into()
+            }]
         );
 
         t.feed(b"\x1b[?1016h\x1b[?1016$p");
@@ -1475,7 +1641,9 @@ mod tests {
         assert!(t.emu.dump_modes().contains("\x1b[?1016h"));
         assert_eq!(
             t.emu.take_host_actions(),
-            vec![HostAction::Respond { reply: "\x1b[?1016;1$y".into() }]
+            vec![HostAction::Respond {
+                reply: "\x1b[?1016;1$y".into()
+            }]
         );
 
         t.feed(b"\x1b[?1016l");

@@ -179,7 +179,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                     if (semi >= 0 && int.TryParse(text[(semi + 1)..], out int ec)) m.ExitCode = ec;
                 }
                 break;
-            // 'B' (command-line start) isn't tracked separately in v1.
+                // 'B' (command-line start) isn't tracked separately in v1.
         }
         if (_marks.Count > 512) _marks.RemoveRange(0, _marks.Count - 512);
     }
@@ -309,14 +309,14 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 case '?': Host?.Respond($"\x1b[?{KeyboardFlags}u"); break;   // report current flags
                 case '>': _kbdStack.Push(parameters.Count > 0 ? parameters[0] : 0); break;
                 case '=':
-                {
-                    int flags = parameters.Count > 0 ? parameters[0] : 0;
-                    int mode = parameters.Count > 1 ? parameters[1] : 1;   // 1 set, 2 or-in, 3 and-not
-                    int cur = KeyboardFlags, next = mode switch { 2 => cur | flags, 3 => cur & ~flags, _ => flags };
-                    if (_kbdStack.Count > 0) _kbdStack.Pop();
-                    _kbdStack.Push(next);
-                    break;
-                }
+                    {
+                        int flags = parameters.Count > 0 ? parameters[0] : 0;
+                        int mode = parameters.Count > 1 ? parameters[1] : 1;   // 1 set, 2 or-in, 3 and-not
+                        int cur = KeyboardFlags, next = mode switch { 2 => cur | flags, 3 => cur & ~flags, _ => flags };
+                        if (_kbdStack.Count > 0) _kbdStack.Pop();
+                        _kbdStack.Push(next);
+                        break;
+                    }
                 case '<': for (int n = Math.Max(1, parameters.Count > 0 ? parameters[0] : 1); n > 0 && _kbdStack.Count > 0; n--) _kbdStack.Pop(); break;
             }
             return;
@@ -365,11 +365,11 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
             case 'S': for (int i = 0; i < P(0, 1); i++) ScrollRegionUp(); break;   // SU
             case 'T': for (int i = 0; i < P(0, 1); i++) ScrollRegionDown(); break; // SD
             case 'q' when prefix == '\0': // DECSCUSR (CSI Ps SP q) — cursor shape; the SP intermediate is dropped
-            {
-                int ps = parameters.Count > 0 ? parameters[0] : 0;
-                if (ps is >= 0 and <= 6) CursorShape = ps;   // out-of-range values are ignored
-                break;
-            }
+                {
+                    int ps = parameters.Count > 0 ? parameters[0] : 0;
+                    if (ps is >= 0 and <= 6) CursorShape = ps;   // out-of-range values are ignored
+                    break;
+                }
             default:
                 Host?.Unhandled("CSI", $"{(prefix == '\0' ? "" : prefix + " ")}{string.Join(';', parameters)} {final}");
                 break;
@@ -655,24 +655,24 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                     Host?.Notify(parts[1], parts.Length >= 3 ? string.Join(';', parts[2..]) : "");
                 break;
             case 52: // OSC 52 ; Pc ; Pd — program writes the clipboard (base64 payload). Pc (which
-            {        // selection) is ignored: everything goes to the system clipboard, like WT.
-                int semi = text.IndexOf(';');
-                if (semi < 0) break;
-                string data = text[(semi + 1)..];
-                // "?" is a read-back query — never answered (clipboard exfiltration). Cap the payload
-                // so a runaway sequence can't balloon memory (4MB base64 ≈ 3MB text, far above any
-                // real selection).
-                if (data.Length == 0 || data == "?" || data.Length > 4_000_000) break;
-                try
-                {
-                    // Tolerate unpadded base64 (some emitters strip '=').
-                    string decoded = System.Text.Encoding.UTF8.GetString(
-                        Convert.FromBase64String(data.PadRight((data.Length + 3) & ~3, '=')));
-                    if (decoded.Length > 0) Host?.ClipboardWrite(decoded);
+                {        // selection) is ignored: everything goes to the system clipboard, like WT.
+                    int semi = text.IndexOf(';');
+                    if (semi < 0) break;
+                    string data = text[(semi + 1)..];
+                    // "?" is a read-back query — never answered (clipboard exfiltration). Cap the payload
+                    // so a runaway sequence can't balloon memory (4MB base64 ≈ 3MB text, far above any
+                    // real selection).
+                    if (data.Length == 0 || data == "?" || data.Length > 4_000_000) break;
+                    try
+                    {
+                        // Tolerate unpadded base64 (some emitters strip '=').
+                        string decoded = System.Text.Encoding.UTF8.GetString(
+                            Convert.FromBase64String(data.PadRight((data.Length + 3) & ~3, '=')));
+                        if (decoded.Length > 0) Host?.ClipboardWrite(decoded);
+                    }
+                    catch (FormatException) { /* malformed base64 — drop */ }
+                    break;
                 }
-                catch (FormatException) { /* malformed base64 — drop */ }
-                break;
-            }
             default:
                 Host?.Unhandled("OSC", $"{command};{(text.Length > 40 ? text[..40] + "…" : text)}");
                 break;

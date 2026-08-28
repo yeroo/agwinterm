@@ -65,10 +65,16 @@ public class RustParityTests
         public static FfiCell From(Cell c) => new()
         {
             Rune = c.Rune,
-            Fg = Pack(c.Foreground), Bg = Pack(c.Background),
-            Attrs = (uint)c.Attributes, Width = c.Width,
-            FgKind = (uint)c.FgSpec.Kind, FgIndex = c.FgSpec.Index, FgRgb = Pack(c.FgSpec.Rgb),
-            BgKind = (uint)c.BgSpec.Kind, BgIndex = c.BgSpec.Index, BgRgb = Pack(c.BgSpec.Rgb),
+            Fg = Pack(c.Foreground),
+            Bg = Pack(c.Background),
+            Attrs = (uint)c.Attributes,
+            Width = c.Width,
+            FgKind = (uint)c.FgSpec.Kind,
+            FgIndex = c.FgSpec.Index,
+            FgRgb = Pack(c.FgSpec.Rgb),
+            BgKind = (uint)c.BgSpec.Kind,
+            BgIndex = c.BgSpec.Index,
+            BgRgb = Pack(c.BgSpec.Rgb),
         };
 
         public bool SameAs(Cell c) =>
@@ -138,33 +144,33 @@ public class RustParityTests
                         Assert.True(sClear(rs));
                         break;
                     case 2 or 3: // fill a row
-                    {
-                        int row = rng.Next(cs.Rows);
-                        var cell = RandomCell(rng);
-                        cs.FillRow(row, cell);
-                        var f = FfiCell.From(cell);
-                        Assert.True(sFill(rs, (uint)row, &f));
-                        break;
-                    }
+                        {
+                            int row = rng.Next(cs.Rows);
+                            var cell = RandomCell(rng);
+                            cs.FillRow(row, cell);
+                            var f = FfiCell.From(cell);
+                            Assert.True(sFill(rs, (uint)row, &f));
+                            break;
+                        }
                     case 4 or 5: // move rows (valid ranges only — C# throws where FFI returns false)
-                    {
-                        if (cs.Rows < 2) break;
-                        int count = rng.Next(1, cs.Rows);
-                        int src = rng.Next(cs.Rows - count + 1);
-                        int dst = rng.Next(cs.Rows - count + 1);
-                        cs.MoveRows(src, dst, count);
-                        Assert.True(sMove(rs, (uint)src, (uint)dst, (uint)count));
-                        break;
-                    }
+                        {
+                            if (cs.Rows < 2) break;
+                            int count = rng.Next(1, cs.Rows);
+                            int src = rng.Next(cs.Rows - count + 1);
+                            int dst = rng.Next(cs.Rows - count + 1);
+                            cs.MoveRows(src, dst, count);
+                            Assert.True(sMove(rs, (uint)src, (uint)dst, (uint)count));
+                            break;
+                        }
                     default: // set a random cell
-                    {
-                        int row = rng.Next(cs.Rows), col = rng.Next(cs.Cols);
-                        var cell = RandomCell(rng);
-                        cs[row, col] = cell;
-                        var f = FfiCell.From(cell);
-                        Assert.True(sSet(rs, (uint)row, (uint)col, &f));
-                        break;
-                    }
+                        {
+                            int row = rng.Next(cs.Rows), col = rng.Next(cs.Cols);
+                            var cell = RandomCell(rng);
+                            cs[row, col] = cell;
+                            var f = FfiCell.From(cell);
+                            Assert.True(sSet(rs, (uint)row, (uint)col, &f));
+                            break;
+                        }
                 }
                 // Full-grid compare after every op — first divergence pinpoints the op class.
                 for (int r = 0; r < cs.Rows; r++)

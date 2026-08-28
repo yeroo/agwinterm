@@ -36,12 +36,6 @@ public static class KittyFormats
     public static KittyFormat ParseWireFormat(int f)
         => IsWireFormat(f) ? (KittyFormat)f : KittyFormat.Rgba;
 
-    /// <summary>
-    /// True when converting this format to the renderer's BGRA target has to swap the red and
-    /// blue channels. <see cref="KittyFormat.Bgra"/> is already in target order, so it takes the
-    /// no-swizzle route.
-    /// </summary>
-    public static bool NeedsChannelSwap(KittyFormat format) => format != KittyFormat.Bgra;
 }
 
 /// <summary>

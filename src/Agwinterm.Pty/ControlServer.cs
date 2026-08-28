@@ -19,16 +19,13 @@ public sealed class ControlServer : IDisposable
     private readonly string _pipeName;
     private CancellationTokenSource? _cts;
 
-    // Per-session record of the last content signature transmitted for each image id, so an
-    // unchanged image can be re-placed (a=p) instead of re-transmitted (a=T) on every frame.
-    private readonly ConditionalWeakTable<ISession, Dictionary<int, long>> _txState = new();
+    private enum FrameSource { File, SharedMemory }
+    private sealed record FrameCacheEntry(FrameSource Source, long Token, KittyImage Image);
 
-    // Per-session record of the last publish sequence accepted for each image id on the
-    // shared-memory path. It is the `image.frameshm` analogue of _txState's content signature:
-    // a producer that re-sends the same (id, seq) is saying "nothing changed, just re-place it",
-    // so the megabyte copy is skipped. Kept separate from _txState because the two spaces are
-    // unrelated - a file signature and a producer's frame counter must never alias.
-    private readonly ConditionalWeakTable<ISession, Dictionary<int, long>> _shmState = new();
+    // One cache covers both frame transports. The source tag prevents unrelated file signatures
+    // and shm sequences from aliasing, while the image reference detects replacement through
+    // image.show or terminal Kitty output before a nominal cache hit is trusted.
+    private readonly ConditionalWeakTable<ISession, Dictionary<int, FrameCacheEntry>> _frameState = new();
 
     public ControlServer(ISessionHost host, string pipeName = "agwinterm")
     {
@@ -138,7 +135,8 @@ public sealed class ControlServer : IDisposable
             {
                 case "tree": return HandleTree(host);
                 case "window.state": return HandleWindowState(host);
-                case "session.new": return Ok(host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace"),
+                case "session.new":
+                    return Ok(host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace"),
                     GetString(args, "command"), GetString(args, "workspace-name"), GetBool(args, "create-workspace"), GetString(args, "profile"), GetBool(args, "no-select"), GetBool(args, "wait")));
                 case "session.duplicate": return Ok(host.DuplicateSession(target));
                 case "profiles.list": return Ok(host.ProfilesList());
@@ -185,11 +183,11 @@ public sealed class ControlServer : IDisposable
                 case "config.list": return Ok(host.ConfigList());
                 case "settings.open": return Ok(host.SettingsOpen());
                 case "sidebar":
-                {
-                    string op = GetString(args, "op") ?? "toggle";
-                    if (op is "state" or "get") return Ok(host.SidebarState());   // read-back, no mutation
-                    host.SidebarOp(op); return Ok("sidebar");
-                }
+                    {
+                        string op = GetString(args, "op") ?? "toggle";
+                        if (op is "state" or "get") return Ok(host.SidebarState());   // read-back, no mutation
+                        host.SidebarOp(op); return Ok("sidebar");
+                    }
                 case "session.copy": return Ok(host.SessionCopy(target)); // selection text (host-side), "" if none
                 case "selection.all": return Ok(host.SelectionAll(target));
                 case "selection.copy": return Ok(host.SelectionCopy(target));      // -> Windows clipboard
@@ -231,11 +229,11 @@ public sealed class ControlServer : IDisposable
                         GetString(args, "path"), GetInt(args, "opacity", -1), GetString(args, "mode")));
                 case "session.switch": return Ok(host.SessionSwitch(GetString(args, "op") ?? "advance"));
                 case "command.run":
-                {
-                    string? nameOrCmd = GetString(args, "name") ?? GetString(args, "command");
-                    if (string.IsNullOrWhiteSpace(nameOrCmd)) return Err("command.run needs args.name or args.command");
-                    return Ok(host.CommandRun(nameOrCmd!, GetString(args, "mode")));
-                }
+                    {
+                        string? nameOrCmd = GetString(args, "name") ?? GetString(args, "command");
+                        if (string.IsNullOrWhiteSpace(nameOrCmd)) return Err("command.run needs args.name or args.command");
+                        return Ok(host.CommandRun(nameOrCmd!, GetString(args, "mode")));
+                    }
                 case "command.list": return Ok(host.CommandList());
                 case "command.leader": return Ok(host.CommandLeader(GetString(args, "op") ?? "state"));
                 case "omp.set": return Ok(host.OmpSet(GetString(args, "name") ?? "", GetBool(args, "persist")));
@@ -462,17 +460,21 @@ public sealed class ControlServer : IDisposable
     }
 
     private string HandleImageFrame(ISession s, JsonElement args)
+        => HandleImageFrame(s, args, retryInvalidCache: true);
+
+    private string HandleImageFrame(ISession s, JsonElement args, bool retryInvalidCache)
     {
         if (args.ValueKind != JsonValueKind.Object ||
             !args.TryGetProperty("images", out var images) || images.ValueKind != JsonValueKind.Array)
             return Err("image.frame requires args.images array");
 
-        var state = _txState.GetOrCreateValue(s);
+        var state = _frameState.GetOrCreateValue(s);
         // Phase 1 (OFF the render lock): resolve placements and read+own the pixel bytes for any
         // image whose content changed. The expensive file read stays out of the lock, and we pass
         // raw PNG bytes straight to the emulator — no base64 encode here and no base64 decode under
         // the lock (the renderer decodes PNG asynchronously on its own thread).
-        var ops = new List<(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh, byte[]? data)>();
+        var ops = new List<(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh,
+                            long token, byte[]? data, FrameCacheEntry? cached)>();
         int count = 0, transmits = 0;
         long readBytes = 0;
         foreach (var img in images.EnumerateArray())
@@ -486,34 +488,55 @@ public sealed class ControlServer : IDisposable
             int sx = GetInt(img, "sx", 0), sy = GetInt(img, "sy", 0), sw = GetInt(img, "sw", 0), sh = GetInt(img, "sh", 0);
 
             long sig = ContentSignature(path);
-            bool transmit;
-            lock (state) transmit = sig == 0 || !(state.TryGetValue(id, out var prev) && prev == sig);
+            FrameCacheEntry? cacheEntry = null;
+            bool cached = sig != 0 && IsCurrentFrameCacheHit(s, state, id, FrameSource.File, sig, out cacheEntry);
 
             byte[]? data = null;
-            if (transmit)
+            if (!cached)
             {
                 try { data = File.ReadAllBytes(path); } catch { data = null; }
-                if (data is not null) { lock (state) state[id] = sig; transmits++; readBytes += data.Length; }
+                if (data is not null) { transmits++; readBytes += data.Length; }
             }
-            ops.Add((id, row, col, cols, rows, sx, sy, sw, sh, data));
+            ops.Add((id, row, col, cols, rows, sx, sy, sw, sh, sig, data, cacheEntry));
             count++;
         }
 
         // Phase 2 (BRIEF lock): swap placements and register any new pixels — dictionary/list
         // updates only, microseconds, so a big image appearing never stalls the paint thread.
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool invalidCache = false;
         s.MutateLocked(em =>
         {
+            // A child can replace an id between phase 1's cache check and this lock. Abort before
+            // clearing placements; the one automatic retry below will transmit the pixels again.
+            foreach (var op in ops.Where(op => op.data is null && op.cached is not null))
+                if (!em.Images.TryGetValue(op.id, out var image) || !ReferenceEquals(image, op.cached!.Image))
+                { invalidCache = true; return; }
+
             em.ClearPlacements();
+            var updates = new List<(int id, FrameCacheEntry entry)>();
             foreach (var op in ops)
             {
                 if (op.data is not null)
+                {
                     em.SetImageData(op.id, KittyFormat.Png, 0, 0, op.data);
+                    if (op.token != 0 && em.Images.TryGetValue(op.id, out var image))
+                        updates.Add((op.id, new FrameCacheEntry(FrameSource.File, op.token, image)));
+                }
                 else if (!em.HasImage(op.id))
                     continue; // never transmitted and no cached copy -> nothing to place
                 em.PlaceImage(op.id, op.row, op.col, op.cols, op.rows, op.sx, op.sy, op.sw, op.sh);
             }
+            lock (state)
+                foreach (var update in updates) state[update.id] = update.entry;
         });
+        if (invalidCache)
+        {
+            RemoveInvalidCacheEntries(state, ops.Select(op => (op.id, op.cached)));
+            return retryInvalidCache
+                ? HandleImageFrame(s, args, retryInvalidCache: false)
+                : Err("image.frame cache changed while the frame was prepared; retry");
+        }
         if (_perfLog is not null)
             Perf($"frame images={count} transmits={transmits} readKB={readBytes / 1024} lockMs={System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds:F2}");
         return Ok($"frame:{count}/{transmits}");
@@ -532,17 +555,21 @@ public sealed class ControlServer : IDisposable
     /// See <c>docs/specs/image-frameshm.md</c> for the normative contract.
     /// </summary>
     private string HandleImageFrameShm(ISession s, JsonElement args)
+        => HandleImageFrameShm(s, args, retryInvalidCache: true);
+
+    private string HandleImageFrameShm(ISession s, JsonElement args, bool retryInvalidCache)
     {
         if (args.ValueKind != JsonValueKind.Object ||
             !args.TryGetProperty("images", out var images) || images.ValueKind != JsonValueKind.Array)
             return Err("image.frameshm requires args.images array");
 
-        var state = _shmState.GetOrCreateValue(s);
+        var state = _frameState.GetOrCreateValue(s);
 
         // Phase 1 (OFF the render lock): validate, then copy each changed frame out of its mapping.
         // Nothing is applied yet - a failure anywhere below returns before phase 2 runs, so a
         // rejected request never leaves the pane holding half a frame.
-        var ops = new List<(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh, ShmFrame? frame)>();
+        var ops = new List<(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh,
+                            long token, ShmFrame? frame, FrameCacheEntry? cached)>();
         int count = 0, transmits = 0;
         long readBytes = 0;
         foreach (var img in images.EnumerateArray())
@@ -574,41 +601,99 @@ public sealed class ControlServer : IDisposable
             // The (id, seq) cache, the shm analogue of image.frame's content signature: a repeated
             // seq means "nothing changed, just re-place it", and skipping it saves the whole copy.
             // seq 0 is the producer's "read whatever is in the slot", which is never cacheable.
-            bool transmit;
-            lock (state) transmit = seq <= 0 || !(state.TryGetValue(id, out long prev) && prev == seq);
+            FrameCacheEntry? cacheEntry = null;
+            bool cached = seq > 0 && IsCurrentFrameCacheHit(
+                s, state, id, FrameSource.SharedMemory, seq, out cacheEntry);
 
             ShmFrame? frame = null;
-            if (transmit)
+            if (!cached)
             {
                 var request = new ShmFrameRequest(name, slot, seq, width, height, stride, format);
                 if (!ShmFrameReader.TryReadFrame(request, out frame, out var error))
                     return Err("image.frameshm: " + ShmFrameReader.Describe(error));
-                if (seq > 0) lock (state) state[id] = seq;
                 transmits++;
                 readBytes += frame.Pixels.Length;
             }
-            ops.Add((id, row, col, cols, rows, sx, sy, sw, sh, frame));
+            ops.Add((id, row, col, cols, rows, sx, sy, sw, sh, seq, frame, cacheEntry));
             count++;
         }
 
         // Phase 2 (BRIEF lock): dictionary/list swaps only, exactly as image.frame does - the
         // megabytes were already copied above, so the paint thread stalls for microseconds.
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool invalidCache = false;
         s.MutateLocked(em =>
         {
+            foreach (var op in ops.Where(op => op.frame is null && op.cached is not null))
+                if (!em.Images.TryGetValue(op.id, out var image) || !ReferenceEquals(image, op.cached!.Image))
+                { invalidCache = true; return; }
+
             em.ClearPlacements();
+            var updates = new List<(int id, FrameCacheEntry entry)>();
             foreach (var op in ops)
             {
                 if (op.frame is not null)
+                {
                     em.SetImageData(op.id, (KittyFormat)op.frame.Format, op.frame.Width, op.frame.Height, op.frame.Pixels);
+                    if (op.token > 0 && em.Images.TryGetValue(op.id, out var image))
+                        updates.Add((op.id, new FrameCacheEntry(FrameSource.SharedMemory, op.token, image)));
+                }
                 else if (!em.HasImage(op.id))
                     continue; // cache said "unchanged" but nothing was ever transmitted -> nothing to place
                 em.PlaceImage(op.id, op.row, op.col, op.cols, op.rows, op.sx, op.sy, op.sw, op.sh);
             }
+            // Commit cache state only after the whole all-or-nothing frame has validated and applied.
+            lock (state)
+                foreach (var update in updates) state[update.id] = update.entry;
         });
+        if (invalidCache)
+        {
+            RemoveInvalidCacheEntries(state, ops.Select(op => (op.id, op.cached)));
+            return retryInvalidCache
+                ? HandleImageFrameShm(s, args, retryInvalidCache: false)
+                : Err("image.frameshm cache changed while the frame was prepared; retry");
+        }
         if (_perfLog is not null)
             Perf($"frameshm images={count} transmits={transmits} readKB={readBytes / 1024} lockMs={System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds:F2}");
         return Ok($"frame:{count}/{transmits}");
+    }
+
+    private static bool IsCurrentFrameCacheHit(
+        ISession session,
+        Dictionary<int, FrameCacheEntry> state,
+        int id,
+        FrameSource source,
+        long token,
+        out FrameCacheEntry? entry)
+    {
+        FrameCacheEntry candidate;
+        lock (state)
+        {
+            if (!state.TryGetValue(id, out var cached) || cached.Source != source || cached.Token != token)
+            { entry = null; return false; }
+            candidate = cached;
+        }
+        entry = candidate;
+
+        bool current = false;
+        session.MutateLocked(em =>
+            current = em.Images.TryGetValue(id, out var image) && ReferenceEquals(image, candidate.Image));
+        if (current) return true;
+
+        lock (state)
+            if (state.TryGetValue(id, out var found) && ReferenceEquals(found, candidate)) state.Remove(id);
+        entry = null;
+        return false;
+    }
+
+    private static void RemoveInvalidCacheEntries(
+        Dictionary<int, FrameCacheEntry> state,
+        IEnumerable<(int id, FrameCacheEntry? entry)> candidates)
+    {
+        lock (state)
+            foreach (var (id, entry) in candidates)
+                if (entry is not null && state.TryGetValue(id, out var found) && ReferenceEquals(found, entry))
+                    state.Remove(id);
     }
 
     /// <summary>

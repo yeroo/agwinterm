@@ -155,21 +155,21 @@ internal partial class Program
                 return IntPtr.Zero;
 
             case WM_APP_REDRAW:
-            {
-                System.Threading.Interlocked.Exchange(ref _redrawPending, 0);
-                // Frame cap (RedrawMinIntervalMs): paint immediately when quiet; under sustained
-                // output defer to a one-shot timer so floods render at ~66fps instead of per chunk.
-                long since = Environment.TickCount64 - _lastPaintTick;
-                if (since >= RedrawMinIntervalMs) InvalidateRect(hwnd, IntPtr.Zero, false);
-                else if (!_redrawTimerArmed)
                 {
-                    _redrawTimerArmed = true;
-                    SetTimer(hwnd, (IntPtr)RedrawTimer, (uint)Math.Max(1, RedrawMinIntervalMs - (int)since), IntPtr.Zero);
+                    System.Threading.Interlocked.Exchange(ref _redrawPending, 0);
+                    // Frame cap (RedrawMinIntervalMs): paint immediately when quiet; under sustained
+                    // output defer to a one-shot timer so floods render at ~66fps instead of per chunk.
+                    long since = Environment.TickCount64 - _lastPaintTick;
+                    if (since >= RedrawMinIntervalMs) InvalidateRect(hwnd, IntPtr.Zero, false);
+                    else if (!_redrawTimerArmed)
+                    {
+                        _redrawTimerArmed = true;
+                        SetTimer(hwnd, (IntPtr)RedrawTimer, (uint)Math.Max(1, RedrawMinIntervalMs - (int)since), IntPtr.Zero);
+                    }
+                    // Screen reader active: (re)arm the announce debounce — speaks once output settles.
+                    if (Uia.ClientsListening) SetTimer(hwnd, (IntPtr)UiaAnnounceTimer, UiaAnnounceQuietMs, IntPtr.Zero);
+                    return IntPtr.Zero;
                 }
-                // Screen reader active: (re)arm the announce debounce — speaks once output settles.
-                if (Uia.ClientsListening) SetTimer(hwnd, (IntPtr)UiaAnnounceTimer, UiaAnnounceQuietMs, IntPtr.Zero);
-                return IntPtr.Zero;
-            }
 
             case WM_APP_ACTION:
                 while (_uiActions.TryDequeue(out var act))

@@ -240,12 +240,26 @@ internal static class Keymap
         if (vk >= 0x70 && vk <= 0x7B) return "f" + (vk - 0x70 + 1);
         return vk switch
         {
-            VK_TAB => "tab", VK_RETURN => "enter", VK_ESCAPE => "escape", VK_SPACE => "space",
-            VK_UP => "up", VK_DOWN => "down", VK_LEFT => "left", VK_RIGHT => "right",
+            VK_TAB => "tab",
+            VK_RETURN => "enter",
+            VK_ESCAPE => "escape",
+            VK_SPACE => "space",
+            VK_UP => "up",
+            VK_DOWN => "down",
+            VK_LEFT => "left",
+            VK_RIGHT => "right",
             // OEM punctuation VKs (US layout names)
-            0xBA => "semicolon", 0xBB => "equals", 0xBC => "comma", 0xBD => "minus",
-            0xBE => "period", 0xBF => "slash", 0xC0 => "backtick",
-            0xDB => "lbracket", 0xDC => "backslash", 0xDD => "rbracket", 0xDE => "quote",
+            0xBA => "semicolon",
+            0xBB => "equals",
+            0xBC => "comma",
+            0xBD => "minus",
+            0xBE => "period",
+            0xBF => "slash",
+            0xC0 => "backtick",
+            0xDB => "lbracket",
+            0xDC => "backslash",
+            0xDD => "rbracket",
+            0xDE => "quote",
             _ => null,
         };
     }

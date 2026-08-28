@@ -205,15 +205,15 @@ internal partial class Program
                 script = "oh-my-posh init pwsh --config '" + omp.Replace("'", "''") + "' | Invoke-Expression\n" + wrap;
                 break;
             case "starship":
-            {
-                string? cfgPath = Agwinterm.Pty.StarshipPresets.ConfigFor(_config.StarshipTheme, AppDir);
-                // UTF-8 both ways: console CP for native writes + the .NET encodings Windows
-                // PowerShell 5.1 uses to decode captured native output (starship's init captures).
-                script = "chcp 65001 >$null; $OutputEncoding=[Console]::InputEncoding=[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"
-                       + (cfgPath is not null ? "$env:STARSHIP_CONFIG='" + cfgPath.Replace("'", "''") + "'\n" : "")
-                       + "Invoke-Expression (&starship init powershell)\n" + wrap;
-                break;
-            }
+                {
+                    string? cfgPath = Agwinterm.Pty.StarshipPresets.ConfigFor(_config.StarshipTheme, AppDir);
+                    // UTF-8 both ways: console CP for native writes + the .NET encodings Windows
+                    // PowerShell 5.1 uses to decode captured native output (starship's init captures).
+                    script = "chcp 65001 >$null; $OutputEncoding=[Console]::InputEncoding=[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"
+                           + (cfgPath is not null ? "$env:STARSHIP_CONFIG='" + cfgPath.Replace("'", "''") + "'\n" : "")
+                           + "Invoke-Expression (&starship init powershell)\n" + wrap;
+                    break;
+                }
         }
         string enc = System.Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
         return new[] { "-NoLogo", "-NoExit", "-EncodedCommand", enc };

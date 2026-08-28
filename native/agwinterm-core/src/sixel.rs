@@ -28,8 +28,8 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
 
     // The VT-241 default 16-color palette; apps usually redefine what they use.
     const DEFAULTS: [u32; 16] = [
-        0x000000, 0x3333CC, 0xCC2121, 0x33CC33, 0xCC33CC, 0x33CCCC, 0xCCCC33, 0x878787,
-        0x424242, 0x545499, 0x994242, 0x549954, 0x995499, 0x549999, 0x999954, 0xCCCCCC,
+        0x000000, 0x3333CC, 0xCC2121, 0x33CC33, 0xCC33CC, 0x33CCCC, 0xCCCC33, 0x878787, 0x424242,
+        0x545499, 0x994242, 0x549954, 0x995499, 0x549999, 0x999954, 0xCCCCCC,
     ];
     let mut palette = [(0u8, 0u8, 0u8); 256];
     for (p, slot) in palette.iter_mut().enumerate() {
@@ -45,8 +45,11 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
 
     // Grow-as-needed canvas (clamped). false = "would exceed even the clamp at this
     // position" — the caller stops parsing, like the C# catch.
-    let mut ensure_size = |need_w: usize, need_h: usize,
-                           rgba: &mut Vec<u8>, canvas_w: &mut usize, canvas_h: &mut usize| {
+    let ensure_size = |need_w: usize,
+                       need_h: usize,
+                       rgba: &mut Vec<u8>,
+                       canvas_w: &mut usize,
+                       canvas_h: &mut usize| {
         let need_w = need_w.min(MAX_DIM);
         let need_h = need_h.min(MAX_DIM);
         if need_w <= *canvas_w && need_h <= *canvas_h {
@@ -106,8 +109,12 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
                         rgba[o + 1] = g;
                         rgba[o + 2] = bl;
                         rgba[o + 3] = 255;
-                        if px + 1 > width { width = px + 1; }
-                        if py + 1 > height { height = py + 1; }
+                        if px + 1 > width {
+                            width = px + 1;
+                        }
+                        if py + 1 > height {
+                            height = py + 1;
+                        }
                     }
                 }
                 x += 1;
@@ -155,7 +162,13 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
             skip(&mut i, b';');
             let pv = read_int(&mut i);
             if ph > 0 && pv > 0 {
-                ensure_size(ph as usize, pv as usize, &mut rgba, &mut canvas_w, &mut canvas_h);
+                ensure_size(
+                    ph as usize,
+                    pv as usize,
+                    &mut rgba,
+                    &mut canvas_w,
+                    &mut canvas_h,
+                );
             }
         } else if b == b'!' {
             i += 1;
@@ -195,18 +208,26 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
         out[row * width * 4..(row + 1) * width * 4]
             .copy_from_slice(&rgba[row * canvas_w * 4..row * canvas_w * 4 + width * 4]);
     }
-    Some(Decoded { width, height, rgba: out })
+    Some(Decoded {
+        width,
+        height,
+        rgba: out,
+    })
 }
 
 fn hls_to_rgb(h: i32, l: i32, s: i32) -> (u8, u8, u8) {
     let ll = l as f64 / 100.0;
     let ss = s as f64 / 100.0;
-    let hh = (((h % 360) + 360) % 360) as f64 / 360.0;
+    let hh = h.rem_euclid(360) as f64 / 360.0;
     if ss == 0.0 {
         let v = (ll * 255.0) as u8;
         return (v, v, v);
     }
-    let q = if ll < 0.5 { ll * (1.0 + ss) } else { ll + ss - ll * ss };
+    let q = if ll < 0.5 {
+        ll * (1.0 + ss)
+    } else {
+        ll + ss - ll * ss
+    };
     let p = 2.0 * ll - q;
     let r = hue(p, q, hh + 1.0 / 3.0);
     let g = hue(p, q, hh);
@@ -214,11 +235,21 @@ fn hls_to_rgb(h: i32, l: i32, s: i32) -> (u8, u8, u8) {
     return ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
 
     fn hue(p: f64, q: f64, mut t: f64) -> f64 {
-        if t < 0.0 { t += 1.0; }
-        if t > 1.0 { t -= 1.0; }
-        if t < 1.0 / 6.0 { return p + (q - p) * 6.0 * t; }
-        if t < 1.0 / 2.0 { return q; }
-        if t < 2.0 / 3.0 { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            return p + (q - p) * 6.0 * t;
+        }
+        if t < 1.0 / 2.0 {
+            return q;
+        }
+        if t < 2.0 / 3.0 {
+            return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+        }
         p
     }
 }
@@ -244,7 +275,7 @@ mod tests {
 
     #[test]
     fn not_sixel() {
-        assert!(decode(b"$qwhatever-with-no-pixels").is_none() || true); // 'q' present but no pixels → None
+        assert!(decode(b"$q????").is_none()); // 'q' present but every sixel has zero bits
         assert!(decode(b"no-introducer-at-all!").is_none());
         assert!(decode(b"").is_none());
     }

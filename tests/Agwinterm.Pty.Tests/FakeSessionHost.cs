@@ -10,7 +10,7 @@ internal sealed class FakeSessionHost : ISessionHost
 {
     internal sealed class Sess
     {
-        public string Id = "", Name = "";
+        public string Id = "", Name = "", PaneId = "";
         public AgentStatus Status = AgentStatus.Idle;
         public bool Flagged, Overlay, ReadOnly;
         public string? AgentResume;
@@ -22,7 +22,7 @@ internal sealed class FakeSessionHost : ISessionHost
     internal readonly List<Ws> Workspaces = new();
     internal Ws ActiveWs;
     internal Sess? ActiveSess;
-    internal bool SidebarVisible = true, Fullscreen, Maximized, QuickVisible, Broadcast;
+    internal bool SidebarVisible = true, QuickVisible, Broadcast;
     internal readonly Dictionary<string, string> Config = new();
     private readonly TerminalSession _session = new(80, 24);
     private int _idSeq;
@@ -30,7 +30,7 @@ internal sealed class FakeSessionHost : ISessionHost
     public FakeSessionHost()
     {
         var w = new Ws { Id = "w1", Name = "workspace 1" };
-        var s = new Sess { Id = "s1", Name = "session 1" };
+        var s = new Sess { Id = "s1", Name = "session 1", PaneId = "p-s1" };
         w.Sessions.Add(s);
         Workspaces.Add(w);
         ActiveWs = w; ActiveSess = s;
@@ -38,7 +38,8 @@ internal sealed class FakeSessionHost : ISessionHost
 
     private Sess? Find(string? t) =>
         t is null or "active" ? ActiveSess
-        : Workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Id == t || s.Id.StartsWith(t));
+        : Workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s =>
+            s.Id == t || s.Id.StartsWith(t) || s.PaneId == t || s.PaneId.StartsWith(t));
     private Ws? FindWs(string? t) =>
         t is null or "active" ? ActiveWs
         : Workspaces.FirstOrDefault(w => w.Id == t || w.Id.StartsWith(t) || string.Equals(w.Name, t, StringComparison.OrdinalIgnoreCase));
@@ -51,21 +52,28 @@ internal sealed class FakeSessionHost : ISessionHost
             s.Overlay, s.Notifications, s.Flagged, false, s.FocusedPane, s.PaneCount, false, s.OverlaySize, s.Ratios)).ToList())).ToList();
 
     public WindowStateSnapshot WindowState() =>
-        new(SidebarVisible, Fullscreen, Maximized, QuickVisible, ActiveWs.Name, ActiveSess?.Name);
+        new(SidebarVisible, Fullscreen: false, Maximized: false, QuickVisible, ActiveWs.Name, ActiveSess?.Name);
 
     // Stands in for the real host's live measurement: the test moves these the way a font-size change
     // or a resize would, and asserts session.metrics reports the NEW numbers rather than a snapshot.
     internal int CellW = 9, CellH = 19, PaneW = 1188, PaneH = 703;
     internal bool Measurable = true;
-    public PaneMetricsSnapshot? PaneMetrics(string? target) =>
-        !Measurable || Find(target) is null ? null
-        : new PaneMetricsSnapshot(_session.Cols, _session.Rows, CellW, CellH, PaneW, PaneH);
+    internal readonly Dictionary<string, PaneMetricsSnapshot> MetricsBySession = new();
+    public PaneMetricsSnapshot? PaneMetrics(string? target)
+    {
+        var session = Find(target);
+        if (!Measurable || session is null) return null;
+        return MetricsBySession.TryGetValue(session.Id, out var metrics)
+            ? metrics
+            : new PaneMetricsSnapshot(_session.Cols, _session.Rows, CellW, CellH, PaneW, PaneH);
+    }
 
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
     {
         var w = FindWs(workspace) ?? ActiveWs;
-        var s = new Sess { Id = "s" + (++_idSeq + 100), Name = string.IsNullOrEmpty(name) ? $"session {w.Sessions.Count + 1}" : name };
+        string id = "s" + (++_idSeq + 100);
+        var s = new Sess { Id = id, Name = string.IsNullOrEmpty(name) ? $"session {w.Sessions.Count + 1}" : name, PaneId = "p-" + id };
         w.Sessions.Add(s); ActiveSess = s; ActiveWs = w;
         return s.Id;
     }
@@ -74,7 +82,8 @@ internal sealed class FakeSessionHost : ISessionHost
     {
         var src = Find(target) ?? ActiveSess;
         var w = src is null ? ActiveWs : Workspaces.First(x => x.Sessions.Contains(src));
-        var s = new Sess { Id = "s" + (++_idSeq + 100), Name = $"session {w.Sessions.Count + 1}" };
+        string id = "s" + (++_idSeq + 100);
+        var s = new Sess { Id = id, Name = $"session {w.Sessions.Count + 1}", PaneId = "p-" + id };
         w.Sessions.Add(s); ActiveSess = s; ActiveWs = w;
         return s.Id;
     }

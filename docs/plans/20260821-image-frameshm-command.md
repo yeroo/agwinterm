@@ -378,12 +378,13 @@ are simply not published.
       `ControlClient::pane_metrics`):
       request `{"cmd":"session.metrics","target":"<pane id>"}`, reply via `OkRaw` — the way `tree`
       and `window.state` answer, not `Ok` —
-      `{"ok":true,"result":{"cols":132,"rows":37,"cellWidth":9,"cellHeight":19,"widthPx":1188,"heightPx":703}}`.
-      camelCase, matching `window.state`'s `sidebarVisible`. `cellWidth`/`cellHeight` are the live
-      values in device pixels and are the only two fields that matter; the consumer reads a reply
-      missing either, or with either zero, as "no metrics" rather than as an error, and reads
-      `unknown command 'session.metrics'` as a capability gap it latches and stops asking about.
-      `cols`/`rows`/`widthPx`/`heightPx` are optional and default to zero.
+      `{"ok":true,"result":{"cols":132,"rows":37,"cellWidth":9,"cellHeight":19,"widthPx":1221,"heightPx":703}}`.
+      camelCase, matching `window.state`'s `sidebarVisible`. `widthPx`/`heightPx` are the exact grid
+      extent in device pixels and are authoritative for a sharp frame. `cellWidth`/`cellHeight` are
+      rounded compatibility hints: multiplying one rounded cell by the grid accumulates the
+      renderer's fractional advance and can still resample. A zero exact extent means "no metrics";
+      `unknown command 'session.metrics'` is a capability gap the consumer latches and stops asking
+      about.
       - ? implemented as a session-targeted `session.metrics` dispatch returning an `OkRaw` object.
         `ISessionHost.PaneMetrics` is the host seam; the Win32 host resolves an exact pane (including
         split-pane ids), marshals synchronously to the UI thread, and measures the target's current
@@ -391,6 +392,10 @@ are simply not published.
         `_cellW`/`_cellH`: terminal rendering and regridding now use per-pane
         `Metrics(pane.FontSize)`, so the verb reads those same live values and correctly follows
         per-pane font zoom instead of reporting only the base chrome font.
+      - ➕ **review correction:** the first implementation rounded one cell before publishing it,
+        while rendering deliberately keeps the exact DirectWrite advance. `PaneMetricsSnapshot`
+        now accumulates that fractional advance across the whole grid before rounding once into
+        `widthPx`/`heightPx`; tests pin a case where `cols * cellWidth` differs by 33 pixels.
 - [x] note that `Agwinterm.App/MainWindow.xaml.cs` is **dead code** - absent from `Agwinterm.slnx`.
       The live values are in `Agwinterm.Win32`. Do not implement against the dead project.
       - ? the control host and spec both state this explicitly; the implementation is only in

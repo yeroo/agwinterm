@@ -204,6 +204,9 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     public void SetImageData(int id, KittyFormat format, int width, int height, byte[] data)
     {
         _rust.SetImageData(id, (int)format, width, height, data);
+        // SyncImages fetches native pixels only for ids not already cached. Direct image APIs reuse
+        // stable ids for successive frames, so refresh this entry from the bytes we already own.
+        _imageCache[id] = new KittyImage(id, format, width, height, data);
         SyncImages();
     }
     public void PlaceImage(int id, int row, int col, int cols, int rows,

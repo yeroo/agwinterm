@@ -7,8 +7,8 @@ namespace Agwinterm.Pty.Tests;
 /// <summary>
 /// `session.metrics` — the contract winterm-browser codes against (`pixel-core`'s
 /// `ControlClient::pane_metrics`). It is the only way anything outside the process can learn a pane's
-/// cell size, so the shape is pinned here field by field: a producer that guesses the cell size wrong
-/// still lands its clicks (canvas and pointer share the number) but ships a resampled, mis-sized page.
+/// grid size, so the shape is pinned here field by field: the exact extent prevents the rounded
+/// per-cell compatibility hint from accumulating into a resampled, mis-sized page.
 /// </summary>
 public class SessionMetricsTests
 {
@@ -96,14 +96,34 @@ public class SessionMetricsTests
     }
 
     [Fact]
+    public void FractionalCellMetricsKeepTheExactRenderedGridExtent()
+    {
+        var m = PaneMetricsSnapshot.FromDipGrid(
+            cols: 132, rows: 37, cellWidthDip: 7.4f, cellHeightDip: 15.2f, dpiScale: 1.25f);
+
+        Assert.Equal(9, m.CellWidth);
+        Assert.Equal(19, m.CellHeight);
+        Assert.Equal(1221, m.WidthPx);  // round(132 * 7.4 * 1.25), not 132 * round(7.4 * 1.25)
+        Assert.Equal(703, m.HeightPx);
+    }
+
+    [Fact]
     public void ATargetedPaneIsMeasuredRatherThanTheActiveOne()
     {
         var (server, host) = New();
         string second = host.NewSession("second", null, null);
-        host.CellW = 11; host.CellH = 22;
+        string secondPane = "p-" + second;
+        host.MetricsBySession[second] = new PaneMetricsSnapshot(40, 12, 11, 22, 440, 264);
+        Assert.True(host.SelectSession("s1"));
+        host.CellW = 9; host.CellH = 19; host.PaneW = 720; host.PaneH = 456;
 
-        var r = Metrics(server, second);
-        Assert.Equal(11, r.GetProperty("cellWidth").GetInt32());
+        foreach (string target in new[] { secondPane, secondPane[..^1] })
+        {
+            var r = Metrics(server, target);
+            Assert.Equal(11, r.GetProperty("cellWidth").GetInt32());
+            Assert.Equal(440, r.GetProperty("widthPx").GetInt32());
+            Assert.Equal(40, r.GetProperty("cols").GetInt32());
+        }
     }
 
     // A host with no UI to measure is not an error: the consumer treats a zero cell size as "no

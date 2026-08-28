@@ -54,7 +54,7 @@ pub extern "C" fn agwcore_color_from_index(palette_index: u8) -> u32 {
 #[derive(Clone, Copy)]
 pub struct FfiCell {
     pub rune: i32,
-    pub fg: u32,      // 0x00RRGGBB resolved colors
+    pub fg: u32, // 0x00RRGGBB resolved colors
     pub bg: u32,
     pub attrs: u32,
     pub width: u32,
@@ -70,7 +70,11 @@ fn pack_color(c: Color) -> u32 {
     ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32
 }
 fn unpack_color(v: u32) -> Color {
-    Color { r: (v >> 16) as u8, g: (v >> 8) as u8, b: v as u8 }
+    Color {
+        r: (v >> 16) as u8,
+        g: (v >> 8) as u8,
+        b: v as u8,
+    }
 }
 fn unpack_kind(v: u32) -> ColorSpecKind {
     match v {
@@ -106,8 +110,16 @@ impl From<FfiCell> for Cell {
             background: unpack_color(f.bg),
             attributes: f.attrs,
             width: f.width as u8,
-            fg_spec: ColorSpec { kind: unpack_kind(f.fg_kind), index: f.fg_index as u8, rgb: unpack_color(f.fg_rgb) },
-            bg_spec: ColorSpec { kind: unpack_kind(f.bg_kind), index: f.bg_index as u8, rgb: unpack_color(f.bg_rgb) },
+            fg_spec: ColorSpec {
+                kind: unpack_kind(f.fg_kind),
+                index: f.fg_index as u8,
+                rgb: unpack_color(f.fg_rgb),
+            },
+            bg_spec: ColorSpec {
+                kind: unpack_kind(f.bg_kind),
+                index: f.bg_index as u8,
+                rgb: unpack_color(f.bg_rgb),
+            },
         }
     }
 }
@@ -139,8 +151,15 @@ unsafe fn sb<'a>(p: *mut ScreenBuffer) -> Option<&'a mut ScreenBuffer> {
 /// # Safety
 /// `p` from `agwcore_screen_new`; `out` a valid FfiCell pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_screen_get(p: *mut ScreenBuffer, row: u32, col: u32, out: *mut FfiCell) -> bool {
-    let Some(s) = (unsafe { sb(p) }) else { return false };
+pub unsafe extern "C" fn agwcore_screen_get(
+    p: *mut ScreenBuffer,
+    row: u32,
+    col: u32,
+    out: *mut FfiCell,
+) -> bool {
+    let Some(s) = (unsafe { sb(p) }) else {
+        return false;
+    };
     if out.is_null() || row as usize >= s.rows() || col as usize >= s.cols() {
         return false;
     }
@@ -151,8 +170,15 @@ pub unsafe extern "C" fn agwcore_screen_get(p: *mut ScreenBuffer, row: u32, col:
 /// # Safety
 /// `p` from `agwcore_screen_new`; `cell` a valid FfiCell pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_screen_set(p: *mut ScreenBuffer, row: u32, col: u32, cell: *const FfiCell) -> bool {
-    let Some(s) = (unsafe { sb(p) }) else { return false };
+pub unsafe extern "C" fn agwcore_screen_set(
+    p: *mut ScreenBuffer,
+    row: u32,
+    col: u32,
+    cell: *const FfiCell,
+) -> bool {
+    let Some(s) = (unsafe { sb(p) }) else {
+        return false;
+    };
     if cell.is_null() || row as usize >= s.rows() || col as usize >= s.cols() {
         return false;
     }
@@ -164,7 +190,9 @@ pub unsafe extern "C" fn agwcore_screen_set(p: *mut ScreenBuffer, row: u32, col:
 /// `p` from `agwcore_screen_new`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agwcore_screen_clear(p: *mut ScreenBuffer) -> bool {
-    let Some(s) = (unsafe { sb(p) }) else { return false };
+    let Some(s) = (unsafe { sb(p) }) else {
+        return false;
+    };
     s.clear();
     true
 }
@@ -172,8 +200,15 @@ pub unsafe extern "C" fn agwcore_screen_clear(p: *mut ScreenBuffer) -> bool {
 /// # Safety
 /// `p` from `agwcore_screen_new`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_screen_move_rows(p: *mut ScreenBuffer, src: u32, dst: u32, count: u32) -> bool {
-    let Some(s) = (unsafe { sb(p) }) else { return false };
+pub unsafe extern "C" fn agwcore_screen_move_rows(
+    p: *mut ScreenBuffer,
+    src: u32,
+    dst: u32,
+    count: u32,
+) -> bool {
+    let Some(s) = (unsafe { sb(p) }) else {
+        return false;
+    };
     let (src, dst, count) = (src as usize, dst as usize, count as usize);
     if count == 0 {
         return true;
@@ -188,8 +223,14 @@ pub unsafe extern "C" fn agwcore_screen_move_rows(p: *mut ScreenBuffer, src: u32
 /// # Safety
 /// `p` from `agwcore_screen_new`; `cell` a valid FfiCell pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_screen_fill_row(p: *mut ScreenBuffer, row: u32, cell: *const FfiCell) -> bool {
-    let Some(s) = (unsafe { sb(p) }) else { return false };
+pub unsafe extern "C" fn agwcore_screen_fill_row(
+    p: *mut ScreenBuffer,
+    row: u32,
+    cell: *const FfiCell,
+) -> bool {
+    let Some(s) = (unsafe { sb(p) }) else {
+        return false;
+    };
     if cell.is_null() || row as usize >= s.rows() {
         return false;
     }
@@ -201,7 +242,9 @@ pub unsafe extern "C" fn agwcore_screen_fill_row(p: *mut ScreenBuffer, row: u32,
 /// `p` from `agwcore_screen_new`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agwcore_screen_resize(p: *mut ScreenBuffer, cols: u32, rows: u32) -> bool {
-    let Some(s) = (unsafe { sb(p) }) else { return false };
+    let Some(s) = (unsafe { sb(p) }) else {
+        return false;
+    };
     if cols == 0 || rows == 0 || cols > 10_000 || rows > 10_000 {
         return false;
     }
@@ -269,7 +312,11 @@ impl vtparser::Performer for RecordingPerformer {
 /// # Safety
 /// `bytes` must point to `len` readable bytes; `out_len` must be writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_vtparse_events(bytes: *const u8, len: u32, out_len: *mut u32) -> *mut u8 {
+pub unsafe extern "C" fn agwcore_vtparse_events(
+    bytes: *const u8,
+    len: u32,
+    out_len: *mut u32,
+) -> *mut u8 {
     if bytes.is_null() || out_len.is_null() {
         return core::ptr::null_mut();
     }
@@ -309,7 +356,9 @@ pub unsafe extern "C" fn agwcore_emu_free(p: *mut Terminal) {
 /// `p` from `agwcore_emu_new`; `bytes` points to `len` readable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agwcore_emu_feed(p: *mut Terminal, bytes: *const u8, len: u32) -> bool {
-    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return false;
+    };
     if bytes.is_null() {
         return false;
     }
@@ -321,7 +370,9 @@ pub unsafe extern "C" fn agwcore_emu_feed(p: *mut Terminal, bytes: *const u8, le
 /// `p` from `agwcore_emu_new`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agwcore_emu_resize(p: *mut Terminal, cols: u32, rows: u32) -> bool {
-    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return false;
+    };
     if cols == 0 || rows == 0 || cols > 10_000 || rows > 10_000 {
         return false;
     }
@@ -335,9 +386,17 @@ fn dump_cell(s: &mut String, c: Cell) {
     let _ = write!(
         s,
         "{:X}.{:06X}.{:06X}.{:X}.{}.{}{:02X}.{:06X}.{}{:02X}.{:06X}",
-        c.rune, pc(c.foreground), pc(c.background), c.attributes, c.width,
-        c.fg_spec.kind as u8, c.fg_spec.index, pc(c.fg_spec.rgb),
-        c.bg_spec.kind as u8, c.bg_spec.index, pc(c.bg_spec.rgb)
+        c.rune,
+        pc(c.foreground),
+        pc(c.background),
+        c.attributes,
+        c.width,
+        c.fg_spec.kind as u8,
+        c.fg_spec.index,
+        pc(c.fg_spec.rgb),
+        c.bg_spec.kind as u8,
+        c.bg_spec.index,
+        pc(c.bg_spec.rgb)
     );
 }
 
@@ -349,17 +408,27 @@ fn dump_cell(s: &mut String, c: Cell) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut u32) -> *mut u8 {
     use core::fmt::Write;
-    let Some(t) = (unsafe { p.as_mut() }) else { return core::ptr::null_mut() };
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return core::ptr::null_mut();
+    };
     if out_len.is_null() {
         return core::ptr::null_mut();
     }
     let e = &t.emu;
     let mut s = String::new();
     let (mc, md, mm, ms, mp) = e.mouse_flags();
-    let _ = writeln!(s, "cursor:{},{},{}", e.cursor_row, e.cursor_col, e.cursor_visible as u8);
+    let _ = writeln!(
+        s,
+        "cursor:{},{},{}",
+        e.cursor_row, e.cursor_col, e.cursor_visible as u8
+    );
     let _ = writeln!(s, "region:{},{}", e.scroll_top(), e.scroll_bottom());
     let _ = writeln!(s, "alt:{}", e.is_alt_screen() as u8);
-    let _ = writeln!(s, "mouse:{}{}{}{}{}", mc as u8, md as u8, mm as u8, ms as u8, mp as u8);
+    let _ = writeln!(
+        s,
+        "mouse:{}{}{}{}{}",
+        mc as u8, md as u8, mm as u8, ms as u8, mp as u8
+    );
     let _ = writeln!(s, "paste:{}", e.bracketed_paste as u8);
     let _ = writeln!(s, "focus:{}", e.focus_reporting as u8);
     let _ = writeln!(s, "sync:{}", e.synchronized_output as u8);
@@ -372,8 +441,12 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
     let _ = writeln!(s, "gen:{}", e.scroll_generation);
     for m in e.marks() {
         let _ = writeln!(
-            s, "mark:{},{},{},{},{}",
-            m.prompt_line, m.command_line, m.output_line, m.end_line,
+            s,
+            "mark:{},{},{},{},{}",
+            m.prompt_line,
+            m.command_line,
+            m.output_line,
+            m.end_line,
             m.exit_code.map_or("none".to_string(), |v| v.to_string())
         );
     }
@@ -384,11 +457,21 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
             hash ^= b as u64;
             hash = hash.wrapping_mul(0x100000001b3);
         }
-        let _ = writeln!(s, "img:{},{},{},{},{},{:016x}", id, img.format, img.width, img.height, img.data.len(), hash);
+        let _ = writeln!(
+            s,
+            "img:{},{},{},{},{},{:016x}",
+            id,
+            img.format,
+            img.width,
+            img.height,
+            img.data.len(),
+            hash
+        );
     }
     for p in e.placements() {
         let _ = writeln!(
-            s, "pl:{},{},{},{},{},{},{},{},{}",
+            s,
+            "pl:{},{},{},{},{},{},{},{},{}",
             p.image_id, p.row, p.col, p.cols, p.rows, p.src_x, p.src_y, p.src_w, p.src_h
         );
     }
@@ -396,7 +479,9 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
     for h in 0..e.history_count() {
         let _ = write!(s, "h{h}:");
         for c in 0..cols {
-            if c > 0 { s.push(' '); }
+            if c > 0 {
+                s.push(' ');
+            }
             dump_cell(&mut s, e.get_history_cell(h, c));
         }
         s.push('\n');
@@ -404,7 +489,9 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
     for r in 0..rows {
         let _ = write!(s, "g{r}:");
         for c in 0..cols {
-            if c > 0 { s.push(' '); }
+            if c > 0 {
+                s.push(' ');
+            }
             dump_cell(&mut s, e.screen().get(r, c));
         }
         s.push('\n');
@@ -429,8 +516,13 @@ pub unsafe extern "C" fn agwcore_emu_state_dump(p: *mut Terminal, out_len: *mut 
 /// # Safety
 /// `p` from `agwcore_emu_new`; `out_len` writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_emu_take_host_actions(p: *mut Terminal, out_len: *mut u32) -> *mut u8 {
-    let Some(t) = (unsafe { p.as_mut() }) else { return core::ptr::null_mut() };
+pub unsafe extern "C" fn agwcore_emu_take_host_actions(
+    p: *mut Terminal,
+    out_len: *mut u32,
+) -> *mut u8 {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return core::ptr::null_mut();
+    };
     if out_len.is_null() {
         return core::ptr::null_mut();
     }
@@ -489,7 +581,7 @@ pub struct FfiEmuInfo {
     pub cols: u32,
     pub rows: u32,
     pub cursor_row: u32,
-    pub cursor_col: u32,      // may equal cols (post-print overflow)
+    pub cursor_col: u32, // may equal cols (post-print overflow)
     pub cursor_visible: u32,
     pub is_alt_screen: u32,
     pub history_count: u32,
@@ -515,7 +607,9 @@ pub struct FfiEmuInfo {
 /// `p` from `agwcore_emu_new`; `out` a valid FfiEmuInfo pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agwcore_emu_info(p: *mut Terminal, out: *mut FfiEmuInfo) -> bool {
-    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return false;
+    };
     if out.is_null() {
         return false;
     }
@@ -567,7 +661,9 @@ pub struct FfiMark {
 /// `p` from `agwcore_emu_new`; `out` points to `cap` writable FfiMarks.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agwcore_emu_marks(p: *mut Terminal, out: *mut FfiMark, cap: u32) -> u32 {
-    let Some(t) = (unsafe { p.as_mut() }) else { return 0 };
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return 0;
+    };
     if out.is_null() {
         return 0;
     }
@@ -611,8 +707,14 @@ pub unsafe extern "C" fn agwcore_emu_set_scrollback(p: *mut Terminal, max: u32) 
 /// # Safety
 /// `p` from `agwcore_emu_new`; `text` points to `len` readable bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_emu_seed_scrollback(p: *mut Terminal, text: *const u8, len: u32) -> bool {
-    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+pub unsafe extern "C" fn agwcore_emu_seed_scrollback(
+    p: *mut Terminal,
+    text: *const u8,
+    len: u32,
+) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return false;
+    };
     if text.is_null() {
         return len == 0;
     }
@@ -661,8 +763,14 @@ pub unsafe extern "C" fn agwcore_emu_placement_count(p: *mut Terminal) -> u32 {
 /// # Safety
 /// `p` from `agwcore_emu_new`; `out` points to `cap` writable FfiPlacements.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_emu_copy_placements(p: *mut Terminal, out: *mut FfiPlacement, cap: u32) -> u32 {
-    let Some(t) = (unsafe { p.as_mut() }) else { return 0 };
+pub unsafe extern "C" fn agwcore_emu_copy_placements(
+    p: *mut Terminal,
+    out: *mut FfiPlacement,
+    cap: u32,
+) -> u32 {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return 0;
+    };
     if out.is_null() {
         return 0;
     }
@@ -671,8 +779,15 @@ pub unsafe extern "C" fn agwcore_emu_copy_placements(p: *mut Terminal, out: *mut
     let out = unsafe { core::slice::from_raw_parts_mut(out, n) };
     for (i, p) in pl.iter().take(n).enumerate() {
         out[i] = FfiPlacement {
-            image_id: p.image_id, row: p.row, col: p.col, cols: p.cols, rows: p.rows,
-            src_x: p.src_x, src_y: p.src_y, src_w: p.src_w, src_h: p.src_h,
+            image_id: p.image_id,
+            row: p.row,
+            col: p.col,
+            cols: p.cols,
+            rows: p.rows,
+            src_x: p.src_x,
+            src_y: p.src_y,
+            src_w: p.src_w,
+            src_h: p.src_h,
         };
     }
     n as u32
@@ -684,8 +799,14 @@ pub unsafe extern "C" fn agwcore_emu_copy_placements(p: *mut Terminal, out: *mut
 /// # Safety
 /// `p` from `agwcore_emu_new`; `out` points to `cap` writable FfiImageMeta.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_emu_image_metas(p: *mut Terminal, out: *mut FfiImageMeta, cap: u32) -> u32 {
-    let Some(t) = (unsafe { p.as_mut() }) else { return 0 };
+pub unsafe extern "C" fn agwcore_emu_image_metas(
+    p: *mut Terminal,
+    out: *mut FfiImageMeta,
+    cap: u32,
+) -> u32 {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return 0;
+    };
     if out.is_null() {
         return 0;
     }
@@ -693,7 +814,13 @@ pub unsafe extern "C" fn agwcore_emu_image_metas(p: *mut Terminal, out: *mut Ffi
     let n = imgs.len().min(cap as usize);
     let out = unsafe { core::slice::from_raw_parts_mut(out, n) };
     for (i, (id, img)) in imgs.iter().take(n).enumerate() {
-        out[i] = FfiImageMeta { id: *id, format: img.format, width: img.width, height: img.height, data_len: img.data.len() as u32 };
+        out[i] = FfiImageMeta {
+            id: *id,
+            format: img.format,
+            width: img.width,
+            height: img.height,
+            data_len: img.data.len() as u32,
+        };
     }
     n as u32
 }
@@ -702,9 +829,18 @@ pub unsafe extern "C" fn agwcore_emu_image_metas(p: *mut Terminal, out: *mut Ffi
 /// # Safety
 /// `p` from `agwcore_emu_new`; `out` points to `cap` writable bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_emu_copy_image_data(p: *mut Terminal, id: i32, out: *mut u8, cap: u32) -> u32 {
-    let Some(t) = (unsafe { p.as_mut() }) else { return 0 };
-    let Some(img) = t.emu.images().get(&id) else { return 0 };
+pub unsafe extern "C" fn agwcore_emu_copy_image_data(
+    p: *mut Terminal,
+    id: i32,
+    out: *mut u8,
+    cap: u32,
+) -> u32 {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return 0;
+    };
+    let Some(img) = t.emu.images().get(&id) else {
+        return 0;
+    };
     if out.is_null() || (cap as usize) < img.data.len() {
         return 0;
     }
@@ -712,46 +848,88 @@ pub unsafe extern "C" fn agwcore_emu_copy_image_data(p: *mut Terminal, id: i32, 
     img.data.len() as u32
 }
 
-/// # Safety: `p` from `agwcore_emu_new`.
+/// # Safety
+/// `p` must have been returned by `agwcore_emu_new` and remain valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agwcore_emu_has_image(p: *mut Terminal, id: i32) -> bool {
     (unsafe { p.as_mut() }).is_some_and(|t| t.emu.has_image(id))
 }
 
-/// # Safety: `p` from `agwcore_emu_new`.
+/// # Safety
+/// `p` must have been returned by `agwcore_emu_new` and remain valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agwcore_emu_clear_placements(p: *mut Terminal) {
-    if let Some(t) = (unsafe { p.as_mut() }) {
+    if let Some(t) = unsafe { p.as_mut() } {
         t.emu.clear_placements();
     }
 }
 
-/// # Safety: `p` from `agwcore_emu_new`; `data` points to `len` readable bytes.
+/// # Safety
+/// `p` must have been returned by `agwcore_emu_new` and remain valid. When non-null,
+/// `data` must point to at least `len` readable bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_emu_set_image_data(p: *mut Terminal, id: i32, format: i32, width: i32, height: i32, data: *const u8, len: u32) -> bool {
-    let Some(t) = (unsafe { p.as_mut() }) else { return false };
-    let bytes = if data.is_null() { Vec::new() } else { unsafe { core::slice::from_raw_parts(data, len as usize) }.to_vec() };
+pub unsafe extern "C" fn agwcore_emu_set_image_data(
+    p: *mut Terminal,
+    id: i32,
+    format: i32,
+    width: i32,
+    height: i32,
+    data: *const u8,
+    len: u32,
+) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return false;
+    };
+    let bytes = if data.is_null() {
+        Vec::new()
+    } else {
+        unsafe { core::slice::from_raw_parts(data, len as usize) }.to_vec()
+    };
     t.emu.set_image_data(id, format, width, height, bytes);
     true
 }
 
-/// # Safety: `p` from `agwcore_emu_new`.
+/// # Safety
+/// `p` must have been returned by `agwcore_emu_new` and remain valid.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn agwcore_emu_place_image(p: *mut Terminal, id: i32, row: i64, col: i64, cols: i32, rows: i32, src_x: i32, src_y: i32, src_w: i32, src_h: i32) -> bool {
-    let Some(t) = (unsafe { p.as_mut() }) else { return false };
-    t.emu.place_image(id, row, col, cols, rows, src_x, src_y, src_w, src_h);
+pub unsafe extern "C" fn agwcore_emu_place_image(
+    p: *mut Terminal,
+    id: i32,
+    row: i64,
+    col: i64,
+    cols: i32,
+    rows: i32,
+    src_x: i32,
+    src_y: i32,
+    src_w: i32,
+    src_h: i32,
+) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return false;
+    };
+    t.emu
+        .place_image(id, row, col, cols, rows, src_x, src_y, src_w, src_h);
     true
 }
 
-/// # Safety: `p` from `agwcore_emu_new`; `data` points to `len` readable bytes.
+/// # Safety
+/// `p` must have been returned by `agwcore_emu_new` and remain valid. `data` must
+/// point to at least `len` readable bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_emu_place_sixel(p: *mut Terminal, data: *const u8, len: u32) -> bool {
-    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+pub unsafe extern "C" fn agwcore_emu_place_sixel(
+    p: *mut Terminal,
+    data: *const u8,
+    len: u32,
+) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return false;
+    };
     if data.is_null() {
         return false;
     }
-    t.emu.place_sixel_public(unsafe { core::slice::from_raw_parts(data, len as usize) })
+    t.emu
+        .place_sixel_public(unsafe { core::slice::from_raw_parts(data, len as usize) })
 }
 
 /// Copy the whole visible grid, row-major, into `out` (must hold cols*rows cells).
@@ -760,8 +938,14 @@ pub unsafe extern "C" fn agwcore_emu_place_sixel(p: *mut Terminal, data: *const 
 /// # Safety
 /// `p` from `agwcore_emu_new`; `out` points to `cap` writable FfiCells.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_emu_copy_grid(p: *mut Terminal, out: *mut FfiCell, cap: u32) -> bool {
-    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+pub unsafe extern "C" fn agwcore_emu_copy_grid(
+    p: *mut Terminal,
+    out: *mut FfiCell,
+    cap: u32,
+) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return false;
+    };
     let e = &t.emu;
     let (cols, rows) = (e.screen().cols(), e.screen().rows());
     if out.is_null() || (cap as usize) < cols * rows {
@@ -780,16 +964,23 @@ pub unsafe extern "C" fn agwcore_emu_copy_grid(p: *mut Terminal, out: *mut FfiCe
 /// # Safety
 /// `p` from `agwcore_emu_new`; `out` points to `cap` writable FfiCells.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_emu_copy_history_row(p: *mut Terminal, row: u32, out: *mut FfiCell, cap: u32) -> bool {
-    let Some(t) = (unsafe { p.as_mut() }) else { return false };
+pub unsafe extern "C" fn agwcore_emu_copy_history_row(
+    p: *mut Terminal,
+    row: u32,
+    out: *mut FfiCell,
+    cap: u32,
+) -> bool {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return false;
+    };
     let e = &t.emu;
     let cols = e.screen().cols();
     if out.is_null() || (cap as usize) < cols || (row as usize) >= e.history_count() {
         return false;
     }
     let out = unsafe { core::slice::from_raw_parts_mut(out, cols) };
-    for c in 0..cols {
-        out[c] = e.get_history_cell(row as usize, c).into();
+    for (col, cell) in out.iter_mut().enumerate() {
+        *cell = e.get_history_cell(row as usize, col).into();
     }
     true
 }
@@ -798,8 +989,14 @@ pub unsafe extern "C" fn agwcore_emu_copy_history_row(p: *mut Terminal, row: u32
 /// # Safety
 /// `p` from `agwcore_emu_new`; `out_len` writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn agwcore_emu_get_text(p: *mut Terminal, which: u32, out_len: *mut u32) -> *mut u8 {
-    let Some(t) = (unsafe { p.as_mut() }) else { return core::ptr::null_mut() };
+pub unsafe extern "C" fn agwcore_emu_get_text(
+    p: *mut Terminal,
+    which: u32,
+    out_len: *mut u32,
+) -> *mut u8 {
+    let Some(t) = (unsafe { p.as_mut() }) else {
+        return core::ptr::null_mut();
+    };
     if out_len.is_null() {
         return core::ptr::null_mut();
     }
@@ -822,6 +1019,6 @@ pub unsafe extern "C" fn agwcore_emu_get_text(p: *mut Terminal, which: u32, out_
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agwcore_free_buf(ptr: *mut u8, len: u32) {
     if !ptr.is_null() {
-        drop(unsafe { Box::from_raw(core::slice::from_raw_parts_mut(ptr, len as usize)) });
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len as usize)) });
     }
 }

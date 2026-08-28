@@ -137,19 +137,19 @@ internal partial class Program
                             _rt.DrawBitmap(bmp, new Vortice.RawRectF(tx, ty, tx + iw, ty + ih), opacity, BitmapInterpolationMode.Linear, null);
                     break;
                 case "center":
-                {
-                    float cx = ox + (pw - iw) / 2f, cy = oy + (ph - ih) / 2f;
-                    _rt.DrawBitmap(bmp, new Vortice.RawRectF(cx, cy, cx + iw, cy + ih), opacity, BitmapInterpolationMode.Linear, null);
-                    break;
-                }
+                    {
+                        float cx = ox + (pw - iw) / 2f, cy = oy + (ph - ih) / 2f;
+                        _rt.DrawBitmap(bmp, new Vortice.RawRectF(cx, cy, cx + iw, cy + ih), opacity, BitmapInterpolationMode.Linear, null);
+                        break;
+                    }
                 default: // "fit" (letterbox) and "fill" (cover) — same math, min vs max scale; clip handles overflow.
-                {
-                    float scale = ses.BgMode == "fill" ? MathF.Max(pw / iw, ph / ih) : MathF.Min(pw / iw, ph / ih);
-                    float dw = iw * scale, dh = ih * scale;
-                    float dx = ox + (pw - dw) / 2f, dy = oy + (ph - dh) / 2f;
-                    _rt.DrawBitmap(bmp, new Vortice.RawRectF(dx, dy, dx + dw, dy + dh), opacity, BitmapInterpolationMode.Linear, null);
-                    break;
-                }
+                    {
+                        float scale = ses.BgMode == "fill" ? MathF.Max(pw / iw, ph / ih) : MathF.Min(pw / iw, ph / ih);
+                        float dw = iw * scale, dh = ih * scale;
+                        float dx = ox + (pw - dw) / 2f, dy = oy + (ph - dh) / 2f;
+                        _rt.DrawBitmap(bmp, new Vortice.RawRectF(dx, dy, dx + dw, dy + dh), opacity, BitmapInterpolationMode.Linear, null);
+                        break;
+                    }
             }
         }
         catch (Exception ex) { Log($"watermark draw FAILED {path}: {ex.Message}"); }

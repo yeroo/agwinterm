@@ -182,13 +182,13 @@ public class PtyHostTests : IDisposable
     }
 
     [Fact]
-    public void Shutdown_KillsSessionsAndCompletes()
+    public async Task Shutdown_KillsSessionsAndCompletes()
     {
         var server = new PtyHostServer(_appId + "-sd");
         using var client = PtyHostClient.Connect(_appId + "-sd");
         client.Create(Guid.NewGuid().ToString(), 80, 24, "cmd.exe", new[] { "/q" }, verbatim: true);
         client.Shutdown();
-        Assert.True(server.Completion.Wait(5000), "shutdown must complete the host");
+        await server.Completion.WaitAsync(TimeSpan.FromSeconds(5));
     }
 }
 

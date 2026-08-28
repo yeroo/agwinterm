@@ -58,4 +58,39 @@ public class MouseReportTests
         Assert.NotEqual(PixelReport(41, true), PixelReport(47, true));
         Assert.Equal(PixelReport(41, false), PixelReport(47, false));
     }
+
+    [Fact]
+    public void PointerMappingUsesDpiScaledPaneOriginsOnBothAxes()
+    {
+        var p = MouseReport.MapCoordinates(
+            dipX: 111, dipY: 72, deviceX: 167, deviceY: 108,
+            paneXDip: 100, paneYDip: 50, cellWidthDip: 8, cellHeightDip: 20,
+            dpiScale: 1.5f, columns: 10, rows: 4);
+
+        Assert.Equal(new MouseCoordinates(Column: 1, Row: 1, PixelX: 17, PixelY: 33), p);
+    }
+
+    [Fact]
+    public void PointerMappingClampsCellsAndPixelsToThePaneEdges()
+    {
+        var before = MouseReport.MapCoordinates(
+            0, 0, 0, 0, 100, 50, 8, 20, 1.25f, 10, 4);
+        var after = MouseReport.MapCoordinates(
+            1000, 1000, 1000, 1000, 100, 50, 8, 20, 1.25f, 10, 4);
+
+        Assert.Equal(new MouseCoordinates(0, 0, 0, 0), before);
+        Assert.Equal(new MouseCoordinates(9, 3, 99, 99), after);
+    }
+
+    [Fact]
+    public void WheelClientDeviceCoordinatesUseTheSamePixelMappingAsButtonEvents()
+    {
+        string report = MouseReport.EncodePointer(
+            button: 64, dipX: 46, dipY: 30, deviceX: 69, deviceY: 45,
+            paneXDip: 40, paneYDip: 20, cellWidthDip: 8, cellHeightDip: 16,
+            dpiScale: 1.5f, columns: 12, rows: 6,
+            press: true, sgr: false, sgrPixels: true);
+
+        Assert.Equal("\x1b[<64;10;16M", report);
+    }
 }

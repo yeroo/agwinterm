@@ -20,10 +20,25 @@ public sealed record WindowStateSnapshot(bool SidebarVisible, bool Fullscreen, b
     bool QuickTerminalVisible, string? ActiveWorkspace, string? ActiveSession);
 
 /// <summary>A pane's live geometry for `session.metrics`, in DEVICE pixels — the space a producer's
-/// frame buffer lives in, not the DIPs the chrome lays out in. <see cref="CellWidth"/>/<see cref="CellHeight"/>
-/// are the only fields a consumer needs (a shared-frame producer sizes its buffer from them); the rest
-/// spare it a second round trip. A host with no UI to measure reports zeros, which reads as "no metrics".</summary>
-public sealed record PaneMetricsSnapshot(int Cols, int Rows, int CellWidth, int CellHeight, int WidthPx, int HeightPx);
+/// frame buffer lives in, not the DIPs the chrome lays out in. <see cref="WidthPx"/>/<see cref="HeightPx"/>
+/// are the exact rendered grid extent; the integer cell fields are compatibility hints because rounding
+/// one fractional cell and multiplying accumulates error. A host with no UI reports zeros.</summary>
+public sealed record PaneMetricsSnapshot(int Cols, int Rows, int CellWidth, int CellHeight, int WidthPx, int HeightPx)
+{
+    /// <summary>
+    /// Build device-pixel metrics from the exact floating-point grid step used by rendering.
+    /// CellWidth/CellHeight remain integer compatibility hints; WidthPx/HeightPx accumulate the
+    /// unrounded step across the grid and are the authoritative sharp-frame extent.
+    /// </summary>
+    public static PaneMetricsSnapshot FromDipGrid(
+        int cols, int rows, float cellWidthDip, float cellHeightDip, float dpiScale)
+        => new(
+            cols, rows,
+            Math.Max(1, (int)MathF.Round(cellWidthDip * dpiScale)),
+            Math.Max(1, (int)MathF.Round(cellHeightDip * dpiScale)),
+            Math.Max(0, (int)MathF.Round(cols * cellWidthDip * dpiScale)),
+            Math.Max(0, (int)MathF.Round(rows * cellHeightDip * dpiScale)));
+}
 
 /// <summary>
 /// The control server's view of the app. Lets it target a session by id / unique-prefix /
@@ -245,9 +260,6 @@ public sealed class SingleSessionHost : ISessionHost
         new[] { new WorkspaceSnapshot("ws", "workspace", true,
             new[] { new SessionSnapshot("single", "session", true, _session.Status) }) };
     public WindowStateSnapshot WindowState() => new(true, false, false, false, "ws", "single");
-    // Cols/rows come from the session; there is no window here, so the pixel fields stay zero
-    // ("no metrics") rather than inventing a cell size a caller might size a frame buffer from.
-    public PaneMetricsSnapshot? PaneMetrics(string? target) => new(_session.Cols, _session.Rows, 0, 0, 0, 0);
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false) => "single";
     public string DuplicateSession(string? target) => "";

@@ -152,12 +152,12 @@ public static class ShmFrameReader
         handle.ReadSpan(0, headerBytes);
         if (!ShmFrameLayout.TryRead(headerBytes, out var header, out error) || header is null) return false;
 
-        // Acquire half of the producer's release/acquire pair: `ready` has now been loaded, and
-        // this fence keeps the pixel reads below from being hoisted above it. What we copy is
-        // therefore at least as new as the sequence number that named it.
-        Interlocked.MemoryBarrier();
+        if (request.Seq < 0) { error = ShmFrameError.BadSequence; return false; }
 
-        if (request.Seq > 0 && header.Ready < request.Seq)
+        // Centralize the acquire load in the wire-layout helper so tests and production exercise
+        // one synchronization path rather than two implementations that can drift.
+        long ready = ShmFrameLayout.ReadReadyAcquire(headerBytes);
+        if (request.Seq > 0 && ready < request.Seq)
         { error = ShmFrameError.FrameNotPublished; return false; }
 
         if (!ShmFrameLayout.TryGetSlot(header, request.Slot, out var slot, out error)) return false;
@@ -183,10 +183,10 @@ public static class ShmFrameReader
         // Args and header must agree. They are two statements of the same fact by the same
         // producer; a disagreement means one of them is stale, and guessing which is worse than
         // saying so.
-        if ((request.Width > 0 && request.Width != slot.Width) ||
-            (request.Height > 0 && request.Height != slot.Height) ||
-            (request.Stride > 0 && request.Stride != slot.Stride) ||
-            (request.Format > 0 && request.Format != slot.Format))
+        if ((request.Width != 0 && request.Width != slot.Width) ||
+            (request.Height != 0 && request.Height != slot.Height) ||
+            (request.Stride != 0 && request.Stride != slot.Stride) ||
+            (request.Format != 0 && request.Format != slot.Format))
         { error = ShmFrameError.GeometryMismatch; return false; }
 
         var pixels = new byte[frameBytes];
@@ -204,7 +204,7 @@ public static class ShmFrameReader
                     pixels.AsSpan((int)(y * rowBytes), (int)rowBytes));
         }
 
-        frame = new ShmFrame(slot.Width, slot.Height, slot.Format, header.Ready, pixels);
+        frame = new ShmFrame(slot.Width, slot.Height, slot.Format, ready, pixels);
         error = ShmFrameError.None;
         return true;
     }
@@ -236,6 +236,7 @@ public static class ShmFrameReader
         ShmFrameError.OutOfView => "slot pixels lie outside the mapped view",
         ShmFrameError.UnsupportedFormat => "format must be 132 (BGRA) or 32 (RGBA)",
         ShmFrameError.FrameTooLarge => $"frame exceeds {MaxFrameBytes} bytes",
+        ShmFrameError.BadSequence => "requested seq must be zero or positive",
         ShmFrameError.FrameNotPublished => "requested seq is newer than the mapping's ready sequence",
         ShmFrameError.GeometryMismatch => "request geometry disagrees with the slot descriptor",
         _ => "invalid shared frame",

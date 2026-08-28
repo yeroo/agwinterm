@@ -190,7 +190,7 @@ internal partial class Program : ISessionHost, IWindowHost
     // Terminal text selection drag + multi-click (word/line) tracking.
     private bool _selecting;       // left-drag selecting text in the content region
     private bool _selMoved;        // moved past a cell during the drag (distinguishes click from select)
-    private int _lastClickMs, _clickCount, _lastClickLine, _lastClickCol;
+    private int _lastClickMs, _clickCount;
     private Pane? _selPane;        // pane the current selection drag belongs to (locked at press)
     private int _selAutoDir;       // drag-autoscroll: -1 mouse above pane, +1 below, 0 in-bounds
     private int _selMouseX;        // last drag X (client px) for column tracking during autoscroll
@@ -437,7 +437,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 case "--pty-host": _argPtyHost = true; break;
                 case "--default-session-host" when i + 1 < args.Length: _argDefaultSessionHost = args[++i]; break;
                 case "--app-id" when i + 1 < args.Length: ++i; break; // consumed by ResolveAppId (namespaces data dir + pipe)
-                // unknown args are ignored (forward compatibility)
+                                                                      // unknown args are ignored (forward compatibility)
             }
         }
         if (_argDir is not null)
@@ -640,7 +640,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private static IDWriteTextFormat NewFormat(string family, float px,
         FontWeight weight = FontWeight.Normal, FontStyle style = FontStyle.Normal)
     {
-        var f = _dwrite.CreateTextFormat(family, null, weight, style, FontStretch.Normal, px);
+        var f = _dwrite.CreateTextFormat(family, null!, weight, style, FontStretch.Normal, px);
         f.WordWrapping = WordWrapping.NoWrap;
         f.TextAlignment = TextAlignment.Leading;
         f.ParagraphAlignment = ParagraphAlignment.Near;
@@ -772,8 +772,8 @@ internal partial class Program : ISessionHost, IWindowHost
     private static IDWriteTextFormat NewChromeFormat(string family, float px, bool center)
     {
         IDWriteTextFormat f;
-        try { f = _dwrite.CreateTextFormat(family, null, FontWeight.Normal, FontStyle.Normal, FontStretch.Normal, px); }
-        catch { f = _dwrite.CreateTextFormat("Segoe UI", null, FontWeight.Normal, FontStyle.Normal, FontStretch.Normal, px); }
+        try { f = _dwrite.CreateTextFormat(family, null!, FontWeight.Normal, FontStyle.Normal, FontStretch.Normal, px); }
+        catch { f = _dwrite.CreateTextFormat("Segoe UI", null!, FontWeight.Normal, FontStyle.Normal, FontStretch.Normal, px); }
         f.WordWrapping = WordWrapping.NoWrap;
         f.TextAlignment = center ? TextAlignment.Center : TextAlignment.Leading;
         f.ParagraphAlignment = ParagraphAlignment.Center; // vertically centre within the row rect
@@ -802,7 +802,10 @@ internal partial class Program : ISessionHost, IWindowHost
             int doc = nodes.Count;
             nodes.Add(new Uia.Node
             {
-                Kind = Uia.NodeKind.HelpDoc, Name = HelpText(), Parent = 0, Focused = true,
+                Kind = Uia.NodeKind.HelpDoc,
+                Name = HelpText(),
+                Parent = 0,
+                Focused = true,
                 Rect = ScreenRect(_helpCard.Left, _helpCard.Top, _helpCard.Right - _helpCard.Left, _helpCard.Bottom - _helpCard.Top),
             });
             nodes[0].Children = new[] { doc };
@@ -816,7 +819,9 @@ internal partial class Program : ISessionHost, IWindowHost
             int grp = nodes.Count;
             nodes.Add(new Uia.Node
             {
-                Kind = Uia.NodeKind.SettingsGroup, Name = "Settings", Parent = 0,
+                Kind = Uia.NodeKind.SettingsGroup,
+                Name = "Settings",
+                Parent = 0,
                 Rect = ScreenRect(_setCard.Left, _setCard.Top, _setCard.Right - _setCard.Left, _setCard.Bottom - _setCard.Top),
             });
             var gkids = new List<int>();
@@ -825,7 +830,9 @@ internal partial class Program : ISessionHost, IWindowHost
                 gkids.Add(nodes.Count);
                 nodes.Add(new Uia.Node
                 {
-                    Kind = Uia.NodeKind.SettingsTab, Index = i, Parent = grp,
+                    Kind = Uia.NodeKind.SettingsTab,
+                    Index = i,
+                    Parent = grp,
                     Name = SetTabNames[i] + (i == _setTab ? " tab, selected" : " tab"),
                     Selected = i == _setTab,
                     Rect = ScreenRect(_setCard.Left + 8f, _navHit[i * 2], SetNavW - 16f, _navHit[i * 2 + 1] - _navHit[i * 2]),
@@ -838,7 +845,9 @@ internal partial class Program : ISessionHost, IWindowHost
                 gkids.Add(nodes.Count);
                 nodes.Add(new Uia.Node
                 {
-                    Kind = Uia.NodeKind.SettingsControl, Index = i, Parent = grp,
+                    Kind = Uia.NodeKind.SettingsControl,
+                    Index = i,
+                    Parent = grp,
                     Name = SettingsControlName(r),
                     Focused = ReferenceEquals(r, _setFocus),
                     Rect = r.Vis ? ScreenRect(r.Hx0, r.Hy0, Math.Max(1, r.Hx1 - r.Hx0), Math.Max(1, r.Hy1 - r.Hy0)) : default,
@@ -853,7 +862,9 @@ internal partial class Program : ISessionHost, IWindowHost
         float contentBottom = ClientH() - FooterH;
         nodes.Add(new Uia.Node
         {
-            Kind = Uia.NodeKind.Terminal, Name = "terminal", Parent = 0,
+            Kind = Uia.NodeKind.Terminal,
+            Name = "terminal",
+            Parent = 0,
             Focused = !_chromeFocus && !_setOpen,
             Rect = ScreenRect(_sidebarW, TitleBarH, ClientW() - _sidebarW, contentBottom - TitleBarH),
         });
@@ -862,7 +873,9 @@ internal partial class Program : ISessionHost, IWindowHost
         bool sidebarShown = _sidebarW > 0;
         nodes.Add(new Uia.Node
         {
-            Kind = Uia.NodeKind.Sidebar, Name = "Sessions", Parent = 0,
+            Kind = Uia.NodeKind.Sidebar,
+            Name = "Sessions",
+            Parent = 0,
             Rect = sidebarShown ? ScreenRect(0, TitleBarH, _sidebarW, contentBottom - TitleBarH) : default,
         });
 
@@ -879,7 +892,10 @@ internal partial class Program : ISessionHost, IWindowHost
             kids.Add(nodes.Count);
             nodes.Add(new Uia.Node
             {
-                Kind = Uia.NodeKind.Session, Index = i, Name = s.Name, Parent = list,
+                Kind = Uia.NodeKind.Session,
+                Index = i,
+                Name = s.Name,
+                Parent = list,
                 Focused = _chromeFocus && ReferenceEquals(_focusRow, s),
                 Selected = ReferenceEquals(_active, s),
                 Rect = rowRect.TryGetValue(s, out var r) ? r : default,
@@ -1008,9 +1024,16 @@ internal partial class Program : ISessionHost, IWindowHost
 
             return new Uia.TextSnapshot
             {
-                Lines = lines, LineStart = starts, TotalLength = total, CaretOffset = caretOff,
-                FirstVisibleLine = firstVisibleDoc, VisibleRows = rows,
-                ScreenX = origin.x, ScreenY = origin.y, CellW = cw, CellH = ch,
+                Lines = lines,
+                LineStart = starts,
+                TotalLength = total,
+                CaretOffset = caretOff,
+                FirstVisibleLine = firstVisibleDoc,
+                VisibleRows = rows,
+                ScreenX = origin.x,
+                ScreenY = origin.y,
+                CellW = cw,
+                CellH = ch,
             };
         }
     }
@@ -1064,7 +1087,8 @@ internal partial class Program : ISessionHost, IWindowHost
             case VK_UP: _focusRow = list[Math.Max(idx - 1, 0)]; AnnounceFocusRow(); RequestRedraw(); return true;
             case VK_HOME: _focusRow = list[0]; AnnounceFocusRow(); RequestRedraw(); return true;
             case VK_END: _focusRow = list[^1]; AnnounceFocusRow(); RequestRedraw(); return true;
-            case VK_RETURN: case VK_SPACE:
+            case VK_RETURN:
+            case VK_SPACE:
                 if (_focusRow is not null) SetActive(_focusRow);
                 ExitChromeFocus();
                 return true;

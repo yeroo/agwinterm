@@ -3,20 +3,20 @@
 
 use std::ffi::c_void;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::windows::io::FromRawHandle;
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, S_OK, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Console::{
-    ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
+    COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
-    InitializeProcThreadAttributeList, UpdateProcThreadAttribute, WaitForSingleObject,
-    EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
-    STARTUPINFOEXW, STARTUPINFOW,
+    CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROCESS_INFORMATION, STARTUPINFOEXW, STARTUPINFOW, UpdateProcThreadAttribute,
+    WaitForSingleObject,
 };
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
@@ -42,7 +42,11 @@ fn wide(s: &str) -> Vec<u16> {
 
 /// Quote one argument per CommandLineToArgvW rules (port of TerminalSession.QuoteArg).
 pub fn quote_arg(arg: &str) -> String {
-    if !arg.is_empty() && !arg.chars().any(|c| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '"')) {
+    if !arg.is_empty()
+        && !arg
+            .chars()
+            .any(|c| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '"'))
+    {
         return arg.to_string();
     }
     let mut out = String::from("\"");
@@ -55,14 +59,14 @@ pub fn quote_arg(arg: &str) -> String {
             slashes += 1;
         }
         if i == chars.len() {
-            out.extend(std::iter::repeat('\\').take(slashes * 2));
+            out.extend(std::iter::repeat_n('\\', slashes * 2));
             break;
         }
         if chars[i] == '"' {
-            out.extend(std::iter::repeat('\\').take(slashes * 2 + 1));
+            out.extend(std::iter::repeat_n('\\', slashes * 2 + 1));
             out.push('"');
         } else {
-            out.extend(std::iter::repeat('\\').take(slashes));
+            out.extend(std::iter::repeat_n('\\', slashes));
             out.push(chars[i]);
         }
         i += 1;
@@ -74,7 +78,7 @@ pub fn quote_arg(arg: &str) -> String {
 /// UTF-16 double-null environment block from key=value pairs (sorted, Windows convention).
 fn env_block(vars: &[(String, String)]) -> Vec<u16> {
     let mut sorted: Vec<&(String, String)> = vars.iter().collect();
-    sorted.sort_by(|a, b| a.0.to_uppercase().cmp(&b.0.to_uppercase()));
+    sorted.sort_by_key(|a| a.0.to_uppercase());
     let mut block: Vec<u16> = Vec::new();
     for (k, v) in sorted {
         block.extend(format!("{k}={v}").encode_utf16());
@@ -162,7 +166,9 @@ impl ConPty {
                 null(),
                 0,
                 EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-                env_w.as_ref().map_or(null_mut(), |e| e.as_ptr() as *mut c_void),
+                env_w
+                    .as_ref()
+                    .map_or(null_mut(), |e| e.as_ptr() as *mut c_void),
                 cwd_w.as_ref().map_or(null(), |c| c.as_ptr()),
                 &si as *const STARTUPINFOEXW as *const STARTUPINFOW,
                 &mut pi,
@@ -210,27 +216,10 @@ impl ConPty {
         (self.cols, self.rows)
     }
 
-    /// Blocking wait for child exit; returns the exit code.
-    pub fn wait_exit(&self) -> i32 {
-        unsafe {
-            if WaitForSingleObject(self.child, INFINITE) == WAIT_OBJECT_0 {
-                let mut code = 0u32;
-                GetExitCodeProcess(self.child, &mut code);
-                return code as i32;
-            }
-        }
-        -1
-    }
-
     pub fn kill(&self) {
         unsafe {
             windows_sys::Win32::System::Threading::TerminateProcess(self.child, 1);
         }
-    }
-
-    /// Reader over ConPTY output (call from a dedicated pump thread).
-    pub fn read_output(&mut self, buf: &mut [u8]) -> usize {
-        self.output.read(buf).unwrap_or(0)
     }
 }
 
@@ -245,7 +234,6 @@ impl Drop for ConPty {
         let _ = self.output.flush();
     }
 }
-
 
 /// Blocking wait on a raw child handle (usize-cast) + exit code. Safe to run
 /// concurrently with pty-mutex users; a closed handle yields -1.

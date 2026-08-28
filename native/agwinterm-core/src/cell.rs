@@ -9,19 +9,71 @@ pub struct Color {
 }
 
 impl Color {
-    pub const DEFAULT_FOREGROUND: Color = Color { r: 229, g: 229, b: 229 };
+    pub const DEFAULT_FOREGROUND: Color = Color {
+        r: 229,
+        g: 229,
+        b: 229,
+    };
     pub const DEFAULT_BACKGROUND: Color = Color { r: 0, g: 0, b: 0 };
 
     const STANDARD_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
     const ANSI16: [Color; 16] = [
-        Color { r: 0, g: 0, b: 0 },       Color { r: 205, g: 0, b: 0 },
-        Color { r: 0, g: 205, b: 0 },     Color { r: 205, g: 205, b: 0 },
-        Color { r: 0, g: 0, b: 238 },     Color { r: 205, g: 0, b: 205 },
-        Color { r: 0, g: 205, b: 205 },   Color { r: 229, g: 229, b: 229 },
-        Color { r: 127, g: 127, b: 127 }, Color { r: 255, g: 0, b: 0 },
-        Color { r: 0, g: 255, b: 0 },     Color { r: 255, g: 255, b: 0 },
-        Color { r: 92, g: 92, b: 255 },   Color { r: 255, g: 0, b: 255 },
-        Color { r: 0, g: 255, b: 255 },   Color { r: 255, g: 255, b: 255 },
+        Color { r: 0, g: 0, b: 0 },
+        Color { r: 205, g: 0, b: 0 },
+        Color { r: 0, g: 205, b: 0 },
+        Color {
+            r: 205,
+            g: 205,
+            b: 0,
+        },
+        Color { r: 0, g: 0, b: 238 },
+        Color {
+            r: 205,
+            g: 0,
+            b: 205,
+        },
+        Color {
+            r: 0,
+            g: 205,
+            b: 205,
+        },
+        Color {
+            r: 229,
+            g: 229,
+            b: 229,
+        },
+        Color {
+            r: 127,
+            g: 127,
+            b: 127,
+        },
+        Color { r: 255, g: 0, b: 0 },
+        Color { r: 0, g: 255, b: 0 },
+        Color {
+            r: 255,
+            g: 255,
+            b: 0,
+        },
+        Color {
+            r: 92,
+            g: 92,
+            b: 255,
+        },
+        Color {
+            r: 255,
+            g: 0,
+            b: 255,
+        },
+        Color {
+            r: 0,
+            g: 255,
+            b: 255,
+        },
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
     ];
 
     /// xterm 256-palette resolution — mirrors Color.FromIndex (which throws outside
@@ -62,12 +114,24 @@ pub struct ColorSpec {
 }
 
 impl ColorSpec {
-    pub const DEFAULT: ColorSpec = ColorSpec { kind: ColorSpecKind::Default, index: 0, rgb: Color { r: 0, g: 0, b: 0 } };
+    pub const DEFAULT: ColorSpec = ColorSpec {
+        kind: ColorSpecKind::Default,
+        index: 0,
+        rgb: Color { r: 0, g: 0, b: 0 },
+    };
     pub fn indexed(index: u8) -> ColorSpec {
-        ColorSpec { kind: ColorSpecKind::Indexed, index, ..Self::DEFAULT }
+        ColorSpec {
+            kind: ColorSpecKind::Indexed,
+            index,
+            ..Self::DEFAULT
+        }
     }
     pub fn from_rgb(rgb: Color) -> ColorSpec {
-        ColorSpec { kind: ColorSpecKind::Rgb, index: 0, rgb }
+        ColorSpec {
+            kind: ColorSpecKind::Rgb,
+            index: 0,
+            rgb,
+        }
     }
 }
 
@@ -117,7 +181,14 @@ mod tests {
         assert_eq!(Color::from_index(16), Color { r: 0, g: 0, b: 0 });
         assert_eq!(Color::from_index(196), Color { r: 255, g: 0, b: 0 }); // 16 + 180 = pure red corner
         assert_eq!(Color::from_index(232), Color { r: 8, g: 8, b: 8 });
-        assert_eq!(Color::from_index(255), Color { r: 238, g: 238, b: 238 });
+        assert_eq!(
+            Color::from_index(255),
+            Color {
+                r: 238,
+                g: 238,
+                b: 238
+            }
+        );
     }
 
     #[test]
