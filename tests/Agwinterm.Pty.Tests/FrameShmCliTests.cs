@@ -13,6 +13,9 @@ public class FrameShmCliTests
 {
     private const string Name = @"Local\agwinterm-frame-browser-1";
 
+    public static IEnumerable<object[]> EveryNumericField =>
+        FrameShmCli.NumericFields.Select(option => new object[] { option });
+
     private static Dictionary<string, string> Opts(params (string k, string v)[] pairs)
     {
         var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -192,6 +195,33 @@ public class FrameShmCliTests
     {
         Assert.False(FrameShmCli.TryBuildArgs([Name], Opts(("images", "[]")), out _, out var err));
         Assert.Contains("not both", err);
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryNumericField))]
+    public void EverySingleEntryNumericFlagIsRejectedWithImagesJson(string field)
+    {
+        Assert.False(FrameShmCli.TryBuildArgs([], Opts(("images", "[]"), (field, "1")), out _, out var err));
+        Assert.Contains($"--{field}", err);
+        Assert.Contains("--images", err);
+    }
+
+    [Theory]
+    [InlineData("target")]
+    [InlineData("window")]
+    [InlineData("pipe")]
+    [InlineData("socket")]
+    public void GlobalRoutingOptionsRemainAllowedWithImagesJson(string option)
+    {
+        Assert.True(FrameShmCli.TryBuildArgs([], Opts(("images", "[]"), (option, "value")), out _, out var err));
+        Assert.Null(err);
+    }
+
+    [Fact]
+    public void ImagesWithoutAJsonValueIsRejectedExplicitly()
+    {
+        Assert.False(FrameShmCli.TryBuildArgs([], Opts(("images", "true")), out _, out var err));
+        Assert.Contains("JSON array value", err);
     }
 
     [Fact]

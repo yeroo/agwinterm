@@ -34,6 +34,9 @@ var (
 	resumeThread             = kernel32.NewProc("ResumeThread")
 	isProcessInJob           = kernel32.NewProc("IsProcessInJob")
 	closeHandle              = kernel32.NewProc("CloseHandle")
+	// Test synchronization seam: production leaves this nil. A test can stop the child at the exact
+	// point after CreateProcess returns and before assignment, proving CREATE_SUSPENDED is effective.
+	afterSuspendedStart func(*exec.Cmd) error
 )
 
 type threadEntry32 struct {
@@ -211,7 +214,7 @@ func runInKillOnCloseJob(cmd *exec.Cmd) error {
 // startProcessInJob closes the process-creation race in which a fast child can
 // spawn descendants before AssignProcessToJobObject runs. The primary thread is
 // created suspended, assigned to the job, and resumed only after assignment.
-// resume is injected so the ordering can be asserted without racing the child.
+// resume is injected so assignment can be asserted at the resume boundary without racing the child.
 func startProcessInJob(cmd *exec.Cmd, job uintptr, resume func(int) error) error {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -225,6 +228,11 @@ func startProcessInJob(cmd *exec.Cmd, job uintptr, resume func(int) error) error
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return err
+	}
+	if afterSuspendedStart != nil {
+		if err := afterSuspendedStart(cmd); err != nil {
+			return failStarted(fmt.Errorf("after suspended process start: %w", err))
+		}
 	}
 	var assignErr error
 	if err := cmd.Process.WithHandle(func(processHandle uintptr) {

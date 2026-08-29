@@ -244,9 +244,12 @@ its own default rather than an explicit `0` the caller never asked for. The CLI 
 emits a JSON **number** — that is the whole reason the parsing exists, since a quoted number is
 rejected by `ControlServer`.
 
-Two checks happen locally, before the pipe is opened: a value that is not a whole number, and a
-mapping name outside the `Local\agwinterm-frame-` prefix. Everything else — ranges, the header, the
-slot descriptor — is the reader's business and reports through the reply.
+The CLI rejects unknown options and contradictory input shapes before opening the pipe. In the
+single-entry form it also rejects non-numeric values, values outside the JSON field's `Int32`/`Int64`
+type, and mapping names outside the `Local\agwinterm-frame-` prefix. In the multi-entry form it checks
+that `--images` is a JSON array and rejects the positional name or any single-entry numeric flag beside
+it. Semantic field ranges, mapping headers and slot descriptors remain the reader's business and
+report through the reply.
 
 For the multi-entry, all-or-nothing case there is no flag shape, so pass the array directly:
 
@@ -255,7 +258,8 @@ agwintermctl image frameshm --images '[{"name":"Local\\agwinterm-frame-a","slot"
                                        {"name":"Local\\agwinterm-frame-b","slot":1,"seq":3}]'
 ```
 
-`--images` is forwarded verbatim and is mutually exclusive with the positional name.
+`--images` is forwarded as the request array and is mutually exclusive with the positional name and
+the single-entry numeric flags. Global routing options such as `--target` and `--pipe` remain valid.
 
 ## Sizing a pane with `session.metrics`
 

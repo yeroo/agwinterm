@@ -312,11 +312,11 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
 - ➕ **`--seq` is parsed as a `long`.** `TryNum` reads `seq` as 64-bit — it is a publish counter, not
       a dimension — and truncating it at the CLI would be a ceiling invented here. Every other field
       is range-checked to 32 bits so the error names the *flag* rather than the JSON property.
-- ➕ **only two things are validated locally**: a non-numeric flag value, and a mapping name outside
-      the `Local\agwinterm-frame-` prefix. Both are cheap, both are stable parts of the spec, and
-      both otherwise cost a pipe round-trip to learn. Ranges, the header and the slot descriptor stay
-      the reader's business — duplicating those would let the CLI drift into rejecting frames the
-      terminal accepts.
+- ➕ **the CLI validates its own syntax and JSON types locally**: unknown options, contradictory
+      positional/`--images`/single-entry flag shapes, malformed or non-array `--images`, non-numeric
+      flag values, `Int32` overflow, and mapping names outside the `Local\agwinterm-frame-` prefix.
+      Semantic field ranges, the mapping header and the slot descriptor stay the reader's business —
+      duplicating those would let the CLI drift into rejecting frames the terminal accepts.
 - ➕ a flag given with no value parses as the literal `"true"` in `Program.cs`'s option splitter, so
       `FrameShmCli` skips it rather than failing on it; `--slot` with nothing after it means
       "unset", not an error. Covered by `AValuelessFlagIsIgnoredRatherThanParsedAsTrue`.

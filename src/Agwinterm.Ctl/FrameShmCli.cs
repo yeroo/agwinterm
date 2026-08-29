@@ -52,9 +52,16 @@ public static class FrameShmCli
 
         // --images is the escape hatch for the multi-entry case: the verb applies a whole images[]
         // array all-or-nothing, and a composition of several mappings has no flag shape.
-        if (options.TryGetValue("images", out string? rawImages) && rawImages != "true")
+        if (options.TryGetValue("images", out string? rawImages))
         {
+            if (rawImages == "true") { error = "--images needs a JSON array value"; return false; }
             if (rest.Count > 0) { error = "takes either <name> or --images, not both"; return false; }
+            foreach (string field in NumericFields)
+            {
+                if (!options.ContainsKey(field)) continue;
+                error = $"--{field} cannot be used with --images; put it in the JSON array entry";
+                return false;
+            }
             JsonElement arr;
             try { arr = JsonDocument.Parse(rawImages).RootElement.Clone(); }
             catch (JsonException ex) { error = "--images is not valid JSON: " + ex.Message; return false; }

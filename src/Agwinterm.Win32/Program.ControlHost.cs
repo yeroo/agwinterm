@@ -162,12 +162,9 @@ internal partial class Program
     public ISession? Resolve(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface()?.S;
-        lock (_workspaces)
-        {
-            var panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToList();
-            var p = panes.FirstOrDefault(x => x.Id == target) ?? panes.FirstOrDefault(x => x.Id.StartsWith(target));
-            if (p is not null) return p.S;   // target any pane by id (e.g. docxy's AGWINTERM_SESSION_ID)
-        }
+        // Pane ids include split panes and every auxiliary cover. In particular, a ctl launched
+        // inside scratch/overlay/quick inherits that cover's id as AGWINTERM_SESSION_ID.
+        if (FindPaneById(target) is { } hit) return hit.pane.S;
         return Find(target)?.S;
     }
 
@@ -219,20 +216,19 @@ internal partial class Program
         // session. A pane targeted by its AGWINTERM_PANE_ID must land on ITS column, not the
         // session's active one — a split browser pane would otherwise be told the wrong width.
         Ses? ses = null; Pane? pane = null;
-        lock (_workspaces)
+        if (string.IsNullOrEmpty(target) || target == "active")
         {
-            if (string.IsNullOrEmpty(target) || target == "active") { ses = _active; pane = ActiveSurface(); }
-            else
-            {
-                var all = _workspaces.SelectMany(w => w.Sessions).ToList();
-                foreach (var s in all)
-                {
-                    var p = s.Panes.FirstOrDefault(x => x.Id == target) ?? s.Panes.FirstOrDefault(x => x.Id.StartsWith(target));
-                    if (p is not null) { ses = s; pane = p; break; }
-                }
-            }
+            ses = _active;
+            pane = ActiveSurface();
         }
-        if (ses is null || pane is null) { var f = Find(target); ses = f; pane = f?.ActivePane; }
+        else if (FindPaneById(target) is { } hit)
+        {
+            ses = hit.ses;
+            pane = hit.pane;
+        }
+        // A quick pane has no owning Ses, so a non-null pane is already a complete id resolution.
+        // Fall back to a session target only when no pane (regular or cover) matched at all.
+        if (pane is null) { var f = Find(target); ses = f; pane = f?.ActivePane; }
         if (pane is null || (ses is null && !ReferenceEquals(pane, _cover))) return null;
 
         var (_, cwDip, chDip) = Metrics(pane.FontSize);
@@ -479,12 +475,7 @@ internal partial class Program
     /// agent-workflow primitive: "give me what that command printed".</summary>
     public string SessionOutput(string? target)
     {
-        var s = Resolve(target);
-        if (s is null) return "";
-        Pane? pane;
-        lock (_workspaces)
-            pane = _workspaces.SelectMany(w => w.Sessions).SelectMany(x => x.Panes)
-                              .FirstOrDefault(p => ReferenceEquals(p.S, s));
+        var pane = PaneForTarget(target);
         if (pane is null) return "";
         TerminalEmulator.ShellMark? m;
         lock (pane.S.SyncRoot) m = pane.S.Emulator.Marks.LastOrDefault(x => x.EndLine >= 0);
@@ -497,12 +488,7 @@ internal partial class Program
 
     public string SessionCopy(string? target) => InvokeOnUi(() =>
     {
-        var s = Resolve(target);
-        if (s is null) return "";
-        Pane? pane;
-        lock (_workspaces)
-            pane = _workspaces.SelectMany(w => w.Sessions).SelectMany(x => x.Panes)
-                              .FirstOrDefault(p => ReferenceEquals(p.S, s));
+        var pane = PaneForTarget(target);
         // On the UI thread: reading a selection RECONCILES it (eviction may have renumbered or
         // invalidated it), and selection state belongs to this thread.
         return pane is not null ? SelectionText(pane) : "";
@@ -728,32 +714,19 @@ internal partial class Program
 
     public string CommandLeader(string op) => InvokeOnUi(() => LeaderOp(op));
 
-    /// <summary>Resolve a control-API target ("active"/null/id/prefix) to its owning session.</summary>
     /// <summary>Resolve a control-API target to a specific pane: the active surface for "active"/empty,
     /// else a pane by (prefix) id, else the target session's active pane.</summary>
     private Pane? PaneForTarget(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface();
-        lock (_workspaces)
-        {
-            var panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToList();
-            var p = panes.FirstOrDefault(x => x.Id == target) ?? panes.FirstOrDefault(x => x.Id.StartsWith(target));
-            if (p is not null) return p;
-        }
+        if (FindPaneById(target) is { } hit) return hit.pane;
         return FindSesForTarget(target)?.ActivePane;
     }
 
+    /// <summary>Resolve a control-API target ("active"/null/session or pane id/prefix) to its owning session.</summary>
     private Ses? FindSesForTarget(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return _active;
-        lock (_workspaces)
-        {
-            var all = _workspaces.SelectMany(w => w.Sessions).ToList();
-            foreach (var s in all)
-                if (s.Id == target || s.Panes.Any(p => p.Id == target)) return s;
-            foreach (var s in all)
-                if (s.Id.StartsWith(target) || s.Panes.Any(p => p.Id.StartsWith(target))) return s;
-        }
-        return null;
+        return FindPaneById(target)?.ses ?? Find(target);
     }
 }
