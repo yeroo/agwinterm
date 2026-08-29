@@ -221,7 +221,7 @@ internal partial class Program
         Ses? ses = null; Pane? pane = null;
         lock (_workspaces)
         {
-            if (string.IsNullOrEmpty(target) || target == "active") { ses = _active; pane = _active?.ActivePane; }
+            if (string.IsNullOrEmpty(target) || target == "active") { ses = _active; pane = ActiveSurface(); }
             else
             {
                 var all = _workspaces.SelectMany(w => w.Sessions).ToList();
@@ -233,12 +233,21 @@ internal partial class Program
             }
         }
         if (ses is null || pane is null) { var f = Find(target); ses = f; pane = f?.ActivePane; }
-        if (ses is null || pane is null) return null;
+        if (pane is null || (ses is null && !ReferenceEquals(pane, _cover))) return null;
 
         var (_, cwDip, chDip) = Metrics(pane.FontSize);
-        bool laidOut = false;
-        foreach (var (p, _, _, w, h) in PaneLayout(ses))
-            if (ReferenceEquals(p, pane)) { laidOut = w > 0 && h > 0; break; }
+        bool laidOut;
+        if (ReferenceEquals(pane, _cover))
+        {
+            var (_, _, w, h) = CoverRect();
+            laidOut = w > 0 && h > 0;
+        }
+        else
+        {
+            laidOut = false;
+            foreach (var (p, _, _, w, h) in PaneLayout(ses!))
+                if (ReferenceEquals(p, pane)) { laidOut = w > 0 && h > 0; break; }
+        }
         return laidOut
             ? PaneMetricsSnapshot.FromDipGrid(pane.S.Cols, pane.S.Rows, cwDip, chDip, Scale)
             : null;

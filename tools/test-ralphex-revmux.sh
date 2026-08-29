@@ -232,7 +232,7 @@ legacy_auth_task="$(tail -n 1 "$TMP/tasks.log")"
 [ "$api_auth_task" != "$legacy_auth_task" ] \
   || { echo 'colliding plan basenames reused one task id' >&2; exit 1; }
 
-existing_plan='docs/plans/20260821-image-frameshm-command.md'
+existing_plan='docs/plans/completed/20260821-image-frameshm-command.md'
 write_prompt "$TMP/relative-plan.txt" "$existing_plan"
 run_bridge "$TMP/relative-plan.txt" "$TMP/clean.json" \
   > "$TMP/relative.out" 2> "$TMP/relative.err"

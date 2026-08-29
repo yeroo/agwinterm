@@ -48,39 +48,54 @@ func TestFindGitBashRejectsUnrelatedPathBash(t *testing.T) {
 	}
 }
 
-func TestKillOnCloseJobTerminatesAssignedProcess(t *testing.T) {
+func TestProcessIsAssignedBeforeItCanExecute(t *testing.T) {
 	job, err := newKillOnCloseJob()
 	if err != nil {
 		t.Fatalf("newKillOnCloseJob: %v", err)
 	}
 
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command", "Start-Sleep -Seconds 60")
-	if err := cmd.Start(); err != nil {
+	marker := filepath.Join(t.TempDir(), "started")
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command",
+		"[IO.File]::WriteAllText($env:AGW_LAUNCH_MARKER, 'started'); Start-Sleep -Seconds 60")
+	cmd.Env = append(os.Environ(), "AGW_LAUNCH_MARKER="+marker)
+	if err := startProcessInJob(cmd, job, func(pid int) error {
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("child executed before job assignment: marker err=%v", err)
+		}
+		var assigned bool
+		var inspectErr error
+		if err := cmd.Process.WithHandle(func(processHandle uintptr) {
+			assigned, inspectErr = processInJob(processHandle, job)
+		}); err != nil {
+			return err
+		}
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if !assigned {
+			t.Fatal("child was not assigned when its primary thread was resumed")
+		}
+		return resumeProcessThreads(pid)
+	}); err != nil {
 		closeWindowsHandle(job)
-		t.Fatalf("start child: %v", err)
+		t.Fatalf("start suspended child in job: %v", err)
 	}
 	defer func() { _ = cmd.Process.Kill() }()
 
-	var assignErr error
-	if err := cmd.Process.WithHandle(func(processHandle uintptr) {
-		assignErr = addProcessToJob(job, processHandle)
-	}); err != nil {
-		closeWindowsHandle(job)
-		t.Fatalf("open child handle: %v", err)
-	}
-	if assignErr != nil {
-		closeWindowsHandle(job)
-		t.Fatalf("assign child to job: %v", assignErr)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			closeWindowsHandle(job)
+			t.Fatal("child did not execute after its assigned thread was resumed")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		closeWindowsHandle(job)
-		t.Fatalf("child exited before job closure: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
 
 	closeWindowsHandle(job)
 	select {

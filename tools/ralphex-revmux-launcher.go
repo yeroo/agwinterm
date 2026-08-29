@@ -14,8 +14,12 @@ import (
 )
 
 const (
+	createSuspended                   = 0x00000004
+	threadSuspendResume               = 0x0002
+	th32csSnapThread                  = 0x00000004
 	jobObjectExtendedLimitInformation = 9
 	jobObjectLimitKillOnJobClose      = 0x00002000
+	invalidHandleValue                = ^uintptr(0)
 )
 
 var (
@@ -23,8 +27,24 @@ var (
 	createJobObjectW         = kernel32.NewProc("CreateJobObjectW")
 	setInformationJobObject  = kernel32.NewProc("SetInformationJobObject")
 	assignProcessToJobObject = kernel32.NewProc("AssignProcessToJobObject")
+	createToolhelp32Snapshot = kernel32.NewProc("CreateToolhelp32Snapshot")
+	thread32First            = kernel32.NewProc("Thread32First")
+	thread32Next             = kernel32.NewProc("Thread32Next")
+	openThread               = kernel32.NewProc("OpenThread")
+	resumeThread             = kernel32.NewProc("ResumeThread")
+	isProcessInJob           = kernel32.NewProc("IsProcessInJob")
 	closeHandle              = kernel32.NewProc("CloseHandle")
 )
+
+type threadEntry32 struct {
+	size           uint32
+	usage          uint32
+	threadID       uint32
+	ownerProcessID uint32
+	basePriority   int32
+	deltaPriority  int32
+	flags          uint32
+}
 
 type jobObjectBasicLimitInformation struct {
 	perProcessUserTimeLimit int64
@@ -182,7 +202,28 @@ func runInKillOnCloseJob(cmd *exec.Cmd) error {
 	}
 	defer closeWindowsHandle(job)
 
+	if err := startProcessInJob(cmd, job, resumeProcessThreads); err != nil {
+		return err
+	}
+	return cmd.Wait()
+}
+
+// startProcessInJob closes the process-creation race in which a fast child can
+// spawn descendants before AssignProcessToJobObject runs. The primary thread is
+// created suspended, assigned to the job, and resumed only after assignment.
+// resume is injected so the ordering can be asserted without racing the child.
+func startProcessInJob(cmd *exec.Cmd, job uintptr, resume func(int) error) error {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= createSuspended
 	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	failStarted := func(err error) error {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return err
 	}
 	var assignErr error
@@ -192,11 +233,64 @@ func runInKillOnCloseJob(cmd *exec.Cmd) error {
 		assignErr = err
 	}
 	if assignErr != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return fmt.Errorf("assign Git Bash to child-process job: %w", assignErr)
+		return failStarted(fmt.Errorf("assign Git Bash to child-process job: %w", assignErr))
 	}
-	return cmd.Wait()
+	if err := resume(cmd.Process.Pid); err != nil {
+		return failStarted(fmt.Errorf("resume Git Bash after job assignment: %w", err))
+	}
+	return nil
+}
+
+func resumeProcessThreads(pid int) error {
+	snapshot, _, callErr := createToolhelp32Snapshot.Call(th32csSnapThread, 0)
+	if snapshot == invalidHandleValue {
+		return windowsCallError("CreateToolhelp32Snapshot", callErr)
+	}
+	defer closeWindowsHandle(snapshot)
+
+	entry := threadEntry32{size: uint32(unsafe.Sizeof(threadEntry32{}))}
+	ok, _, callErr := thread32First.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+	if ok == 0 {
+		return windowsCallError("Thread32First", callErr)
+	}
+	resumed := false
+	for {
+		if entry.ownerProcessID == uint32(pid) {
+			thread, _, openErr := openThread.Call(threadSuspendResume, 0, uintptr(entry.threadID))
+			if thread == 0 {
+				return windowsCallError("OpenThread", openErr)
+			}
+			previous, _, resumeErr := resumeThread.Call(thread)
+			closeWindowsHandle(thread)
+			if previous == uintptr(^uint32(0)) {
+				return windowsCallError("ResumeThread", resumeErr)
+			}
+			resumed = true
+		}
+
+		entry.size = uint32(unsafe.Sizeof(entry))
+		next, _, nextErr := thread32Next.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+		if next != 0 {
+			continue
+		}
+		if errno, ok := nextErr.(syscall.Errno); ok && errno == syscall.ERROR_NO_MORE_FILES {
+			break
+		}
+		return windowsCallError("Thread32Next", nextErr)
+	}
+	if !resumed {
+		return fmt.Errorf("no thread found for process %d", pid)
+	}
+	return nil
+}
+
+func processInJob(process, job uintptr) (bool, error) {
+	var assigned uint32
+	ok, _, callErr := isProcessInJob.Call(process, job, uintptr(unsafe.Pointer(&assigned)))
+	if ok == 0 {
+		return false, windowsCallError("IsProcessInJob", callErr)
+	}
+	return assigned != 0, nil
 }
 
 func newKillOnCloseJob() (uintptr, error) {

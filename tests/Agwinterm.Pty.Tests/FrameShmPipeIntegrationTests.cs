@@ -17,7 +17,7 @@ namespace Agwinterm.Pty.Tests;
 /// survives the round trip as JSON <em>numbers</em>, that a connection is reusable across frames,
 /// and that a rejection answers on the same connection instead of tearing it down.
 ///
-/// The live counterpart is Task 6 of docs/plans/20260821-image-frameshm-command.md, run against a
+/// The live counterpart is Task 6 of docs/plans/completed/20260821-image-frameshm-command.md, run against a
 /// dev instance; the throughput it measured is recorded in docs/specs/image-frameshm.md.
 /// </summary>
 public class FrameShmPipeIntegrationTests : IDisposable

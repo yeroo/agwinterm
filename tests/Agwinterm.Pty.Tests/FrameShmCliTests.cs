@@ -131,6 +131,25 @@ public class FrameShmCliTests
     }
 
     [Fact]
+    public void AnUnknownOptionIsRejectedRatherThanSilentlyDropped()
+    {
+        Assert.False(FrameShmCli.TryBuildArgs([Name], Opts(("sloot", "1")), out _, out var err));
+        Assert.Contains("--sloot", err);
+        Assert.Contains("unknown option", err);
+    }
+
+    [Theory]
+    [InlineData("target")]
+    [InlineData("window")]
+    [InlineData("pipe")]
+    [InlineData("socket")]
+    public void GlobalRoutingOptionsRemainAllowed(string option)
+    {
+        Assert.True(FrameShmCli.TryBuildArgs([Name], Opts((option, "value")), out _, out var err));
+        Assert.Null(err);
+    }
+
+    [Fact]
     public void AMissingNameIsRejected()
     {
         Assert.False(FrameShmCli.TryBuildArgs([], Opts(), out _, out var err));

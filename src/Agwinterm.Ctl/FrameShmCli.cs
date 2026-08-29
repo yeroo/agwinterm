@@ -25,6 +25,12 @@ public static class FrameShmCli
         "row", "col", "cols", "rows", "sx", "sy", "sw", "sh",
     ];
 
+    private static readonly HashSet<string> AllowedOptions =
+        new(NumericFields, StringComparer.OrdinalIgnoreCase)
+        {
+            "images", "target", "window", "pipe", "socket",
+        };
+
     /// <summary>
     /// Builds <c>args</c> for <c>image.frameshm</c> from <paramref name="rest"/> (the positionals
     /// after <c>image frameshm</c>) and <paramref name="options"/> (the parsed <c>--flags</c>).
@@ -36,6 +42,13 @@ public static class FrameShmCli
     {
         cargs = new Dictionary<string, object?>();
         error = null;
+
+        foreach (string option in options.Keys)
+        {
+            if (AllowedOptions.Contains(option)) continue;
+            error = $"unknown option '--{option}'";
+            return false;
+        }
 
         // --images is the escape hatch for the multi-entry case: the verb applies a whole images[]
         // array all-or-nothing, and a composition of several mappings has no flag shape.
