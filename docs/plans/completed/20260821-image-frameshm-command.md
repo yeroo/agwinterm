@@ -109,8 +109,11 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
   validation; `tests/Agwinterm.Core.Tests/` for any `KittyGraphics` change.
 - **Integration test**: a test that creates a real `MemoryMappedFile`, publishes a frame through the
   control server, and asserts the emulator holds the expected `KittyImage` and `ImagePlacement`.
-- **No e2e/UI test in this plan.** Visual confirmation arrives with the winterm-browser plan, which
-  is the real consumer. Do not build a throwaway pixel producer just to look at it.
+- **Win32 control-host e2e test**: `tests/integration/win32-control.ps1` launches an isolated real
+  window and drives the real CLI/control pipe, including live pane and cover geometry.
+- **No visual pixel-producer UI test in this plan.** Visual confirmation arrives with the
+  winterm-browser plan, which is the real consumer. Do not build a throwaway pixel producer just to
+  look at it.
 
 ## Progress Tracking
 

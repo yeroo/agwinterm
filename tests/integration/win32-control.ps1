@@ -42,8 +42,21 @@ if (-not $Exe) { "  SKIP  agwinterm not found (pass -Exe)"; exit ($Strict ? 1 : 
 $env:AGWINTERM_SESSION_ID = $null
 $env:AGWINTERM_PANE_ID = $null
 $env:AGWINTERM_PIPE = $null
-$pipe = 'win32-control-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+$env:AGWINTERM_APP_ID = $null
+$testToken = [guid]::NewGuid().ToString('N')
+$pipe = 'win32-control-' + $testToken.Substring(0, 12)
+$appId = 'agwinterm-win32-control-' + $testToken
+$localAppDataRoot = [IO.Path]::GetFullPath(
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)).TrimEnd('\')
+$testAppDir = [IO.Path]::GetFullPath((Join-Path $localAppDataRoot $appId))
+$testAppParent = [IO.Directory]::GetParent($testAppDir).FullName.TrimEnd('\')
+if (-not $testAppParent.Equals($localAppDataRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    -not ([IO.Path]::GetFileName($testAppDir)).Equals($appId, [StringComparison]::Ordinal)) {
+    throw "refusing unsafe test app-data path: $testAppDir"
+}
+if (Test-Path -LiteralPath $testAppDir) { throw "unique test app-data path already exists: $testAppDir" }
 $captureFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-cover-id-" + [guid]::NewGuid().ToString('N') + '.txt')
+$releaseFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-release-pane-" + [guid]::NewGuid().ToString('N') + '.signal')
 
 function Invoke-Ctl($argv) {
     $argv = [string[]]@($argv)
@@ -64,9 +77,10 @@ function Get-SessionSnapshot([string]$id) {
 }
 
 # A real window is required: the assertions compare the renderer's live client-area geometry.
-$process = Start-Process $Exe -ArgumentList @('--pipe', $pipe, '--no-restore') -PassThru
+$process = $null
 $sessionId = $null
 try {
+    $process = Start-Process $Exe -ArgumentList @('--app-id', $appId, '--pipe', $pipe, '--no-restore') -PassThru
     $up = $false
     for ($i = 0; $i -lt 40; $i++) {
         Start-Sleep -Milliseconds 500
@@ -78,7 +92,8 @@ try {
     # Reproduce the collision from the review: the initial pane shares the session id; a hidden
     # scratch id begins with that id. Once the initial side of a split exits, only the exact session
     # and the scratch prefix remain. Exact session resolution must win.
-    $exitCommand = 'powershell.exe -NoLogo -NoProfile -Command "Start-Sleep -Seconds 12"'
+    $releaseLiteral = $releaseFile.Replace("'", "''")
+    $exitCommand = "powershell.exe -NoLogo -NoProfile -Command `"while (-not (Test-Path -LiteralPath '$releaseLiteral')) { Start-Sleep -Milliseconds 100 }`""
     $created = Invoke-Ctl @('session', 'new', '--name', 'win32-resolver', '--command', $exitCommand)
     $sessionId = [string]$created.result
     $ready = $false
@@ -118,6 +133,10 @@ try {
         Invoke-Ctl @('session', 'readonly', 'off', '--target', $sessionId) | Out-Null
     }
 
+    # Keep the primary pane alive until the collision assertion above is complete, then release it
+    # deterministically so the survivor-promotion assertions cannot race a fixed process lifetime.
+    [IO.File]::WriteAllText($releaseFile, 'release')
+
     $promoted = $false
     for ($i = 0; $i -lt 80; $i++) {
         $snapshot = Get-SessionSnapshot $sessionId
@@ -151,6 +170,44 @@ try {
             $sessionMetrics.result.widthPx -eq $survivorMetrics.result.widthPx -and
             $sessionMetrics.result.heightPx -eq $survivorMetrics.result.heightPx
         Check 'exact session metrics describe its surviving regular pane' $sameMetrics
+
+        $baselineCellWidth = [double]$survivorMetrics.result.cellWidth
+        $baselineCellHeight = [double]$survivorMetrics.result.cellHeight
+        $fontInc = Invoke-Ctl @('font', 'inc', '--target', $sessionId)
+        $changedMetrics = $null
+        for ($i = 0; $i -lt 40; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $survivorId)
+            if ($candidate.ok -and
+                ([double]$candidate.result.cellWidth -ne $baselineCellWidth -or
+                 [double]$candidate.result.cellHeight -ne $baselineCellHeight)) {
+                $changedMetrics = $candidate
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        Check 'font inc through the exact session id changes the surviving pane' `
+            ($fontInc.ok -and $null -ne $changedMetrics)
+
+        $changedViaSession = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+        $fontMetricsMatch = $null -ne $changedMetrics -and $changedViaSession.ok -and
+            $changedViaSession.result.cellWidth -eq $changedMetrics.result.cellWidth -and
+            $changedViaSession.result.cellHeight -eq $changedMetrics.result.cellHeight
+        Check 'font-target metrics still agree through session and survivor ids' $fontMetricsMatch
+
+        $fontReset = Invoke-Ctl @('font', 'reset', '--target', $sessionId)
+        $fontResetApplied = $false
+        for ($i = 0; $i -lt 40; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $survivorId)
+            if ($candidate.ok -and
+                [double]$candidate.result.cellWidth -eq $baselineCellWidth -and
+                [double]$candidate.result.cellHeight -eq $baselineCellHeight) {
+                $fontResetApplied = $true
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        Check 'the promoted pane font resets after the routing check' ($fontReset.ok -and $fontResetApplied)
+        $sessionMetrics = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
 
         # Exercise an auxiliary cover by its actual inherited id. The background pane is read-only;
         # the quick cover is not, so readonly state proves PaneForTarget did not fall through to the
@@ -194,6 +251,10 @@ try {
     }
 }
 finally {
+    # An earlier assertion failure must not strand the fixture process waiting on its release file.
+    if (-not (Test-Path -LiteralPath $releaseFile)) {
+        try { [IO.File]::WriteAllText($releaseFile, 'release') } catch { }
+    }
     try { Invoke-Ctl @('quick', 'off') | Out-Null } catch { }
     if ($survivorId) {
         try { Invoke-Ctl @('session', 'readonly', 'off', '--target', $survivorId) | Out-Null } catch { }
@@ -202,9 +263,16 @@ finally {
         try { Invoke-Ctl @('session', 'close', $sessionId) | Out-Null } catch { }
     }
     if (Test-Path -LiteralPath $captureFile) { Remove-Item -LiteralPath $captureFile -Force }
-    try { $process.CloseMainWindow() | Out-Null } catch { }
-    Start-Sleep -Seconds 2
-    if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+    if (Test-Path -LiteralPath $releaseFile) { Remove-Item -LiteralPath $releaseFile -Force }
+    if ($process) {
+        try { $process.CloseMainWindow() | Out-Null } catch { }
+        if (-not $process.WaitForExit(2000)) {
+            Stop-Process -Id $process.Id -Force
+            $process.WaitForExit()
+        }
+    }
+    # $testAppDir was proved to be one direct child of LocalApplicationData before launch.
+    if (Test-Path -LiteralPath $testAppDir) { Remove-Item -LiteralPath $testAppDir -Recurse -Force }
 }
 
 if ($fail) { "Win32 control-host integration: $fail FAILED"; exit 1 }

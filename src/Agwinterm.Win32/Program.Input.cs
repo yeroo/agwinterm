@@ -388,9 +388,15 @@ internal partial class Program
     private void SendMousePx(int btn, IntPtr lParam, bool press)
         => SendMouse(btn, DipX(lParam), DipY(lParam), LoWord(lParam), HiWord(lParam), press);
 
-    /// <summary>Origin + metrics of the active pane in DIPs, for mouse-to-cell mapping.</summary>
+    /// <summary>Origin + metrics of the active terminal surface in DIPs, for mouse-to-cell mapping.</summary>
     private (float ox, float oy, float cw, float ch) ActivePaneView()
     {
+        if (_cover is { } cover)
+        {
+            var (x, y, _, _) = CoverRect();
+            var (_, cw, ch) = Metrics(cover.FontSize);
+            return (x, y, cw, ch);
+        }
         if (_active is not null)
             foreach (var (pane, x, y, _, _) in PaneLayout(_active))
                 if (ReferenceEquals(pane, _active.ActivePane)) { var (_, cw, ch) = Metrics(pane.FontSize); return (x, y, cw, ch); }
