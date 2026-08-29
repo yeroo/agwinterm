@@ -245,11 +245,14 @@ emits a JSON **number** — that is the whole reason the parsing exists, since a
 rejected by `ControlServer`.
 
 The CLI rejects unknown options and contradictory input shapes before opening the pipe. In the
-single-entry form it also rejects non-numeric values, values outside the JSON field's `Int32`/`Int64`
-type, and mapping names outside the `Local\agwinterm-frame-` prefix. In the multi-entry form it checks
-that `--images` is a JSON array and rejects the positional name or any single-entry numeric flag beside
-it. Semantic field ranges, mapping headers and slot descriptors remain the reader's business and
-report through the reply.
+single-entry form it also rejects non-numeric values other than the option parser's `"true"` sentinel,
+values outside the JSON field's `Int32`/`Int64` type, and mapping names outside the
+`Local\agwinterm-frame-` prefix. A numeric flag without a following value is represented by that
+sentinel and omitted; because the parser cannot distinguish it from an explicit spelling such as
+`--slot true`, that spelling is omitted too. In the multi-entry form the CLI checks that `--images` is
+a JSON array and rejects the positional name or any single-entry numeric flag beside it. Semantic
+field ranges, mapping headers and slot descriptors remain the reader's business and report through
+the reply.
 
 For the multi-entry, all-or-nothing case there is no flag shape, so pass the array directly:
 

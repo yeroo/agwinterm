@@ -314,12 +314,14 @@ shipped both the client for it and a `TERMINAL_BROWSER_CELL_PX` override to use 
       is range-checked to 32 bits so the error names the *flag* rather than the JSON property.
 - ➕ **the CLI validates its own syntax and JSON types locally**: unknown options, contradictory
       positional/`--images`/single-entry flag shapes, malformed or non-array `--images`, non-numeric
-      flag values, `Int32` overflow, and mapping names outside the `Local\agwinterm-frame-` prefix.
+      flag values other than the option parser's `"true"` sentinel, `Int32` overflow, and mapping names
+      outside the `Local\agwinterm-frame-` prefix.
       Semantic field ranges, the mapping header and the slot descriptor stay the reader's business —
       duplicating those would let the CLI drift into rejecting frames the terminal accepts.
 - ➕ a flag given with no value parses as the literal `"true"` in `Program.cs`'s option splitter, so
-      `FrameShmCli` skips it rather than failing on it; `--slot` with nothing after it means
-      "unset", not an error. Covered by `AValuelessFlagIsIgnoredRatherThanParsedAsTrue`.
+      `FrameShmCli` skips it rather than failing on it; `--slot` with nothing after it means "unset",
+      not an error. The splitter cannot distinguish explicit `--slot true`, so that spelling is also
+      omitted. Covered by `AValuelessFlagIsIgnoredRatherThanParsedAsTrue`.
 - ➕ documented the CLI in `docs/specs/image-frameshm.md` ("Driving it from the CLI"), since the spec
       is what winterm-browser codes against and the ctl is the manual way to exercise it.
 

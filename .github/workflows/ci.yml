@@ -69,6 +69,11 @@ jobs:
         timeout-minutes: 15
         run: ./tests/conformance/conformance.ps1 -Strict
 
+      - name: Win32 control-host integration
+        shell: pwsh
+        timeout-minutes: 10
+        run: ./tests/integration/win32-control.ps1 -Strict
+
       - name: Test (Core + Pty)
         # One retry for the known .NET 10 test-host #118 pathology under named-pipe churn, which
         # manifests two ways: a native CRASH ("Test Run Aborted") OR a DEADLOCK that hangs the run

@@ -164,8 +164,7 @@ internal partial class Program
         if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface()?.S;
         // Pane ids include split panes and every auxiliary cover. In particular, a ctl launched
         // inside scratch/overlay/quick inherits that cover's id as AGWINTERM_SESSION_ID.
-        if (FindPaneById(target) is { } hit) return hit.pane.S;
-        return Find(target)?.S;
+        return FindControlPane(target)?.pane.S;
     }
 
     public IReadOnlyList<WorkspaceSnapshot> Tree()
@@ -212,23 +211,19 @@ internal partial class Program
 
     private PaneMetricsSnapshot? MeasurePane(string? target)
     {
-        // Same resolution order as Resolve(): active, then pane id (exact, then prefix), then
-        // session. A pane targeted by its AGWINTERM_PANE_ID must land on ITS column, not the
-        // session's active one — a split browser pane would otherwise be told the wrong width.
+        // Same resolution order as Resolve(). A pane targeted by its AGWINTERM_PANE_ID must land
+        // on ITS column, while an exact session id must beat a derived scratch/overlay id prefix.
         Ses? ses = null; Pane? pane = null;
         if (string.IsNullOrEmpty(target) || target == "active")
         {
             ses = _active;
             pane = ActiveSurface();
         }
-        else if (FindPaneById(target) is { } hit)
+        else if (FindControlPane(target) is { } hit)
         {
             ses = hit.ses;
             pane = hit.pane;
         }
-        // A quick pane has no owning Ses, so a non-null pane is already a complete id resolution.
-        // Fall back to a session target only when no pane (regular or cover) matched at all.
-        if (pane is null) { var f = Find(target); ses = f; pane = f?.ActivePane; }
         if (pane is null || (ses is null && !ReferenceEquals(pane, _cover))) return null;
 
         var (_, cwDip, chDip) = Metrics(pane.FontSize);
@@ -299,13 +294,15 @@ internal partial class Program
     public bool SetFontSize(string? target, string op)
     {
         int delta = op switch { "inc" => 1, "dec" => -1, _ => 0 }; // reset otherwise
-                                                                   // A specific pane id (split / scratch / overlay / quick terminal) zooms just that pane;
-                                                                   // a session id (or null = active) zooms the session's active pane, as before.
-        if (!string.IsNullOrEmpty(target) && FindPaneById(target!) is { } hit)
-        { Post(() => ZoomPane(hit, delta)); return true; }
-        var ses = Find(target);
-        if (ses is null) return false;
-        Post(() => ChangeFontSizeOf(ses, delta));
+        if (string.IsNullOrEmpty(target) || target == "active")
+        {
+            var ses = Find(target);
+            if (ses is null) return false;
+            Post(() => ChangeFontSizeOf(ses, delta));
+            return true;
+        }
+        if (FindControlPane(target) is not { } targetPane) return false;
+        Post(() => ZoomPane(targetPane, delta));
         return true;
     }
 
@@ -679,7 +676,7 @@ internal partial class Program
 
     public string RestartClaudeYolo(string? target) => InvokeOnUi(() =>
     {
-        var p = string.IsNullOrEmpty(target) ? ActiveSurface() : (FindPaneById(target!)?.pane ?? ActiveSurface());
+        var p = PaneForTarget(target) ?? ActiveSurface();
         return p is null ? "no pane" : RestartClaudeYolo(p);
     });
 
@@ -714,19 +711,18 @@ internal partial class Program
 
     public string CommandLeader(string op) => InvokeOnUi(() => LeaderOp(op));
 
-    /// <summary>Resolve a control-API target to a specific pane: the active surface for "active"/empty,
-    /// else a pane by (prefix) id, else the target session's active pane.</summary>
+    /// <summary>Resolve a control target to a pane using the shared exact-pane, exact-session,
+    /// pane-prefix, session-prefix/name ordering.</summary>
     private Pane? PaneForTarget(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface();
-        if (FindPaneById(target) is { } hit) return hit.pane;
-        return FindSesForTarget(target)?.ActivePane;
+        return FindControlPane(target)?.pane;
     }
 
     /// <summary>Resolve a control-API target ("active"/null/session or pane id/prefix) to its owning session.</summary>
     private Ses? FindSesForTarget(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return _active;
-        return FindPaneById(target)?.ses ?? Find(target);
+        return FindControlPane(target)?.ses;
     }
 }

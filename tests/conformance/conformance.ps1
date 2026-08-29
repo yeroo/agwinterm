@@ -156,39 +156,6 @@ try {
         Check "session env $v" ($text -match "\[$v=[^\]]+\]") 'not set in the session shell'
     }
 
-    # --- Win32 cover metrics -------------------------------------------------------------------
-    # This deliberately runs ctl FROM the quick terminal. Its inherited AGWINTERM_SESSION_ID is the
-    # cover pane id, which is absent from Tree().PaneIds; the Win32 host must resolve that id through
-    # its auxiliary-pane index and measure the quick panel's 85% CoverRect, not the regular pane.
-    $baseMetrics = Invoke-Ctl @('session', 'metrics', '--target', 'active')
-    $metricsFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-cover-metrics-" + [guid]::NewGuid().ToString('N') + '.json')
-    try {
-        Invoke-Ctl @('quick', 'on') | Out-Null
-        Start-Sleep -Seconds 2
-        $ctlLiteral = $ctl.Replace("'", "''")
-        $fileLiteral = $metricsFile.Replace("'", "''")
-        $probe = "& '$ctlLiteral' session metrics --json | Set-Content -LiteralPath '$fileLiteral' -Encoding utf8`r"
-        Invoke-Ctl @('session', 'type', $probe, '--target', 'active') | Out-Null
-
-        for ($i = 0; $i -lt 40 -and -not (Test-Path -LiteralPath $metricsFile); $i++) {
-            Start-Sleep -Milliseconds 250
-        }
-        $coverMetrics = if (Test-Path -LiteralPath $metricsFile) {
-            try { Get-Content -LiteralPath $metricsFile -Raw | ConvertFrom-Json } catch { $null }
-        } else { $null }
-        $coverIsDistinct = $baseMetrics.ok -and $coverMetrics.ok -and
-            $coverMetrics.result.widthPx -gt 0 -and $coverMetrics.result.heightPx -gt 0 -and
-            $coverMetrics.result.widthPx -lt $baseMetrics.result.widthPx -and
-            $coverMetrics.result.heightPx -lt $baseMetrics.result.heightPx
-        $coverDetail = if ($coverMetrics) { $coverMetrics | ConvertTo-Json -Compress -Depth 4 } else { 'no cover reply file' }
-        Check 'session.metrics resolves and measures the active quick cover id' $coverIsDistinct `
-            "base=$($baseMetrics.result.widthPx)x$($baseMetrics.result.heightPx); cover=$coverDetail"
-    }
-    finally {
-        Invoke-Ctl @('quick', 'off') | Out-Null
-        if (Test-Path -LiteralPath $metricsFile) { Remove-Item -LiteralPath $metricsFile -Force }
-    }
-
     # --- refusals -------------------------------------------------------------------------------
     # A script branches on ok, so a bad target must come back as a refusal — not a crash, and not a
     # cheerful ok:true that did nothing.
