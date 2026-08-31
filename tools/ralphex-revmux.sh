@@ -95,10 +95,23 @@ PLAN_SLUG="$(printf '%s' "$PLAN_STEM" \
 [ -n "$PLAN_SLUG" ] || PLAN_SLUG="review"
 PLAN_HASH="$(printf '%s' "$TASK_SUBJECT" | sha256sum | cut -c1-10)"
 TASK="ralphex-${PLAN_SLUG}-${PLAN_HASH}"
-RUN="$(date +%Y%m%d-%H%M%S)"
-
 NEW_LOG="$(mktemp)" || fail "could not allocate revmux-new log"
-if ! PATHS_JSON="$(revmux new --task "$TASK" --run "$RUN" 2>"$NEW_LOG")"; then
+RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
+PATHS_JSON=""
+NEW_OK=false
+for attempt in 1 2 3; do
+  # The timestamp is readable but not unique: two external reviews can start in the same second
+  # for the same deterministic task. PID plus Bash's per-process random value separates them;
+  # the attempt suffix guarantees that a reported collision gets a fresh name on retry.
+  RUN="$RUN_STAMP-$$-${RANDOM:-0}-$attempt"
+  : > "$NEW_LOG"
+  if PATHS_JSON="$(revmux new --task "$TASK" --run "$RUN" 2>"$NEW_LOG")"; then
+    NEW_OK=true
+    break
+  fi
+  grep -Eqi 'already exists|duplicate|collision' "$NEW_LOG" || break
+done
+if [ "$NEW_OK" != true ]; then
   tail -n 20 "$NEW_LOG" >&2
   fail "revmux new failed"
 fi

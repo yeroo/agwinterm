@@ -10,6 +10,29 @@ param(
 $ErrorActionPreference = 'Stop'
 $fail = 0
 
+if (-not ('Agwinterm.Win32ControlTest.NativeMethods' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace Agwinterm.Win32ControlTest
+{
+    public static class NativeMethods
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RECT { public int Left, Top, Right, Bottom; }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SendMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    }
+}
+'@
+}
+
 function Check([string]$name, [bool]$ok, [string]$detail = '') {
     if ($ok) { "  PASS  $name" }
     else { $script:fail++; "  FAIL  $name$(if ($detail) { " — $detail" })" }
@@ -57,6 +80,10 @@ if (-not $testAppParent.Equals($localAppDataRoot, [StringComparison]::OrdinalIgn
 if (Test-Path -LiteralPath $testAppDir) { throw "unique test app-data path already exists: $testAppDir" }
 $captureFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-cover-id-" + [guid]::NewGuid().ToString('N') + '.txt')
 $releaseFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-release-pane-" + [guid]::NewGuid().ToString('N') + '.signal')
+$mouseCellReadyFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-mouse-cell-ready-" + [guid]::NewGuid().ToString('N') + '.signal')
+$mousePixelReadyFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-mouse-pixel-ready-" + [guid]::NewGuid().ToString('N') + '.signal')
+$mouseCellFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-mouse-cell-" + [guid]::NewGuid().ToString('N') + '.txt')
+$mousePixelFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-mouse-pixel-" + [guid]::NewGuid().ToString('N') + '.txt')
 
 function Invoke-Ctl($argv) {
     $argv = [string[]]@($argv)
@@ -76,6 +103,14 @@ function Get-SessionSnapshot([string]$id) {
     return $null
 }
 
+function Send-TestClick([IntPtr]$hwnd, [int]$x, [int]$y) {
+    $packed = (($y -band 0xffff) -shl 16) -bor ($x -band 0xffff)
+    [void][Agwinterm.Win32ControlTest.NativeMethods]::SendMessageW(
+        $hwnd, 0x0201, [IntPtr]1, [IntPtr]$packed)
+    [void][Agwinterm.Win32ControlTest.NativeMethods]::SendMessageW(
+        $hwnd, 0x0202, [IntPtr]0, [IntPtr]$packed)
+}
+
 # A real window is required: the assertions compare the renderer's live client-area geometry.
 $process = $null
 $sessionId = $null
@@ -88,6 +123,14 @@ try {
     }
     Check 'the isolated Win32 instance answers' $up
     if (-not $up) { throw 'instance never came up' }
+
+    # The unique pipe proves control isolation only. Require the files seeded under the explicit
+    # app-id before the first mutation, so ignoring --app-id cannot silently fall back to real state.
+    $appDataAdopted = (Test-Path -LiteralPath $testAppDir -PathType Container) -and
+        (Test-Path -LiteralPath (Join-Path $testAppDir 'agwinterm.conf') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $testAppDir 'profiles.json') -PathType Leaf)
+    Check 'the Win32 instance adopts its dedicated app-data namespace' $appDataAdopted $testAppDir
+    if (-not $appDataAdopted) { throw 'isolated instance did not seed its dedicated app-data directory' }
 
     # Reproduce the collision from the review: the initial pane shares the session id; a hidden
     # scratch id begins with that id. Once the initial side of a split exits, only the exact session
@@ -248,12 +291,160 @@ try {
             Check 'session.copy reads the targeted quick cover selection' `
                 ($quickCopy.ok -and ([string]$quickCopy.result).Contains($quickMarker))
         }
+
+        Invoke-Ctl @('quick', 'off') | Out-Null
+        Invoke-Ctl @('sidebar', 'hide') | Out-Null
+        Start-Sleep -Milliseconds 500
+
+        # Run a mouse-aware process in a 50%-sized floating cover. It captures one SGR cell report,
+        # consumes its release, enables SGR-Pixels, then captures a pixel report for the same client
+        # point. With background geometry both coordinates clamp to the cover's right edge; with the
+        # cover origin and font metrics they land at its horizontal midpoint.
+        $cellReadyLiteral = $mouseCellReadyFile.Replace("'", "''")
+        $pixelReadyLiteral = $mousePixelReadyFile.Replace("'", "''")
+        $cellMouseLiteral = $mouseCellFile.Replace("'", "''")
+        $pixelMouseLiteral = $mousePixelFile.Replace("'", "''")
+        $mouseScript = @'
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace Agwinterm.ControlMouseFixture
+{
+    public static class ConsoleMode
+    {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr GetStdHandle(int nStdHandle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+    }
+}
+"@
+
+$stdinHandle = [Agwinterm.ControlMouseFixture.ConsoleMode]::GetStdHandle(-10)
+$stdinMode = [uint32]0
+if (-not [Agwinterm.ControlMouseFixture.ConsoleMode]::GetConsoleMode($stdinHandle, [ref]$stdinMode)) {
+    throw "GetConsoleMode failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+}
+
+# Ask ConPTY for raw VT input so terminal mouse reports reach the fixture as
+# bytes. ReadKey() consumes console input records and silently ignores them.
+$stdinMode = ($stdinMode -bor 0x0200) -band (-bnot 0x0006)
+if (-not [Agwinterm.ControlMouseFixture.ConsoleMode]::SetConsoleMode($stdinHandle, $stdinMode)) {
+    throw "SetConsoleMode failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+}
+
+$script:mouseInput = [Console]::OpenStandardInput()
+function Read-MouseReport([int]$terminator) {
+    $bytes = [Collections.Generic.List[byte]]::new()
+    do {
+        $value = $script:mouseInput.ReadByte()
+        if ($value -lt 0) {
+            throw 'stdin closed before a mouse report arrived'
+        }
+        $bytes.Add([byte]$value)
+    } until ($value -eq $terminator)
+    return [Text.Encoding]::ASCII.GetString($bytes.ToArray())
+}
+[IO.File]::WriteAllText('__CELL_READY__', 'ready')
+[IO.File]::WriteAllText('__CELL_REPORT__', (Read-MouseReport 77))
+[void](Read-MouseReport 109)
+[IO.File]::WriteAllText('__PIXEL_READY__', 'ready')
+[IO.File]::WriteAllText('__PIXEL_REPORT__', (Read-MouseReport 77))
+'@
+        $mouseScript = $mouseScript.Replace('__CELL_READY__', $cellReadyLiteral).
+            Replace('__CELL_REPORT__', $cellMouseLiteral).
+            Replace('__PIXEL_READY__', $pixelReadyLiteral).
+            Replace('__PIXEL_REPORT__', $pixelMouseLiteral)
+        $mouseEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($mouseScript))
+        $mouseCommand = "powershell.exe -NoLogo -NoProfile -EncodedCommand $mouseEncoded"
+        $mouseOverlay = Invoke-Ctl @(
+            'session', 'overlay', 'open', $mouseCommand,
+            '--size-percent', '50', '--target', $survivorId)
+        $mouseOverlayId = [string]$mouseOverlay.result
+        for ($i = 0; $i -lt 40 -and -not (Test-Path -LiteralPath $mouseCellReadyFile); $i++) {
+            Start-Sleep -Milliseconds 250
+        }
+
+        $process.Refresh()
+        $hwnd = $process.MainWindowHandle
+        $overlayMetrics = if ($mouseOverlayId) {
+            Invoke-Ctl @('session', 'metrics', '--target', $mouseOverlayId)
+        } else { $null }
+        $mouseFixtureReady = $mouseOverlay.ok -and $hwnd -ne [IntPtr]::Zero -and
+            (Test-Path -LiteralPath $mouseCellReadyFile) -and $overlayMetrics.ok -and
+            $overlayMetrics.result.cols -gt 8 -and $overlayMetrics.result.widthPx -gt 0
+        Check 'the floating cover mouse-reporting fixture becomes ready' $mouseFixtureReady
+
+        if ($mouseFixtureReady) {
+            $esc = [char]27
+            $enableCellMouse = Invoke-Ctl @(
+                'session', 'write', "$esc[?1000h$esc[?1006h", '--target', $mouseOverlayId)
+            $clientRect = [Agwinterm.Win32ControlTest.NativeMethods+RECT]::new()
+            $hasClientRect = [Agwinterm.Win32ControlTest.NativeMethods]::GetClientRect(
+                $hwnd, [ref]$clientRect)
+            $clickX = [int](($clientRect.Right - $clientRect.Left) / 2)
+            $clickY = [int](($clientRect.Bottom - $clientRect.Top) / 2)
+            if ($enableCellMouse.ok -and $hasClientRect) { Send-TestClick $hwnd $clickX $clickY }
+            for ($i = 0; $i -lt 40 -and -not (Test-Path -LiteralPath $mouseCellFile); $i++) {
+                Start-Sleep -Milliseconds 100
+            }
+            for ($i = 0; $i -lt 40 -and -not (Test-Path -LiteralPath $mousePixelReadyFile); $i++) {
+                Start-Sleep -Milliseconds 100
+            }
+            $enablePixelMouse = Invoke-Ctl @(
+                'session', 'write', "$esc[?1016h", '--target', $mouseOverlayId)
+            if ($enablePixelMouse.ok -and $hasClientRect -and
+                (Test-Path -LiteralPath $mousePixelReadyFile)) {
+                Send-TestClick $hwnd $clickX $clickY
+            }
+            for ($i = 0; $i -lt 40 -and -not (Test-Path -LiteralPath $mousePixelFile); $i++) {
+                Start-Sleep -Milliseconds 100
+            }
+
+            $cellReport = if (Test-Path -LiteralPath $mouseCellFile) {
+                [IO.File]::ReadAllText($mouseCellFile)
+            } else { '' }
+            $pixelReport = if (Test-Path -LiteralPath $mousePixelFile) {
+                [IO.File]::ReadAllText($mousePixelFile)
+            } else { '' }
+            $cellMatch = [regex]::Match($cellReport, '^\x1b\[<0;(?<x>[0-9]+);[0-9]+M$')
+            $pixelMatch = [regex]::Match($pixelReport, '^\x1b\[<0;(?<x>[0-9]+);[0-9]+M$')
+            $cellColumn = if ($cellMatch.Success) { [int]$cellMatch.Groups['x'].Value } else { -1 }
+            $pixelX = if ($pixelMatch.Success) { [int]$pixelMatch.Groups['x'].Value } else { -1 }
+            $coverCols = [int]$overlayMetrics.result.cols
+            $coverWidthPx = [int]$overlayMetrics.result.widthPx
+            $coverCellWidth = [int]$overlayMetrics.result.cellWidth
+            $expectedCellMidpoint = [int][Math]::Floor($coverCols / 2.0) + 1
+            $cellIsCoverRelative = $cellMatch.Success -and
+                [Math]::Abs($cellColumn - $expectedCellMidpoint) -le 1 -and
+                $cellColumn -lt $coverCols - 1
+            $pixelIsCoverRelative = $pixelMatch.Success -and
+                [Math]::Abs($pixelX - ($coverWidthPx / 2.0)) -le $coverCellWidth + 2 -and
+                $pixelX -lt $coverWidthPx - $coverCellWidth
+            $cellCodes = (($cellReport.ToCharArray() | ForEach-Object { [int]$_ }) -join ',')
+            $pixelCodes = (($pixelReport.ToCharArray() | ForEach-Object { [int]$_ }) -join ',')
+            Check 'mouse reports use floating-cover cell and pixel geometry' `
+                ($enableCellMouse.ok -and $enablePixelMouse.ok -and $hasClientRect -and
+                 $cellIsCoverRelative -and $pixelIsCoverRelative) `
+                "cell=$cellColumn/$coverCols [$cellCodes]; pixel=$pixelX/$coverWidthPx [$pixelCodes]"
+        }
+        Invoke-Ctl @('session', 'overlay', 'close', '--target', $survivorId) | Out-Null
     }
 }
 finally {
     # An earlier assertion failure must not strand the fixture process waiting on its release file.
     if (-not (Test-Path -LiteralPath $releaseFile)) {
         try { [IO.File]::WriteAllText($releaseFile, 'release') } catch { }
+    }
+    if ($sessionId) {
+        try { Invoke-Ctl @('session', 'overlay', 'close', '--target', $sessionId) | Out-Null } catch { }
     }
     try { Invoke-Ctl @('quick', 'off') | Out-Null } catch { }
     if ($survivorId) {
@@ -264,6 +455,9 @@ finally {
     }
     if (Test-Path -LiteralPath $captureFile) { Remove-Item -LiteralPath $captureFile -Force }
     if (Test-Path -LiteralPath $releaseFile) { Remove-Item -LiteralPath $releaseFile -Force }
+    foreach ($mouseFile in @($mouseCellReadyFile, $mousePixelReadyFile, $mouseCellFile, $mousePixelFile)) {
+        if (Test-Path -LiteralPath $mouseFile) { Remove-Item -LiteralPath $mouseFile -Force }
+    }
     if ($process) {
         try { $process.CloseMainWindow() | Out-Null } catch { }
         if (-not $process.WaitForExit(2000)) {

@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 BRIDGE="$ROOT/tools/ralphex-revmux.sh"
 REAL_GIT="$(command -v git)"
+REAL_DATE="$(command -v date)"
 TMP="$(mktemp -d)"
 RALPHEX_FIXTURE_PROGRESS=""
 cleanup_test() {
@@ -30,6 +31,18 @@ fi
 exec "$REAL_GIT_BIN" "$@"
 FAKE_GIT
 chmod +x "$TMP/bin/git"
+
+# Hold every bridge invocation in the same synthetic second. Unique run ids must therefore come
+# from the collision-resistant suffix rather than from test timing.
+cat > "$TMP/bin/date" <<FAKE_DATE
+#!/usr/bin/env bash
+if [ "\${1:-}" = '+%Y%m%d-%H%M%S' ]; then
+  printf '%s\n' '20260831-010203'
+  exit 0
+fi
+exec "$REAL_DATE" "\$@"
+FAKE_DATE
+chmod +x "$TMP/bin/date"
 
 cat > "$TMP/bin/claude" <<'FAKE_CLAUDE'
 #!/usr/bin/env bash
@@ -66,9 +79,20 @@ if [ "${1:-}" = "new" ]; then
       *) shift ;;
     esac
   done
-  round="$FAKE_ROOT/rounds/$task/$run"
-  mkdir -p "$round/input"
-  task_file="$FAKE_ROOT/rounds/$task/task.md"
+  if [ "${FAKE_COLLIDE_ONCE:-false}" = true ] && [ ! -f "$FAKE_ROOT/collision-injected" ]; then
+    touch "$FAKE_ROOT/collision-injected"
+    printf 'synthetic round already exists\n' >&2
+    exit 8
+  fi
+  task_root="$FAKE_ROOT/rounds/$task"
+  round="$task_root/$run"
+  mkdir -p "$task_root"
+  if ! mkdir "$round"; then
+    printf 'duplicate synthetic round: %s/%s\n' "$task" "$run" >&2
+    exit 8
+  fi
+  mkdir "$round/input"
+  task_file="$task_root/task.md"
   created_task_file=false
   if [ ! -f "$task_file" ]; then
     created_task_file=true
@@ -82,6 +106,7 @@ if [ "${1:-}" = "new" ]; then
       > "$task_file"
   fi
   printf '%s\n' "$task" >> "$FAKE_ROOT/tasks.log"
+  printf '%s\t%s\n' "$task" "$run" >> "$FAKE_ROOT/runs.log"
   printf '%s' "$round/input/scope.md" > "$FAKE_ROOT/last-scope"
   jq -n --arg round_dir "$round" \
         --arg scope "$round/input/scope.md" \
@@ -150,6 +175,7 @@ run_bridge() {
     FAKE_GIT_BRANCH="${FAKE_GIT_BRANCH:-}" \
     FAKE_GIT_DETACHED_SHA="${FAKE_GIT_DETACHED_SHA:-abc1234}" \
     FAKE_OMIT_TASK_FILE="${FAKE_OMIT_TASK_FILE:-false}" \
+    FAKE_COLLIDE_ONCE="${FAKE_COLLIDE_ONCE:-false}" \
     "$BRIDGE" "$prompt"
 }
 
@@ -176,6 +202,12 @@ assert_not_contains "$scope" 'STALE_CONTEXT_MUST_NOT_REACH_SCOPE'
 task_file="$TMP/rounds/$(tail -n 1 "$TMP/tasks.log")/task.md"
 api_auth_task="$(tail -n 1 "$TMP/tasks.log")"
 assert_contains "$task_file" 'description: "Ralphex review loop for docs/plans/api/auth.md"'
+
+FAKE_COLLIDE_ONCE=true run_bridge "$TMP/api-auth.txt" "$TMP/clean.json" \
+  > "$TMP/collision-retry.out" 2> "$TMP/collision-retry.err"
+assert_contains "$TMP/collision-retry.out" 'NO ISSUES FOUND'
+[ -f "$TMP/collision-injected" ] \
+  || { echo 'revmux-new collision fixture did not run' >&2; exit 1; }
 
 write_prompt "$TMP/metadata.txt" 'docs/plans/metadata.md' 'trunk'
 FAKE_GIT_MODE=branch FAKE_GIT_BRANCH='Feature/UPPER_Case' \
@@ -407,5 +439,13 @@ fi
 tasks_after="$(wc -l < "$TMP/tasks.log" | tr -d ' ')"
 [ "$tasks_after" -gt "$tasks_before" ] \
   || { echo 'Ralphex did not reach the configured review launcher' >&2; exit 1; }
+
+duplicate_runs="$(sort "$TMP/runs.log" | uniq -d)"
+[ -z "$duplicate_runs" ] \
+  || { printf 'bridge reused task/run identities:\n%s\n' "$duplicate_runs" >&2; exit 1; }
+if ! awk -F '\t' '$2 !~ /^20260831-010203-[0-9]+-[0-9]+-[1-3]$/ { exit 1 }' "$TMP/runs.log"; then
+  echo 'bridge run id lacks timestamp, process id, random suffix, or retry attempt' >&2
+  exit 1
+fi
 
 echo 'ralphex-revmux bridge tests passed'
