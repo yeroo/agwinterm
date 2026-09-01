@@ -104,16 +104,27 @@ for attempt in 1 2 3; do
   # for the same deterministic task. PID plus Bash's per-process random value separates them;
   # the attempt suffix guarantees that a reported collision gets a fresh name on retry.
   RUN="$RUN_STAMP-$$-${RANDOM:-0}-$attempt"
-  : > "$NEW_LOG"
+  # The 2> below opens with O_TRUNC before revmux execs, so only the last attempt's
+  # refusal survives to the tail. That is the intent, but it is the redirect doing it:
+  # an edit to 2>> would change what gets reported and nothing here would look wrong.
   if PATHS_JSON="$(revmux new --task "$TASK" --run "$RUN" 2>"$NEW_LOG")"; then
     NEW_OK=true
     break
   fi
-  grep -Eqi 'already exists|duplicate|collision' "$NEW_LOG" || break
+  # Every failure retries, deliberately, rather than only the ones whose wording reads
+  # like a taken name. This loop used to gate the retry on
+  # `grep -Eqi 'already exists|duplicate|collision'` and revmux says none of those: its
+  # four refusals for a name it will not open are "has already run", "is being written
+  # by a run holding it", "was claimed by a run that never came back" and "is reserved".
+  # The gate matched nothing, so the retry never ran, and correcting it to those four
+  # phrases only moves the next silent breakage to the next wording change. Two of the
+  # messages end by advising "open a new round instead", which is what a retry does.
+  # A failure a fresh name cannot cure costs two extra sub-second calls; the attempt cap
+  # is what bounds this loop, not the wording.
 done
 if [ "$NEW_OK" != true ]; then
   tail -n 20 "$NEW_LOG" >&2
-  fail "revmux new failed"
+  fail "revmux new failed after $attempt attempts"
 fi
 
 pluck() {

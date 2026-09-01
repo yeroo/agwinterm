@@ -79,9 +79,17 @@ if [ "${1:-}" = "new" ]; then
       *) shift ;;
     esac
   done
+  # Refuse in revmux's own words, taken from the binary. A refusal authored to satisfy
+  # the bridge's retry condition is what let a gate matching nothing look tested: the
+  # loop used to require 'already exists|duplicate|collision', which revmux never says.
   if [ "${FAKE_COLLIDE_ONCE:-false}" = true ] && [ ! -f "$FAKE_ROOT/collision-injected" ]; then
     touch "$FAKE_ROOT/collision-injected"
-    printf 'synthetic round already exists\n' >&2
+    printf 'round %s is being written by a run holding it: two runs sharing a round truncate each other'"'"'s artifacts, so open a new round instead\n' "$run" >&2
+    exit 8
+  fi
+  if [ "${FAKE_ALWAYS_TAKEN:-false}" = true ]; then
+    printf '%s\n' "$run" >> "$FAKE_ROOT/taken-attempts.log"
+    printf 'round %s has already run, report.md is in place: a round that went badly is exactly the one a later reflection agent reads, so it is never reused\n' "$run" >&2
     exit 8
   fi
   task_root="$FAKE_ROOT/rounds/$task"
@@ -176,6 +184,7 @@ run_bridge() {
     FAKE_GIT_DETACHED_SHA="${FAKE_GIT_DETACHED_SHA:-abc1234}" \
     FAKE_OMIT_TASK_FILE="${FAKE_OMIT_TASK_FILE:-false}" \
     FAKE_COLLIDE_ONCE="${FAKE_COLLIDE_ONCE:-false}" \
+    FAKE_ALWAYS_TAKEN="${FAKE_ALWAYS_TAKEN:-false}" \
     "$BRIDGE" "$prompt"
 }
 
@@ -208,6 +217,26 @@ FAKE_COLLIDE_ONCE=true run_bridge "$TMP/api-auth.txt" "$TMP/clean.json" \
 assert_contains "$TMP/collision-retry.out" 'NO ISSUES FOUND'
 [ -f "$TMP/collision-injected" ] \
   || { echo 'revmux-new collision fixture did not run' >&2; exit 1; }
+
+# A name refused every time: the loop must give up bounded rather than spin, offer a
+# distinct name each attempt, and surface revmux's reason. `fail` exits 2 and prints no
+# done-signal, so this is a loud failure by design - the retry is a safety net, not a
+# way of hiding one.
+: > "$TMP/taken-attempts.log"
+set +e
+FAKE_ALWAYS_TAKEN=true run_bridge "$TMP/api-auth.txt" "$TMP/clean.json" \
+  > "$TMP/always-taken.out" 2> "$TMP/always-taken.err"
+always_taken_status=$?
+set -e
+[ "$always_taken_status" -eq 2 ] \
+  || { echo "exhausted retries exited $always_taken_status, want 2" >&2; exit 1; }
+attempts="$(wc -l < "$TMP/taken-attempts.log" | tr -d ' ')"
+[ "$attempts" -eq 3 ] \
+  || { echo "revmux new was called $attempts time(s), want 3" >&2; exit 1; }
+[ "$(sort -u "$TMP/taken-attempts.log" | wc -l | tr -d ' ')" -eq 3 ] \
+  || { echo 'an attempt reused a run name already refused' >&2; exit 1; }
+assert_contains "$TMP/always-taken.err" 'has already run'
+assert_contains "$TMP/always-taken.err" 'revmux new failed after 3 attempts'
 
 write_prompt "$TMP/metadata.txt" 'docs/plans/metadata.md' 'trunk'
 FAKE_GIT_MODE=branch FAKE_GIT_BRANCH='Feature/UPPER_Case' \
