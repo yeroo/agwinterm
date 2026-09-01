@@ -96,7 +96,14 @@ internal partial class Program
     {
         var p = ActiveSurface();
         if (p is null) return false;
-        if (p.S.Emulator.IsAltScreen) return true;   // no history to scroll to; an offset here is never rendered
+        // The alt screen has no history to scroll to, and an offset taken here is never rendered.
+        // Zeroing one is still allowed — and is in fact the only way back if some other path left an
+        // offset behind, which is what Shift+End is for.
+        if (p.S.Emulator.IsAltScreen)
+        {
+            if (p.ScrollOffset != 0) { p.ScrollOffset = 0; RequestRedraw(); }
+            return true;
+        }
         int hist = p.S.Emulator.HistoryCount;
         int no = deltaLines == int.MaxValue ? hist : deltaLines == int.MinValue ? 0
                : Math.Clamp(p.ScrollOffset + deltaLines, 0, hist);
@@ -858,11 +865,18 @@ internal partial class Program
     /// characters of pure separator — non-empty by length, and it would swallow the interrupt in
     /// exactly the case this is here to catch. Clearing stays the caller's decision, so
     /// copy-on-select and mark mode keep the highlight they explicitly asked to keep.</summary>
-    private bool CopySelection(Pane pane, bool clear = true)
+    private bool CopySelection(Pane pane, bool clear = true) => CopySelection(pane, out _, clear);
+
+    /// <summary>As above, handing back exactly what reached the clipboard (empty when nothing did).
+    /// Callers that report on the copy must use this rather than scanning again: the pty reader
+    /// feeds the emulator on its own thread and SelectionText holds the session lock only for one
+    /// scan, so a second scan can measure a different buffer than the one that was copied.</summary>
+    private bool CopySelection(Pane pane, out string copied, bool clear = true)
     {
         string t = SelectionText(pane);
+        copied = t;
         bool any = t.AsSpan().IndexOfAnyExcept('\r', '\n', ' ') >= 0;
-        if (any) ClipboardSet(t);
+        if (any) ClipboardSet(t); else copied = "";
         if (clear) pane.ClearSel();
         RequestRedraw();
         return any;
@@ -883,10 +897,8 @@ internal partial class Program
 
     /// <summary>Called when a selection is finished (drag mouse-up / word / line select). Honors copy-on-select
     /// by copying to the clipboard without clearing the highlight.</summary>
-    private void FinalizeSelection(Pane p)
-    {
-        if (_config.CopyOnSelect && HasLiveSel(p)) CopySelection(p, clear: false);
-    }
+    private bool FinalizeSelection(Pane p)
+        => _config.CopyOnSelect && HasLiveSel(p) && CopySelection(p, clear: false);
 
     private void StopSelAutoscroll()
     {
@@ -962,7 +974,10 @@ internal partial class Program
         {
             int cols = em.Screen.Cols, rows = em.Screen.Rows, hist = em.HistoryCount;
             var sb = new StringBuilder(cols);
-            for (int line = 0; line < hist + rows; line++)
+            // On the alt screen the pane shows only the live grid: matches below `hist` belong to the
+            // other screen, cannot be highlighted or scrolled to, and would inflate "n of m".
+            int from = em.IsAltScreen ? hist : 0;
+            for (int line = from; line < hist + rows; line++)
             {
                 sb.Clear();
                 for (int c = 0; c < cols; c++)
@@ -997,7 +1012,9 @@ internal partial class Program
         if (ap is null || _searchCur < 0 || _searchCur >= _searchMatches.Count) return;
         int ml = _searchMatches[_searchCur].Line;
         var em = ap.S.Emulator;
-        int rows, hist; lock (ap.S.SyncRoot) { rows = em.Screen.Rows; hist = em.HistoryCount; }
+        int rows, hist; bool alt;
+        lock (ap.S.SyncRoot) { rows = em.Screen.Rows; hist = em.HistoryCount; alt = em.IsAltScreen; }
+        if (alt) return;   // nothing to scroll to, and the offset would never be rendered
         ap.ScrollOffset = Math.Clamp(hist - ml + rows / 2, 0, hist); // centre the match; live grid => snaps to 0
     }
 

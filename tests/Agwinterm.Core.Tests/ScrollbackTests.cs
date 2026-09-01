@@ -101,6 +101,28 @@ public class ScrollbackTests
         Assert.Equal(0, t.HistoryCount);
     }
 
+    /// <summary>The premise the Win32 selection bound rests on (see SelectionBoundsTests): entering
+    /// the alt screen leaves the main screen's history in place, so `HistoryCount` is exactly the
+    /// first line the alt screen can show. A change that CLEARED history on the transition would
+    /// pass the test above — it enters with an empty history — while quietly turning that bound back
+    /// into 0, which is how invisible scrollback ended up on the clipboard.</summary>
+    [Fact]
+    public void AltScreen_LeavesMainScreenHistoryIntact()
+    {
+        var t = new TerminalEmulator(10, 3);
+        for (int i = 0; i < 10; i++) Feed(t, $"M{i}\r\n");
+        int before = t.HistoryCount;
+        Assert.True(before > 0, "the main screen should have scrolled some lines into history");
+
+        Feed(t, "\x1b[?1049h");
+        Assert.Equal(before, t.HistoryCount);
+        for (int i = 0; i < 10; i++) Feed(t, "A\r\n");
+        Assert.Equal(before, t.HistoryCount);   // the alt screen never pushes, and never drops
+
+        Feed(t, "\x1b[?1049l");
+        Assert.Equal(before, t.HistoryCount);
+    }
+
     [Fact]
     public void Clear_DoesNotRecordHistory()
     {

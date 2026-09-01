@@ -466,8 +466,7 @@ internal partial class Program
             // nothing and leaves the clipboard alone, and an agent acting on this reply must not be
             // told otherwise. Length is not the measure — SelectionText joins rows with CRLF whether
             // or not a row held text.
-            string t = SelectionText(p);
-            return CopySelection(p) ? $"copied {t.Length} chars" : "nothing to copy";
+            return CopySelection(p, out string copied) ? $"copied {copied.Length} chars" : "nothing to copy";
         });
 
         public string SelectionClear(string? target) => InvokeOnUi(() =>
@@ -480,8 +479,11 @@ internal partial class Program
         public string SelectionFinalize(string? target) => InvokeOnUi(() =>
         {
             var p = PaneForTarget(target); if (p is null) return "no session";
-            FinalizeSelection(p);
-            return _config.CopyOnSelect ? (HasLiveSel(p) ? "finalized (copied)" : "finalized (empty)") : "finalized (copy-on-select off)";
+            // Ask the copy what happened rather than inferring it from a surviving selection: since
+            // FinalizeSelection passes clear:false, the selection survives either way, so the
+            // "(empty)" arm was unreachable and a declined copy was reported as a copy.
+            bool copied = FinalizeSelection(p);
+            return _config.CopyOnSelect ? (copied ? "finalized (copied)" : "finalized (empty)") : "finalized (copy-on-select off)";
         });
 
         public string SessionPaste(string? target, string? text) => InvokeOnUi(() =>
