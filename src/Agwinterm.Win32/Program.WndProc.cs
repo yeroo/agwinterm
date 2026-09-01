@@ -544,6 +544,7 @@ internal partial class Program
                     // Otherwise scroll the pane under the cursor through its scrollback history.
                     if (_cover is not null && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
                     {
+                        if (_cover.S.Emulator.IsAltScreen) return IntPtr.Zero;
                         int hn = _cover.S.Emulator.HistoryCount;
                         int step = Math.Clamp(_config.ScrollSpeed, 1, 10);
                         int no = Math.Clamp(_cover.ScrollOffset + (HiWord(wParam) > 0 ? step : -step), 0, hn);
@@ -554,6 +555,9 @@ internal partial class Program
                         foreach (var (p, x, _, w, _) in PaneLayout(_active))
                             if (pt.x >= x && pt.x < x + w)
                             {
+                                // The alt screen shows no history: an offset accumulated here would
+                                // never be rendered, and silently move where clicks land.
+                                if (p.S.Emulator.IsAltScreen) break;
                                 int histN = p.S.Emulator.HistoryCount;
                                 int dir = HiWord(wParam) > 0 ? 1 : -1; // wheel up scrolls back into history
                                 int no = Math.Clamp(p.ScrollOffset + dir * Math.Clamp(_config.ScrollSpeed, 1, 10), 0, histN);

@@ -568,9 +568,12 @@ internal partial class Program
     private (int line, int col) CellAtPx(Pane pane, float ox, float oy, float cw, float ch, int px, int py)
     {
         var em = pane.S.Emulator;
-        int cols, rows, hist;
-        lock (pane.S.SyncRoot) { cols = em.Screen.Cols; rows = em.Screen.Rows; hist = em.HistoryCount; }
-        int off = Math.Clamp(pane.ScrollOffset, 0, hist);
+        int cols, rows, hist; bool alt;
+        lock (pane.S.SyncRoot) { cols = em.Screen.Cols; rows = em.Screen.Rows; hist = em.HistoryCount; alt = em.IsAltScreen; }
+        // The alt screen shows no history, so the renderer pins its offset to 0 (Program.Render.cs)
+        // and so must this: mapping a click through a stale offset would name history rows that are
+        // not on screen — a selection nothing highlights, which Ctrl+C would then copy.
+        int off = alt ? 0 : Math.Clamp(pane.ScrollOffset, 0, hist);
         int vr = Math.Clamp((int)((py - oy) / ch), 0, rows - 1);
         int col = Math.Clamp((int)((px - ox) / cw), 0, cols - 1);
         int line = Math.Clamp(hist - off + vr, 0, hist + rows - 1);
@@ -661,7 +664,11 @@ internal partial class Program
             if (Math.Min(p.SelAncLine, p.SelFocLine) < evicted) { p.ClearSel(); return false; }
             p.SelAncLine -= (int)evicted; p.SelFocLine -= (int)evicted;
         }
-        return true;
+        // Same bounds check as the branch above: Resize shrinks the screen without reflowing or
+        // pushing the lost rows into history, so a selection on the bottom rows of an ordinary shell
+        // can end up past the end of the buffer, where SelectionText reads Cell.Empty and copies
+        // blank lines the renderer never highlighted.
+        return ClampSel(p, hist, rows, cols);
     }
 
     /// <summary>Hold a selection inside the buffer it is drawn against. Only a resize moves those
@@ -671,6 +678,11 @@ internal partial class Program
     {
         int maxLine = hist + rows - 1, maxCol = Math.Max(0, cols - 1);
         if (maxLine < 0 || Math.Min(p.SelAncLine, p.SelFocLine) > maxLine) { p.ClearSel(); return false; }
+        // Columns only name text for a rectangle or a one-row selection; when such a selection sits
+        // entirely right of a narrower screen, drop it rather than pin it to the last column, where
+        // it would highlight an unrelated stripe. (A taller linear selection still covers whole rows.)
+        if ((p.BlockSel || p.SelAncLine == p.SelFocLine) && Math.Min(p.SelAncCol, p.SelFocCol) > maxCol)
+        { p.ClearSel(); return false; }
         p.SelAncLine = Math.Clamp(p.SelAncLine, 0, maxLine);
         p.SelFocLine = Math.Clamp(p.SelFocLine, 0, maxLine);
         p.SelAncCol = Math.Clamp(p.SelAncCol, 0, maxCol);
@@ -716,9 +728,9 @@ internal partial class Program
         if (_markMode) { _markMode = false; ShowToast("mark mode off"); RequestRedraw(); return; }
         if (ActiveSurface() is not { } p) return;
         var em = p.S.Emulator;
-        int hist, row, col;
-        lock (p.S.SyncRoot) { hist = em.HistoryCount; row = em.CursorRow; col = em.CursorCol; }
-        int abs = hist - Math.Clamp(p.ScrollOffset, 0, hist) + row;   // buffer-absolute caret line
+        int hist, row, col; bool alt;
+        lock (p.S.SyncRoot) { hist = em.HistoryCount; row = em.CursorRow; col = em.CursorCol; alt = em.IsAltScreen; }
+        int abs = hist - (alt ? 0 : Math.Clamp(p.ScrollOffset, 0, hist)) + row;   // buffer-absolute caret line
         p.SelAncLine = p.SelFocLine = abs; p.SelAncCol = p.SelFocCol = col; p.HasSel = true; p.BlockSel = false;
         StampSel(p);
         _markMode = true;
@@ -735,8 +747,8 @@ internal partial class Program
         // left in the old numbering and the two ends would name different eras of the buffer.
         if (p.HasSel && !ReconcileSel(p)) { _markMode = false; p.ClearSel(); RequestRedraw(); return true; }
         var em = p.S.Emulator;
-        int cols, rows, hist;
-        lock (p.S.SyncRoot) { cols = em.Screen.Cols; rows = em.Screen.Rows; hist = em.HistoryCount; }
+        int cols, rows, hist; bool alt;
+        lock (p.S.SyncRoot) { cols = em.Screen.Cols; rows = em.Screen.Rows; hist = em.HistoryCount; alt = em.IsAltScreen; }
         int maxLine = hist + rows - 1;
         switch (vk)
         {
@@ -747,17 +759,29 @@ internal partial class Program
             case VK_DOWN: p.SelFocLine = Math.Min(maxLine, p.SelFocLine + 1); break;
             case VK_HOME: p.SelFocCol = 0; break;
             case VK_END: p.SelFocCol = cols - 1; break;
-            case VK_RETURN: CopySelection(p, clear: false); _markMode = false; ShowToast("copied"); RequestRedraw(); return true;
-            case 0x43 when ctrl: CopySelection(p, clear: false); _markMode = false; ShowToast("copied"); RequestRedraw(); return true; // Ctrl+C
+            case VK_RETURN: MarkModeCopy(p); return true;
+            case 0x43 when ctrl: MarkModeCopy(p); return true;   // Ctrl+C
             default: return true;   // swallow everything else while in mark mode
         }
         p.HasSel = true;
-        // keep the focus line visible (scroll the pane if the caret walked off the top)
-        int topAbs = hist - Math.Clamp(p.ScrollOffset, 0, hist);
+        // keep the focus line visible (scroll the pane if the caret walked off the top). The alt
+        // screen shows no history, so there is nothing to scroll and its offset stays pinned at 0.
+        int topAbs = hist - (alt ? 0 : Math.Clamp(p.ScrollOffset, 0, hist));
+        if (alt) { RequestRedraw(); return true; }
         if (p.SelFocLine < topAbs) p.ScrollOffset = Math.Clamp(hist - p.SelFocLine, 0, hist);
         else if (p.SelFocLine >= topAbs + rows) p.ScrollOffset = Math.Clamp(hist - (p.SelFocLine - rows + 1), 0, hist);
         RequestRedraw();
         return true;
+    }
+
+    /// <summary>Mark mode's two copy keys (Enter, Ctrl+C). Keeps the highlight up so the user can see
+    /// what was taken, and says plainly when the cells held nothing.</summary>
+    private void MarkModeCopy(Pane p)
+    {
+        bool copied = CopySelection(p, clear: false);
+        _markMode = false;
+        ShowToast(copied ? "copied" : "nothing to copy");
+        RequestRedraw();
     }
 
     private void BeginSelect(Pane p, int line, int col, bool extend)
@@ -811,14 +835,21 @@ internal partial class Program
 
     /// <summary>Copy the selection; false if there was nothing to copy. A live selection can still
     /// hold no text — a TUI that repaints blanks the cells under it — and the caller needs to tell
-    /// the two apart: plain Ctrl+C must interrupt rather than be swallowed by a copy of nothing.</summary>
+    /// the two apart: plain Ctrl+C must interrupt rather than be swallowed by a copy of nothing.
+    ///
+    /// "Nothing" is decided on CONTENT, not on length: SelectionText joins its rows with CRLF
+    /// whether or not a row contributed a character, so a blanked six-row selection is ten
+    /// characters of pure separator — non-empty by length, and it would swallow the interrupt in
+    /// exactly the case this is here to catch. Clearing stays the caller's decision, so
+    /// copy-on-select and mark mode keep the highlight they explicitly asked to keep.</summary>
     private bool CopySelection(Pane pane, bool clear = true)
     {
         string t = SelectionText(pane);
-        if (t.Length > 0) ClipboardSet(t);
-        if (clear || t.Length == 0) pane.ClearSel();
+        bool any = t.AsSpan().IndexOfAnyExcept('\r', '\n', ' ') >= 0;
+        if (any) ClipboardSet(t);
+        if (clear) pane.ClearSel();
         RequestRedraw();
-        return t.Length > 0;
+        return any;
     }
 
     /// <summary>Select the pane's entire buffer — all scrollback history through the last live row.</summary>
