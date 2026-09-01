@@ -462,7 +462,12 @@ internal partial class Program
         {
             var p = PaneForTarget(target); if (p is null) return "no session";
             if (!HasLiveSel(p)) return "no selection";
-            string t = SelectionText(p); CopySelection(p); return $"copied {t.Length} chars";
+            // Report what actually happened: a live selection over cells a TUI has blanked copies
+            // nothing and leaves the clipboard alone, and an agent acting on this reply must not be
+            // told otherwise. Length is not the measure — SelectionText joins rows with CRLF whether
+            // or not a row held text.
+            string t = SelectionText(p);
+            return CopySelection(p) ? $"copied {t.Length} chars" : "nothing to copy";
         });
 
         public string SelectionClear(string? target) => InvokeOnUi(() =>
