@@ -607,16 +607,15 @@ internal partial class Program
             // against; inside a partial DECSTBM region (a reserved status line) rows move with no
             // history push at all; the alt screen has no history by definition. ScrollGeneration
             // stays flat in all three — see TerminalEmulator.ScrollRegionUp's guard — so a selection
-            // taken there can only ever be dropped, never followed.
+            // taken there cannot follow its text; it stays on the cells it was drawn over.
             p.SelTrackable = !em.IsAltScreen && em.ScrollbackMax > 0
                              && em.ScrollTop == 0 && em.ScrollBottom == em.Screen.Rows - 1;
         }
-        p.SelOutSeq = System.Threading.Interlocked.Read(ref p.OutputSeq);
     }
 
     /// <summary>Reconcile a selection with everything that has happened to the buffer since it was
     /// made, and report whether anything is still selected. UI THREAD ONLY — the pty reader never
-    /// touches selection state, it only bumps <see cref="Pane.OutputSeq"/>.</summary>
+    /// touches selection state.</summary>
     private static bool HasLiveSel(Pane p) => p.HasSel && ReconcileSel(p);
 
     /// <summary>The reconcile itself, WITHOUT the <see cref="Pane.HasSel"/> guard.
@@ -629,10 +628,10 @@ internal partial class Program
     private static bool ReconcileSel(Pane p)
     {
         var em = p.S.Emulator;
-        long gen; int hist, rows; bool alt; int top, bottom, sbMax;
+        long gen; int hist, rows, cols; bool alt; int top, bottom, sbMax;
         lock (p.S.SyncRoot)
         {
-            gen = em.ScrollGeneration; hist = em.HistoryCount; rows = em.Screen.Rows;
+            gen = em.ScrollGeneration; hist = em.HistoryCount; rows = em.Screen.Rows; cols = em.Screen.Cols;
             alt = em.IsAltScreen; top = em.ScrollTop; bottom = em.ScrollBottom; sbMax = em.ScrollbackMax;
         }
         // The alt screen is a different buffer: an index into one names unrelated text in the other.
@@ -640,10 +639,18 @@ internal partial class Program
         bool trackable = !alt && sbMax > 0 && top == 0 && bottom == rows - 1;
         if (!trackable || !p.SelTrackable)
         {
-            // Content can move here with nothing to measure it by. Drop the selection the moment
-            // anything is printed rather than let it cover text the user never highlighted.
-            if (System.Threading.Interlocked.Read(ref p.OutputSeq) != p.SelOutSeq) { p.ClearSel(); return false; }
-            return true;
+            // Content can move here with nothing to measure it by — a full-screen TUI repainting in
+            // place, a reserved status line, scrollback off. The selection cannot FOLLOW its text,
+            // but it can stay on the cells it covers: the highlight is redrawn from these very
+            // coordinates every frame and SelectionText reads the same cells the renderer draws, so
+            // what lands on the clipboard is always what is visibly highlighted.
+            //
+            // Dropping it on the first byte of output instead (as this did) made selection
+            // impossible in exactly the apps people select from most. codex repaints its status line
+            // about once a second: every mouse-move mid-drag found new output, dropped the anchor and
+            // re-anchored under the cursor, so the drag never built a selection at all — and Ctrl+C,
+            // finding nothing live, fell through to the app as an interrupt.
+            return ClampSel(p, hist, rows, cols);
         }
         // One generation per line pushed into history: what scrolled but did not grow history was
         // evicted off the front, and eviction is the only thing that renumbers absolute indices.
@@ -654,6 +661,20 @@ internal partial class Program
             if (Math.Min(p.SelAncLine, p.SelFocLine) < evicted) { p.ClearSel(); return false; }
             p.SelAncLine -= (int)evicted; p.SelFocLine -= (int)evicted;
         }
+        return true;
+    }
+
+    /// <summary>Hold a selection inside the buffer it is drawn against. Only a resize moves those
+    /// bounds under it; a selection left entirely past the end is dropped rather than pinned to the
+    /// last row, where it would highlight text the user never touched.</summary>
+    private static bool ClampSel(Pane p, int hist, int rows, int cols)
+    {
+        int maxLine = hist + rows - 1, maxCol = Math.Max(0, cols - 1);
+        if (maxLine < 0 || Math.Min(p.SelAncLine, p.SelFocLine) > maxLine) { p.ClearSel(); return false; }
+        p.SelAncLine = Math.Clamp(p.SelAncLine, 0, maxLine);
+        p.SelFocLine = Math.Clamp(p.SelFocLine, 0, maxLine);
+        p.SelAncCol = Math.Clamp(p.SelAncCol, 0, maxCol);
+        p.SelFocCol = Math.Clamp(p.SelFocCol, 0, maxCol);
         return true;
     }
 
@@ -788,12 +809,16 @@ internal partial class Program
         p.SelAncLine = p.SelFocLine = line; p.SelAncCol = 0; p.SelFocCol = cols - 1; p.HasSel = true; StampSel(p);
     }
 
-    private void CopySelection(Pane pane, bool clear = true)
+    /// <summary>Copy the selection; false if there was nothing to copy. A live selection can still
+    /// hold no text — a TUI that repaints blanks the cells under it — and the caller needs to tell
+    /// the two apart: plain Ctrl+C must interrupt rather than be swallowed by a copy of nothing.</summary>
+    private bool CopySelection(Pane pane, bool clear = true)
     {
         string t = SelectionText(pane);
         if (t.Length > 0) ClipboardSet(t);
-        if (clear) pane.ClearSel();
+        if (clear || t.Length == 0) pane.ClearSel();
         RequestRedraw();
+        return t.Length > 0;
     }
 
     /// <summary>Select the pane's entire buffer — all scrollback history through the last live row.</summary>
@@ -1092,9 +1117,10 @@ internal partial class Program
                 // Ctrl+Shift+C is the explicit copy shortcut (always consumed). Plain Ctrl+C copies the
                 // selection only when copy-on-ctrl-c is on — otherwise it falls through and interrupts,
                 // so with nothing selected (or the option off) the shell still gets ^C.
-                if (shift) { if (HasLiveSel(ap)) { CopySelection(ap); ShowToast("Text copied", 500); } return true; }
-                if (_config.CopyOnCtrlC && HasLiveSel(ap)) { CopySelection(ap); ShowToast("Text copied", 500); return true; }
-                // plain Ctrl+C with no selection (or option off) falls through to the interrupt below
+                if (shift) { if (HasLiveSel(ap) && CopySelection(ap)) ShowToast("Text copied", 500); return true; }
+                if (_config.CopyOnCtrlC && HasLiveSel(ap) && CopySelection(ap)) { ShowToast("Text copied", 500); return true; }
+                // plain Ctrl+C with no selection, nothing under it, or the option off falls through
+                // to the interrupt below
             }
             else if (vk == 0x56) { PasteInto(ap); return true; } // Ctrl+V / Ctrl+Shift+V
         }

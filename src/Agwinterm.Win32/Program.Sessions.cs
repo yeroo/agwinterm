@@ -87,15 +87,13 @@ internal partial class Program
         // close to unusable next to a running agent: the agent prints, the selection you just made is
         // gone, and Ctrl+C falls through to the interrupt — cancelling its turn. The selection is
         // reconciled in ReconcileSel instead, on the UI thread, against the snapshot taken when it was made.
-        // This handler therefore writes NOTHING about the selection; it only bumps a counter that lets
-        // the reconcile tell "output has arrived since" from "nothing has happened".
+        // This handler therefore writes NOTHING about the selection at all.
         // Repaints are requested ONLY when this pane is on screen: a background tab's output flood
         // used to repaint the (unchanged!) foreground at the full frame cap, starving typing on slow
         // machines. The emulator still consumes everything; switching to the pane shows current
         // content, and the sidebar title catches up on the next paint (cursor blink at the latest).
         session.OutputReceived += () =>
         {
-            System.Threading.Interlocked.Increment(ref pane.OutputSeq);
             long gen = session.Emulator.ScrollGeneration;
             if (gen != pane.LastScrollGen) { pane.LastScrollGen = gen; pane.ScrollOffset = 0; }
             // Synchronized output (DECSET ?2026): while the app is mid-frame, defer painting so a
