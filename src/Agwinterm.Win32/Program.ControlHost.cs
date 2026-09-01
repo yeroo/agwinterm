@@ -519,8 +519,27 @@ internal partial class Program
 
         public void Quick(string op) => Post(() => QuickOp(op));
 
+        /// <summary>An overlay covers a whole SESSION. When the caller named one pane of a split, that
+        /// is not what they asked for - say so rather than widen it in silence and blank the pane the
+        /// user was reading. (Found for real: a review TUI aimed at the right pane took the left one
+        /// too, and nothing in the reply said it would.) A pane in a single-pane session is refused
+        /// nothing: there, covering the session covers exactly that pane.</summary>
+        private string? OverlayTargetRefusal(string? target)
+        {
+            if (string.IsNullOrEmpty(target) || target == "active") return null;
+            var ses = FindSesForTarget(target);
+            if (ses is null || ses.Panes.Count <= 1) return null;   // one pane: covering the session covers it
+            // A string that names the SESSION keeps session behaviour; only a pane id is refused.
+            if (ses.Id == target || ses.Id.StartsWith(target, StringComparison.Ordinal)) return null;
+            if (!ses.Panes.Any(p => p.Id == target || p.Id.StartsWith(target, StringComparison.Ordinal))) return null;
+            return ISessionHost.RefusePrefix +
+                   $"'{target}' names one pane of a {ses.Panes.Count}-pane session; session.overlay covers " +
+                   $"the whole session. Pass the session id ({ses.Id}) to cover it, or omit --target.";
+        }
+
         public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
         {
+            if (action != "result" && OverlayTargetRefusal(target) is { } refusal) return refusal;
             switch (action)
             {
                 case "result":

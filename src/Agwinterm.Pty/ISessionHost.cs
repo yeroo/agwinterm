@@ -27,6 +27,11 @@ public sealed record WindowStateSnapshot(bool SidebarVisible, bool Fullscreen, b
 /// </summary>
 public interface ISessionHost
 {
+    /// <summary>Marker a host puts in front of a verb's result to mean "refused, and here is why" —
+    /// the control server turns it into an ok:false error. Needed where the host returns a string
+    /// rather than a bool, so a refusal cannot be mistaken for a result.</summary>
+    public const string RefusePrefix = "refuse:";
+
     ISession? Resolve(string? target);
 
     /// <summary>The full workspace→session tree.</summary>
