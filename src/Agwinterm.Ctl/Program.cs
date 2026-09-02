@@ -13,7 +13,8 @@ using System.Text.Json;
 //   agwintermctl session seen [--target ID]        (clear the unseen-notification badge)
 //   agwintermctl sidebar state                      (read-back: "visible tree" | "hidden flagged" | ...)
 //   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
-//   agwintermctl session type <text...> [--target ID]
+//   agwintermctl session text [--lines N] [--target ID]   (N reaches into scrollback; default = screen)
+//   agwintermctl session type <text...> [--target ID]     (refuses control bytes; use write for raw)
 //   agwintermctl session write <text...> [--target ID]
 //   agwintermctl session copy [--target ID]           (returns the selection text)
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
@@ -146,7 +147,9 @@ switch (area)
                 // --select <text> (agterm parity): text may come via --select instead of positionals.
                 cargs["text"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("select") ?? "");
                 break;
-            case "text": break; // dump the buffer; target only
+            case "text": // dump the buffer; --lines N reaches back into scrollback (default: the visible screen)
+                if (int.TryParse(Opt("lines"), out var textLines)) cargs["lines"] = textLines;
+                break;
             case "copy": break;  // return the target's selection text; target only
             case "seen": break;  // clear the unseen-notification badge; target only
             case "output": break; // last completed command's output (FTCS marks); target only
