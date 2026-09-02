@@ -169,14 +169,11 @@ which ConPTY makes necessary), shell `profiles`, `omp` theme control, `claude.ad
 
 ## agliteterm, against agwinterm
 
-lite implements the same protocol with a smaller command set. Missing relative to agwinterm:
-`selection.*` (all four), every `image.*`, and `session.background`, `session.bind`, `session.focus`,
-`session.metrics`, `session.readonly`, `session.resize`, `session.restore`, `session.search`,
-`session.switch`, plus `workspace.move`.
-
-For the hub's own tooling that is survivable — `peer-chat.py` and `agmsg peek` need only `tree`,
-`session.text` and `session.type` — but `selection.*` missing means the copy tooling and anything
-reading a user's selection cannot work there.
+Tracked separately, in **[lite-parity.md](lite-parity.md)** — the goal there is that the two products
+expose the same features, so it is a list with an end, not a survey. Short version as of 2026-09-02:
+agliteterm answers **41 of agwinterm's 85** control verbs, the sharpest gap being `selection.*`
+(it can read a selection but not make one). It is also *ahead* in three places, which should move the
+other way.
 
 ---
 
