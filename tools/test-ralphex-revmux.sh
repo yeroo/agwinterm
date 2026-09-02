@@ -53,10 +53,6 @@ to_unix_path() {
 FAKE_ROOT="$(to_unix_path "$FAKE_ROOT")"
 FAKE_REPORT="$(to_unix_path "$FAKE_REPORT")"
 if [ "${1:-}" = "new" ]; then
-  if [ "${FAKE_NEW_STATUS:-0}" != "0" ]; then
-    echo 'synthetic revmux-new diagnostic' >&2
-    exit "$FAKE_NEW_STATUS"
-  fi
   task=""
   run=""
   while [ "$#" -gt 0 ]; do
@@ -66,6 +62,20 @@ if [ "${1:-}" = "new" ]; then
       *) shift ;;
     esac
   done
+  # Every name the bridge asks for, so a test can count attempts and check they differ.
+  printf '%s\n' "$run" >> "$FAKE_ROOT/new-attempts.log"
+  if [ "${FAKE_NEW_STATUS:-0}" != "0" ]; then
+    echo 'synthetic revmux-new diagnostic' >&2
+    exit "$FAKE_NEW_STATUS"
+  fi
+  # Refuse the first attempt in revmux's own words, taken from the binary. A refusal
+  # authored to match whatever the bridge happens to look for is how a retry condition
+  # that matches nothing still looks tested.
+  if [ "${FAKE_COLLIDE_ONCE:-false}" = true ] && [ ! -f "$FAKE_ROOT/collision-injected" ]; then
+    touch "$FAKE_ROOT/collision-injected"
+    printf 'round %s has already run, report.md is in place: a round that went badly is exactly the one a later reflection agent reads, so it is never reused\n' "$run" >&2
+    exit 8
+  fi
   round="$FAKE_ROOT/rounds/$task/$run"
   mkdir -p "$round/input"
   task_file="$FAKE_ROOT/rounds/$task/task.md"
@@ -150,6 +160,7 @@ run_bridge() {
     FAKE_GIT_BRANCH="${FAKE_GIT_BRANCH:-}" \
     FAKE_GIT_DETACHED_SHA="${FAKE_GIT_DETACHED_SHA:-abc1234}" \
     FAKE_OMIT_TASK_FILE="${FAKE_OMIT_TASK_FILE:-false}" \
+    FAKE_COLLIDE_ONCE="${FAKE_COLLIDE_ONCE:-false}" \
     "$BRIDGE" "$prompt"
 }
 
@@ -271,6 +282,7 @@ set -e
 [ "$failure_status" = "2" ] || { echo "revmux exit 2 became $failure_status" >&2; exit 1; }
 
 set +e
+: > "$TMP/new-attempts.log"
 PATH="$TMP/bin:$PATH" REAL_GIT_BIN="$REAL_GIT" FAKE_ROOT="$TMP" \
   FAKE_REPORT="$TMP/clean.json" FAKE_NEW_STATUS=9 \
   "$BRIDGE" "$TMP/api-auth.txt" > "$TMP/new-failure.out" 2> "$TMP/new-failure.err"
@@ -278,6 +290,25 @@ new_failure_status=$?
 set -e
 [ "$new_failure_status" -ne 0 ] || { echo 'revmux new failure returned success' >&2; exit 1; }
 assert_contains "$TMP/new-failure.err" 'synthetic revmux-new diagnostic'
+# The same call, read for the retry: a name refused every time must give up bounded
+# rather than spin, and must offer a distinct name on each attempt.
+new_attempts="$(wc -l < "$TMP/new-attempts.log" | tr -d ' ')"
+[ "$new_attempts" -eq 3 ] \
+  || { echo "revmux new was called $new_attempts time(s), want 3" >&2; exit 1; }
+[ "$(sort -u "$TMP/new-attempts.log" | wc -l | tr -d ' ')" -eq 3 ] \
+  || { echo 'an attempt reused a run name already refused' >&2; exit 1; }
+assert_contains "$TMP/new-failure.err" 'revmux new failed after 3 attempts'
+
+# A name taken once: the retry recovers and the review completes normally.
+: > "$TMP/new-attempts.log"
+FAKE_COLLIDE_ONCE=true run_bridge "$TMP/api-auth.txt" "$TMP/clean.json" \
+  > "$TMP/collision-retry.out" 2> "$TMP/collision-retry.err"
+assert_contains "$TMP/collision-retry.out" 'NO ISSUES FOUND'
+[ -f "$TMP/collision-injected" ] \
+  || { echo 'revmux-new collision fixture did not run' >&2; exit 1; }
+collide_attempts="$(wc -l < "$TMP/new-attempts.log" | tr -d ' ')"
+[ "$collide_attempts" -eq 2 ] \
+  || { echo "collision retry took $collide_attempts attempt(s), want 2" >&2; exit 1; }
 
 set +e
 FAKE_OMIT_TASK_FILE=true run_bridge "$TMP/api-auth.txt" "$TMP/clean.json" \

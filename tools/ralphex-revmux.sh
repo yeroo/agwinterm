@@ -95,12 +95,35 @@ PLAN_SLUG="$(printf '%s' "$PLAN_STEM" \
 [ -n "$PLAN_SLUG" ] || PLAN_SLUG="review"
 PLAN_HASH="$(printf '%s' "$TASK_SUBJECT" | sha256sum | cut -c1-10)"
 TASK="ralphex-${PLAN_SLUG}-${PLAN_HASH}"
-RUN="$(date +%Y%m%d-%H%M%S)"
-
 NEW_LOG="$(mktemp)" || fail "could not allocate revmux-new log"
-if ! PATHS_JSON="$(revmux new --task "$TASK" --run "$RUN" 2>"$NEW_LOG")"; then
+RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
+PATHS_JSON=""
+NEW_OK=false
+for attempt in 1 2 3; do
+  # The timestamp reads well in a directory listing but is not unique, and the task name
+  # above is deterministic per plan: two external reviews of one plan opening in the same
+  # second ask revmux for the same round, and it refuses the second. The PID plus bash's
+  # per-process $RANDOM separates concurrent callers; the attempt suffix gives a refused
+  # name a genuinely fresh one to retry with.
+  RUN="$RUN_STAMP-$$-${RANDOM:-0}-$attempt"
+  # The 2> below opens with O_TRUNC before revmux execs, so only the last attempt's
+  # refusal survives to the tail. That is the intent, but it is the redirect doing it:
+  # an edit to 2>> would change what gets reported and nothing here would look wrong.
+  if PATHS_JSON="$(revmux new --task "$TASK" --run "$RUN" 2>"$NEW_LOG")"; then
+    NEW_OK=true
+    break
+  fi
+  # Every failure retries, rather than only the ones whose wording reads like a taken
+  # name. revmux's four refusals for a name it will not open are "has already run", "is
+  # being written by a run holding it", "was claimed by a run that never came back" and
+  # "is reserved" - so a wording gate is both easy to get wrong and quiet when it is,
+  # which is exactly what happened on feat/image-frameshm-control. Two of those messages
+  # end by advising "open a new round instead", which is what a retry does. A failure a
+  # fresh name cannot cure costs two extra sub-second calls; the attempt cap bounds this.
+done
+if [ "$NEW_OK" != true ]; then
   tail -n 20 "$NEW_LOG" >&2
-  fail "revmux new failed"
+  fail "revmux new failed after $attempt attempts"
 fi
 
 pluck() {
