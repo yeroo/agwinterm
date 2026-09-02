@@ -42,7 +42,7 @@ public class ControlServerTypeTextTests
         string resp = Type(server, "rm -rf /tmp/safe\0 --force");
         Assert.Contains("\"ok\":false", resp);
         Assert.Contains("0x00", resp);            // says WHICH byte (JSON-escaped "+" is why this is hex)
-        Assert.Contains("session.write", resp);   // the escape hatch is named
+        Assert.Contains("allow-control", resp);   // and names the escape hatch that actually works
     }
 
     [Fact]
@@ -63,6 +63,27 @@ public class ControlServerTypeTextTests
         string before = session.Emulator.DumpRow(0);
         Assert.Contains("\"ok\":false", Type(server, "echo hi\0\r"));
         Assert.Equal(before, session.Emulator.DumpRow(0));
+    }
+
+    /// <summary>The escape hatch has to exist, and has to be the one the refusal names. The first
+    /// version of that message sent callers to session.write, which injects into the emulator and
+    /// never reaches the shell — so a caller with a legitimate control byte had nowhere to go.</summary>
+    [Fact]
+    public void Type_AllowControl_SendsItAnyway()
+    {
+        var (server, _) = New();
+        string resp = server.Dispatch(
+            "{\"cmd\":\"session.type\",\"args\":{\"allow-control\":true,\"text\":\"ls\u001b[A\"}}");
+        Assert.DoesNotContain("refuses", resp);
+    }
+
+    [Fact]
+    public void Type_Refusal_NamesTheEscapeHatch_NotSessionWrite()
+    {
+        var (server, _) = New();
+        string resp = Type(server, "oops" + (char)0x1b);
+        Assert.Contains("allow-control", resp);
+        Assert.DoesNotContain("session.write", resp);
     }
 
     [Fact]

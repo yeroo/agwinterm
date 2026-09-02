@@ -94,8 +94,9 @@ public static class AgentSkill
 
         ## Type into a session
         - `agwintermctl session type "npm test" --target <id>`   — send keystrokes (newline = Enter). Control bytes are
-          REFUSED, not stripped: a NUL would truncate your command while its Return still fired. Use `session write`
-          when you really mean raw bytes (an escape sequence, a lone ^C)
+          REFUSED, not stripped: a NUL would truncate your command while its Return still fired. Add `--allow-control`
+          when you really mean one (an escape sequence for a TUI, a lone ^C). `session write` is NOT the way — it
+          injects into the display and never reaches the shell
 
         ## Scratch & quick terminals
         - `agwintermctl session scratch on|off|toggle [--target <id>]` — a per-session extra shell drawn over that session's content (opens in the session's cwd; stays alive when hidden; not restored)
