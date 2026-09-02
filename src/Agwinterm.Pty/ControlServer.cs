@@ -360,14 +360,19 @@ public sealed class ControlServer : IDisposable
     /// Return and ran. Stripping produces that same shortened line; refusing tells the caller its
     /// text was not what it thought.
     ///
-    /// TAB stays (completion is typing). A caller that genuinely wants raw bytes - an escape
-    /// sequence, a lone ^C - has session.write, which promises nothing about its content.</summary>
+    /// TAB stays (completion is typing). A caller that genuinely means the control byte - an escape
+    /// sequence for a TUI, a lone ^C - passes allow-control and gets exactly what it asked for.
+    ///
+    /// It does NOT get sent to session.write, whatever an earlier version of this message said:
+    /// session.write injects into the emulator and never reaches the shell (ISession.Inject), so as
+    /// a way to deliver bytes to a program it does not work at all. Pointing a caller at a verb that
+    /// silently cannot do the job is worse than the refusal it was meant to soften.</summary>
     private static string HandleType(ISession s, JsonElement args)
     {
         string text = (GetString(args, "text") ?? "").Replace("\r\n", "\r").Replace('\n', '\r');
-        if (FirstControlByte(text) is { } bad)
+        if (!GetBool(args, "allow-control") && FirstControlByte(text) is { } bad)
             return Err($"session.type refuses control byte 0x{(int)bad:X2} at index {text.IndexOf(bad)} " +
-                       "(CR, LF and TAB are fine) - use session.write for raw bytes");
+                       "(CR, LF and TAB are fine) - pass --allow-control if you mean it");
         s.Write(Encoding.UTF8.GetBytes(text));
         return Ok("typed");
     }

@@ -14,7 +14,7 @@ using System.Text.Json;
 //   agwintermctl sidebar state                      (read-back: "visible tree" | "hidden flagged" | ...)
 //   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
 //   agwintermctl session text [--lines N] [--target ID]   (N reaches into scrollback; default = screen)
-//   agwintermctl session type <text...> [--target ID]     (refuses control bytes; use write for raw)
+//   agwintermctl session type <text...> [--allow-control] [--target ID]   (control bytes refused unless allowed)
 //   agwintermctl session write <text...> [--target ID]
 //   agwintermctl session copy [--target ID]           (returns the selection text)
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
@@ -143,6 +143,11 @@ switch (area)
                 if (options.TryGetValue("sound", out var sndOpt)) cargs["sound"] = sndOpt; // "true" (default alert) or a name/.wav path
                 break;
             case "type":
+                // Deliberate control bytes (an escape sequence for a TUI, a lone ^C). Without it a
+                // control byte is refused, because the usual reason one is there is that a caller
+                // built the string wrong.
+                if (options.ContainsKey("allow-control")) cargs["allow-control"] = true;
+                goto case "write";
             case "write":
                 // --select <text> (agterm parity): text may come via --select instead of positionals.
                 cargs["text"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("select") ?? "");
