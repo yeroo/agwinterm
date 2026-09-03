@@ -631,15 +631,19 @@ public sealed class ControlServer : IDisposable
         // Phase 2 (BRIEF lock): swap placements and register any new pixels — dictionary/list
         // updates only, microseconds, so a big image appearing never stalls the paint thread.
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        bool invalidCache = false;
+        HashSet<int>? staleIds = null;
         s.MutateLocked(em =>
         {
             // Phase 1 trusted the cache dictionary alone; this is the only check that the emulator
             // still holds the cached image. A child can replace an id at any time, so abort before
             // clearing placements; the one automatic retry below will transmit the pixels again.
+            // Every stale id is collected, not just the first: a live sibling keeps its cache hit,
+            // so the retry (a full re-run of phase 1) re-reads only the stale ids plus whatever
+            // already missed the cache on this attempt.
             foreach (var op in ops.Where(op => op.data is null && op.cached is not null))
                 if (!em.Images.TryGetValue(op.id, out var image) || !ReferenceEquals(image, op.cached!.Image))
-                { invalidCache = true; return; }
+                    (staleIds ??= new()).Add(op.id);
+            if (staleIds is not null) return;
 
             em.ClearPlacements();
             var updates = new List<(int id, FrameCacheEntry entry)>();
@@ -658,9 +662,9 @@ public sealed class ControlServer : IDisposable
             lock (state)
                 foreach (var update in updates) state[update.id] = update.entry;
         });
-        if (invalidCache)
+        if (staleIds is not null)
         {
-            RemoveInvalidCacheEntries(state, ops.Select(op => (op.id, op.cached)));
+            RemoveInvalidCacheEntries(state, ops.Where(op => staleIds.Contains(op.id)).Select(op => (op.id, op.cached)));
             return retryInvalidCache
                 ? HandleImageFrame(s, args, retryInvalidCache: false)
                 : Err("image.frame cache changed while the frame was prepared; retry");
@@ -768,7 +772,7 @@ public sealed class ControlServer : IDisposable
         // Phase 2 (BRIEF lock): dictionary/list swaps only, exactly as image.frame does - the
         // megabytes were already copied above, so the paint thread stalls for microseconds.
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        bool invalidCache = false;
+        HashSet<int>? staleIds = null;
         string? commitError = null;
         s.MutateLocked(em =>
         {
@@ -814,10 +818,13 @@ public sealed class ControlServer : IDisposable
             }
 
             // The only liveness check for a cache hit (phase 1 read the dictionary alone): the
-            // emulator must still hold the very image the entry was recorded against.
+            // emulator must still hold the very image the entry was recorded against. All stale
+            // ids are collected so a live sibling keeps its cache hit: the retry re-runs phase 1
+            // and copies only the stale ids plus whatever already missed the cache this attempt.
             foreach (var op in ops.Where(op => op.frame is null && op.cached is not null))
                 if (!em.Images.TryGetValue(op.id, out var image) || !ReferenceEquals(image, op.cached!.Image))
-                { invalidCache = true; return; }
+                    (staleIds ??= new()).Add(op.id);
+            if (staleIds is not null) return;
 
             if (!FitsRetainedSharedFrameBudget(
                 em,
@@ -860,9 +867,9 @@ public sealed class ControlServer : IDisposable
                         op.identity, latestPositiveSequence, generation, Sequenced: op.token > 0);
                 }
         });
-        if (invalidCache)
+        if (staleIds is not null)
         {
-            RemoveInvalidCacheEntries(state, ops.Select(op => (op.id, op.cached)));
+            RemoveInvalidCacheEntries(state, ops.Where(op => staleIds.Contains(op.id)).Select(op => (op.id, op.cached)));
             return retryInvalidCache
                 ? HandleImageFrameShm(s, args, retryInvalidCache: false, requestGeneration)
                 : Err("image.frameshm cache changed while the frame was prepared; retry");

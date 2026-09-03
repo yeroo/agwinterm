@@ -524,6 +524,57 @@ public class ControlServerFrameShmTests : IDisposable
         Assert.Equal(Packed(0xE0), session.Emulator.Images[1].Data);
     }
 
+    // Two cached ids, one replaced behind the verb's back: the retry copies that one out of shared
+    // memory and the live sibling keeps its cache hit - the burst this cache exists to avoid.
+    [Fact]
+    public void OnlyTheStaleIdIsRecopiedWhenASiblingIsStillLive()
+    {
+        var (server, session) = New();
+        var a = NewProducer();
+        var b = NewProducer();
+        long seqA = a.Publish(0xA1);
+        long seqB = b.Publish(0xB1);
+        string request = Request("{\"images\":[" + Image(a, seqA, a.Slot, id: 1) + "," +
+            Image(b, seqB, b.Slot, id: 2, row: 6) + "]}");
+        Assert.Contains("frame:2/2", server.Dispatch(request));
+        Assert.Contains("frame:2/0", server.Dispatch(request));
+
+        session.MutateLocked(em => em.SetImageData(2, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 }));
+
+        Assert.Contains("frame:2/1", server.Dispatch(request));
+        Assert.Equal(Packed(0xA1), session.Emulator.Images[1].Data);
+        Assert.Equal(Packed(0xB1), session.Emulator.Images[2].Data);
+        Assert.Equal(2, session.Emulator.Placements.Count);
+    }
+
+    // Both cached ids replaced at once. The liveness loop must collect EVERY stale id: a loop that
+    // stopped at the first would drop one entry, retry, go stale on the other with no retry left,
+    // and answer an error while the pane kept the previous frame.
+    [Fact]
+    public void TwoStaleIdsAreBothRecopiedInTheSingleRetry()
+    {
+        var (server, session) = New();
+        var a = NewProducer();
+        var b = NewProducer();
+        long seqA = a.Publish(0xA2);
+        long seqB = b.Publish(0xB2);
+        string request = Request("{\"images\":[" + Image(a, seqA, a.Slot, id: 1) + "," +
+            Image(b, seqB, b.Slot, id: 2, row: 6) + "]}");
+        Assert.Contains("frame:2/2", server.Dispatch(request));
+        Assert.Contains("frame:2/0", server.Dispatch(request));
+
+        session.MutateLocked(em =>
+        {
+            em.SetImageData(1, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 });
+            em.SetImageData(2, KittyFormat.Rgba, 1, 1, new byte[] { 5, 6, 7, 8 });
+        });
+
+        Assert.Contains("frame:2/2", server.Dispatch(request));
+        Assert.Equal(Packed(0xA2), session.Emulator.Images[1].Data);
+        Assert.Equal(Packed(0xB2), session.Emulator.Images[2].Data);
+        Assert.Equal(2, session.Emulator.Placements.Count);
+    }
+
     [Fact]
     public void ACacheReplacementBetweenValidationAndCommitRetransmitsOnce()
     {
@@ -755,8 +806,10 @@ public class ControlServerFrameShmTests : IDisposable
             "{\"images\":[" + Image(p, newerSeq, newerSlot, id: 1) + "]}");
         Assert.Contains("frame:1/1", server.Dispatch(newerRequest));
 
-        // Replacing the image invalidates and removes the retransmit-cache entry during the next
-        // phase 1. Accepted sequence order is separate state and must remain authoritative.
+        // Replacing the image leaves the retransmit-cache entry in place: phase 1 still answers
+        // a hit from the dictionary, phase 2 finds the emulator's image is not the cached one,
+        // drops the entry and retries. Accepted sequence order is separate state and must remain
+        // authoritative through all of that.
         session.MutateLocked(em =>
             em.SetImageData(1, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 }));
         using var newerPrepared = new ManualResetEventSlim();
@@ -775,7 +828,7 @@ public class ControlServerFrameShmTests : IDisposable
         try
         {
             Assert.True(newerPrepared.Wait(TimeSpan.FromSeconds(10)),
-                "newer request did not finish cache invalidation and phase 1");
+                "newer request did not finish phase 1");
             olderResponse = server.Dispatch(Request(
                 "{\"images\":[" + Image(p, olderSeq, olderSlot, id: 1) + "]}"));
         }
