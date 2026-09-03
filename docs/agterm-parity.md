@@ -29,9 +29,9 @@ named as such rather than left to look like a backlog nobody is working on.
 | `session.write` (display injection) in lite | — | lite #15 *(open)* |
 | Per-session split panes (lite matched agwinterm) | — | lite #13 |
 | `session.new --workspace` in lite | — | lite #13 |
-| `surface.cursor` — the caret column | 0.24.0 | agwinterm #220 *(P1)*, lite: P8 |
-| `statusChangedAt` on the tree's session node | 0.25.0 | agwinterm #220 *(P1)*, lite: P8 |
-| `agwintermctl version` | 0.25.0 | agwinterm #220 *(P1)*, lite: P8 |
+| `surface.cursor` — the caret column | 0.24.0 | agwinterm #221 *(P1)*, lite: P8 |
+| `statusChangedAt` on the tree's session node | 0.25.0 | agwinterm #221 *(P1)*, lite: P8 |
+| `agwintermctl version` | 0.25.0 | agwinterm #221 *(P1)*, lite: P8 |
 
 The overlay entry is the *honesty* half only: a pane id is now refused rather than silently widened.
 Pane-scoped overlays themselves are still open, below.
@@ -150,7 +150,7 @@ shell `profiles`, `omp` theme control, `claude.adopt` / `claude.yolo` / `claude.
 
 **Not on `main`, despite an earlier version of this section claiming otherwise:** `session.metrics`
 (live cell and pixel geometry) and `image.frameshm` (shared-memory frame delivery, which ConPTY
-makes necessary). Both live only on the unmerged local branch `feat/image-frameshm-control`. They
+makes necessary). Both live only on `feat/image-frameshm-control`, now open as **#220**. They
 are a lead, not a shipped advantage, and counting unmerged work as parity is how a tracker starts
 lying — the same failure mode as leaving a closed item marked missing.
 
