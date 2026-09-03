@@ -172,7 +172,73 @@ public class StatusChangedAtTests
         b.BackdateStatus(2_000_000);
         var panes = new ISession[] { a, b };
 
+        Assert.Equal((AgentStatus.Completed, 1_000_000L), StatusAggregate.WinnerAndChangedAt(panes));   // completed beats active
         Assert.Equal(AgentStatus.Completed, StatusAggregate.Winner(panes));
-        Assert.Equal(1_000_000, StatusAggregate.WinnerChangedAt(panes));   // completed beats active
+    }
+
+    // Statuses are written without a lock. A two-scan aggregation (find the winning severity, then
+    // find a pane that still has it) can see the winner cleared between its scans and report the
+    // won status with statusChangedAt 0 — "silent since 1970". This pane flips from blocked to
+    // idle after its first read, which is exactly the interleaving; a single pass must still pair
+    // the blocked status it saw with that pane's stamp.
+    [Fact]
+    public void AStatusClearedDuringAggregation_StillPairsWithItsOwnStamp()
+    {
+        var racing = new RacingStatusSession(AgentStatus.Blocked, then: AgentStatus.Idle, changedAt: 1_700_000_000);
+        using var steady = new TerminalSession(80, 24);
+        steady.SetStatus(AgentStatus.Active);
+        steady.BackdateStatus(1_600_000_000);
+
+        var (status, at) = StatusAggregate.WinnerAndChangedAt(new ISession[] { racing, steady });
+
+        Assert.Equal(AgentStatus.Blocked, status);
+        Assert.Equal(1_700_000_000, at);
+        Assert.Equal(1, racing.StatusReads);
+    }
+
+    /// <summary>An ISession whose status is one thing on the first read and another after it —
+    /// the unlocked concurrent write, made deterministic. Only the status members are real.</summary>
+    private sealed class RacingStatusSession : ISession
+    {
+        private readonly AgentStatus _first, _then;
+        public int StatusReads;
+        public RacingStatusSession(AgentStatus first, AgentStatus then, long changedAt)
+        { _first = first; _then = then; StatusChangedAt = changedAt; }
+
+        public AgentStatus Status => StatusReads++ == 0 ? _first : _then;
+        public long StatusChangedAt { get; }
+
+        private static Exception NotPartOfThisTest() => new NotSupportedException("status members only");
+        public ITerminalCore Emulator => throw NotPartOfThisTest();
+        public int Cols => throw NotPartOfThisTest();
+        public int Rows => throw NotPartOfThisTest();
+        public int? ChildProcessId => null;
+        public object SyncRoot { get; } = new();
+        public event Action? OutputReceived { add { } remove { } }
+        public bool Blink => false;
+        public bool AutoReset => false;
+        public event Action? StatusChanged { add { } remove { } }
+        public event Action<string?>? SoundRequested { add { } remove { } }
+        public void SetStatus(AgentStatus status, bool blink = false, bool autoReset = false, bool sound = false, string? soundName = null)
+            => throw NotPartOfThisTest();
+        public void NotifyActivity() => throw NotPartOfThisTest();
+        public Task<int> RunAsync(string app, string[] commandLine, bool verbatimCommandLine = false, CancellationToken ct = default)
+            => throw NotPartOfThisTest();
+        public Task StartAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
+            IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null, bool deElevate = false,
+            bool freshEnv = true, CancellationToken ct = default) => throw NotPartOfThisTest();
+        public void Attach(Microsoft.Win32.SafeHandles.SafeFileHandle conOut, Microsoft.Win32.SafeHandles.SafeFileHandle conIn,
+            Microsoft.Win32.SafeHandles.SafeFileHandle signal, IntPtr clientProcess, int pid) => throw NotPartOfThisTest();
+        public int? ExitCode => null;
+        public bool HasExited => false;
+        public event Action<int>? Exited { add { } remove { } }
+        public void Inject(ReadOnlySpan<byte> bytes) => throw NotPartOfThisTest();
+        public void MutateLocked(Action<ITerminalCore> mutate) => throw NotPartOfThisTest();
+        public void Write(ReadOnlySpan<byte> bytes) => throw NotPartOfThisTest();
+        public void Resize(int cols, int rows) => throw NotPartOfThisTest();
+        public string SnapshotRow(int row) => throw NotPartOfThisTest();
+        public (int Row, int Col) SnapshotCursor() => throw NotPartOfThisTest();
+        public void Detach() { }
+        public void Dispose() { }
     }
 }

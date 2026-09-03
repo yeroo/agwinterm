@@ -58,7 +58,9 @@ public static class AgentSkill
           showing — its liveness clock. Every status write to that pane restamps it, including a re-assert of
           the same status, so `now - statusChangedAt` is how long ago that agent last said anything: a large
           age next to `"status":"active"` means the hook died, not that work is still running. In a split
-          session the age is the winning pane's, so a write to the other pane does not move it. Always
+          session the age belongs to the pane whose status won: a write to a pane that LOSES the
+          aggregate does not move it, but panes tied at the winning status all do, so two panes both
+          `active` report the freshest of the two — check each pane before calling one dead. Always
           present, even for an idle session that never set one)
         - `agwintermctl events [--since CURSOR] [--limit N]`      — poll the event log (status/notification/session/tree changes); returns {cursor, events:[{seq,type,session,info}]}. Pass the returned cursor as --since next poll.
         - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"] [--profile NAME] [--no-select] [--wait]`

@@ -233,8 +233,10 @@ Three of those answer a question a script would otherwise have to guess at:
 - `tree --json` reports `statusChangedAt` per session — epoch **seconds** of the last status write on
   the pane whose status the node shows, restamped even when the same status is re-asserted.
   `now - statusChangedAt` is how long ago that agent last spoke, which is what separates a working
-  agent from one whose hook died. In a split session it is the winning pane's clock: a write to the
-  other pane does not move it.
+  agent from one whose hook died. In a split session it is the clock of the pane whose status won:
+  a write to a pane that loses the aggregate does not move it, but panes tied at the winning status
+  all do — two `active` panes report the freshest of the two, so a dead hook next to a live one is
+  only visible per pane.
 - `version` prints two greppable lines: the `cli` that ran (version and its resolved path — several
   `agwintermctl.exe` can coexist off `PATH`) and the `app` that answered (version and pipe). It exits 0
   and still prints the `cli` line when nothing is listening, which is the case it exists for. `--json`

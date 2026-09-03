@@ -11,9 +11,12 @@ internal sealed class FakeSessionHost : ISessionHost
     internal sealed class Sess
     {
         public string Id = "", Name = "";
-        /// <summary>Aggregated from the panes, exactly as the app does — so the tree's status and its
-        /// age always describe the same pane.</summary>
-        public AgentStatus Status => StatusAggregate.Winner(Panes);
+        /// <summary>Status and its age, aggregated from the panes in the app's single pass
+        /// (<see cref="StatusAggregate.WinnerAndChangedAt"/>) — so the tree's status and its age
+        /// always describe the same reading of the same pane. <see cref="Status"/> alone is for
+        /// tests that ask about the status only.</summary>
+        public (AgentStatus Status, long ChangedAt) StatusAndChangedAt => StatusAggregate.WinnerAndChangedAt(Panes);
+        public AgentStatus Status => StatusAndChangedAt.Status;
         public bool Flagged, Overlay, ReadOnly;
         public string? AgentResume;
         public int Notifications, PaneCount = 1, FocusedPane, OverlaySize;
@@ -27,7 +30,6 @@ internal sealed class FakeSessionHost : ISessionHost
         /// reaches pane 0 whatever <see cref="FocusedPane"/> says, and only a NAME reaches the
         /// focused pane — the asymmetry qa/control-read.md pins.</summary>
         public readonly List<string> PaneIds = new();
-        public long StatusChangedAt => StatusAggregate.WinnerChangedAt(Panes);
         /// <summary>Split this session: adds a pane and returns it, for the multi-pane status cases.</summary>
         public ISession AddPane()
         {
@@ -86,9 +88,13 @@ internal sealed class FakeSessionHost : ISessionHost
 
     public IReadOnlyList<WorkspaceSnapshot> Tree() => Workspaces.Select(w => new WorkspaceSnapshot(
         w.Id, w.Name, ReferenceEquals(w, ActiveWs),
-        w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, ActiveSess), s.Status,
-            s.Overlay, s.Notifications, s.Flagged, false, s.FocusedPane, s.PaneCount, false, s.OverlaySize, s.Ratios,
-            StatusChangedAt: s.StatusChangedAt)).ToList())).ToList();
+        w.Sessions.Select(s =>
+        {
+            var (status, statusChangedAt) = s.StatusAndChangedAt;   // one reading, as Program.ControlHost.Tree does
+            return new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, ActiveSess), status,
+                s.Overlay, s.Notifications, s.Flagged, false, s.FocusedPane, s.PaneCount, false, s.OverlaySize, s.Ratios,
+                StatusChangedAt: statusChangedAt);
+        }).ToList())).ToList();
 
     public WindowStateSnapshot WindowState() =>
         new(SidebarVisible, Fullscreen: false, Maximized: false, QuickVisible, ActiveWs.Name, ActiveSess?.Name);

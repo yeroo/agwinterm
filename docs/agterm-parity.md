@@ -146,13 +146,8 @@ notarisation. agwinterm has its own UIA path.
 
 Not a one-way list. Ours have, and agterm's control surface does not appear to: `session.readonly`,
 shell `profiles`, `omp` theme control, `claude.adopt` / `claude.yolo` / `claude.update`,
-`app.update`.
-
-**Not on `main`, despite an earlier version of this section claiming otherwise:** `session.metrics`
-(live cell and pixel geometry) and `image.frameshm` (shared-memory frame delivery, which ConPTY
-makes necessary). Both live only on `feat/image-frameshm-control`, now open as **#220**. They
-are a lead, not a shipped advantage, and counting unmerged work as parity is how a tracker starts
-lying — the same failure mode as leaving a closed item marked missing.
+`app.update`, `session.metrics` (live cell and pixel geometry) and `image.frameshm` (shared-memory
+frame delivery, which ConPTY makes necessary) — the last two on `main` since **#220**.
 
 ## agliteterm, against agwinterm
 

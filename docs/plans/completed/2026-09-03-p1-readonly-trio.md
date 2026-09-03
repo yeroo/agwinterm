@@ -181,7 +181,9 @@ They are grouped by what they have in common: each one answers a question a call
       PR number, and note in `docs/lite-parity.md` that P8 owes the mirror
 - [x] **correct the factual error** in `agterm-parity.md`'s "Where we are ahead": it claims
       `session.metrics` (live cell and pixel geometry) exists. No such verb is on `main` — it lives
-      on the unmerged local branch `feat/image-frameshm-control`. Either say so or drop the claim
+      on the unmerged local branch `feat/image-frameshm-control`. Either say so or drop the claim.
+      *Superseded before this batch merged:* #220 landed on `main` first, so the section lists the
+      verb as shipped again.
 
 **What the verification found.**
 
@@ -197,10 +199,11 @@ They are grouped by what they have in common: each one answers a question a call
   pane, and a caller deciding whether to type must get a number rather than an error. A session
   *removed from the tree* is the case that is refused, and the two are now pinned apart.
 - The alt screen was already covered and needed no change: `AltScreen_IsNotSpecialCased`.
-- `image.frameshm` was **the same factual error** as `session.metrics` and is corrected with it —
-  both live only on `feat/image-frameshm-control`. The open list is renumbered now that items 1, 2
-  and 8 are closed, with a note in the Closed table so this plan's "closes items 1, 2 and 8" still
-  reads true.
+- `image.frameshm` was **the same factual error** as `session.metrics` and was corrected with it —
+  at the time both lived only on `feat/image-frameshm-control`. That branch merged as #220 while
+  this batch was in review, so the correction was reversed on the merge and the tracker lists both
+  as shipped. The open list is renumbered now that items 1, 2 and 8 are closed, with a note in the
+  Closed table so this plan's "closes items 1, 2 and 8" still reads true.
 - ⚠️ **The three pty-host detach/adopt tests flake under full-suite CPU contention, and did so on the
   untouched baseline too** — verified by restoring both test files from `HEAD` and re-running. One
   contributing cause was real and is fixed: two orphaned `agwinterm-ptyhost.exe` from earlier runs
