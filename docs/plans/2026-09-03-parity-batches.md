@@ -15,6 +15,11 @@ without a **Shipped** line below has not started.
 - **Contract before mirror.** `tests/conformance/control-api.json` is canonical here and agliteterm's
   CI checks its copy against it. So a verb is defined in agwinterm first; the lite batch that mirrors
   it runs after, never beside it.
+- **Mirror per batch, not per wave** (Boris, 2026-09-03: "I want both terminals to be on par"). Each
+  agwinterm batch is followed immediately by its lite mirror (`P1-lite`, `P2-lite`, ...), a separate
+  plan in the agliteterm repo. The contract step for a new verb lands in agwinterm in a small
+  sibling PR that merges first; lite's CI is red on `check-contract` for exactly the gap between the
+  two merges. P8 below is therefore dissolved into those per-batch mirrors.
 - **A batch is a theme, not a size quota.** Items travel together when they share a test area or a
   format change, so one revmux round covers them coherently.
 - **Every batch exits the same way:** its own tests, the QA cases in `qa/` (both products have them),
@@ -103,11 +108,10 @@ the posted `WM_MOUSEWHEEL` that never reaches lite's handler (harness finding, 0
 
 Same model as P6, different surface — split because it is UI work with a different test shape.
 
-### P8 · lite · mirror Wave 1
-`surface.cursor` · `statusChangedAt` · `version` · `--stdin` · size-percent validation ·
-`session.context`
-
-Runs only after P1–P3 land, so the contract is fixed before it is copied.
+### P8 · lite · mirror Wave 1 — dissolved into per-batch mirrors
+`surface.cursor` · `statusChangedAt` · `version` → **P1-lite** (agliteterm
+`docs/plans/2026-09-03-p1-lite-mirror.md`, 2026-09-03) · `--stdin` · size-percent validation →
+P2-lite · `session.context` → P3-lite. Each runs right after its agwinterm batch merges.
 
 ### P9 · lite · driving a pane
 `session.readonly` **first** — it is how you stop stray keys reaching a running agent — then
