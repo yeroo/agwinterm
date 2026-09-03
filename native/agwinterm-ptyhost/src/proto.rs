@@ -55,10 +55,8 @@ pub struct Create {
     #[prost(bool, tag = "9")]
     pub fresh_env_off: bool,
     #[prost(map = "string, string", tag = "10")]
-    pub env: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        ::prost::alloc::string::String,
-    >,
+    pub env:
+        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Attach {

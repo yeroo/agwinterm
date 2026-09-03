@@ -26,6 +26,7 @@ public interface ITerminalCore
     bool MouseReporting { get; }
     bool MouseReportsMotion { get; }
     bool MouseSgr { get; }
+    bool MouseSgrPixels { get; }
     bool MouseClick { get; }
     bool MouseDrag { get; }
     bool MouseMotion { get; }

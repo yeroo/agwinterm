@@ -6,7 +6,9 @@ says otherwise and gives the reason.
 
 - agwinterm **0.17.7** released (main ahead), agliteterm **0.17.13** released.
 - Verb lists below were **extracted from both dispatchers** on 2026-09-02, not written from memory:
-  85 verbs in agwinterm, 41 in agliteterm.
+  85 verbs in agwinterm, 41 in agliteterm. #220 added two more to agwinterm — `image.frameshm` and
+  `session.metrics` — both agwinterm-only by design (see *Images*), so the gap count below is
+  unchanged at 44.
 - Update this file in the PR that closes an item.
 - The verbs below are cut into runnable batches (P6–P12) in
   [plans/2026-09-03-parity-batches.md](plans/2026-09-03-parity-batches.md).
@@ -44,7 +46,10 @@ you stop stray keys reaching a running agent.
 `image.show` · `image.sixel` · `image.clear` · `image.frame`
 
 lite renders no images at all. `image.frameshm` (shared-memory frame delivery) is the one ConPTY
-makes necessary, and it is agwinterm-only. **Size:** large.
+makes necessary, and it is agwinterm-only — as is `session.metrics`, the pane's cell and pixel
+geometry, which exists so a frameshm producer can size its frames and a mouse-driving script can
+turn cells into SGR-Pixels coordinates. Neither is a gap: lite has no consumer for either, and the
+README tells callers to capability-probe both. **Size:** large.
 
 ### Configuration and appearance
 `config.get` · `config.list` · `config.set` · `theme.list` · `theme.set` · `omp.list` · `omp.set` ·

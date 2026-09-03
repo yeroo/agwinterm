@@ -5,34 +5,34 @@
 
 /// Inclusive [lo, hi] ranges of double-width code points (BMP).
 const WIDE: &[(u32, u32)] = &[
-    (0x1100, 0x115F),  // Hangul Jamo
-    (0x2329, 0x232A),  // angle brackets
-    (0x2E80, 0x303E),  // CJK radicals, Kangxi, CJK symbols/punctuation
-    (0x3041, 0x33FF),  // Hiragana, Katakana, CJK symbols, enclosed
-    (0x3400, 0x4DBF),  // CJK Extension A
-    (0x4E00, 0x9FFF),  // CJK Unified Ideographs
-    (0xA000, 0xA4CF),  // Yi
-    (0xAC00, 0xD7A3),  // Hangul Syllables
-    (0xF900, 0xFAFF),  // CJK Compatibility Ideographs
-    (0xFE10, 0xFE19),  // vertical forms
-    (0xFE30, 0xFE6F),  // CJK compatibility / small forms
-    (0xFF00, 0xFF60),  // Fullwidth forms
-    (0xFFE0, 0xFFE6),  // Fullwidth signs
+    (0x1100, 0x115F), // Hangul Jamo
+    (0x2329, 0x232A), // angle brackets
+    (0x2E80, 0x303E), // CJK radicals, Kangxi, CJK symbols/punctuation
+    (0x3041, 0x33FF), // Hiragana, Katakana, CJK symbols, enclosed
+    (0x3400, 0x4DBF), // CJK Extension A
+    (0x4E00, 0x9FFF), // CJK Unified Ideographs
+    (0xA000, 0xA4CF), // Yi
+    (0xAC00, 0xD7A3), // Hangul Syllables
+    (0xF900, 0xFAFF), // CJK Compatibility Ideographs
+    (0xFE10, 0xFE19), // vertical forms
+    (0xFE30, 0xFE6F), // CJK compatibility / small forms
+    (0xFF00, 0xFF60), // Fullwidth forms
+    (0xFFE0, 0xFFE6), // Fullwidth signs
 ];
 
 /// Inclusive [lo, hi] ranges of zero-width combining marks (BMP subset).
 const ZERO_WIDTH: &[(u32, u32)] = &[
-    (0x0300, 0x036F),  // combining diacritical marks
+    (0x0300, 0x036F), // combining diacritical marks
     (0x0483, 0x0489),
     (0x0591, 0x05BD),
     (0x0610, 0x061A),
     (0x064B, 0x065F),
     (0x0670, 0x0670),
     (0x06D6, 0x06DC),
-    (0x200B, 0x200F),  // zero-width space / joiners / marks
-    (0xFE00, 0xFE0F),  // variation selectors: VS16 selects emoji presentation of the
-                       // PRECEDING character, it is not a character of its own
-    (0xFE20, 0xFE2F),  // combining half marks
+    (0x200B, 0x200F), // zero-width space / joiners / marks
+    (0xFE00, 0xFE0F), // variation selectors: VS16 selects emoji presentation of the
+    // PRECEDING character, it is not a character of its own
+    (0xFE20, 0xFE2F), // combining half marks
 ];
 
 pub fn of(codepoint: u32) -> u8 {

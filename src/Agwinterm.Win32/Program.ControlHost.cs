@@ -159,399 +159,439 @@ internal partial class Program
 
     // ---- ISessionHost bridge (Program is the host) so the control server / agwintermctl drive
     // this window. Un-scoped verbs act on this instance; the seam for future --window targeting. ----
-        public ISession? Resolve(string? target)
+    public ISession? Resolve(string? target)
+    {
+        if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface()?.S;
+        // Pane ids include split panes and every auxiliary cover. In particular, a ctl launched
+        // inside scratch/overlay/quick inherits that cover's id as AGWINTERM_SESSION_ID.
+        return FindControlPane(target)?.pane.S;
+    }
+
+    public IReadOnlyList<WorkspaceSnapshot> Tree()
+    {
+        lock (_workspaces)
+            return _workspaces.Select(w => new WorkspaceSnapshot(
+                w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
+                w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), AggStatus(s),
+                    s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
+                    FocusedPane: Math.Clamp(s.Active, 0, Math.Max(0, s.Panes.Count - 1)), PaneCount: s.Panes.Count,
+                    StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
+                    SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
+                    PaneIds: s.Panes.Select(p => p.Id).ToList(),
+                    RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList())).ToList()
+            )).ToList();
+    }
+
+    // Read-back snapshot: plain field reads + a Win32 query, safe from the pipe thread (worst case slightly stale).
+    public WindowStateSnapshot WindowState()
+    {
+        var a = _active;
+        return new WindowStateSnapshot(
+            SidebarVisible: _sidebarW > 0, Fullscreen: _fullscreen, Maximized: IsZoomed(_hwnd),
+            QuickTerminalVisible: _coverKind == 2 && _cover is not null && ReferenceEquals(_cover, _quick),
+            ActiveWorkspace: a?.Ws.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
+    }
+
+    /// <summary>
+    /// Live cell + pane metrics for `session.metrics`, in DEVICE pixels. Measured on the UI thread:
+    /// <see cref="Metrics"/> memoises text formats in a static dictionary the render path writes to,
+    /// so reading it from the pipe thread would race a font rebuild — and taking the layout and the
+    /// cell size in one hop also keeps them describing the same instant.
+    ///
+    /// The numbers are the ones the renderer actually draws with (<see cref="PaneLayout"/> +
+    /// <c>Metrics(pane.FontSize)</c>), converted DIP→device by <see cref="Scale"/>. The exact grid
+    /// extent accumulates the fractional cell advance before rounding, avoiding per-cell error.
+    /// </summary>
+    public PaneMetricsSnapshot? PaneMetrics(string? target)
+    {
+        PaneMetricsSnapshot? snap = null;
+        InvokeOnUi(() => { snap = MeasurePane(target); return ""; });
+        return snap;
+    }
+
+    private PaneMetricsSnapshot? MeasurePane(string? target)
+    {
+        // Same resolution order as Resolve(). A pane targeted by its AGWINTERM_PANE_ID must land
+        // on ITS column, while an exact session id must beat a derived scratch/overlay id prefix.
+        Ses? ses = null; Pane? pane = null;
+        if (string.IsNullOrEmpty(target) || target == "active")
         {
-            if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface()?.S;
-            lock (_workspaces)
+            ses = _active;
+            pane = ActiveSurface();
+        }
+        else if (FindControlPane(target) is { } hit)
+        {
+            ses = hit.ses;
+            pane = hit.pane;
+        }
+        if (pane is null || (ses is null && !ReferenceEquals(pane, _cover))) return null;
+
+        var (_, cwDip, chDip) = Metrics(pane.FontSize);
+        bool laidOut;
+        if (ReferenceEquals(pane, _cover))
+        {
+            var (_, _, w, h) = CoverRect();
+            laidOut = w > 0 && h > 0;
+        }
+        else
+        {
+            laidOut = false;
+            foreach (var (p, _, _, w, h) in PaneLayout(ses!))
+                if (ReferenceEquals(p, pane)) { laidOut = w > 0 && h > 0; break; }
+        }
+        return laidOut
+            ? PaneMetricsSnapshot.FromDipGrid(pane.S.Cols, pane.S.Rows, cwDip, chDip, Scale)
+            : null;
+    }
+
+    public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
+    {
+        string id = Guid.NewGuid().ToString();
+        Post(() =>
+        {
+            Workspace ws;
+            if (!string.IsNullOrEmpty(workspace))
+                lock (_workspaces)
+                    ws = _workspaces.FirstOrDefault(w => w.Id == workspace)
+                         ?? _workspaces.FirstOrDefault(w => w.Id.StartsWith(workspace)) ?? ActiveWorkspace();
+            else if (!string.IsNullOrEmpty(workspaceName))
             {
-                var panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToList();
-                var p = panes.FirstOrDefault(x => x.Id == target) ?? panes.FirstOrDefault(x => x.Id.StartsWith(target));
-                if (p is not null) return p.S;   // target any pane by id (e.g. docxy's AGWINTERM_SESSION_ID)
+                Workspace? byName;
+                lock (_workspaces) byName = _workspaces.FirstOrDefault(w => string.Equals(w.Name, workspaceName, StringComparison.OrdinalIgnoreCase));
+                ws = byName ?? (createWorkspace ? CreateWorkspace(Guid.NewGuid().ToString(), workspaceName) : ActiveWorkspace());
             }
-            return Find(target)?.S;
-        }
+            else ws = ActiveWorkspace();
+            // --no-select creates the session in the background, leaving the current focus/selection (agterm #250).
+            CreateSession(id, name, cwd, ws, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
+        });
+        return id;
+    }
 
-        public IReadOnlyList<WorkspaceSnapshot> Tree()
-        {
-            lock (_workspaces)
-                return _workspaces.Select(w => new WorkspaceSnapshot(
-                    w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
-                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), AggStatus(s),
-                        s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
-                        FocusedPane: Math.Clamp(s.Active, 0, Math.Max(0, s.Panes.Count - 1)), PaneCount: s.Panes.Count,
-                        StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
-                        SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
-                        PaneIds: s.Panes.Select(p => p.Id).ToList(),
-                        RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList())).ToList()
-                )).ToList();
-        }
+    public bool SelectSession(string target)
+    {
+        var ses = Find(target);
+        if (ses is null) return false;
+        Post(() => SetActive(ses));
+        return true;
+    }
 
-        // Read-back snapshot: plain field reads + a Win32 query, safe from the pipe thread (worst case slightly stale).
-        public WindowStateSnapshot WindowState()
-        {
-            var a = _active;
-            return new WindowStateSnapshot(
-                SidebarVisible: _sidebarW > 0, Fullscreen: _fullscreen, Maximized: IsZoomed(_hwnd),
-                QuickTerminalVisible: _coverKind == 2 && _cover is not null && ReferenceEquals(_cover, _quick),
-                ActiveWorkspace: a?.Ws.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
-        }
+    public bool CloseSession(string target)
+    {
+        var ses = Find(target);
+        if (ses is null) return false;
+        Post(() => CloseSessionInternal(ses));
+        return true;
+    }
 
-        public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-            string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
-        {
-            string id = Guid.NewGuid().ToString();
-            Post(() =>
-            {
-                Workspace ws;
-                if (!string.IsNullOrEmpty(workspace))
-                    lock (_workspaces)
-                        ws = _workspaces.FirstOrDefault(w => w.Id == workspace)
-                             ?? _workspaces.FirstOrDefault(w => w.Id.StartsWith(workspace)) ?? ActiveWorkspace();
-                else if (!string.IsNullOrEmpty(workspaceName))
-                {
-                    Workspace? byName;
-                    lock (_workspaces) byName = _workspaces.FirstOrDefault(w => string.Equals(w.Name, workspaceName, StringComparison.OrdinalIgnoreCase));
-                    ws = byName ?? (createWorkspace ? CreateWorkspace(Guid.NewGuid().ToString(), workspaceName) : ActiveWorkspace());
-                }
-                else ws = ActiveWorkspace();
-                // --no-select creates the session in the background, leaving the current focus/selection (agterm #250).
-                CreateSession(id, name, cwd, ws, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
-            });
-            return id;
-        }
+    public string NewWorkspace(string? name)
+    {
+        string id = Guid.NewGuid().ToString();
+        Post(() => CreateWorkspace(id, name));
+        return id;
+    }
 
-        public bool SelectSession(string target)
+    public bool SetFontSize(string? target, string op)
+    {
+        int delta = op switch { "inc" => 1, "dec" => -1, _ => 0 }; // reset otherwise
+        if (string.IsNullOrEmpty(target) || target == "active")
         {
-            var ses = Find(target);
-            if (ses is null) return false;
-            Post(() => SetActive(ses));
-            return true;
-        }
-
-        public bool CloseSession(string target)
-        {
-            var ses = Find(target);
-            if (ses is null) return false;
-            Post(() => CloseSessionInternal(ses));
-            return true;
-        }
-
-        public string NewWorkspace(string? name)
-        {
-            string id = Guid.NewGuid().ToString();
-            Post(() => CreateWorkspace(id, name));
-            return id;
-        }
-
-        public bool SetFontSize(string? target, string op)
-        {
-            int delta = op switch { "inc" => 1, "dec" => -1, _ => 0 }; // reset otherwise
-            // A specific pane id (split / scratch / overlay / quick terminal) zooms just that pane;
-            // a session id (or null = active) zooms the session's active pane, as before.
-            if (!string.IsNullOrEmpty(target) && FindPaneById(target!) is { } hit)
-            { Post(() => ZoomPane(hit, delta)); return true; }
             var ses = Find(target);
             if (ses is null) return false;
             Post(() => ChangeFontSizeOf(ses, delta));
             return true;
         }
+        if (FindControlPane(target) is not { } targetPane) return false;
+        Post(() => ZoomPane(targetPane, delta));
+        return true;
+    }
 
-        /// <summary>Control-API dashboard: open over explicit session ids (comma/space separated; empty =
-        /// most-recently-used), close it, and optionally pin a font size. (agterm #202 CLI.)</summary>
-        public bool Dashboard(bool close, string? ids, int fontSize)
+    /// <summary>Control-API dashboard: open over explicit session ids (comma/space separated; empty =
+    /// most-recently-used), close it, and optionally pin a font size. (agterm #202 CLI.)</summary>
+    public bool Dashboard(bool close, string? ids, int fontSize)
+    {
+        Post(() =>
         {
-            Post(() =>
-            {
-                if (close) { CloseDashboard(); return; }
-                List<Ses>? list = null;
-                if (!string.IsNullOrWhiteSpace(ids))
-                    list = ids!.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries)
-                               .Select(id => Find(id)).Where(s => s is not null).Cast<Ses>().ToList();
-                OpenDashboard(list, fontSize);
-            });
-            return true;
-        }
-
-        // ---- Wave A1 verbs ----
-        public void SessionGo(string dir) => Post(() => SessionGoInternal(dir));
-
-        public bool SessionReorder(string? target, string dir)
-        {
-            var s = Find(target);
-            if (s is null) return false;
-            Post(() => { lock (_workspaces) ReorderInList(s.Ws.Sessions, s, dir); RequestRedraw(); SaveState(); });
-            return true;
-        }
-
-        public bool SessionToWorkspace(string? target, string workspace)
-        {
-            var s = Find(target); var ws = FindWs(workspace);
-            if (s is null || ws is null) return false;
-            Post(() => MoveSession(s, ws));
-            return true;
-        }
-
-        public bool SessionRename(string? target, string name)
-        {
-            var ses = FindSesForTarget(target);
-            if (ses is null || string.IsNullOrWhiteSpace(name)) return false;
-            Post(() => { ses.Name = name; ses.CustomName = name; RequestRedraw(); SaveState(); }); // CustomName drives the title bar
-            return true;
-        }
-
-        public bool WorkspaceRename(string? target, string name)
-        {
-            var ws = FindWs(target);
-            if (ws is null || string.IsNullOrWhiteSpace(name)) return false;
-            Post(() => { ws.Name = name; RequestRedraw(); SaveState(); });
-            return true;
-        }
-
-        // Clone a session by target (agterm #234) — new session, same cwd + profile. Returns its new id.
-        public string DuplicateSession(string? target)
-        {
-            string id = Guid.NewGuid().ToString();
-            Post(() => DuplicateSession(FindSesForTarget(target), id));
-            return id;
-        }
-
-        // Collapse/expand a single workspace by id (agterm #272). target null/empty = the active workspace.
-        public bool WorkspaceCollapse(string? target, bool expand)
-        {
-            var ws = string.IsNullOrEmpty(target) ? ActiveWorkspace() : FindWs(target);
-            if (ws is null) return false;
-            Post(() => { lock (_workspaces) ws.Expanded = expand; RequestRedraw(); SaveState(); });
-            return true;
-        }
-
-        public bool WorkspaceDelete(string? target)
-        {
-            var ws = FindWs(target);
-            if (ws is null) return false;
-            Post(() => DeleteWorkspace(ws));
-            return true;
-        }
-
-        public bool WorkspaceSelect(string? target)
-        {
-            var ws = FindWs(target);
-            if (ws is null) return false;
-            Post(() => { var s = ws.Sessions.FirstOrDefault(); if (s is not null) SetActive(s); });
-            return true;
-        }
-
-        public bool WorkspaceReorder(string? target, string dir)
-        {
-            var ws = FindWs(target);
-            if (ws is null) return false;
-            Post(() => { lock (_workspaces) ReorderInList(_workspaces, ws, dir); RequestRedraw(); SaveState(); });
-            return true;
-        }
-
-        public void Split(string op) => Post(() => SplitOp(op));
-
-        public void FocusPaneDir(string dir)
-        {
-            int delta = dir switch
-            {
-                "left" => -1,
-                "right" => 1,
-                _ => (_active is not null && _active.Active == 0) ? 1 : -1, // "other"
-            };
-            Post(() => FocusPane(delta));
-        }
-
-        public void ResizeSplit(double? ratio, int growLeft, int growRight)
-            => Post(() => ResizeActiveSplitInternal(ratio, growLeft, growRight));
-
-        public IReadOnlyList<string> ThemeList() => _allThemes.Select(t => t.Name).ToList();
-
-        public bool ThemeSet(string name)
-        {
-            if (!_allThemes.Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase))) return false;
-            Post(() => CommitTheme(FindTheme(name)));
-            return true;
-        }
-
-        public string KeymapReload() { Post(ReloadKeymap); return "keymap reload requested"; }
-
-        public string ConfigSet(string key, string value) => InvokeOnUi(() => ConfigSetInternal(key, value));
-        public string ConfigGet(string key) => InvokeOnUi(() => ConfigValue(key.Trim().ToLowerInvariant()));
-        public string ConfigList() => InvokeOnUi(() => string.Join("\n", ConfigKeys.Select(k => $"{k} = {ConfigValue(k)}")));
-        public string SettingsOpen() { Post(OpenSettingsWindow); return "settings opened"; }
-
-        public string ProfilesList() => InvokeOnUi(() => string.Join("\n", _profileCfg.Profiles.Select(p =>
-            $"{(p.Name.Equals(_profileCfg.Default, StringComparison.OrdinalIgnoreCase) ? "*" : " ")} {p.Name}\t{p.Command}{(p.Args is { Length: > 0 } a ? " " + string.Join(" ", a) : "")}")));
-        public string ProfilesReload() => InvokeOnUi(() => { _profileCfg = Agwinterm.Pty.ShellProfiles.Load(AppDir); RequestRedraw(); return $"{_profileCfg.Profiles.Count} profiles loaded"; });
-
-        public string RestoreClear()
-        {
-            try { if (File.Exists(StatePath)) { File.Delete(StatePath); return "restore state cleared"; } return "no restore state"; }
-            catch (Exception ex) { return "error: " + ex.Message; }
-        }
-
-        public void SidebarOp(string op) => Post(() => SidebarOpInternal(op));
-
-        public string SidebarState() => InvokeOnUi(() =>
-            (_sidebarW > 0 ? "visible" : "hidden") + " " + (_sidebarMode == SidebarMode.Flagged ? "flagged" : "tree"));
-
-        public string BroadcastOp(string op) => InvokeOnUi(() =>
-        {
-            bool want = op switch { "on" => true, "off" => false, "state" or "get" => _broadcast, _ => !_broadcast };
-            if (op is not ("state" or "get") && want != _broadcast) ToggleBroadcast();
-            return _broadcast ? "on" : "off";
+            if (close) { CloseDashboard(); return; }
+            List<Ses>? list = null;
+            if (!string.IsNullOrWhiteSpace(ids))
+                list = ids!.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                           .Select(id => Find(id)).Where(s => s is not null).Cast<Ses>().ToList();
+            OpenDashboard(list, fontSize);
         });
+        return true;
+    }
 
-        public string ReadOnlyOp(string? target, string op) => InvokeOnUi(() =>
+    // ---- Wave A1 verbs ----
+    public void SessionGo(string dir) => Post(() => SessionGoInternal(dir));
+
+    public bool SessionReorder(string? target, string dir)
+    {
+        var s = Find(target);
+        if (s is null) return false;
+        Post(() => { lock (_workspaces) ReorderInList(s.Ws.Sessions, s, dir); RequestRedraw(); SaveState(); });
+        return true;
+    }
+
+    public bool SessionToWorkspace(string? target, string workspace)
+    {
+        var s = Find(target); var ws = FindWs(workspace);
+        if (s is null || ws is null) return false;
+        Post(() => MoveSession(s, ws));
+        return true;
+    }
+
+    public bool SessionRename(string? target, string name)
+    {
+        var ses = FindSesForTarget(target);
+        if (ses is null || string.IsNullOrWhiteSpace(name)) return false;
+        Post(() => { ses.Name = name; ses.CustomName = name; RequestRedraw(); SaveState(); }); // CustomName drives the title bar
+        return true;
+    }
+
+    public bool WorkspaceRename(string? target, string name)
+    {
+        var ws = FindWs(target);
+        if (ws is null || string.IsNullOrWhiteSpace(name)) return false;
+        Post(() => { ws.Name = name; RequestRedraw(); SaveState(); });
+        return true;
+    }
+
+    // Clone a session by target (agterm #234) — new session, same cwd + profile. Returns its new id.
+    public string DuplicateSession(string? target)
+    {
+        string id = Guid.NewGuid().ToString();
+        Post(() => DuplicateSession(FindSesForTarget(target), id));
+        return id;
+    }
+
+    // Collapse/expand a single workspace by id (agterm #272). target null/empty = the active workspace.
+    public bool WorkspaceCollapse(string? target, bool expand)
+    {
+        var ws = string.IsNullOrEmpty(target) ? ActiveWorkspace() : FindWs(target);
+        if (ws is null) return false;
+        Post(() => { lock (_workspaces) ws.Expanded = expand; RequestRedraw(); SaveState(); });
+        return true;
+    }
+
+    public bool WorkspaceDelete(string? target)
+    {
+        var ws = FindWs(target);
+        if (ws is null) return false;
+        Post(() => DeleteWorkspace(ws));
+        return true;
+    }
+
+    public bool WorkspaceSelect(string? target)
+    {
+        var ws = FindWs(target);
+        if (ws is null) return false;
+        Post(() => { var s = ws.Sessions.FirstOrDefault(); if (s is not null) SetActive(s); });
+        return true;
+    }
+
+    public bool WorkspaceReorder(string? target, string dir)
+    {
+        var ws = FindWs(target);
+        if (ws is null) return false;
+        Post(() => { lock (_workspaces) ReorderInList(_workspaces, ws, dir); RequestRedraw(); SaveState(); });
+        return true;
+    }
+
+    public void Split(string op) => Post(() => SplitOp(op));
+
+    public void FocusPaneDir(string dir)
+    {
+        int delta = dir switch
         {
-            var p = PaneForTarget(target); if (p is null) return "no session";
-            bool want = op switch { "on" => true, "off" => false, "state" or "get" => p.ReadOnly, _ => !p.ReadOnly };
-            if (op is not ("state" or "get")) { p.ReadOnly = want; RequestRedraw(); }
-            return p.ReadOnly ? "on" : "off";
-        });
+            "left" => -1,
+            "right" => 1,
+            _ => (_active is not null && _active.Active == 0) ? 1 : -1, // "other"
+        };
+        Post(() => FocusPane(delta));
+    }
 
-        public bool SessionSeen(string? target)
+    public void ResizeSplit(double? ratio, int growLeft, int growRight)
+        => Post(() => ResizeActiveSplitInternal(ratio, growLeft, growRight));
+
+    public IReadOnlyList<string> ThemeList() => _allThemes.Select(t => t.Name).ToList();
+
+    public bool ThemeSet(string name)
+    {
+        if (!_allThemes.Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase))) return false;
+        Post(() => CommitTheme(FindTheme(name)));
+        return true;
+    }
+
+    public string KeymapReload() { Post(ReloadKeymap); return "keymap reload requested"; }
+
+    public string ConfigSet(string key, string value) => InvokeOnUi(() => ConfigSetInternal(key, value));
+    public string ConfigGet(string key) => InvokeOnUi(() => ConfigValue(key.Trim().ToLowerInvariant()));
+    public string ConfigList() => InvokeOnUi(() => string.Join("\n", ConfigKeys.Select(k => $"{k} = {ConfigValue(k)}")));
+    public string SettingsOpen() { Post(OpenSettingsWindow); return "settings opened"; }
+
+    public string ProfilesList() => InvokeOnUi(() => string.Join("\n", _profileCfg.Profiles.Select(p =>
+        $"{(p.Name.Equals(_profileCfg.Default, StringComparison.OrdinalIgnoreCase) ? "*" : " ")} {p.Name}\t{p.Command}{(p.Args is { Length: > 0 } a ? " " + string.Join(" ", a) : "")}")));
+    public string ProfilesReload() => InvokeOnUi(() => { _profileCfg = Agwinterm.Pty.ShellProfiles.Load(AppDir); RequestRedraw(); return $"{_profileCfg.Profiles.Count} profiles loaded"; });
+
+    public string RestoreClear()
+    {
+        try { if (File.Exists(StatePath)) { File.Delete(StatePath); return "restore state cleared"; } return "no restore state"; }
+        catch (Exception ex) { return "error: " + ex.Message; }
+    }
+
+    public void SidebarOp(string op) => Post(() => SidebarOpInternal(op));
+
+    public string SidebarState() => InvokeOnUi(() =>
+        (_sidebarW > 0 ? "visible" : "hidden") + " " + (_sidebarMode == SidebarMode.Flagged ? "flagged" : "tree"));
+
+    public string BroadcastOp(string op) => InvokeOnUi(() =>
+    {
+        bool want = op switch { "on" => true, "off" => false, "state" or "get" => _broadcast, _ => !_broadcast };
+        if (op is not ("state" or "get") && want != _broadcast) ToggleBroadcast();
+        return _broadcast ? "on" : "off";
+    });
+
+    public string ReadOnlyOp(string? target, string op) => InvokeOnUi(() =>
+    {
+        var p = PaneForTarget(target); if (p is null) return "no session";
+        bool want = op switch { "on" => true, "off" => false, "state" or "get" => p.ReadOnly, _ => !p.ReadOnly };
+        if (op is not ("state" or "get")) { p.ReadOnly = want; RequestRedraw(); }
+        return p.ReadOnly ? "on" : "off";
+    });
+
+    public bool SessionSeen(string? target)
+    {
+        var ses = FindSesForTarget(target);
+        if (ses is null) return false;
+        Post(() => { ClearUnread(ses); RequestRedraw(); });
+        return true;
+    }
+
+    /// <summary>Plain text of the LAST COMPLETED command's output (FTCS marks) — the
+    /// agent-workflow primitive: "give me what that command printed".</summary>
+    public string SessionOutput(string? target)
+    {
+        var pane = PaneForTarget(target);
+        if (pane is null) return "";
+        TerminalEmulator.ShellMark? m;
+        lock (pane.S.SyncRoot) m = pane.S.Emulator.Marks.LastOrDefault(x => x.EndLine >= 0);
+        if (m is null) return "no completed command marks (FTCS wrap not active?)";
+        // Output begins after the command's input row: 133;C if the shell emits it, else the
+        // line after 133;B (the input row), else after the prompt.
+        int from = m.OutputLine >= 0 ? m.OutputLine : m.CommandLine >= 0 ? m.CommandLine + 1 : m.PromptLine + 1;
+        return from > m.EndLine - 1 ? "" : RowsText(pane, from, m.EndLine - 1);
+    }
+
+    public string SessionCopy(string? target) => InvokeOnUi(() =>
+    {
+        var pane = PaneForTarget(target);
+        // On the UI thread: reading a selection RECONCILES it (eviction may have renumbered or
+        // invalidated it), and selection state belongs to this thread.
+        return pane is not null ? SelectionText(pane) : "";
+    });
+
+    // Selection/clipboard control API. Clipboard + selection are UI-thread concepts, so hop on-thread.
+    public string SelectionAll(string? target) => InvokeOnUi(() =>
+    {
+        var p = PaneForTarget(target); if (p is null) return "no session";
+        SelectAll(p); return HasLiveSel(p) ? "selected all" : "empty";
+    });
+
+    public string SelectionCopy(string? target) => InvokeOnUi(() =>
+    {
+        var p = PaneForTarget(target); if (p is null) return "no session";
+        if (!HasLiveSel(p)) return "no selection";
+        // Report what actually happened: a live selection over cells a TUI has blanked copies
+        // nothing and leaves the clipboard alone, and an agent acting on this reply must not be
+        // told otherwise. Length is not the measure — SelectionText joins rows with CRLF whether
+        // or not a row held text.
+        return CopySelection(p, out string copied) ? $"copied {copied.Length} chars" : "nothing to copy";
+    });
+
+    public string SelectionClear(string? target) => InvokeOnUi(() =>
+    {
+        var p = PaneForTarget(target); if (p is null) return "no session";
+        p.ClearSel(); RequestRedraw(); return "cleared";
+    });
+
+    // Test/observability hook: run the same finalize path a mouse-up runs (honors copy-on-select).
+    public string SelectionFinalize(string? target) => InvokeOnUi(() =>
+    {
+        var p = PaneForTarget(target); if (p is null) return "no session";
+        // Ask the copy what happened rather than inferring it from a surviving selection: since
+        // FinalizeSelection passes clear:false, the selection survives either way, so the
+        // "(empty)" arm was unreachable and a declined copy was reported as a copy.
+        bool copied = FinalizeSelection(p);
+        return _config.CopyOnSelect ? (copied ? "finalized (copied)" : "finalized (empty)") : "finalized (copy-on-select off)";
+    });
+
+    public string SessionPaste(string? target, string? text) => InvokeOnUi(() =>
+    {
+        var p = PaneForTarget(target); if (p is null) return "no session";
+        PasteTextInto(p, text ?? ClipboardGet(), interactive: false);   // scripted: never prompt (agents)
+        return "pasted";
+    });
+
+    // Search operates on the active pane's find bar (a UI-thread concept); run it synchronously
+    // on the UI thread and return the "N of M" status. (target is accepted for API shape; v1
+    // searches the active session.)
+    public string SessionSearch(string? target, string? query, string? action) => InvokeOnUi(() =>
+    {
+        if (_active is null) return "no session";
+        if (action == "close") { CloseSearch(); return "closed"; }
+        if (!_searchActive) _searchActive = true;
+        if (!string.IsNullOrEmpty(query)) { _searchQuery = query!; RecomputeSearch(); _searchCur = 0; ScrollToMatch(); }
+        else if (action == "next") SearchStep(1);
+        else if (action == "prev") SearchStep(-1);
+        else { RecomputeSearch(); ScrollToMatch(); }
+        RequestRedraw();
+        return SearchStatus();
+    });
+
+    public bool SessionScratch(string? target, string op)
+    {
+        var ses = FindSesForTarget(target);
+        if (ses is null) return false;
+        Post(() => ScratchOp(ses, op));
+        return true;
+    }
+
+    public void Quick(string op) => Post(() => QuickOp(op));
+
+    /// <summary>An overlay covers a whole SESSION. When the caller named one pane of a split, that
+    /// is not what they asked for - say so rather than widen it in silence and blank the pane the
+    /// user was reading. (Found for real: a review TUI aimed at the right pane took the left one
+    /// too, and nothing in the reply said it would.) A pane in a single-pane session is refused
+    /// nothing: there, covering the session covers exactly that pane.</summary>
+    private string? OverlayTargetRefusal(string? target)
+    {
+        if (string.IsNullOrEmpty(target) || target == "active") return null;
+        var ses = FindSesForTarget(target);
+        if (ses is null || ses.Panes.Count <= 1) return null;   // one pane: covering the session covers it
+        // A string that names the SESSION keeps session behaviour; only a pane id is refused.
+        if (ses.Id == target || ses.Id.StartsWith(target, StringComparison.Ordinal)) return null;
+        if (!ses.Panes.Any(p => p.Id == target || p.Id.StartsWith(target, StringComparison.Ordinal))) return null;
+        return ISessionHost.RefusePrefix +
+               $"'{target}' names one pane of a {ses.Panes.Count}-pane session; session.overlay covers " +
+               $"the whole session. Pass the session id ({ses.Id}) to cover it, or omit --target.";
+    }
+
+    public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
+    {
+        if (action != "result" && OverlayTargetRefusal(target) is { } refusal) return refusal;
+        switch (action)
         {
-            var ses = FindSesForTarget(target);
-            if (ses is null) return false;
-            Post(() => { ClearUnread(ses); RequestRedraw(); });
-            return true;
-        }
-
-        /// <summary>Plain text of the LAST COMPLETED command's output (FTCS marks) — the
-        /// agent-workflow primitive: "give me what that command printed".</summary>
-        public string SessionOutput(string? target)
-        {
-            var s = Resolve(target);
-            if (s is null) return "";
-            Pane? pane;
-            lock (_workspaces)
-                pane = _workspaces.SelectMany(w => w.Sessions).SelectMany(x => x.Panes)
-                                  .FirstOrDefault(p => ReferenceEquals(p.S, s));
-            if (pane is null) return "";
-            TerminalEmulator.ShellMark? m;
-            lock (pane.S.SyncRoot) m = pane.S.Emulator.Marks.LastOrDefault(x => x.EndLine >= 0);
-            if (m is null) return "no completed command marks (FTCS wrap not active?)";
-            // Output begins after the command's input row: 133;C if the shell emits it, else the
-            // line after 133;B (the input row), else after the prompt.
-            int from = m.OutputLine >= 0 ? m.OutputLine : m.CommandLine >= 0 ? m.CommandLine + 1 : m.PromptLine + 1;
-            return from > m.EndLine - 1 ? "" : RowsText(pane, from, m.EndLine - 1);
-        }
-
-        public string SessionCopy(string? target) => InvokeOnUi(() =>
-        {
-            var s = Resolve(target);
-            if (s is null) return "";
-            Pane? pane;
-            lock (_workspaces)
-                pane = _workspaces.SelectMany(w => w.Sessions).SelectMany(x => x.Panes)
-                                  .FirstOrDefault(p => ReferenceEquals(p.S, s));
-            // On the UI thread: reading a selection RECONCILES it (eviction may have renumbered or
-            // invalidated it), and selection state belongs to this thread.
-            return pane is not null ? SelectionText(pane) : "";
-        });
-
-        // Selection/clipboard control API. Clipboard + selection are UI-thread concepts, so hop on-thread.
-        public string SelectionAll(string? target) => InvokeOnUi(() =>
-        {
-            var p = PaneForTarget(target); if (p is null) return "no session";
-            SelectAll(p); return HasLiveSel(p) ? "selected all" : "empty";
-        });
-
-        public string SelectionCopy(string? target) => InvokeOnUi(() =>
-        {
-            var p = PaneForTarget(target); if (p is null) return "no session";
-            if (!HasLiveSel(p)) return "no selection";
-            // Report what actually happened: a live selection over cells a TUI has blanked copies
-            // nothing and leaves the clipboard alone, and an agent acting on this reply must not be
-            // told otherwise. Length is not the measure — SelectionText joins rows with CRLF whether
-            // or not a row held text.
-            return CopySelection(p, out string copied) ? $"copied {copied.Length} chars" : "nothing to copy";
-        });
-
-        public string SelectionClear(string? target) => InvokeOnUi(() =>
-        {
-            var p = PaneForTarget(target); if (p is null) return "no session";
-            p.ClearSel(); RequestRedraw(); return "cleared";
-        });
-
-        // Test/observability hook: run the same finalize path a mouse-up runs (honors copy-on-select).
-        public string SelectionFinalize(string? target) => InvokeOnUi(() =>
-        {
-            var p = PaneForTarget(target); if (p is null) return "no session";
-            // Ask the copy what happened rather than inferring it from a surviving selection: since
-            // FinalizeSelection passes clear:false, the selection survives either way, so the
-            // "(empty)" arm was unreachable and a declined copy was reported as a copy.
-            bool copied = FinalizeSelection(p);
-            return _config.CopyOnSelect ? (copied ? "finalized (copied)" : "finalized (empty)") : "finalized (copy-on-select off)";
-        });
-
-        public string SessionPaste(string? target, string? text) => InvokeOnUi(() =>
-        {
-            var p = PaneForTarget(target); if (p is null) return "no session";
-            PasteTextInto(p, text ?? ClipboardGet(), interactive: false);   // scripted: never prompt (agents)
-            return "pasted";
-        });
-
-        // Search operates on the active pane's find bar (a UI-thread concept); run it synchronously
-        // on the UI thread and return the "N of M" status. (target is accepted for API shape; v1
-        // searches the active session.)
-        public string SessionSearch(string? target, string? query, string? action) => InvokeOnUi(() =>
-        {
-            if (_active is null) return "no session";
-            if (action == "close") { CloseSearch(); return "closed"; }
-            if (!_searchActive) _searchActive = true;
-            if (!string.IsNullOrEmpty(query)) { _searchQuery = query!; RecomputeSearch(); _searchCur = 0; ScrollToMatch(); }
-            else if (action == "next") SearchStep(1);
-            else if (action == "prev") SearchStep(-1);
-            else { RecomputeSearch(); ScrollToMatch(); }
-            RequestRedraw();
-            return SearchStatus();
-        });
-
-        public bool SessionScratch(string? target, string op)
-        {
-            var ses = FindSesForTarget(target);
-            if (ses is null) return false;
-            Post(() => ScratchOp(ses, op));
-            return true;
-        }
-
-        public void Quick(string op) => Post(() => QuickOp(op));
-
-        /// <summary>An overlay covers a whole SESSION. When the caller named one pane of a split, that
-        /// is not what they asked for - say so rather than widen it in silence and blank the pane the
-        /// user was reading. (Found for real: a review TUI aimed at the right pane took the left one
-        /// too, and nothing in the reply said it would.) A pane in a single-pane session is refused
-        /// nothing: there, covering the session covers exactly that pane.</summary>
-        private string? OverlayTargetRefusal(string? target)
-        {
-            if (string.IsNullOrEmpty(target) || target == "active") return null;
-            var ses = FindSesForTarget(target);
-            if (ses is null || ses.Panes.Count <= 1) return null;   // one pane: covering the session covers it
-            // A string that names the SESSION keeps session behaviour; only a pane id is refused.
-            if (ses.Id == target || ses.Id.StartsWith(target, StringComparison.Ordinal)) return null;
-            if (!ses.Panes.Any(p => p.Id == target || p.Id.StartsWith(target, StringComparison.Ordinal))) return null;
-            return ISessionHost.RefusePrefix +
-                   $"'{target}' names one pane of a {ses.Panes.Count}-pane session; session.overlay covers " +
-                   $"the whole session. Pass the session id ({ses.Id}) to cover it, or omit --target.";
-        }
-
-        public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
-        {
-            if (action != "result" && OverlayTargetRefusal(target) is { } refusal) return refusal;
-            switch (action)
-            {
-                case "result":
-                    return _lastOverlayExit;
-                case "close":
+            case "result":
+                return _lastOverlayExit;
+            case "close":
                 {
                     var ses = FindSesForTarget(target);
                     if (ses?.Overlay is null) return "no overlay";
                     Post(() => CloseOverlayOf(ses));
                     return "closed";
                 }
-                case "resize":
+            case "resize":
                 {
                     var ses = FindSesForTarget(target);
                     if (ses?.Overlay is null) return "no overlay";
@@ -559,7 +599,7 @@ internal partial class Program
                     Post(() => { ses.OverlaySizePercent = sp; if (ReferenceEquals(_ovlOwner, ses)) RegridCover(); RequestRedraw(); });
                     return $"resized {sp}%";
                 }
-                default: // "open"
+            default: // "open"
                 {
                     if (string.IsNullOrWhiteSpace(command)) return "no command";
                     if (block)
@@ -571,158 +611,144 @@ internal partial class Program
                     }
                     return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? "no session" : OverlayOpen(s, command!, sizePercent, wait); });
                 }
-            }
         }
+    }
 
-        public bool Notify(string? target, string? title, string body)
+    public bool Notify(string? target, string? title, string body)
+    {
+        var ses = FindSesForTarget(target);
+        if (ses is null) return false;
+        Post(() => OnNotified(ses.ActivePane, title ?? "", body));
+        return true;
+    }
+
+    public bool SessionFlag(string? target, string op)
+    {
+        if (op == "clear") { Post(() => FlagOp(null, "clear")); return true; } // clear is global; no target needed
+        var ses = FindSesForTarget(target);
+        if (ses is null) return false;
+        Post(() => FlagOp(ses, op));
+        return true;
+    }
+
+    // Bind (or clear) a resumable agent on a specific pane, keyed by the pane id the caller used as
+    // its AGWINTERM_SESSION_ID. Persisted so restart re-launches the agent (which resumes itself).
+    public bool SessionBind(string? target, string agent)
+    {
+        if (string.IsNullOrEmpty(target)) return false;
+        var hit = FindPaneById(target!);
+        if (hit is null) return false;
+        string? val = string.IsNullOrWhiteSpace(agent) || agent.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : agent.ToLowerInvariant();
+        Post(() => { hit.Value.pane.AgentResume = val; SaveState(); });
+        return true;
+    }
+
+    // Pin (or clear) a restore command on a specific pane, keyed by pane id (agterm #271). Persisted so
+    // restart always re-runs it. Empty/"none" clears the pin. Returns false if the pane isn't found.
+    public bool SessionRestore(string? target, string command)
+    {
+        if (string.IsNullOrEmpty(target)) return false;
+        var hit = FindPaneById(target!);
+        if (hit is null) return false;
+        string? val = string.IsNullOrWhiteSpace(command) || command.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : command;
+        Post(() => { hit.Value.pane.RestoreCommand = val; SaveState(); });
+        return true;
+    }
+
+    // ---- Control-API event bus (agterm #273): a bounded, cursor-polled log of status / notification /
+    // session-lifecycle / tree-change events. Poll with `events --since <cursor>`; the reply carries the
+    // new max cursor. Instance-scoped (this window). Emitted from any thread; polled from the pipe. ----
+    private readonly object _evtLock = new();
+    private readonly Queue<(long Seq, string Type, string? Session, string? Info)> _evtLog = new();
+    private long _evtSeq;
+
+    internal void EmitEvent(string type, string? session = null, string? info = null)
+    {
+        lock (_evtLock)
         {
-            var ses = FindSesForTarget(target);
-            if (ses is null) return false;
-            Post(() => OnNotified(ses.ActivePane, title ?? "", body));
-            return true;
+            _evtLog.Enqueue((++_evtSeq, type, session, info));
+            while (_evtLog.Count > 1000) _evtLog.Dequeue();   // bounded history
         }
+    }
 
-        public bool SessionFlag(string? target, string op)
+    public string Events(long since, int limit)
+    {
+        (long Seq, string Type, string? Session, string? Info)[] items;
+        long cursor;
+        lock (_evtLock)
         {
-            if (op == "clear") { Post(() => FlagOp(null, "clear")); return true; } // clear is global; no target needed
-            var ses = FindSesForTarget(target);
-            if (ses is null) return false;
-            Post(() => FlagOp(ses, op));
-            return true;
+            cursor = _evtSeq;
+            var q = _evtLog.Where(e => e.Seq > since);
+            if (limit > 0) q = q.Take(limit);
+            items = q.ToArray();
         }
-
-        // Bind (or clear) a resumable agent on a specific pane, keyed by the pane id the caller used as
-        // its AGWINTERM_SESSION_ID. Persisted so restart re-launches the agent (which resumes itself).
-        public bool SessionBind(string? target, string agent)
+        var sb = new System.Text.StringBuilder();
+        sb.Append("{\"cursor\":").Append(cursor).Append(",\"events\":[");
+        for (int i = 0; i < items.Length; i++)
         {
-            if (string.IsNullOrEmpty(target)) return false;
-            var hit = FindPaneById(target!);
-            if (hit is null) return false;
-            string? val = string.IsNullOrWhiteSpace(agent) || agent.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : agent.ToLowerInvariant();
-            Post(() => { hit.Value.pane.AgentResume = val; SaveState(); });
-            return true;
+            if (i > 0) sb.Append(',');
+            var e = items[i];
+            sb.Append("{\"seq\":").Append(e.Seq)
+              .Append(",\"type\":").Append(System.Text.Json.JsonSerializer.Serialize(e.Type));
+            if (e.Session is not null) sb.Append(",\"session\":").Append(System.Text.Json.JsonSerializer.Serialize(e.Session));
+            if (e.Info is not null) sb.Append(",\"info\":").Append(System.Text.Json.JsonSerializer.Serialize(e.Info));
+            sb.Append('}');
         }
+        sb.Append("]}");
+        return sb.ToString();
+    }
 
-        // Pin (or clear) a restore command on a specific pane, keyed by pane id (agterm #271). Persisted so
-        // restart always re-runs it. Empty/"none" clears the pin. Returns false if the pane isn't found.
-        public bool SessionRestore(string? target, string command)
-        {
-            if (string.IsNullOrEmpty(target)) return false;
-            var hit = FindPaneById(target!);
-            if (hit is null) return false;
-            string? val = string.IsNullOrWhiteSpace(command) || command.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : command;
-            Post(() => { hit.Value.pane.RestoreCommand = val; SaveState(); });
-            return true;
-        }
+    public string AdoptClaude() => InvokeOnUi(() => AdoptClaudeSessions());
 
-        // ---- Control-API event bus (agterm #273): a bounded, cursor-polled log of status / notification /
-        // session-lifecycle / tree-change events. Poll with `events --since <cursor>`; the reply carries the
-        // new max cursor. Instance-scoped (this window). Emitted from any thread; polled from the pipe. ----
-        private readonly object _evtLock = new();
-        private readonly Queue<(long Seq, string Type, string? Session, string? Info)> _evtLog = new();
-        private long _evtSeq;
+    public string RestartClaudeYolo(string? target) => InvokeOnUi(() =>
+    {
+        var p = PaneForTarget(target) ?? ActiveSurface();
+        return p is null ? "no pane" : RestartClaudeYolo(p);
+    });
 
-        internal void EmitEvent(string type, string? session = null, string? info = null)
-        {
-            lock (_evtLock)
-            {
-                _evtLog.Enqueue((++_evtSeq, type, session, info));
-                while (_evtLog.Count > 1000) _evtLog.Dequeue();   // bounded history
-            }
-        }
+    public string UpdateClaude() => InvokeOnUi(() => UpdateClaudeCode());
 
-        public string Events(long since, int limit)
-        {
-            (long Seq, string Type, string? Session, string? Info)[] items;
-            long cursor;
-            lock (_evtLock)
-            {
-                cursor = _evtSeq;
-                var q = _evtLog.Where(e => e.Seq > since);
-                if (limit > 0) q = q.Take(limit);
-                items = q.ToArray();
-            }
-            var sb = new System.Text.StringBuilder();
-            sb.Append("{\"cursor\":").Append(cursor).Append(",\"events\":[");
-            for (int i = 0; i < items.Length; i++)
-            {
-                if (i > 0) sb.Append(',');
-                var e = items[i];
-                sb.Append("{\"seq\":").Append(e.Seq)
-                  .Append(",\"type\":").Append(System.Text.Json.JsonSerializer.Serialize(e.Type));
-                if (e.Session is not null) sb.Append(",\"session\":").Append(System.Text.Json.JsonSerializer.Serialize(e.Session));
-                if (e.Info is not null) sb.Append(",\"info\":").Append(System.Text.Json.JsonSerializer.Serialize(e.Info));
-                sb.Append('}');
-            }
-            sb.Append("]}");
-            return sb.ToString();
-        }
+    public string UpdateApp() => InvokeOnUi(() => UpdateAgwinterm());
 
-        public string AdoptClaude() => InvokeOnUi(() => AdoptClaudeSessions());
+    public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => InvokeOnUi(() =>
+    {
+        var ses = FindSesForTarget(target);
+        if (ses is null) return "no session";
+        if (action == "clear") { ClearBackground(ses); return "cleared"; }
+        if (string.IsNullOrWhiteSpace(path)) return "background set needs a path";
+        return SetBackground(ses, path!, opacity, mode);
+    });
 
-        public string RestartClaudeYolo(string? target) => InvokeOnUi(() =>
-        {
-            var p = string.IsNullOrEmpty(target) ? ActiveSurface() : (FindPaneById(target!)?.pane ?? ActiveSurface());
-            return p is null ? "no pane" : RestartClaudeYolo(p);
-        });
+    public void WorkspaceFocus(string op) => Post(() => WorkspaceFocusOp(op));
 
-        public string UpdateClaude() => InvokeOnUi(() => UpdateClaudeCode());
+    public string SessionSwitch(string op) => InvokeOnUi(() => SwitchOp(op));
 
-        public string UpdateApp() => InvokeOnUi(() => UpdateAgwinterm());
+    public string CommandRun(string nameOrCommand, string? mode) => InvokeOnUi(() =>
+    {
+        var cmd = _commands.FirstOrDefault(c => string.Equals(c.Label, nameOrCommand, StringComparison.OrdinalIgnoreCase));
+        string text = cmd?.Text ?? nameOrCommand;
+        // A configured command uses its mode unless overridden; a raw command defaults to a new session.
+        string useMode = mode ?? cmd?.Mode ?? "new";
+        string expanded = RunCommandText(text, useMode);
+        return $"{useMode}: {expanded}";
+    });
 
-        public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => InvokeOnUi(() =>
-        {
-            var ses = FindSesForTarget(target);
-            if (ses is null) return "no session";
-            if (action == "clear") { ClearBackground(ses); return "cleared"; }
-            if (string.IsNullOrWhiteSpace(path)) return "background set needs a path";
-            return SetBackground(ses, path!, opacity, mode);
-        });
+    public string CommandList() => InvokeOnUi(CommandListText);
 
-        public void WorkspaceFocus(string op) => Post(() => WorkspaceFocusOp(op));
+    public string CommandLeader(string op) => InvokeOnUi(() => LeaderOp(op));
 
-        public string SessionSwitch(string op) => InvokeOnUi(() => SwitchOp(op));
-
-        public string CommandRun(string nameOrCommand, string? mode) => InvokeOnUi(() =>
-        {
-            var cmd = _commands.FirstOrDefault(c => string.Equals(c.Label, nameOrCommand, StringComparison.OrdinalIgnoreCase));
-            string text = cmd?.Text ?? nameOrCommand;
-            // A configured command uses its mode unless overridden; a raw command defaults to a new session.
-            string useMode = mode ?? cmd?.Mode ?? "new";
-            string expanded = RunCommandText(text, useMode);
-            return $"{useMode}: {expanded}";
-        });
-
-        public string CommandList() => InvokeOnUi(CommandListText);
-
-        public string CommandLeader(string op) => InvokeOnUi(() => LeaderOp(op));
-
-    /// <summary>Resolve a control-API target ("active"/null/id/prefix) to its owning session.</summary>
-    /// <summary>Resolve a control-API target to a specific pane: the active surface for "active"/empty,
-    /// else a pane by (prefix) id, else the target session's active pane.</summary>
+    /// <summary>Resolve a control target to a pane using the shared exact-pane, exact-session,
+    /// pane-prefix, session-prefix/name ordering.</summary>
     private Pane? PaneForTarget(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return ActiveSurface();
-        lock (_workspaces)
-        {
-            var panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToList();
-            var p = panes.FirstOrDefault(x => x.Id == target) ?? panes.FirstOrDefault(x => x.Id.StartsWith(target));
-            if (p is not null) return p;
-        }
-        return FindSesForTarget(target)?.ActivePane;
+        return FindControlPane(target)?.pane;
     }
 
+    /// <summary>Resolve a control-API target ("active"/null/session or pane id/prefix) to its owning session.</summary>
     private Ses? FindSesForTarget(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return _active;
-        lock (_workspaces)
-        {
-            var all = _workspaces.SelectMany(w => w.Sessions).ToList();
-            foreach (var s in all)
-                if (s.Id == target || s.Panes.Any(p => p.Id == target)) return s;
-            foreach (var s in all)
-                if (s.Id.StartsWith(target) || s.Panes.Any(p => p.Id.StartsWith(target))) return s;
-        }
-        return null;
+        return FindControlPane(target)?.ses;
     }
 }

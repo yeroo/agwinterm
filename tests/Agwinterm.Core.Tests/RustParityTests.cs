@@ -65,10 +65,16 @@ public class RustParityTests
         public static FfiCell From(Cell c) => new()
         {
             Rune = c.Rune,
-            Fg = Pack(c.Foreground), Bg = Pack(c.Background),
-            Attrs = (uint)c.Attributes, Width = c.Width,
-            FgKind = (uint)c.FgSpec.Kind, FgIndex = c.FgSpec.Index, FgRgb = Pack(c.FgSpec.Rgb),
-            BgKind = (uint)c.BgSpec.Kind, BgIndex = c.BgSpec.Index, BgRgb = Pack(c.BgSpec.Rgb),
+            Fg = Pack(c.Foreground),
+            Bg = Pack(c.Background),
+            Attrs = (uint)c.Attributes,
+            Width = c.Width,
+            FgKind = (uint)c.FgSpec.Kind,
+            FgIndex = c.FgSpec.Index,
+            FgRgb = Pack(c.FgSpec.Rgb),
+            BgKind = (uint)c.BgSpec.Kind,
+            BgIndex = c.BgSpec.Index,
+            BgRgb = Pack(c.BgSpec.Rgb),
         };
 
         public bool SameAs(Cell c) =>
@@ -138,33 +144,33 @@ public class RustParityTests
                         Assert.True(sClear(rs));
                         break;
                     case 2 or 3: // fill a row
-                    {
-                        int row = rng.Next(cs.Rows);
-                        var cell = RandomCell(rng);
-                        cs.FillRow(row, cell);
-                        var f = FfiCell.From(cell);
-                        Assert.True(sFill(rs, (uint)row, &f));
-                        break;
-                    }
+                        {
+                            int row = rng.Next(cs.Rows);
+                            var cell = RandomCell(rng);
+                            cs.FillRow(row, cell);
+                            var f = FfiCell.From(cell);
+                            Assert.True(sFill(rs, (uint)row, &f));
+                            break;
+                        }
                     case 4 or 5: // move rows (valid ranges only — C# throws where FFI returns false)
-                    {
-                        if (cs.Rows < 2) break;
-                        int count = rng.Next(1, cs.Rows);
-                        int src = rng.Next(cs.Rows - count + 1);
-                        int dst = rng.Next(cs.Rows - count + 1);
-                        cs.MoveRows(src, dst, count);
-                        Assert.True(sMove(rs, (uint)src, (uint)dst, (uint)count));
-                        break;
-                    }
+                        {
+                            if (cs.Rows < 2) break;
+                            int count = rng.Next(1, cs.Rows);
+                            int src = rng.Next(cs.Rows - count + 1);
+                            int dst = rng.Next(cs.Rows - count + 1);
+                            cs.MoveRows(src, dst, count);
+                            Assert.True(sMove(rs, (uint)src, (uint)dst, (uint)count));
+                            break;
+                        }
                     default: // set a random cell
-                    {
-                        int row = rng.Next(cs.Rows), col = rng.Next(cs.Cols);
-                        var cell = RandomCell(rng);
-                        cs[row, col] = cell;
-                        var f = FfiCell.From(cell);
-                        Assert.True(sSet(rs, (uint)row, (uint)col, &f));
-                        break;
-                    }
+                        {
+                            int row = rng.Next(cs.Rows), col = rng.Next(cs.Cols);
+                            var cell = RandomCell(rng);
+                            cs[row, col] = cell;
+                            var f = FfiCell.From(cell);
+                            Assert.True(sSet(rs, (uint)row, (uint)col, &f));
+                            break;
+                        }
                 }
                 // Full-grid compare after every op — first divergence pinpoints the op class.
                 for (int r = 0; r < cs.Rows; r++)
@@ -307,7 +313,7 @@ public class RustParityTests
         sb.Append($"cursor:{e.CursorRow},{e.CursorCol},{(e.CursorVisible ? 1 : 0)}\n");
         sb.Append($"region:{e.ScrollTop},{e.ScrollBottom}\n");
         sb.Append($"alt:{(e.IsAltScreen ? 1 : 0)}\n");
-        sb.Append($"mouse:{(e.MouseClick ? 1 : 0)}{(e.MouseDrag ? 1 : 0)}{(e.MouseMotion ? 1 : 0)}{(e.MouseSgr ? 1 : 0)}\n");
+        sb.Append($"mouse:{(e.MouseClick ? 1 : 0)}{(e.MouseDrag ? 1 : 0)}{(e.MouseMotion ? 1 : 0)}{(e.MouseSgr ? 1 : 0)}{(e.MouseSgrPixels ? 1 : 0)}\n");
         sb.Append($"paste:{(e.BracketedPaste ? 1 : 0)}\n");
         sb.Append($"focus:{(e.FocusReporting ? 1 : 0)}\n");
         sb.Append($"sync:{(e.SynchronizedOutput ? 1 : 0)}\n");
@@ -424,7 +430,7 @@ public class RustParityTests
             ("alt-screen", new[] { "main1\r\nmain2", "\x1b[?1049h", "ALT", "\x1b[?1049l", "\x1b[?47h", "x",
                                    "\x1b[?47l", "\x1b[?1047h", "\x1b[?1047l" }),
             ("save-restore", new[] { "\x1b[5;5H\x1b7", "\x1b[1;1Hmoved", "\x1b8*", "\x1bE!" }),
-            ("modes", new[] { "\x1b[?25l", "\x1b[?1000;1002;1006h", "\x1b[?1003h", "\x1b[?2004h",
+            ("modes", new[] { "\x1b[?25l", "\x1b[?1000;1002;1006;1016h", "\x1b[?1003h", "\x1b[?2004h",
                               "\x1b[?1002l", "\x1b[?12;7727h", "\x1b[?25h" }),
             ("osc", new[] { "\x1b]0;my title 🚀\x07", "\x1b]2;other\x1b\\", "\x1b]7;file://h/c/x\x07",
                             "\x1b]0;ctrlchars!\x07", "\x1b]777;notify;t;b\x07", "\x1b]52;c;aGk=\x07" }),
@@ -459,7 +465,7 @@ public class RustParityTests
         {
             ("sixel-basic", new[] { "\x1bP0;0;8q#1~~~\x1b\\", "after", "\x1bPq#0;2;100;0;0!5~-~~\x07" }),
             ("sixel-scrolloff", new[] { "\x1b[24;1H", "\x1bPq#2~~~~\x1b\\", "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n" }),
-            ("sixel-hostile", new[] { "\x1bP\"1;1;2000000000;2000000000q#1~\x1b\\", "\x1bPq!2000000000?\x1b\\", "\x1bPnotasixel\x1b\\" }),
+            ("sixel-hostile", new[] { "\x1bPq\"1;1;2000000000;2000000000#1~\x1b\\", "\x1bPq!2000000000?\x1b\\", "\x1bPnotasixel\x1b\\" }),
             ("kitty-basic", new[] { "\x1b_Ga=T,i=5,f=32,s=1,v=1,c=2,r=1;AAAA\x1b\\", "\x1b_Ga=p,i=5;\x1b\\", "\x1b_Ga=d,i=5;\x1b\\" }),
             ("kitty-chunked", new[] { "\x1b_Ga=T,i=9,f=24,m=1;AAAA\x1b\\", "\x1b_Gm=1;BBBB\x1b\\", "\x1b_Gm=0;CCCC\x1b\\" }),
             ("kitty-edge", new[] { "\x1b_Ga=T,i=7;!!!\x1b\\", "\x1b_Gx=1\x1b\\", "\x1b_notG\x1b\\", "\x1b_Ga=d;\x1b\\", "\x1b_Ga=q,i=3;AAAA\x1b\\" }),

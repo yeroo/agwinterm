@@ -5,9 +5,12 @@ use std::fs::File;
 use std::os::windows::io::FromRawHandle;
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_PIPE_CONNECTED, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
 const PIPE_ACCESS_DUPLEX: u32 = 0x0000_0003;
@@ -39,7 +42,10 @@ impl PipeServer {
             )
         };
         if h == INVALID_HANDLE_VALUE {
-            return Err(format!("CreateNamedPipeW({name}) failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "CreateNamedPipeW({name}) failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         Ok(PipeServer { handle: h })
     }
@@ -73,9 +79,9 @@ impl Drop for PipeServer {
 // gives the host a way to end a pending read (detach/supersede/kill).
 
 use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, FALSE};
-use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
+use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OVERLAPPED, ReadFile, WriteFile};
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
-use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile, FILE_FLAG_OVERLAPPED};
+use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
 
 pub struct OverlappedPipeServer {
     handle: HANDLE,
@@ -130,7 +136,10 @@ impl OverlappedPipeServer {
             )
         };
         if h == INVALID_HANDLE_VALUE {
-            return Err(format!("CreateNamedPipeW({name}) failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "CreateNamedPipeW({name}) failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         Ok(OverlappedPipeServer { handle: h })
     }
@@ -170,7 +179,13 @@ impl OvStream {
             let ev = Event::new();
             let mut ov: OVERLAPPED = std::mem::zeroed();
             ov.hEvent = ev.0;
-            let issued = ReadFile(self.handle, buf.as_mut_ptr(), buf.len() as u32, null_mut(), &mut ov);
+            let issued = ReadFile(
+                self.handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                null_mut(),
+                &mut ov,
+            );
             finish(self.handle, &mut ov, issued).unwrap_or(0) as usize
         }
     }
@@ -181,8 +196,16 @@ impl OvStream {
                 let ev = Event::new();
                 let mut ov: OVERLAPPED = std::mem::zeroed();
                 ov.hEvent = ev.0;
-                let issued = WriteFile(self.handle, buf.as_ptr(), buf.len() as u32, null_mut(), &mut ov);
-                let Some(n) = finish(self.handle, &mut ov, issued) else { return false };
+                let issued = WriteFile(
+                    self.handle,
+                    buf.as_ptr(),
+                    buf.len() as u32,
+                    null_mut(),
+                    &mut ov,
+                );
+                let Some(n) = finish(self.handle, &mut ov, issued) else {
+                    return false;
+                };
                 if n == 0 {
                     return false;
                 }

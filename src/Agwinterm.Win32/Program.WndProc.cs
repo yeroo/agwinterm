@@ -155,21 +155,21 @@ internal partial class Program
                 return IntPtr.Zero;
 
             case WM_APP_REDRAW:
-            {
-                System.Threading.Interlocked.Exchange(ref _redrawPending, 0);
-                // Frame cap (RedrawMinIntervalMs): paint immediately when quiet; under sustained
-                // output defer to a one-shot timer so floods render at ~66fps instead of per chunk.
-                long since = Environment.TickCount64 - _lastPaintTick;
-                if (since >= RedrawMinIntervalMs) InvalidateRect(hwnd, IntPtr.Zero, false);
-                else if (!_redrawTimerArmed)
                 {
-                    _redrawTimerArmed = true;
-                    SetTimer(hwnd, (IntPtr)RedrawTimer, (uint)Math.Max(1, RedrawMinIntervalMs - (int)since), IntPtr.Zero);
+                    System.Threading.Interlocked.Exchange(ref _redrawPending, 0);
+                    // Frame cap (RedrawMinIntervalMs): paint immediately when quiet; under sustained
+                    // output defer to a one-shot timer so floods render at ~66fps instead of per chunk.
+                    long since = Environment.TickCount64 - _lastPaintTick;
+                    if (since >= RedrawMinIntervalMs) InvalidateRect(hwnd, IntPtr.Zero, false);
+                    else if (!_redrawTimerArmed)
+                    {
+                        _redrawTimerArmed = true;
+                        SetTimer(hwnd, (IntPtr)RedrawTimer, (uint)Math.Max(1, RedrawMinIntervalMs - (int)since), IntPtr.Zero);
+                    }
+                    // Screen reader active: (re)arm the announce debounce — speaks once output settles.
+                    if (Uia.ClientsListening) SetTimer(hwnd, (IntPtr)UiaAnnounceTimer, UiaAnnounceQuietMs, IntPtr.Zero);
+                    return IntPtr.Zero;
                 }
-                // Screen reader active: (re)arm the announce debounce — speaks once output settles.
-                if (Uia.ClientsListening) SetTimer(hwnd, (IntPtr)UiaAnnounceTimer, UiaAnnounceQuietMs, IntPtr.Zero);
-                return IntPtr.Zero;
-            }
 
             case WM_APP_ACTION:
                 while (_uiActions.TryDequeue(out var act))
@@ -527,6 +527,7 @@ internal partial class Program
                     if (_setOpen) { SettingsWheel(HiWord(wParam) > 0 ? 1 : -1); return IntPtr.Zero; }
                     var pt = new POINT { x = LoWord(lParam), y = HiWord(lParam) }; // wheel gives screen coords
                     ScreenToClient(_hwnd, ref pt);
+                    int deviceX = pt.x, deviceY = pt.y;
                     pt.x = ToDip(pt.x); pt.y = ToDip(pt.y);   // ...and they are compared against DIP layout
                     // Ctrl+wheel: font zoom (Windows-wide convention), on the active surface.
                     if (KeyDown(VK_CONTROL) && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
@@ -538,7 +539,7 @@ internal partial class Program
                     if (em is not null && em.MouseReporting) // app wants the wheel (forward to the active pane)
                     {
                         if (pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
-                            SendMouse(HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, true);
+                            SendMouse(HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, deviceX, deviceY, true);
                         return IntPtr.Zero;
                     }
                     // Otherwise scroll the pane under the cursor through its scrollback history.

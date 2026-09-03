@@ -225,9 +225,9 @@ internal static class Win32
         public RECT rcPaint;
         public int fRestore;
         public int fIncUpdate;
-        public byte rgbReserved0;  public byte rgbReserved1;  public byte rgbReserved2;  public byte rgbReserved3;
-        public byte rgbReserved4;  public byte rgbReserved5;  public byte rgbReserved6;  public byte rgbReserved7;
-        public byte rgbReserved8;  public byte rgbReserved9;  public byte rgbReserved10; public byte rgbReserved11;
+        public byte rgbReserved0; public byte rgbReserved1; public byte rgbReserved2; public byte rgbReserved3;
+        public byte rgbReserved4; public byte rgbReserved5; public byte rgbReserved6; public byte rgbReserved7;
+        public byte rgbReserved8; public byte rgbReserved9; public byte rgbReserved10; public byte rgbReserved11;
         public byte rgbReserved12; public byte rgbReserved13; public byte rgbReserved14; public byte rgbReserved15;
         public byte rgbReserved16; public byte rgbReserved17; public byte rgbReserved18; public byte rgbReserved19;
         public byte rgbReserved20; public byte rgbReserved21; public byte rgbReserved22; public byte rgbReserved23;

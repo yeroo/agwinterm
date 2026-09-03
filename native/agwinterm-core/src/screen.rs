@@ -15,11 +15,19 @@ impl ScreenBuffer {
     /// cols/rows must be > 0 (the C# ctor throws; FFI guards before calling).
     pub fn new(cols: usize, rows: usize) -> ScreenBuffer {
         assert!(cols > 0 && rows > 0);
-        ScreenBuffer { cells: vec![Cell::EMPTY; cols * rows], cols, rows }
+        ScreenBuffer {
+            cells: vec![Cell::EMPTY; cols * rows],
+            cols,
+            rows,
+        }
     }
 
-    pub fn cols(&self) -> usize { self.cols }
-    pub fn rows(&self) -> usize { self.rows }
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
 
     pub fn get(&self, row: usize, col: usize) -> Cell {
         assert!(row < self.rows && col < self.cols);
@@ -43,7 +51,10 @@ impl ScreenBuffer {
         }
         assert!(src_row < self.rows && dst_row < self.rows);
         assert!(src_row + count <= self.rows && dst_row + count <= self.rows);
-        self.cells.copy_within(src_row * self.cols..(src_row + count) * self.cols, dst_row * self.cols);
+        self.cells.copy_within(
+            src_row * self.cols..(src_row + count) * self.cols,
+            dst_row * self.cols,
+        );
     }
 
     pub fn fill_row(&mut self, row: usize, cell: Cell) {
@@ -76,10 +87,14 @@ impl ScreenBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cell::{attrs, Cell, Color};
+    use crate::cell::{Cell, Color, attrs};
 
     fn glyph(ch: char) -> Cell {
-        Cell { rune: ch as i32, attributes: attrs::BOLD, ..Cell::EMPTY }
+        Cell {
+            rune: ch as i32,
+            attributes: attrs::BOLD,
+            ..Cell::EMPTY
+        }
     }
 
     #[test]
@@ -88,7 +103,7 @@ mod tests {
         s.fill_row(0, glyph('a'));
         s.fill_row(1, glyph('b'));
         s.fill_row(2, glyph('c'));
-        s.move_rows(1, 0, 2);            // scroll up one line
+        s.move_rows(1, 0, 2); // scroll up one line
         assert_eq!(s.get(0, 0).rune, 'b' as i32);
         assert_eq!(s.get(1, 3).rune, 'c' as i32);
     }
@@ -110,7 +125,7 @@ mod tests {
         for (r, ch) in ['a', 'b', 'c', 'd'].iter().enumerate() {
             s.fill_row(r, glyph(*ch));
         }
-        s.move_rows(0, 1, 3);            // shift down over itself
+        s.move_rows(0, 1, 3); // shift down over itself
         let got: Vec<i32> = (0..4).map(|r| s.get(r, 0).rune).collect();
         assert_eq!(got, vec!['a' as i32, 'a' as i32, 'b' as i32, 'c' as i32]);
         let _ = Color::DEFAULT_BACKGROUND; // silence unused import in cfg(test)

@@ -13,6 +13,7 @@ using System.Text.Json;
 //   agwintermctl session seen [--target ID]        (clear the unseen-notification badge)
 //   agwintermctl sidebar state                      (read-back: "visible tree" | "hidden flagged" | ...)
 //   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
+//   agwintermctl session metrics [<pane-id>] [--json] (live cell + pane pixel metrics)
 //   agwintermctl session text [--lines N] [--target ID]   (N reaches into scrollback; default = screen)
 //   agwintermctl session type <text...> [--allow-control] [--target ID]   (control bytes refused unless allowed)
 //   agwintermctl session write <text...> [--target ID]
@@ -20,6 +21,12 @@ using System.Text.Json;
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
 //   agwintermctl selection all|copy|clear|finalize [--target ID]
 //   agwintermctl image show <path> [--row R] [--col C] [--id N] [--target ID]
+//   agwintermctl image sixel <path> [--row R] [--col C] [--target ID]
+//   agwintermctl image frameshm <Local\agwinterm-frame-NAME> [--slot N] [--seq N] [--width N]
+//       [--height N] [--stride N] [--format N] [--id N] [--row R] [--col C] [--cols N] [--rows N]
+//       [--sx N] [--sy N] [--sw N] [--sh N] [--target ID]
+//   agwintermctl image frameshm --images '[{"name":"Local\\agwinterm-frame-x","slot":0,...}]'
+//       (several entries applied as one all-or-nothing frame; see docs/specs/image-frameshm.md)
 //   agwintermctl install hooks
 // Target defaults to $AGWINTERM_SESSION_ID (the current session) when not given.
 
@@ -134,6 +141,11 @@ switch (area)
             case "rename": // session rename <new-name...> [--target ID]
                 if (rest.Count == 0 && Opt("name") is null) { Console.Error.WriteLine("session rename needs a name"); return 2; }
                 cargs["name"] = rest.Count > 0 ? string.Join(' ', rest) : Opt("name")!;
+                break;
+            // session metrics [<pane-id>] — cell size + pixel box of a pane, for sizing an
+            // image.frameshm buffer. No args of its own; --json is the useful form.
+            case "metrics":
+                if (rest.Count > 0) target = rest[0];
                 break;
             case "status":
                 if (rest.Count == 0) { Console.Error.WriteLine("session status needs a state"); return 2; }
@@ -304,7 +316,10 @@ switch (area)
                 else if (rest.Count > 0) cargs["name"] = string.Join(' ', rest);
                 break;
             case "list": case "state": break;   // state = read-back of window UI flags
-            case "select": case "close": case "delete": case "zoom":
+            case "select":
+            case "close":
+            case "delete":
+            case "zoom":
                 target = rest.Count > 0 ? rest[0] : (Opt("target") ?? "active");
                 break;
             case "rename":
@@ -332,6 +347,13 @@ switch (area)
         if (int.TryParse(Opt("row"), out var row)) cargs["row"] = row;
         if (int.TryParse(Opt("col"), out var col)) cargs["col"] = col;
         if (int.TryParse(Opt("id"), out var id)) cargs["id"] = id;
+        break;
+    case "image" when sub == "frameshm":
+        cmd = "image.frameshm";
+        target = DefaultTarget();
+        if (!Agwinterm.Ctl.FrameShmCli.TryBuildArgs(rest, options, out var shmArgs, out var shmErr))
+        { Console.Error.WriteLine("image frameshm: " + shmErr); return 2; }
+        foreach (var kv in shmArgs) cargs[kv.Key] = kv.Value;
         break;
     case "image" when sub == "sixel":
         cmd = "image.sixel";

@@ -43,9 +43,10 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
 > the **same Rust emulator core and pty-host** as this app — **half the download** (15 MB vs 31 MB)
 > and a fraction of the moving parts.
 >
-> It speaks the **same `agwintermctl` control API** and sets the same `AGWINTERM_*` session
-> variables, so your scripts, hooks and the agent skill work in both — enforced by a shared
-> conformance suite that runs in *both* repositories' CI, not merely promised.
+> It speaks the **shared `agwintermctl` control-API subset** and sets the same `AGWINTERM_*`
+> session variables, so portable scripts and hooks work in both. The subset is enforced by a
+> conformance suite in both repositories; agwinterm-only extensions such as `image.frameshm` and
+> `session.metrics` must be capability-probed.
 >
 > **[→ github.com/yeroo/agliteterm](https://github.com/yeroo/agliteterm)**
 
@@ -94,10 +95,11 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
   opens as an agwinterm session via the ConPTY handoff, titled by the app.
 - **Fast**: sustained output at **~33k lines/s** (~87 % of a bare conhost window), 0.4 s cold start,
   ~0 % idle CPU, and a leak-hunted session lifecycle (`tools/profile-memory.ps1` keeps it honest).
-- Sixel + Kitty graphics, win32-input-mode + Kitty keyboard protocol, ligatures (toggleable),
-  builtin box-drawing glyphs, buffer restore, block selection + keyboard mark mode, read-only panes,
-  elevated & de-elevated sessions side by side (⚡ marker), FTCS/OSC-133 prompt marks with
-  jump-to-prompt, taskbar progress (OSC 9;4).
+- Sixel + Kitty graphics, win32-input-mode + Kitty keyboard protocol, SGR and SGR-Pixels mouse
+  reporting (`?1006`/`?1016`, including DECRQM discovery and device-pixel coordinates), ligatures
+  (toggleable), builtin box-drawing glyphs, buffer restore, block selection + keyboard mark mode,
+  read-only panes, elevated & de-elevated sessions side by side (⚡ marker), FTCS/OSC-133 prompt
+  marks with jump-to-prompt, taskbar progress (OSC 9;4).
 - Shells are launched with `TERM_PROGRAM=agwinterm` (+ the usual `AGWINTERM_*` vars), so prompt
   engines, tmux and scripts can detect the host terminal.
 
@@ -136,7 +138,7 @@ Grab either from the [**Releases**](https://github.com/yeroo/agwinterm/releases)
 Both are **self-contained** (no .NET runtime needed) and need **no admin rights**.
 
 > On an older or low-RAM machine, take **[agliteterm](https://github.com/yeroo/agliteterm/releases)**
-> instead — half the download, no .NET at all, and the same control API. The two install
+> instead — half the download, no .NET at all, and the same shared control-API subset. The two install
 > independently and can live side by side.
 
 Or install from a package manager (all use the release artifacts and self-update on new releases):
@@ -243,12 +245,12 @@ Neither is a cut-down build of the other — they are separate programs that agr
 
 **What that interface guarantees**, so a script does not have to care which one it is talking to:
 
-- **The same control API.** `tests/conformance/control-api.json` here is the canonical spec — every
-  verb with its expected response shape — and **both repositories run it in CI**, this one against
-  the full app and agliteterm against its client. A verb reshaped on either side fails the other's
-  build. It has already caught real drift in *both* directions.
+- **The same portable control-API subset.** `tests/conformance/control-api.json` is the canonical
+  spec for that subset, and **both repositories run it in CI**. Agwinterm also has product-specific
+  verbs such as `image.frameshm` and `session.metrics`; callers must capability-probe those rather
+  than assume agliteterm implements them.
 - **The same session environment.** `AGWINTERM_*` is unchanged in agliteterm, so the agent skill,
-  the status hooks and `agwintermctl` work identically in both.
+  status hooks and portable `agwintermctl` commands use the same targeting conventions in both.
 - **The same core.** agliteterm builds against an ABI-pinned `agwinterm_core.dll` published from
   this repo, and refuses to build if the published `abiVersion` is not the one it requires.
 

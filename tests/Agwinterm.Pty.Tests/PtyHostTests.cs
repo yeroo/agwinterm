@@ -139,9 +139,10 @@ public class PtyHostTests : IDisposable
         Assert.True(inHistory || live.Contains("before-detach"),
             $"echo lost across detach/reattach (history={inHistory}, live={live.Length} chars)");
 
-        // The revived stream is fully interactive.
-        second.Data.Write("echo after-reattach\r"u8.ToArray()); second.Data.Flush();
-        Assert.Contains("after-reattach", ReadUntil(second.Data, s => s.Contains("after-reattach")));
+        // The revived stream is fully interactive. Retype rather than write once: the repaint
+        // jiggle above resizes the console, and input landing mid-resize is discarded the same way
+        // it is during init (this bit the full suite under parallel load; alone it never did).
+        Assert.Contains("after-reattach", TypeUntilEcho(second.Data, "echo after-reattach", "after-reattach"));
 
         client.Kill(id);
     }
@@ -182,13 +183,13 @@ public class PtyHostTests : IDisposable
     }
 
     [Fact]
-    public void Shutdown_KillsSessionsAndCompletes()
+    public async Task Shutdown_KillsSessionsAndCompletes()
     {
         var server = new PtyHostServer(_appId + "-sd");
         using var client = PtyHostClient.Connect(_appId + "-sd");
         client.Create(Guid.NewGuid().ToString(), 80, 24, "cmd.exe", new[] { "/q" }, verbatim: true);
         client.Shutdown();
-        Assert.True(server.Completion.Wait(5000), "shutdown must complete the host");
+        await server.Completion.WaitAsync(TimeSpan.FromSeconds(5));
     }
 }
 

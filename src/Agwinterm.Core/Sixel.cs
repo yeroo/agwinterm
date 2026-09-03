@@ -8,6 +8,11 @@ namespace Agwinterm.Core;
 /// </summary>
 public static class Sixel
 {
+    private const int MaxDimension = 16_384;
+    private const int MaxCanvasBytes = 64 * 1024 * 1024;
+    private const long MaxCanvasPixels = MaxCanvasBytes / 4;
+    private const long MaxDecodeWork = MaxCanvasPixels;
+
     /// <summary>Result of decoding: RGBA pixels (width*height*4) or null if not a sixel payload.</summary>
     public static (int Width, int Height, byte[] Rgba)? Decode(byte[] dcs)
     {
@@ -34,24 +39,23 @@ public static class Sixel
         int canvasW = cap, canvasH = cap;
         int curColor = 0, x = 0, y = 0;         // y = top of the current 6-pixel band
 
-        void EnsureSize(int needW, int needH)
+        bool EnsureSize(int needW, int needH)
         {
-            // Clamp to a sane maximum: without this, a hostile raster attribute like
-            // "1;1;2000000000;5 sends the doubling loop through int overflow into an INFINITE
-            // LOOP (nw wraps negative then sticks at 0), hanging the output pump — and merely
-            // large values attempt multi-GB allocations. 16384px dwarfs any real terminal image;
-            // writes beyond the clamped canvas throw and land in the forgiving catch (partial
-            // decode), which is the pre-existing behavior for malformed payloads.
-            needW = System.Math.Min(needW, 16384);
-            needH = System.Math.Min(needH, 16384);
-            if (needW <= canvasW && needH <= canvasH) return;
+            // Bound both dimensions and their product. A per-dimension clamp alone permits a tiny
+            // raster declaration to allocate a 16384x16384 (1 GiB) canvas.
+            if (needW <= 0 || needH <= 0 || needW > MaxDimension || needH > MaxDimension)
+                return false;
+            if (needW <= canvasW && needH <= canvasH) return true;
             int nw = canvasW, nh = canvasH;
             while (nw < needW) nw *= 2;
             while (nh < needH) nh *= 2;
-            var ng = new byte[nw * nh * 4];
+            long bytes = (long)nw * nh * 4;
+            if (bytes > MaxCanvasBytes) return false;
+            var ng = new byte[(int)bytes];
             for (int row = 0; row < canvasH; row++)
                 System.Array.Copy(rgba, row * canvasW * 4, ng, row * nw * 4, canvasW * 4);
             rgba = ng; canvasW = nw; canvasH = nh;
+            return true;
         }
 
         int ReadInt(ref int j)
@@ -61,9 +65,11 @@ public static class Sixel
             return any ? v : -1;
         }
 
+        bool rejected = false;
+        long decodeWork = 0;
         try
         {
-            while (i < dcs.Length)
+            while (i < dcs.Length && !rejected)
             {
                 byte b = dcs[i];
                 if (b == (byte)'#')   // color: #Pc  (select)  or  #Pc;Pu;Px;Py;Pz  (define)
@@ -88,51 +94,75 @@ public static class Sixel
                 {
                     i++; ReadInt(ref i); Skip(ref i, ';'); ReadInt(ref i);
                     Skip(ref i, ';'); int ph = ReadInt(ref i); Skip(ref i, ';'); int pv = ReadInt(ref i);
-                    if (ph > 0 && pv > 0) EnsureSize(ph, pv);
+                    if (ph > 0 && pv > 0 && !EnsureSize(ph, pv)) rejected = true;
                 }
                 else if (b == (byte)'!')   // repeat: !Pn <sixel>
                 {
                     i++; int n = ReadInt(ref i);
                     if (i < dcs.Length && dcs[i] >= 0x3F && dcs[i] <= 0x7E)
-                    { PutSixel(dcs[i] - 0x3F, System.Math.Max(1, n)); i++; }
+                    {
+                        if (!PutSixel(dcs[i] - 0x3F, System.Math.Max(1, n))) rejected = true;
+                        i++;
+                    }
                 }
                 else if (b == (byte)'$') { x = 0; i++; }              // CR: back to left, same band
                 else if (b == (byte)'-') { x = 0; y += 6; i++; }      // LF: next 6-pixel band
-                else if (b >= 0x3F && b <= 0x7E) { PutSixel(b - 0x3F, 1); i++; }
+                else if (b >= 0x3F && b <= 0x7E)
+                {
+                    if (!PutSixel(b - 0x3F, 1)) rejected = true;
+                    i++;
+                }
                 else i++;   // ignore anything else (whitespace, stray bytes)
             }
         }
+        catch (OutOfMemoryException) { rejected = true; }
         catch { /* be forgiving: return whatever decoded so far */ }
 
-        if (width <= 0 || height <= 0) return null;
+        if (rejected || width <= 0 || height <= 0) return null;
 
         // Crop the canvas to the used extent.
-        var outp = new byte[width * height * 4];
+        byte[] outp;
+        try { outp = new byte[checked(width * height * 4)]; }
+        catch (OutOfMemoryException) { return null; }
+        catch (OverflowException) { return null; }
         for (int row = 0; row < height; row++)
             System.Array.Copy(rgba, row * canvasW * 4, outp, row * width * 4, width * 4);
         return (width, height, outp);
 
         void Skip(ref int j, char ch) { if (j < dcs.Length && dcs[j] == (byte)ch) j++; }
 
-        void PutSixel(int bits, int repeat)
+        bool PutSixel(int bits, int repeat)
         {
-            EnsureSize(x + repeat, y + 6);
+            long work = (long)repeat * 6;
+            if (work > MaxDecodeWork - decodeWork) return false;
+            decodeWork += work;
+
+            long needW = (long)x + repeat;
+            long needH = (long)y + 6;
+            if (needW > MaxDimension || needH > MaxDimension) return false;
+
+            // A zero-bit sixel advances the position but paints nothing. Do that in O(1), which
+            // keeps a tiny !2147483647? payload from tying up the output pump for billions of loops.
+            if (bits == 0)
+            {
+                x = (int)needW;
+                return true;
+            }
+
+            if (!EnsureSize((int)needW, (int)needH)) return false;
             var (r, g, bl) = palette[curColor];
             for (int rep = 0; rep < repeat; rep++, x++)
                 for (int row = 0; row < 6; row++)
                     if ((bits & (1 << row)) != 0)
                     {
                         int px = x, py = y + row;
-                        // With the EnsureSize clamp, a hostile position can exceed the canvas while
-                        // the flat index still lands INSIDE the array (wrapping into another row) —
-                        // and the over-large width then breaks the crop OUTSIDE the catch. Throw at
-                        // the first out-of-canvas write instead: the catch returns the partial decode.
                         if (px >= canvasW || py >= canvasH) throw new InvalidOperationException();
                         int o = (py * canvasW + px) * 4;
                         rgba[o] = r; rgba[o + 1] = g; rgba[o + 2] = bl; rgba[o + 3] = 255;
                         if (px + 1 > width) width = px + 1;
                         if (py + 1 > height) height = py + 1;
                     }
+            return true;
         }
     }
 

@@ -132,6 +132,11 @@ public class ServerSessionTests : IDisposable
         // The host still runs the child, unattached.
         using (var probe = PtyHostClient.Connect(_appId))
         {
+            Assert.True(WaitFor(() =>
+            {
+                var listed = probe.List();
+                return listed.Count == 1 && !listed[0].HasExited && !listed[0].Attached;
+            }, 5000), "detach must leave the session running, unattached");
             var info = Assert.Single(probe.List());
             Assert.False(info.HasExited);
             Assert.False(info.Attached);
@@ -145,9 +150,10 @@ public class ServerSessionTests : IDisposable
         Assert.True(WaitFor(() => GridText(gen2).Contains("pre+restart")),
             "pre-restart output missing after adoption; grid:\n" + GridText(gen2));
 
-        // And it's live: same shell keeps taking input.
-        gen2.Write("echo post+adopt\r"u8);
-        Assert.True(WaitFor(() => GridText(gen2).Contains("post+adopt")));
+        // And it's live: same shell keeps taking input. TypeLine, not a single Write: adoption
+        // repaints via a resize jiggle, and input landing mid-resize is discarded exactly as it is
+        // during init (seen in the full suite under parallel load, never in isolation).
+        TypeLine(gen2, "echo post+adopt", "post+adopt");
     }
 
     [Fact]

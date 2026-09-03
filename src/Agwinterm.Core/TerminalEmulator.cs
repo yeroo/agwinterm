@@ -4,6 +4,7 @@ namespace Agwinterm.Core;
 
 public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
 {
+    internal const int MaxKittyEncodedChars = 8_000_000;
     private readonly VtParser _parser;
     private readonly ScreenBuffer _main;
     private readonly ScreenBuffer _alt;
@@ -28,6 +29,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     private bool _mouseDrag;    // ?1002 button-event (motion while pressed)
     private bool _mouseMotion;  // ?1003 any-motion
     private bool _mouseSgr;     // ?1006 SGR extended encoding
+    private bool _mouseSgrPixels; // ?1016 SGR encoding with pixel coordinates
 
     /// <summary>True if the app requested mouse reporting (any of ?1000/?1002/?1003).</summary>
     public bool MouseReporting => _mouseClick || _mouseDrag || _mouseMotion;
@@ -37,6 +39,9 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
 
     /// <summary>True if the app requested SGR (?1006) mouse encoding.</summary>
     public bool MouseSgr => _mouseSgr;
+
+    /// <summary>True if the app requested SGR-Pixels (?1016) mouse encoding.</summary>
+    public bool MouseSgrPixels => _mouseSgrPixels;
 
     /// <summary>Individual mouse-mode flags (?1000/?1002/?1003) — for state diffing/tests.</summary>
     public bool MouseClick => _mouseClick;
@@ -175,7 +180,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                     if (semi >= 0 && int.TryParse(text[(semi + 1)..], out int ec)) m.ExitCode = ec;
                 }
                 break;
-            // 'B' (command-line start) isn't tracked separately in v1.
+                // 'B' (command-line start) isn't tracked separately in v1.
         }
         if (_marks.Count > 512) _marks.RemoveRange(0, _marks.Count - 512);
     }
@@ -305,14 +310,14 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 case '?': Host?.Respond($"\x1b[?{KeyboardFlags}u"); break;   // report current flags
                 case '>': _kbdStack.Push(parameters.Count > 0 ? parameters[0] : 0); break;
                 case '=':
-                {
-                    int flags = parameters.Count > 0 ? parameters[0] : 0;
-                    int mode = parameters.Count > 1 ? parameters[1] : 1;   // 1 set, 2 or-in, 3 and-not
-                    int cur = KeyboardFlags, next = mode switch { 2 => cur | flags, 3 => cur & ~flags, _ => flags };
-                    if (_kbdStack.Count > 0) _kbdStack.Pop();
-                    _kbdStack.Push(next);
-                    break;
-                }
+                    {
+                        int flags = parameters.Count > 0 ? parameters[0] : 0;
+                        int mode = parameters.Count > 1 ? parameters[1] : 1;   // 1 set, 2 or-in, 3 and-not
+                        int cur = KeyboardFlags, next = mode switch { 2 => cur | flags, 3 => cur & ~flags, _ => flags };
+                        if (_kbdStack.Count > 0) _kbdStack.Pop();
+                        _kbdStack.Push(next);
+                        break;
+                    }
                 case '<': for (int n = Math.Max(1, parameters.Count > 0 ? parameters[0] : 1); n > 0 && _kbdStack.Count > 0; n--) _kbdStack.Pop(); break;
             }
             return;
@@ -322,9 +327,13 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         {
             if (final is 'h' or 'l')
                 SetPrivateMode(parameters, set: final == 'h');
-            else if (final == 'p' && parameters.Count > 0 && parameters[0] == 2026)
-                // DECRQM ?2026$p — report synchronized-output support so apps enable it (1 set, 2 reset).
-                Host?.Respond($"\x1b[?2026;{(SynchronizedOutput ? 1 : 2)}$y");
+            else if (final == 'p' && parameters.Count > 0 && parameters[0] is 1016 or 2026)
+            {
+                int mode = parameters[0];
+                bool set = mode == 1016 ? MouseSgrPixels : SynchronizedOutput;
+                // DECRQM — 1 means set, 2 means reset. Both modes are supported in either state.
+                Host?.Respond($"\x1b[?{mode};{(set ? 1 : 2)}$y");
+            }
             else
                 Host?.Unhandled("CSI", $"? {string.Join(';', parameters)} {final}"); // e.g. DECRQM ?…$p
             return;
@@ -357,11 +366,11 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
             case 'S': for (int i = 0; i < P(0, 1); i++) ScrollRegionUp(); break;   // SU
             case 'T': for (int i = 0; i < P(0, 1); i++) ScrollRegionDown(); break; // SD
             case 'q' when prefix == '\0': // DECSCUSR (CSI Ps SP q) — cursor shape; the SP intermediate is dropped
-            {
-                int ps = parameters.Count > 0 ? parameters[0] : 0;
-                if (ps is >= 0 and <= 6) CursorShape = ps;   // out-of-range values are ignored
-                break;
-            }
+                {
+                    int ps = parameters.Count > 0 ? parameters[0] : 0;
+                    if (ps is >= 0 and <= 6) CursorShape = ps;   // out-of-range values are ignored
+                    break;
+                }
             default:
                 Host?.Unhandled("CSI", $"{(prefix == '\0' ? "" : prefix + " ")}{string.Join(';', parameters)} {final}");
                 break;
@@ -403,6 +412,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 case 1002: _mouseDrag = set; break;    // button-event (drag) tracking
                 case 1003: _mouseMotion = set; break;  // any-motion tracking
                 case 1006: _mouseSgr = set; break;     // SGR extended mouse encoding
+                case 1016: _mouseSgrPixels = set; break; // SGR encoding with pixel coordinates
                 case 1004: FocusReporting = set; break; // focus in/out reporting
                 case 2026: SynchronizedOutput = set; break; // synchronized output (atomic frames)
                 case 9001: Win32InputMode = set; break; // ConPTY win32-input-mode
@@ -441,6 +451,8 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     private readonly List<ImagePlacement> _placements = new();
     private readonly System.Text.StringBuilder _kittyChunks = new();
     private Dictionary<string, string>? _kittyKeys;
+    private bool _kittyDiscarding;
+    internal int KittyEncodedPayloadLimit { get; set; } = MaxKittyEncodedChars;
 
     /// <summary>Transmitted Kitty images, keyed by image id.</summary>
     public IReadOnlyDictionary<int, KittyImage> Images => _images;
@@ -520,10 +532,27 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         string payload = semi >= 0 ? body[(semi + 1)..] : string.Empty;
 
         var keys = ParseKittyKeys(control);
+        bool more = keys.TryGetValue("m", out var mv) && mv == "1";
+        if (_kittyDiscarding)
+        {
+            if (!more)
+            {
+                _kittyDiscarding = false;
+                _kittyKeys = null;
+            }
+            return;
+        }
+
         if (_kittyChunks.Length == 0) _kittyKeys = keys; // first chunk carries the metadata
+        if ((long)_kittyChunks.Length + payload.Length > KittyEncodedPayloadLimit)
+        {
+            _kittyChunks.Clear();
+            _kittyKeys = null;
+            _kittyDiscarding = more;
+            return;
+        }
         _kittyChunks.Append(payload);
 
-        bool more = keys.TryGetValue("m", out var mv) && mv == "1";
         if (more) return; // accumulate until the final chunk (m=0 / absent)
 
         FinalizeKittyImage();
@@ -537,7 +566,10 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         _kittyKeys = null;
 
         int id = GetKittyInt(keys, "i", 0);
-        var format = (KittyFormat)GetKittyInt(keys, "f", 32);
+        // f= arrives from untrusted terminal output; clamp it to the three wire formats so a
+        // crafted "f=132" cannot mint the host-only KittyFormat.Bgra and send the renderer down
+        // the no-swizzle path with RGBA bytes.
+        var format = KittyFormats.ParseWireFormat(GetKittyInt(keys, "f", 32));
         int w = GetKittyInt(keys, "s", 0);
         int h = GetKittyInt(keys, "v", 0);
         string action = keys.TryGetValue("a", out var a) ? a : "t";
@@ -643,24 +675,24 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                     Host?.Notify(parts[1], parts.Length >= 3 ? string.Join(';', parts[2..]) : "");
                 break;
             case 52: // OSC 52 ; Pc ; Pd — program writes the clipboard (base64 payload). Pc (which
-            {        // selection) is ignored: everything goes to the system clipboard, like WT.
-                int semi = text.IndexOf(';');
-                if (semi < 0) break;
-                string data = text[(semi + 1)..];
-                // "?" is a read-back query — never answered (clipboard exfiltration). Cap the payload
-                // so a runaway sequence can't balloon memory (4MB base64 ≈ 3MB text, far above any
-                // real selection).
-                if (data.Length == 0 || data == "?" || data.Length > 4_000_000) break;
-                try
-                {
-                    // Tolerate unpadded base64 (some emitters strip '=').
-                    string decoded = System.Text.Encoding.UTF8.GetString(
-                        Convert.FromBase64String(data.PadRight((data.Length + 3) & ~3, '=')));
-                    if (decoded.Length > 0) Host?.ClipboardWrite(decoded);
+                {        // selection) is ignored: everything goes to the system clipboard, like WT.
+                    int semi = text.IndexOf(';');
+                    if (semi < 0) break;
+                    string data = text[(semi + 1)..];
+                    // "?" is a read-back query — never answered (clipboard exfiltration). Cap the payload
+                    // so a runaway sequence can't balloon memory (4MB base64 ≈ 3MB text, far above any
+                    // real selection).
+                    if (data.Length == 0 || data == "?" || data.Length > 4_000_000) break;
+                    try
+                    {
+                        // Tolerate unpadded base64 (some emitters strip '=').
+                        string decoded = System.Text.Encoding.UTF8.GetString(
+                            Convert.FromBase64String(data.PadRight((data.Length + 3) & ~3, '=')));
+                        if (decoded.Length > 0) Host?.ClipboardWrite(decoded);
+                    }
+                    catch (FormatException) { /* malformed base64 — drop */ }
+                    break;
                 }
-                catch (FormatException) { /* malformed base64 — drop */ }
-                break;
-            }
             default:
                 Host?.Unhandled("OSC", $"{command};{(text.Length > 40 ? text[..40] + "…" : text)}");
                 break;
@@ -949,6 +981,7 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         if (_mouseDrag) sb.Append("\x1b[?1002h");
         if (_mouseMotion) sb.Append("\x1b[?1003h");
         if (_mouseSgr) sb.Append("\x1b[?1006h");
+        if (_mouseSgrPixels) sb.Append("\x1b[?1016h");
         if (BracketedPaste) sb.Append("\x1b[?2004h");
         if (FocusReporting) sb.Append("\x1b[?1004h");
         if (Win32InputMode) sb.Append("\x1b[?9001h");

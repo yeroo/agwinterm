@@ -129,7 +129,8 @@ internal partial class Program
         switch (vk)
         {
             case VK_ESCAPE: CloseDashboard(); return true;
-            case VK_RETURN: case VK_SPACE:
+            case VK_RETURN:
+            case VK_SPACE:
                 if (_dashSel >= 0 && _dashSel < n) { var s = _dashSessions[_dashSel]; CloseDashboard(); SetActive(s); }
                 return true;
             case VK_LEFT: if (_dashSel % cols != 0) DashSelect(_dashSel - 1); return true;

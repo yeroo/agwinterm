@@ -17,7 +17,7 @@
 //!  - Invalid DECSTBM resets to full screen; any DECSTBM homes the cursor.
 //!  - Zero-width codepoints are dropped (v1 semantics).
 
-use crate::cell::{attrs, Cell, Color, ColorSpec};
+use crate::cell::{Cell, Color, ColorSpec, attrs};
 use crate::screen::ScreenBuffer;
 use crate::sixel;
 use crate::vtparser::{Performer, VtParser};
@@ -25,6 +25,7 @@ use crate::wcwidth;
 use std::collections::{BTreeMap, HashMap};
 
 const TRIM_SLACK: usize = 512;
+const MAX_KITTY_ENCODED_CHARS: usize = 8_000_000;
 
 /// Mirror of C# KittyImage (format kept as the raw transmitted int — the C# enum
 /// cast stores arbitrary values unchanged).
@@ -34,6 +35,8 @@ pub struct KittyImage {
     pub width: i32,
     pub height: i32,
     pub data: Vec<u8>,
+    /// Monotonic content generation for stable-id replacements across the C ABI.
+    pub revision: u64,
 }
 
 /// Mirror of C# ImagePlacement.
@@ -59,7 +62,7 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
             chars.push(c);
         }
     }
-    if chars.len() % 4 != 0 {
+    if !chars.len().is_multiple_of(4) {
         return None;
     }
     if chars.is_empty() {
@@ -128,6 +131,7 @@ pub struct Emulator {
     mouse_drag: bool,
     mouse_motion: bool,
     mouse_sgr: bool,
+    mouse_sgr_pixels: bool,
     pub bracketed_paste: bool,
     pub focus_reporting: bool,
     pub synchronized_output: bool,
@@ -160,6 +164,8 @@ pub struct Emulator {
     placements: Vec<ImagePlacement>,
     kitty_chunks: String,
     kitty_keys: Option<HashMap<String, String>>,
+    kitty_discarding: bool,
+    kitty_encoded_limit: usize,
     sixel_seq: i32,
     pub cell_pixel_width: i32,
     pub cell_pixel_height: i32,
@@ -196,6 +202,7 @@ impl Emulator {
             mouse_drag: false,
             mouse_motion: false,
             mouse_sgr: false,
+            mouse_sgr_pixels: false,
             bracketed_paste: false,
             focus_reporting: false,
             synchronized_output: false,
@@ -221,6 +228,8 @@ impl Emulator {
             placements: Vec::new(),
             kitty_chunks: String::new(),
             kitty_keys: None,
+            kitty_discarding: false,
+            kitty_encoded_limit: MAX_KITTY_ENCODED_CHARS,
             sixel_seq: -1,
             cell_pixel_width: 8,
             cell_pixel_height: 18,
@@ -258,13 +267,49 @@ impl Emulator {
         self.images.contains_key(&id)
     }
     pub fn set_image_data(&mut self, id: i32, format: i32, width: i32, height: i32, data: Vec<u8>) {
-        self.images.insert(id, KittyImage { id, format, width, height, data });
+        let revision = self.next_image_revision(id);
+        self.images.insert(
+            id,
+            KittyImage {
+                id,
+                format,
+                width,
+                height,
+                data,
+                revision,
+            },
+        );
+    }
+    fn next_image_revision(&self, id: i32) -> u64 {
+        self.images
+            .get(&id)
+            .map_or(1, |image| image.revision.wrapping_add(1))
     }
     #[allow(clippy::too_many_arguments)]
-    pub fn place_image(&mut self, id: i32, row: i64, col: i64, cols: i32, rows: i32,
-                       src_x: i32, src_y: i32, src_w: i32, src_h: i32) {
+    pub fn place_image(
+        &mut self,
+        id: i32,
+        row: i64,
+        col: i64,
+        cols: i32,
+        rows: i32,
+        src_x: i32,
+        src_y: i32,
+        src_w: i32,
+        src_h: i32,
+    ) {
         self.placements.retain(|p| p.image_id != id);
-        self.placements.push(ImagePlacement { image_id: id, row, col, cols, rows, src_x, src_y, src_w, src_h });
+        self.placements.push(ImagePlacement {
+            image_id: id,
+            row,
+            col,
+            cols,
+            rows,
+            src_x,
+            src_y,
+            src_w,
+            src_h,
+        });
     }
     /// Decode a sixel payload and place it at the cursor (advancing below). Public wrapper.
     pub fn place_sixel_public(&mut self, data: &[u8]) -> bool {
@@ -275,7 +320,11 @@ impl Emulator {
         if self.on_alt { &self.alt } else { &self.main }
     }
     fn scr(&mut self) -> &mut ScreenBuffer {
-        if self.on_alt { &mut self.alt } else { &mut self.main }
+        if self.on_alt {
+            &mut self.alt
+        } else {
+            &mut self.main
+        }
     }
     pub fn is_alt_screen(&self) -> bool {
         self.on_alt
@@ -293,8 +342,14 @@ impl Emulator {
     pub fn keyboard_flags(&self) -> i32 {
         *self.kbd_stack.last().unwrap_or(&0)
     }
-    pub fn mouse_flags(&self) -> (bool, bool, bool, bool) {
-        (self.mouse_click, self.mouse_drag, self.mouse_motion, self.mouse_sgr)
+    pub fn mouse_flags(&self) -> (bool, bool, bool, bool, bool) {
+        (
+            self.mouse_click,
+            self.mouse_drag,
+            self.mouse_motion,
+            self.mouse_sgr,
+            self.mouse_sgr_pixels,
+        )
     }
     pub fn scroll_top(&self) -> usize {
         self.scroll_top
@@ -364,7 +419,11 @@ impl Emulator {
         let (r, c) = (self.cursor_row, self.cursor_col);
         self.scr().set(r, c, cell);
         if w == 2 {
-            let spacer = Cell { rune: 0, width: 0, ..cell };
+            let spacer = Cell {
+                rune: 0,
+                width: 0,
+                ..cell
+            };
             self.scr().set(r, c + 1, spacer);
         }
         self.cursor_col += w;
@@ -416,9 +475,15 @@ impl Emulator {
         self.history.drain(0..trim as usize);
         self.marks.retain_mut(|m| {
             m.prompt_line -= trim;
-            if m.command_line >= 0 { m.command_line -= trim; }
-            if m.output_line >= 0 { m.output_line -= trim; }
-            if m.end_line >= 0 { m.end_line -= trim; }
+            if m.command_line >= 0 {
+                m.command_line -= trim;
+            }
+            if m.output_line >= 0 {
+                m.output_line -= trim;
+            }
+            if m.end_line >= 0 {
+                m.end_line -= trim;
+            }
             m.prompt_line >= 0
         });
     }
@@ -427,7 +492,7 @@ impl Emulator {
     /// stored is dropped, so the setting means the same thing whenever it is applied.
     pub fn set_scrollback_max(&mut self, max: usize) {
         self.scrollback_max = max;
-        self.trim_history();   // a LOWER cap must take effect now, not at the next scroll
+        self.trim_history(); // a LOWER cap must take effect now, not at the next scroll
     }
 
     fn index(&mut self) {
@@ -502,7 +567,9 @@ impl Emulator {
         if self.cursor_row < self.scroll_top || self.cursor_row > self.scroll_bottom {
             return;
         }
-        let n = n.min((self.scroll_bottom - self.cursor_row + 1) as i64).max(0) as usize;
+        let n = n
+            .min((self.scroll_bottom - self.cursor_row + 1) as i64)
+            .max(0) as usize;
         let shift = self.scroll_bottom - self.cursor_row + 1 - n;
         let row = self.cursor_row;
         let b = self.blank();
@@ -518,7 +585,9 @@ impl Emulator {
         if self.cursor_row < self.scroll_top || self.cursor_row > self.scroll_bottom {
             return;
         }
-        let n = n.min((self.scroll_bottom - self.cursor_row + 1) as i64).max(0) as usize;
+        let n = n
+            .min((self.scroll_bottom - self.cursor_row + 1) as i64)
+            .max(0) as usize;
         let shift = self.scroll_bottom - self.cursor_row + 1 - n;
         let row = self.cursor_row;
         let bottom = self.scroll_bottom;
@@ -554,7 +623,11 @@ impl Emulator {
         let b = self.blank();
         let (row, cur) = (self.cursor_row, self.cursor_col as i64);
         for c in cur..cols {
-            let cell = if c + n < cols { self.screen().get(row, (c + n) as usize) } else { b };
+            let cell = if c + n < cols {
+                self.screen().get(row, (c + n) as usize)
+            } else {
+                b
+            };
             self.scr().set(row, c as usize, cell);
         }
     }
@@ -573,7 +646,11 @@ impl Emulator {
 
     fn erase_line(&mut self, mode: i32) {
         let from = if mode == 0 { self.cursor_col } else { 0 };
-        let to = if mode == 1 { self.cursor_col } else { self.screen().cols() - 1 };
+        let to = if mode == 1 {
+            self.cursor_col
+        } else {
+            self.screen().cols() - 1
+        };
         let b = self.blank();
         let row = self.cursor_row;
         let mut c = from;
@@ -640,6 +717,7 @@ impl Emulator {
                 1002 => self.mouse_drag = set,
                 1003 => self.mouse_motion = set,
                 1006 => self.mouse_sgr = set,
+                1016 => self.mouse_sgr_pixels = set,
                 1004 => self.focus_reporting = set,
                 2026 => self.synchronized_output = set,
                 9001 => self.win32_input_mode = set,
@@ -746,15 +824,31 @@ impl Emulator {
             // Out-of-range index: consume params, change nothing (matches the guarded C#).
             if (0..=255).contains(&idx) {
                 let (c, s) = (Color::from_index(idx as u8), ColorSpec::indexed(idx as u8));
-                if is_fg { self.fg = c; self.fg_spec = s; } else { self.bg = c; self.bg_spec = s; }
+                if is_fg {
+                    self.fg = c;
+                    self.fg_spec = s;
+                } else {
+                    self.bg = c;
+                    self.bg_spec = s;
+                }
             }
             return i + 2;
         }
         if mode == 2 && i + 4 < p.len() {
             // Wrapping byte casts, matching C#'s unchecked (byte) conversion.
-            let c = Color { r: p[i + 2] as u8, g: p[i + 3] as u8, b: p[i + 4] as u8 };
+            let c = Color {
+                r: p[i + 2] as u8,
+                g: p[i + 3] as u8,
+                b: p[i + 4] as u8,
+            };
             let s = ColorSpec::from_rgb(c);
-            if is_fg { self.fg = c; self.fg_spec = s; } else { self.bg = c; self.bg_spec = s; }
+            if is_fg {
+                self.fg = c;
+                self.fg_spec = s;
+            } else {
+                self.bg = c;
+                self.bg_spec = s;
+            }
             return i + 4;
         }
         i + 1
@@ -794,24 +888,28 @@ impl Emulator {
                 }
             }
             'B' => {
-                if let Some(m) = self.marks.last_mut() {
-                    if m.command_line < 0 { m.command_line = abs; }
+                if let Some(m) = self.marks.last_mut()
+                    && m.command_line < 0
+                {
+                    m.command_line = abs;
                 }
             }
             'C' => {
-                if let Some(m) = self.marks.last_mut() {
-                    if m.output_line < 0 { m.output_line = abs; }
+                if let Some(m) = self.marks.last_mut()
+                    && m.output_line < 0
+                {
+                    m.output_line = abs;
                 }
             }
             'D' => {
-                if let Some(m) = self.marks.last_mut() {
-                    if m.end_line < 0 {
-                        m.end_line = abs;
-                        if let Some(semi) = text.find(';') {
-                            if let Ok(ec) = text[semi + 1..].parse::<i32>() {
-                                m.exit_code = Some(ec);
-                            }
-                        }
+                if let Some(m) = self.marks.last_mut()
+                    && m.end_line < 0
+                {
+                    m.end_line = abs;
+                    if let Some(semi) = text.find(';')
+                        && let Ok(ec) = text[semi + 1..].parse::<i32>()
+                    {
+                        m.exit_code = Some(ec);
                     }
                 }
             }
@@ -860,18 +958,49 @@ impl Emulator {
 
     pub fn dump_modes(&self) -> String {
         let mut s = String::new();
-        if self.on_alt { s.push_str("\u{1b}[?1049h"); }
-        if !self.cursor_visible { s.push_str("\u{1b}[?25l"); }
-        if self.mouse_click { s.push_str("\u{1b}[?1000h"); }
-        if self.mouse_drag { s.push_str("\u{1b}[?1002h"); }
-        if self.mouse_motion { s.push_str("\u{1b}[?1003h"); }
-        if self.mouse_sgr { s.push_str("\u{1b}[?1006h"); }
-        if self.bracketed_paste { s.push_str("\u{1b}[?2004h"); }
-        if self.focus_reporting { s.push_str("\u{1b}[?1004h"); }
-        if self.win32_input_mode { s.push_str("\u{1b}[?9001h"); }
-        if self.cursor_shape != 0 { s.push_str(&format!("\u{1b}[{} q", self.cursor_shape)); }
-        if !self.title.is_empty() { s.push_str("\u{1b}]0;"); s.push_str(&self.title); s.push('\u{7}'); }
-        if !self.cwd.is_empty() { s.push_str("\u{1b}]7;"); s.push_str(&self.cwd); s.push('\u{7}'); }
+        if self.on_alt {
+            s.push_str("\u{1b}[?1049h");
+        }
+        if !self.cursor_visible {
+            s.push_str("\u{1b}[?25l");
+        }
+        if self.mouse_click {
+            s.push_str("\u{1b}[?1000h");
+        }
+        if self.mouse_drag {
+            s.push_str("\u{1b}[?1002h");
+        }
+        if self.mouse_motion {
+            s.push_str("\u{1b}[?1003h");
+        }
+        if self.mouse_sgr {
+            s.push_str("\u{1b}[?1006h");
+        }
+        if self.mouse_sgr_pixels {
+            s.push_str("\u{1b}[?1016h");
+        }
+        if self.bracketed_paste {
+            s.push_str("\u{1b}[?2004h");
+        }
+        if self.focus_reporting {
+            s.push_str("\u{1b}[?1004h");
+        }
+        if self.win32_input_mode {
+            s.push_str("\u{1b}[?9001h");
+        }
+        if self.cursor_shape != 0 {
+            s.push_str(&format!("\u{1b}[{} q", self.cursor_shape));
+        }
+        if !self.title.is_empty() {
+            s.push_str("\u{1b}]0;");
+            s.push_str(&self.title);
+            s.push('\u{7}');
+        }
+        if !self.cwd.is_empty() {
+            s.push_str("\u{1b}]7;");
+            s.push_str(&self.cwd);
+            s.push('\u{7}');
+        }
         s
     }
 
@@ -913,7 +1042,10 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(cols: usize, rows: usize) -> Terminal {
-        Terminal { emu: Emulator::new(cols, rows), parser: VtParser::new() }
+        Terminal {
+            emu: Emulator::new(cols, rows),
+            parser: VtParser::new(),
+        }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -996,10 +1128,17 @@ impl Performer for Emulator {
         if prefix == b'?' {
             if ch == b'h' || ch == b'l' {
                 self.set_private_mode(params, ch == b'h');
-            } else if ch == b'p' && params.first() == Some(&2026) {
-                // DECRQM ?2026$p — report synchronized-output support (1 set, 2 reset).
-                let reply = format!("\u{1b}[?2026;{}$y", if self.synchronized_output { 1 } else { 2 });
-                self.push_action(HostAction::Respond { reply });
+            } else if ch == b'p' && matches!(params.first(), Some(1016 | 2026)) {
+                let mode = params[0];
+                let set = if mode == 1016 {
+                    self.mouse_sgr_pixels
+                } else {
+                    self.synchronized_output
+                };
+                // DECRQM — 1 means set, 2 means reset. Both modes are supported in either state.
+                self.push_action(HostAction::Respond {
+                    reply: format!("\u{1b}[?{mode};{}$y", if set { 1 } else { 2 }),
+                });
             } else {
                 self.push_action(HostAction::Unhandled {
                     kind: "CSI".into(),
@@ -1055,7 +1194,11 @@ impl Performer for Emulator {
                 }
             }
             _ => {
-                let pfx = if prefix == 0 { String::new() } else { format!("{} ", prefix as char) };
+                let pfx = if prefix == 0 {
+                    String::new()
+                } else {
+                    format!("{} ", prefix as char)
+                };
                 self.push_action(HostAction::Unhandled {
                     kind: "CSI".into(),
                     detail: format!("{pfx}{} {}", join_params(params), ch as char),
@@ -1078,8 +1221,14 @@ impl Performer for Emulator {
             11 => {
                 // OSC 11 — set/query the terminal background color (per-pane dynamic bg, agterm #240).
                 if text.trim() == "?" {
-                    let (r, g, b) = ((self.dynamic_bg >> 16) & 0xFF, (self.dynamic_bg >> 8) & 0xFF, self.dynamic_bg & 0xFF);
-                    let reply = format!("\u{1b}]11;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\u{1b}\\");
+                    let (r, g, b) = (
+                        (self.dynamic_bg >> 16) & 0xFF,
+                        (self.dynamic_bg >> 8) & 0xFF,
+                        self.dynamic_bg & 0xFF,
+                    );
+                    let reply = format!(
+                        "\u{1b}]11;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\u{1b}\\"
+                    );
                     self.push_action(HostAction::Respond { reply });
                 } else if let Some(rgb) = parse_osc_color(&text) {
                     self.dynamic_bg = 0xFF00_0000 | rgb;
@@ -1098,7 +1247,10 @@ impl Performer for Emulator {
                         .unwrap_or(0);
                     self.push_action(HostAction::Progress { state, value });
                 } else {
-                    self.push_action(HostAction::Notify { title: String::new(), body: text });
+                    self.push_action(HostAction::Notify {
+                        title: String::new(),
+                        body: text,
+                    });
                 }
             }
             777 => {
@@ -1106,7 +1258,11 @@ impl Performer for Emulator {
                 let parts: Vec<&str> = text.split(';').collect();
                 if parts.len() >= 2 && parts[0] == "notify" {
                     let title = parts[1].to_string();
-                    let body = if parts.len() >= 3 { parts[2..].join(";") } else { String::new() };
+                    let body = if parts.len() >= 3 {
+                        parts[2..].join(";")
+                    } else {
+                        String::new()
+                    };
                     self.push_action(HostAction::Notify { title, body });
                 }
             }
@@ -1119,7 +1275,7 @@ impl Performer for Emulator {
                         // Tolerate unpadded base64 (some emitters strip '='), like the managed
                         // core's PadRight before Convert.FromBase64String.
                         let mut padded = data.to_string();
-                        while padded.len() % 4 != 0 {
+                        while !padded.len().is_multiple_of(4) {
                             padded.push('=');
                         }
                         if let Some(bytes) = base64_decode(&padded) {
@@ -1138,7 +1294,10 @@ impl Performer for Emulator {
                 } else {
                     format!("{command};{text}")
                 };
-                self.push_action(HostAction::Unhandled { kind: "OSC".into(), detail });
+                self.push_action(HostAction::Unhandled {
+                    kind: "OSC".into(),
+                    detail,
+                });
             }
         }
     }
@@ -1152,7 +1311,10 @@ impl Performer for Emulator {
             } else {
                 data.to_string()
             };
-            self.push_action(HostAction::Unhandled { kind: "APC".into(), detail });
+            self.push_action(HostAction::Unhandled {
+                kind: "APC".into(),
+                detail,
+            });
             return;
         }
         let body = &data[1..];
@@ -1161,11 +1323,24 @@ impl Performer for Emulator {
             None => (body, ""),
         };
         let keys = parse_kitty_keys(control);
+        let more = keys.get("m").map(|v| v == "1").unwrap_or(false);
+        if self.kitty_discarding {
+            if !more {
+                self.kitty_discarding = false;
+                self.kitty_keys = None;
+            }
+            return;
+        }
         if self.kitty_chunks.is_empty() {
             self.kitty_keys = Some(keys.clone()); // first chunk carries the metadata
         }
+        if self.kitty_chunks.len().saturating_add(payload.len()) > self.kitty_encoded_limit {
+            self.kitty_chunks.clear();
+            self.kitty_keys = None;
+            self.kitty_discarding = more;
+            return;
+        }
         self.kitty_chunks.push_str(payload);
-        let more = keys.get("m").map(|v| v == "1").unwrap_or(false);
         if more {
             return; // accumulate until the final chunk (m=0 / absent)
         }
@@ -1189,17 +1364,31 @@ impl Performer for Emulator {
 fn parse_kitty_keys(control: &str) -> HashMap<String, String> {
     let mut d = HashMap::new();
     for pair in control.split(',') {
-        if let Some(eq) = pair.find('=') {
-            if eq > 0 {
-                d.insert(pair[..eq].to_string(), pair[eq + 1..].to_string());
-            }
+        if let Some(eq) = pair.find('=')
+            && eq > 0
+        {
+            d.insert(pair[..eq].to_string(), pair[eq + 1..].to_string());
         }
     }
     d
 }
 
+/// Clamp an APC `f=` value to the three formats the Kitty protocol can carry on the wire
+/// (24 RGB / 32 RGBA / 100 PNG), falling back to RGBA. `f=` is untrusted terminal output, and
+/// the host-only `KittyFormat.Bgra` (132) must not be reachable from it: it would send the
+/// renderer down the no-swizzle upload path with RGBA bytes. Mirrors C#
+/// `KittyFormats.ParseWireFormat`.
+fn parse_wire_format(f: i32) -> i32 {
+    match f {
+        24 | 32 | 100 => f,
+        _ => 32,
+    }
+}
+
 fn kitty_int(d: &HashMap<String, String>, key: &str, def: i32) -> i32 {
-    d.get(key).and_then(|v| v.parse::<i32>().ok()).unwrap_or(def)
+    d.get(key)
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(def)
 }
 
 /// Parse an OSC color spec (rgb:RR/GG/BB[BB…], #RRGGBB, #RGB) into 0x00RRGGBB. (agterm #240)
@@ -1234,7 +1423,11 @@ fn parse_osc_color(s: &str) -> Option<u32> {
 
 /// Semicolon-join CSI parameters for the Unhandled debug tap (mirrors C#'s `string.Join(';', …)`).
 fn join_params(params: &[i32]) -> String {
-    params.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(";")
+    params
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 impl Emulator {
@@ -1243,7 +1436,7 @@ impl Emulator {
         let b64 = core::mem::take(&mut self.kitty_chunks);
 
         let id = kitty_int(&keys, "i", 0);
-        let format = kitty_int(&keys, "f", 32);
+        let format = parse_wire_format(kitty_int(&keys, "f", 32));
         let w = kitty_int(&keys, "s", 0);
         let h = kitty_int(&keys, "v", 0);
         let action = keys.get("a").map(String::as_str).unwrap_or("t");
@@ -1258,8 +1451,21 @@ impl Emulator {
         }
 
         if !b64.is_empty() {
-            let Some(bytes) = base64_decode(&b64) else { return }; // malformed → drop, like the C# catch
-            self.images.insert(id, KittyImage { id, format, width: w, height: h, data: bytes });
+            let Some(bytes) = base64_decode(&b64) else {
+                return;
+            }; // malformed → drop, like the C# catch
+            let revision = self.next_image_revision(id);
+            self.images.insert(
+                id,
+                KittyImage {
+                    id,
+                    format,
+                    width: w,
+                    height: h,
+                    data: bytes,
+                    revision,
+                },
+            );
         }
 
         if action == "T" || action == "p" {
@@ -1281,21 +1487,29 @@ impl Emulator {
     }
 
     fn place_sixel(&mut self, data: &[u8]) -> bool {
-        let Some(s) = sixel::decode(data) else { return false };
+        let Some(s) = sixel::decode(data) else {
+            return false;
+        };
         if s.width == 0 || s.height == 0 {
             return false;
         }
         let id = self.sixel_seq;
         self.sixel_seq -= 1;
-        self.images.insert(id, KittyImage {
+        let revision = self.next_image_revision(id);
+        self.images.insert(
             id,
-            format: 32, // KittyFormat.Rgba
-            width: s.width as i32,
-            height: s.height as i32,
-            data: s.rgba,
-        });
+            KittyImage {
+                id,
+                format: 32, // KittyFormat.Rgba
+                width: s.width as i32,
+                height: s.height as i32,
+                data: s.rgba,
+                revision,
+            },
+        );
         let cols = (((s.width as i32) + self.cell_pixel_width - 1) / self.cell_pixel_width).max(1);
-        let rows = (((s.height as i32) + self.cell_pixel_height - 1) / self.cell_pixel_height).max(1);
+        let rows =
+            (((s.height as i32) + self.cell_pixel_height - 1) / self.cell_pixel_height).max(1);
         self.placements.push(ImagePlacement {
             image_id: id,
             row: self.cursor_row as i64,
@@ -1370,7 +1584,7 @@ mod tests {
     #[test]
     fn scrollback_rows_are_trimmed() {
         let mut t = Terminal::new(80, 3);
-        t.feed(b"hi\r\n\r\n\r\n\r\n");   // "hi" then blank rows scroll into history
+        t.feed(b"hi\r\n\r\n\r\n\r\n"); // "hi" then blank rows scroll into history
         assert!(t.emu.history_count() >= 1);
         // The "hi" row stores 2 cells, not 80; a blank row stores 0.
         assert_eq!(t.emu.history_row_stored_len(0), 2);
@@ -1397,6 +1611,35 @@ mod tests {
         t.feed(b"\x1b[?1049l");
         assert!(!t.emu.is_alt_screen());
         assert_eq!(row_text(&t, 0), "main");
+    }
+
+    #[test]
+    fn stable_image_id_replacements_advance_the_content_revision() {
+        let mut t = Terminal::new(6, 2);
+        t.emu.set_image_data(7, 132, 1, 1, vec![]);
+        let host_revision = t.emu.images().get(&7).unwrap().revision;
+
+        t.feed(b"\x1b_Ga=t,i=7,f=32,s=1,v=1;CQgHBg==\x1b\\");
+
+        let terminal_image = t.emu.images().get(&7).unwrap();
+        assert!(terminal_image.revision > host_revision);
+        assert_eq!(terminal_image.data, vec![9, 8, 7, 6]);
+    }
+
+    #[test]
+    fn oversized_chunked_kitty_transmission_is_discarded_and_recovers() {
+        let mut t = Terminal::new(6, 2);
+        t.emu.kitty_encoded_limit = 8;
+
+        t.feed(
+            b"\x1b_Ga=T,i=9,f=24,m=1;AAAAAA\x1b\\\
+              \x1b_Gm=1;BBBB\x1b\\\
+              \x1b_Gm=0;CCCC\x1b\\\
+              \x1b_Ga=t,i=10,f=24;AAEC\x1b\\",
+        );
+
+        assert!(!t.emu.images().contains_key(&9));
+        assert_eq!(t.emu.images().get(&10).unwrap().data, vec![0, 1, 2]);
     }
 
     #[test]
@@ -1439,5 +1682,32 @@ mod tests {
         // A REAL size change still resets the margins (xterm behaviour).
         t.emu.resize(20, 12);
         assert_eq!((t.emu.scroll_top(), t.emu.scroll_bottom()), (0, 11));
+    }
+
+    #[test]
+    fn sgr_pixels_mode_and_decrqm_track_set_and_reset() {
+        let mut t = Terminal::new(20, 5);
+        t.feed(b"\x1b[?1016$p");
+        assert!(!t.emu.mouse_sgr_pixels);
+        assert_eq!(
+            t.emu.take_host_actions(),
+            vec![HostAction::Respond {
+                reply: "\x1b[?1016;2$y".into()
+            }]
+        );
+
+        t.feed(b"\x1b[?1016h\x1b[?1016$p");
+        assert!(t.emu.mouse_sgr_pixels);
+        assert!(t.emu.dump_modes().contains("\x1b[?1016h"));
+        assert_eq!(
+            t.emu.take_host_actions(),
+            vec![HostAction::Respond {
+                reply: "\x1b[?1016;1$y".into()
+            }]
+        );
+
+        t.feed(b"\x1b[?1016l");
+        assert!(!t.emu.mouse_sgr_pixels);
+        assert!(!t.emu.dump_modes().contains("\x1b[?1016h"));
     }
 }

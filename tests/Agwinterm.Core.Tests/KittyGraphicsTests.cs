@@ -58,6 +58,21 @@ public class KittyGraphicsTests
     }
 
     [Fact]
+    public void OversizedChunkedTransmissionIsDiscardedAndNextTransferWorks()
+    {
+        var t = new TerminalEmulator(40, 10) { KittyEncodedPayloadLimit = 8 };
+
+        t.Feed(Encoding.ASCII.GetBytes(
+            $"{Esc}_Ga=T,i=9,f=24,m=1;AAAAAA{Esc}\\" +
+            $"{Esc}_Gm=1;BBBB{Esc}\\" +
+            $"{Esc}_Gm=0;CCCC{Esc}\\" +
+            $"{Esc}_Ga=t,i=10,f=24;AAEC{Esc}\\"));
+
+        Assert.False(t.Images.ContainsKey(9));
+        Assert.Equal(new byte[] { 0, 1, 2 }, t.Images[10].Data);
+    }
+
+    [Fact]
     public void RepeatedDisplay_SameId_ReplacesPlacement()
     {
         var t = Feed($"{Esc}_Ga=T,i=5,f=24,s=1,v=1;AAEC{Esc}\\" +
