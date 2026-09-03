@@ -4,6 +4,8 @@ What [umputun/agterm](https://github.com/umputun/agterm) has that **agwinterm** 
 not, and what we have closed.
 
 - Compared against **agterm v0.26.0** (2026-09-02), releases 0.22.0 → 0.26.0.
+- **The running order lives in [plans/2026-09-03-parity-batches.md](plans/2026-09-03-parity-batches.md)** —
+  this file is what is missing, that file is which batch builds it and when.
 - Ours: agwinterm **0.17.7** released (main is ahead), agliteterm **0.17.13** released.
 - Update this file in the PR that closes an item. A line that says "missing" long after it shipped
   is worse than no tracker.
