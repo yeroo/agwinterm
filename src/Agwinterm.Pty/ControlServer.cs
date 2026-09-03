@@ -322,6 +322,16 @@ public sealed class ControlServer : IDisposable
                 "session.text" => HandleText(s, args),
                 "session.status" => HandleStatus(s, args),
                 "session.metrics" => HandleSessionMetrics(host, s, target),
+                // surface.cursor — the caret COLUMN as a bare integer (agterm's shape, so a script
+                // written against either product reads the same reply; a JSON object here would
+                // diverge for no caller we have, and the row is not what "is the composer empty"
+                // asks). Targeting follows Resolve, exactly as session.text/session.type do, so the
+                // pane you CHECK is the pane you then type into: a pane id reports that pane, and a
+                // session NAME reports its focused pane — a cursor is a per-pane thing, and focus is
+                // the only non-arbitrary answer for a session-wide target. Note a session's id is
+                // also its first pane's id, so an id target reports pane 0 regardless of focus
+                // (pre-existing Resolve behaviour, verified in qa/control-read.md).
+                "surface.cursor" => OkRaw(s.SnapshotCursor().Col.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 "image.show" => HandleImageShow(s, args),
                 "image.sixel" => HandleImageSixel(s, args),
                 "image.clear" => HandleImageClear(s),
@@ -370,7 +380,11 @@ public sealed class ControlServer : IDisposable
                 sb.Append("{\"id\":").Append(JsonSerializer.Serialize(n.Id))
                   .Append(",\"name\":").Append(JsonSerializer.Serialize(n.Name))
                   .Append(",\"active\":").Append(n.Active ? "true" : "false")
-                  .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()));
+                  .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()))
+                  // Always emitted, even at 0 (unlike the flags below): a caller distinguishing
+                  // "this agent is working" from "its hook died an hour ago" gains nothing from an
+                  // absent field, and would have to guess which of the two absence meant.
+                  .Append(",\"statusChangedAt\":").Append(n.StatusChangedAt.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 if (n.Overlay) sb.Append(",\"overlay\":true");
                 if (n.Flagged) sb.Append(",\"flagged\":true");
                 if (n.Background) sb.Append(",\"background\":true");
@@ -997,17 +1011,10 @@ public sealed class ControlServer : IDisposable
         => args.ValueKind == JsonValueKind.Object && args.TryGetProperty(key, out var v)
            && (v.ValueKind == JsonValueKind.True || (v.ValueKind == JsonValueKind.String && v.GetString() is "true" or "1"));
 
-    /// <summary>App version for `ping` — the entry assembly's informational version (stamped by the
-    /// release build scripts via -p:Version; "1.0.0" in unstamped dev builds), without metadata.</summary>
-    private static string AppVersion()
-    {
-        string v = System.Reflection.Assembly.GetEntryAssembly()?
-            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
-            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
-            .FirstOrDefault()?.InformationalVersion ?? "dev";
-        int plus = v.IndexOf('+');
-        return plus > 0 ? v[..plus] : v;
-    }
+    /// <summary>App version for `ping` — the entry assembly's informational version, formatted by
+    /// the same rule `agwintermctl version` applies to its own half (see
+    /// <see cref="VersionReport.EntryAssemblyVersion"/>).</summary>
+    private static string AppVersion() => VersionReport.EntryAssemblyVersion();
 
     private static string Ok(string result) => $"{{\"ok\":true,\"result\":{JsonSerializer.Serialize(result)}}}";
     private static string OkRaw(string rawResult) => $"{{\"ok\":true,\"result\":{rawResult}}}";

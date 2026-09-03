@@ -538,6 +538,9 @@ finally {
     foreach ($name in $savedEnv.Keys) {
         [Environment]::SetEnvironmentVariable($name, $savedEnv[$name])
     }
+    foreach ($name in $savedEnv.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $savedEnv[$name])
+    }
 }
 
 if ($fail) { "Win32 control-host integration: $fail FAILED"; exit 1 }

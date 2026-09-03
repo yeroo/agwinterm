@@ -221,7 +221,29 @@ agwintermctl session overlay open "git diff" --size-percent 60
 agwintermctl dashboard build test deploy     # grid overview of chosen sessions
 agwintermctl theme set "Tokyo Night"         # retint the whole window
 agwintermctl window new --name scratchpad    # open a second window
+agwintermctl surface cursor --target <pane>  # the caret column of a pane, as a bare integer
+agwintermctl version                         # which CLI ran, and which app answered the pipe
 ```
+
+Three of those answer a question a script would otherwise have to guess at:
+
+- `surface cursor` returns the caret **column** and nothing else, so "is that agent's composer empty
+  before I type into it" is a comparison, not a hunt for its placeholder text. A different column is
+  proof of a draft; the same column is not proof of none (a draft exactly one wrap width long parks
+  the caret where it started), so back a match with `session text` of that row. It resolves its
+  target exactly as `session text` and `session type` do, so the pane you check is the pane you type
+  into.
+- `tree --json` reports `statusChangedAt` per session — epoch **seconds** of the last status write on
+  the pane whose status the node shows, restamped even when the same status is re-asserted.
+  `now - statusChangedAt` is how long ago that agent last spoke, which is what separates a working
+  agent from one whose hook died. In a split session it is the clock of the pane whose status won:
+  a write to a pane that loses the aggregate does not move it, but panes tied at the winning status
+  all do — two `active` panes report the freshest of the two, so the session-level age cannot tell a
+  dead hook from a live one beside it (nothing reports the stamp per pane).
+- `version` prints two greppable lines: the `cli` that ran (version and its resolved path — several
+  `agwintermctl.exe` can coexist off `PATH`) and the `app` that answered (version and pipe). It exits 0
+  and still prints the `cli` line when nothing is listening, which is the case it exists for. `--json`
+  gives the machine-readable form.
 
 Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
 Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.

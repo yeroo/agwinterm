@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -124,8 +125,14 @@ func TestProcessIsAssignedBeforeItCanExecute(t *testing.T) {
 	}
 
 	marker := filepath.Join(t.TempDir(), "started")
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command",
-		"[IO.File]::WriteAllText($env:AGW_LAUNCH_MARKER, 'started'); Start-Sleep -Seconds 60")
+	// cmd.exe, not powershell.exe: the child only has to touch a file and then stay alive, and
+	// Windows PowerShell cold-starts in whole seconds on a loaded CI runner, which turned this
+	// ordering test into a start-up benchmark (it failed 2 of 3 runs on 2026-09-03). The command
+	// line is spelled out so cmd's own quoting rules apply, not Go's argument escaping.
+	cmd := exec.Command("cmd.exe")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CmdLine: `cmd.exe /d /s /c "echo started>"%AGW_LAUNCH_MARKER%" & ping -n 61 127.0.0.1 >nul"`,
+	}
 	cmd.Env = append(os.Environ(), "AGW_LAUNCH_MARKER="+marker)
 	if err := startProcessInJob(cmd, job, func(pid int) error {
 		if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -151,7 +158,8 @@ func TestProcessIsAssignedBeforeItCanExecute(t *testing.T) {
 	}
 	defer func() { _ = cmd.Process.Kill() }()
 
-	deadline := time.Now().Add(5 * time.Second)
+	// Generous: the invariant is that the child runs AFTER the resume, not that it runs fast.
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if _, err := os.Stat(marker); err == nil {
 			break

@@ -33,6 +33,14 @@ public sealed class TerminalSession : ISession
     public AgentStatus Status { get; private set; } = AgentStatus.Idle;
     public event Action? StatusChanged;
 
+    /// <summary>Epoch seconds of the last status WRITE. Seeded at construction so a session whose
+    /// status was never set still reports its own age instead of 0.</summary>
+    public long StatusChangedAt { get; private set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    /// <summary>Test seam: back-date the status stamp, so a re-assert's re-stamp is observable
+    /// without sleeping out a whole epoch second on every run.</summary>
+    internal void BackdateStatus(long epochSeconds) => StatusChangedAt = epochSeconds;
+
     /// <summary>Pulse the status dot (and title-bar bell) while this status is live (agterm's blinking attention).</summary>
     public bool Blink { get; private set; }
 
@@ -54,6 +62,13 @@ public sealed class TerminalSession : ISession
         Status = status;
         Blink = newBlink;
         AutoReset = newAuto;
+        // Stamped on EVERY write, including a no-op re-assert of the same status. This looks like a
+        // bug and is not: the question callers ask of this timestamp is "is that agent's hook still
+        // alive", and a hook re-asserting `active` every 30s is precisely the liveness signal. Were
+        // repeats collapsed, a healthy long-running agent would report the age of its FIRST write
+        // and be indistinguishable from one whose hook died. StatusChanged still fires on change
+        // only — the repaint it drives has no reason to run for a no-op.
+        StatusChangedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (sound && status != AgentStatus.Idle)
             try { SoundRequested?.Invoke(soundName); } catch { /* playback is best-effort */ }
         if (changed) StatusChanged?.Invoke();
@@ -330,6 +345,12 @@ public sealed class TerminalSession : ISession
     public string SnapshotRow(int row)
     {
         lock (_sync) return Emulator.DumpRow(row);
+    }
+
+    /// <summary>Thread-safe snapshot of the caret's grid position (same lock as <see cref="SnapshotRow"/>).</summary>
+    public (int Row, int Col) SnapshotCursor()
+    {
+        lock (_sync) return (Emulator.CursorRow, Emulator.CursorCol);
     }
 
     /// <summary>In-process sessions cannot outlive the process — detach IS dispose here.</summary>

@@ -4,12 +4,14 @@ namespace Agwinterm.Pty;
 
 /// <summary>A session's metadata for the control-API tree. <see cref="FocusedPane"/>/<see cref="PaneCount"/>/
 /// <see cref="SplitRatios"/> describe its split layout; <see cref="StatusBlink"/> is the attention pulse;
-/// <see cref="OverlaySize"/> is an open overlay's size-percent (0 = none/full).</summary>
+/// <see cref="OverlaySize"/> is an open overlay's size-percent (0 = none/full);
+/// <see cref="StatusChangedAt"/> is epoch seconds of the last status write on the pane whose status
+/// won the aggregate — the age of the status actually shown.</summary>
 public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
     bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
     int FocusedPane = 0, int PaneCount = 1, bool StatusBlink = false, int OverlaySize = 0,
     IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null,
-    IReadOnlyList<string>? RestoreCommands = null);
+    IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -265,7 +267,8 @@ public sealed class SingleSessionHost : ISessionHost
     public ISession? Resolve(string? target) => _session;
     public IReadOnlyList<WorkspaceSnapshot> Tree() =>
         new[] { new WorkspaceSnapshot("ws", "workspace", true,
-            new[] { new SessionSnapshot("single", "session", true, _session.Status) }) };
+            new[] { new SessionSnapshot("single", "session", true, _session.Status,
+                                        StatusChangedAt: _session.StatusChangedAt) }) };
     public WindowStateSnapshot WindowState() => new(true, false, false, false, "ws", "single");
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false) => "single";

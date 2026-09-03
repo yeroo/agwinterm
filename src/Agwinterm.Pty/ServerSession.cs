@@ -121,6 +121,14 @@ public sealed class ServerSession : ISession
     public event Action? StatusChanged;
     public event Action<string?>? SoundRequested;
 
+    /// <summary>Epoch seconds of the last status WRITE (see TerminalSession for why every write,
+    /// not every change). Seeded at construction.</summary>
+    public long StatusChangedAt { get; private set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    /// <summary>Test seam: back-date the status stamp, so a re-assert's re-stamp is observable
+    /// without sleeping out a whole epoch second on every run.</summary>
+    internal void BackdateStatus(long epochSeconds) => StatusChangedAt = epochSeconds;
+
     public void SetStatus(AgentStatus status, bool blink = false, bool autoReset = false,
         bool sound = false, string? soundName = null)
     {
@@ -130,6 +138,7 @@ public sealed class ServerSession : ISession
         Status = status;
         Blink = newBlink;
         AutoReset = newAuto;
+        StatusChangedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();   // every write, not every change
         if (sound && status != AgentStatus.Idle)
             try { SoundRequested?.Invoke(soundName); } catch { }
         if (changed) StatusChanged?.Invoke();
@@ -304,6 +313,13 @@ public sealed class ServerSession : ISession
     public string SnapshotRow(int row)
     {
         lock (_sync) return Emulator.DumpRow(row);
+    }
+
+    /// <summary>Thread-safe snapshot of the caret's grid position, read from the local replica
+    /// emulator — no pty-host round trip, so it can lag the host by the data pipe's latency.</summary>
+    public (int Row, int Col) SnapshotCursor()
+    {
+        lock (_sync) return (Emulator.CursorRow, Emulator.CursorCol);
     }
 
     /// <summary>Stop viewing WITHOUT killing: cancel the read loop, which closes the data pipe (the

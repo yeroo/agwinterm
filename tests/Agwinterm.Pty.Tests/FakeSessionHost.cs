@@ -10,12 +10,35 @@ internal sealed class FakeSessionHost : ISessionHost
 {
     internal sealed class Sess
     {
-        public string Id = "", Name = "", PaneId = "";
-        public AgentStatus Status = AgentStatus.Idle;
+        public string Id = "", Name = "";
+        /// <summary>Status and its age, aggregated from the panes in the app's single pass
+        /// (<see cref="StatusAggregate.WinnerAndChangedAt"/>) — so the tree's status and its age
+        /// always describe the same reading of the same pane. <see cref="Status"/> alone is for
+        /// tests that ask about the status only.</summary>
+        public (AgentStatus Status, long ChangedAt) StatusAndChangedAt => StatusAggregate.WinnerAndChangedAt(Panes);
+        public AgentStatus Status => StatusAndChangedAt.Status;
         public bool Flagged, Overlay, ReadOnly;
         public string? AgentResume;
         public int Notifications, PaneCount = 1, FocusedPane, OverlaySize;
         public List<double> Ratios = new() { 1.0 };
+        /// <summary>The session's panes, so the tree can aggregate status + its age the way the app
+        /// does. One pane unless a test splits it via <see cref="AddPane"/>.</summary>
+        public readonly List<ISession> Panes = new() { new TerminalSession(80, 24) };
+        /// <summary>Pane ids, parallel to <see cref="Panes"/>. The first pane SHARES the session id,
+        /// exactly as the app does it (Program.Sessions.cs: "first pane shares the session id
+        /// (control-API back-compat)"); a split pane gets its own. That sharing is why an id target
+        /// reaches pane 0 whatever <see cref="FocusedPane"/> says, and only a NAME reaches the
+        /// focused pane — the asymmetry qa/control-read.md pins.</summary>
+        public readonly List<string> PaneIds = new();
+        /// <summary>Split this session: adds a pane and returns it, for the multi-pane status cases.</summary>
+        public ISession AddPane()
+        {
+            var p = new TerminalSession(80, 24);
+            Panes.Add(p); PaneIds.Add("p" + Guid.NewGuid().ToString("N")[..8]); PaneCount = Panes.Count;
+            return p;
+        }
+        /// <summary>Seals pane 0's id to the session id once <see cref="Id"/> is set.</summary>
+        public Sess Seed() { if (PaneIds.Count == 0) PaneIds.Add(Id); else PaneIds[0] = Id; return this; }
     }
     internal sealed class Ws { public string Id = "", Name = ""; public List<Sess> Sessions = new(); }
 
@@ -24,13 +47,12 @@ internal sealed class FakeSessionHost : ISessionHost
     internal Sess? ActiveSess;
     internal bool SidebarVisible = true, QuickVisible, Broadcast;
     internal readonly Dictionary<string, string> Config = new();
-    private readonly TerminalSession _session = new(80, 24);
     private int _idSeq;
 
     public FakeSessionHost()
     {
         var w = new Ws { Id = "w1", Name = "workspace 1" };
-        var s = new Sess { Id = "s1", Name = "session 1", PaneId = "p-s1" };
+        var s = new Sess { Id = "s1", Name = "session 1" }.Seed();
         w.Sessions.Add(s);
         Workspaces.Add(w);
         ActiveWs = w; ActiveSess = s;
@@ -39,17 +61,40 @@ internal sealed class FakeSessionHost : ISessionHost
     private Sess? Find(string? t) =>
         t is null or "active" ? ActiveSess
         : Workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s =>
-            s.Id == t || s.Id.StartsWith(t) || s.PaneId == t || s.PaneId.StartsWith(t));
+            s.Id == t || s.Id.StartsWith(t) || s.PaneIds.Any(p => p == t || p.StartsWith(t)));
     private Ws? FindWs(string? t) =>
         t is null or "active" ? ActiveWs
         : Workspaces.FirstOrDefault(w => w.Id == t || w.Id.StartsWith(t) || string.Equals(w.Name, t, StringComparison.OrdinalIgnoreCase));
 
-    public ISession? Resolve(string? target) => Find(target) is not null ? _session : null;
+    // A pane, not a session, and in the app's order: active surface, then ANY pane by id or id
+    // prefix, then a session by name -> its FOCUSED pane. Because pane 0 shares the session id, an
+    // id target lands on pane 0 and never on the focused pane; that is deliberate, and it is the
+    // guarantee session.text / session.type already rely on (the pane you CHECK is the pane you
+    // then type into). Per-session panes are what let the tree's statusChangedAt aggregate for real.
+    public ISession? Resolve(string? target)
+    {
+        var sessions = Workspaces.SelectMany(w => w.Sessions).ToList();
+        if (target is null or "active") return Focused(ActiveSess);
+        foreach (var pred in new Func<string, bool>[] { id => id == target, id => id.StartsWith(target, StringComparison.Ordinal) })
+            foreach (var s in sessions)
+                for (int i = 0; i < s.Panes.Count; i++)
+                    if (i < s.PaneIds.Count && pred(s.PaneIds[i])) return s.Panes[i];
+        var named = sessions.Where(s => string.Equals(s.Name, target, StringComparison.OrdinalIgnoreCase)).ToList();
+        return named.Count == 1 ? Focused(named[0]) : null;   // an ambiguous name resolves to nothing
+    }
+
+    private static ISession? Focused(Sess? s) =>
+        s is null ? null : s.Panes[Math.Clamp(s.FocusedPane, 0, s.Panes.Count - 1)];
 
     public IReadOnlyList<WorkspaceSnapshot> Tree() => Workspaces.Select(w => new WorkspaceSnapshot(
         w.Id, w.Name, ReferenceEquals(w, ActiveWs),
-        w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, ActiveSess), s.Status,
-            s.Overlay, s.Notifications, s.Flagged, false, s.FocusedPane, s.PaneCount, false, s.OverlaySize, s.Ratios)).ToList())).ToList();
+        w.Sessions.Select(s =>
+        {
+            var (status, statusChangedAt) = s.StatusAndChangedAt;   // one reading, as Program.ControlHost.Tree does
+            return new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, ActiveSess), status,
+                s.Overlay, s.Notifications, s.Flagged, false, s.FocusedPane, s.PaneCount, false, s.OverlaySize, s.Ratios,
+                StatusChangedAt: statusChangedAt);
+        }).ToList())).ToList();
 
     public WindowStateSnapshot WindowState() =>
         new(SidebarVisible, Fullscreen: false, Maximized: false, QuickVisible, ActiveWs.Name, ActiveSess?.Name);
@@ -65,15 +110,14 @@ internal sealed class FakeSessionHost : ISessionHost
         if (!Measurable || session is null) return null;
         return MetricsBySession.TryGetValue(session.Id, out var metrics)
             ? metrics
-            : new PaneMetricsSnapshot(_session.Cols, _session.Rows, CellW, CellH, PaneW, PaneH);
+            : new PaneMetricsSnapshot(session.Panes[0].Cols, session.Panes[0].Rows, CellW, CellH, PaneW, PaneH);
     }
 
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
     {
         var w = FindWs(workspace) ?? ActiveWs;
-        string id = "s" + (++_idSeq + 100);
-        var s = new Sess { Id = id, Name = string.IsNullOrEmpty(name) ? $"session {w.Sessions.Count + 1}" : name, PaneId = "p-" + id };
+        var s = new Sess { Id = "s" + (++_idSeq + 100), Name = string.IsNullOrEmpty(name) ? $"session {w.Sessions.Count + 1}" : name }.Seed();
         w.Sessions.Add(s); ActiveSess = s; ActiveWs = w;
         return s.Id;
     }
@@ -82,8 +126,7 @@ internal sealed class FakeSessionHost : ISessionHost
     {
         var src = Find(target) ?? ActiveSess;
         var w = src is null ? ActiveWs : Workspaces.First(x => x.Sessions.Contains(src));
-        string id = "s" + (++_idSeq + 100);
-        var s = new Sess { Id = id, Name = $"session {w.Sessions.Count + 1}", PaneId = "p-" + id };
+        var s = new Sess { Id = "s" + (++_idSeq + 100), Name = $"session {w.Sessions.Count + 1}" }.Seed();
         w.Sessions.Add(s); ActiveSess = s; ActiveWs = w;
         return s.Id;
     }

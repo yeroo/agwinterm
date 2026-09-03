@@ -5,6 +5,7 @@ using System.Text.Json;
 // agwintermctl — drive agwinterm's control API from the shell (agterm's agtermctl analog).
 // Usage:
 //   agwintermctl ping
+//   agwintermctl version [--json]                  (the CLI that ran + the app serving the pipe)
 //   agwintermctl tree [--json]
 //   agwintermctl session new [--cwd DIR] [--name NAME] [--no-select]
 //   agwintermctl session select <target>
@@ -20,6 +21,7 @@ using System.Text.Json;
 //   agwintermctl session copy [--target ID]           (returns the selection text)
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
 //   agwintermctl selection all|copy|clear|finalize [--target ID]
+//   agwintermctl surface cursor [--target ID]         (caret column of a pane, as a bare integer)
 //   agwintermctl image show <path> [--row R] [--col C] [--id N] [--target ID]
 //   agwintermctl image sixel <path> [--row R] [--col C] [--target ID]
 //   agwintermctl image frameshm <Local\agwinterm-frame-NAME> [--slot N] [--seq N] [--width N]
@@ -32,7 +34,7 @@ using System.Text.Json;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: agwintermctl <ping|tree|session|image|install> ... (see --help)");
+    Console.Error.WriteLine("usage: agwintermctl <ping|version|tree|session|surface|image|install> ... (see README.md, \"Control it from anything\")");
     return 2;
 }
 
@@ -67,6 +69,7 @@ var cargs = new Dictionary<string, object?>();
 switch (area)
 {
     case "ping": cmd = "ping"; break;
+    case "version": cmd = "version"; break;   // handled locally, below: needs the resolved pipe name
     case "tree": cmd = "tree"; break;
     case "events": // agwintermctl events [--since CURSOR] [--limit N] — poll status/notification/session/tree events
         cmd = "events";
@@ -264,6 +267,15 @@ switch (area)
         break;
     case "config" when sub == "list": cmd = "config.list"; break;
     case "settings": cmd = "settings.open"; break;
+    case "surface":
+        // agwintermctl surface cursor [--target ID] — the caret column of a pane, as a bare integer.
+        // A pane id selects that pane — and the session id IS pane 0's id, so it selects pane 0
+        // regardless of focus; only a unique session NAME resolves to the focused pane.
+        if (sub != "cursor")
+        { Console.Error.WriteLine("usage: agwintermctl surface cursor [--target ID]"); return 2; }
+        cmd = "surface.cursor";
+        target = DefaultTarget();
+        break;
     case "selection":
         // agwintermctl selection all|copy|clear|finalize [--target ID]
         if (sub is not ("all" or "copy" or "clear" or "finalize"))
@@ -399,6 +411,17 @@ string requestJson = JsonSerializer.Serialize(req);
 string pipeName = options.TryGetValue("socket", out var s) ? s
     : options.TryGetValue("pipe", out var pp) ? pp
     : Environment.GetEnvironmentVariable("AGWINTERM_PIPE") ?? "agwinterm";
+
+// `version` answers "which binary did I run, and which app did it reach". The app half is a ping,
+// but the CLI half must survive a dead pipe — that is the case the command exists for — so it is
+// rendered locally and exits 0 either way.
+if (cmd == "version")
+{
+    var report = Agwinterm.Pty.VersionReport.Build(pipeName);
+    Console.WriteLine(jsonOut ? Agwinterm.Pty.VersionReport.RenderJson(report)
+                              : Agwinterm.Pty.VersionReport.RenderText(report));
+    return 0;
+}
 
 try
 {
