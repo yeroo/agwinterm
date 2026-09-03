@@ -2,7 +2,6 @@ using System.IO.MemoryMappedFiles;
 using System.Text.Json;
 using Agwinterm.Core;
 using Agwinterm.Pty;
-using Microsoft.Win32.SafeHandles;
 
 namespace Agwinterm.Pty.Tests;
 
@@ -36,83 +35,6 @@ public class ControlServerFrameShmTests : IDisposable
             ? new ControlServer(session, limit)
             : new ControlServer(session);
         return (server, session);
-    }
-
-    /// <summary>
-    /// Delegates a real session while exposing the narrow scheduling seam needed to put an image
-    /// replacement between the cache's phase-1 validation and phase-2 commit. The callback runs
-    /// after the inner render lock is released, so another request can make progress while one is
-    /// deliberately paused there.
-    /// </summary>
-    private sealed class InterceptSession : ISession
-    {
-        private readonly TerminalSession _inner = new(80, 24);
-        private int _mutateCalls;
-
-        public Action<int>? AfterMutate { get; set; }
-        public ITerminalCore Emulator => _inner.Emulator;
-        public int Cols => _inner.Cols;
-        public int Rows => _inner.Rows;
-        public int? ChildProcessId => _inner.ChildProcessId;
-        public object SyncRoot => _inner.SyncRoot;
-        public AgentStatus Status => _inner.Status;
-        public bool Blink => _inner.Blink;
-        public bool AutoReset => _inner.AutoReset;
-        public int? ExitCode => _inner.ExitCode;
-        public bool HasExited => _inner.HasExited;
-
-        public event Action? OutputReceived
-        {
-            add => _inner.OutputReceived += value;
-            remove => _inner.OutputReceived -= value;
-        }
-
-        public event Action? StatusChanged
-        {
-            add => _inner.StatusChanged += value;
-            remove => _inner.StatusChanged -= value;
-        }
-
-        public event Action<string?>? SoundRequested
-        {
-            add => _inner.SoundRequested += value;
-            remove => _inner.SoundRequested -= value;
-        }
-
-        public event Action<int>? Exited
-        {
-            add => _inner.Exited += value;
-            remove => _inner.Exited -= value;
-        }
-
-        public void SetStatus(AgentStatus status, bool blink = false, bool autoReset = false,
-            bool sound = false, string? soundName = null)
-            => _inner.SetStatus(status, blink, autoReset, sound, soundName);
-
-        public void NotifyActivity() => _inner.NotifyActivity();
-        public Task<int> RunAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
-            CancellationToken ct = default) => _inner.RunAsync(app, commandLine, verbatimCommandLine, ct);
-        public Task StartAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
-            IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null,
-            bool deElevate = false, bool freshEnv = true, CancellationToken ct = default)
-            => _inner.StartAsync(app, commandLine, verbatimCommandLine, extraEnv, cwd, deElevate, freshEnv, ct);
-        public void Attach(SafeFileHandle conOut, SafeFileHandle conIn, SafeFileHandle signal,
-            IntPtr clientProcess, int pid) => _inner.Attach(conOut, conIn, signal, clientProcess, pid);
-        public void Inject(ReadOnlySpan<byte> bytes) => _inner.Inject(bytes);
-
-        public void MutateLocked(Action<ITerminalCore> mutate)
-        {
-            int call = Interlocked.Increment(ref _mutateCalls);
-            _inner.MutateLocked(mutate);
-            AfterMutate?.Invoke(call);
-        }
-
-        public void MutateInner(Action<ITerminalCore> mutate) => _inner.MutateLocked(mutate);
-        public void Write(ReadOnlySpan<byte> bytes) => _inner.Write(bytes);
-        public void Resize(int cols, int rows) => _inner.Resize(cols, rows);
-        public string SnapshotRow(int row) => _inner.SnapshotRow(row);
-        public void Detach() => _inner.Detach();
-        public void Dispose() => _inner.Dispose();
     }
 
     /// <summary>Padded BGRA whose every pixel carries the frame's tag, so a copy is identifiable.</summary>
@@ -602,24 +524,80 @@ public class ControlServerFrameShmTests : IDisposable
         Assert.Equal(Packed(0xE0), session.Emulator.Images[1].Data);
     }
 
+    // Two cached ids, one replaced behind the verb's back: the retry copies that one out of shared
+    // memory and the live sibling keeps its cache hit - the burst this cache exists to avoid.
+    [Fact]
+    public void OnlyTheStaleIdIsRecopiedWhenASiblingIsStillLive()
+    {
+        var (server, session) = New();
+        var a = NewProducer();
+        var b = NewProducer();
+        long seqA = a.Publish(0xA1);
+        long seqB = b.Publish(0xB1);
+        string request = Request("{\"images\":[" + Image(a, seqA, a.Slot, id: 1) + "," +
+            Image(b, seqB, b.Slot, id: 2, row: 6) + "]}");
+        Assert.Contains("frame:2/2", server.Dispatch(request));
+        Assert.Contains("frame:2/0", server.Dispatch(request));
+
+        session.MutateLocked(em => em.SetImageData(2, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 }));
+
+        Assert.Contains("frame:2/1", server.Dispatch(request));
+        Assert.Equal(Packed(0xA1), session.Emulator.Images[1].Data);
+        Assert.Equal(Packed(0xB1), session.Emulator.Images[2].Data);
+        Assert.Equal(2, session.Emulator.Placements.Count);
+    }
+
+    // Both cached ids replaced at once. The liveness loop must collect EVERY stale id: a loop that
+    // stopped at the first would drop one entry, retry, go stale on the other with no retry left,
+    // and answer an error while the pane kept the previous frame.
+    [Fact]
+    public void TwoStaleIdsAreBothRecopiedInTheSingleRetry()
+    {
+        var (server, session) = New();
+        var a = NewProducer();
+        var b = NewProducer();
+        long seqA = a.Publish(0xA2);
+        long seqB = b.Publish(0xB2);
+        string request = Request("{\"images\":[" + Image(a, seqA, a.Slot, id: 1) + "," +
+            Image(b, seqB, b.Slot, id: 2, row: 6) + "]}");
+        Assert.Contains("frame:2/2", server.Dispatch(request));
+        Assert.Contains("frame:2/0", server.Dispatch(request));
+
+        session.MutateLocked(em =>
+        {
+            em.SetImageData(1, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 });
+            em.SetImageData(2, KittyFormat.Rgba, 1, 1, new byte[] { 5, 6, 7, 8 });
+        });
+
+        Assert.Contains("frame:2/2", server.Dispatch(request));
+        Assert.Equal(Packed(0xA2), session.Emulator.Images[1].Data);
+        Assert.Equal(Packed(0xB2), session.Emulator.Images[2].Data);
+        Assert.Equal(2, session.Emulator.Placements.Count);
+    }
+
     [Fact]
     public void ACacheReplacementBetweenValidationAndCommitRetransmitsOnce()
     {
-        using var session = new InterceptSession();
+        // Phase 1 answers a cache hit from the dictionary alone, so the emulator can lose the
+        // cached image any time before phase 2 takes the lock. Phase 2 must notice, drop the
+        // entry and retry once with the pixels re-read - the caller sees one clean success.
+        using var session = new TerminalSession(80, 24);
         var server = new ControlServer(session);
         var p = NewProducer();
         long seq = p.Publish(0xE1);
         string request = Request("{\"images\":[" + Image(p, seq, p.Slot, id: 1) + "]}");
         Assert.Contains("frame:1/1", server.Dispatch(request));
 
-        session.AfterMutate = call =>
+        int preparedCalls = 0;
+        server.SharedFramePrepared = () =>
         {
-            if (call == 2)
-                session.MutateInner(em =>
+            if (Interlocked.Increment(ref preparedCalls) == 1)
+                session.MutateLocked(em =>
                     em.SetImageData(1, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 }));
         };
 
         string resp = server.Dispatch(request);
+        Assert.Equal(2, preparedCalls);
 
         Assert.Contains("frame:1/1", resp);
         Assert.Equal(Packed(0xE1), session.Emulator.Images[1].Data);
@@ -629,7 +607,7 @@ public class ControlServerFrameShmTests : IDisposable
     [Fact]
     public async Task ASecondCacheReplacementDuringTheRetryReturnsAnErrorWithoutChangingPlacements()
     {
-        using var session = new InterceptSession();
+        using var session = new TerminalSession(80, 24);
         var server = new ControlServer(session);
         var p = NewProducer();
         long seq = p.Publish(0xE2);
@@ -639,18 +617,23 @@ public class ControlServerFrameShmTests : IDisposable
         using var firstValidationDone = new ManualResetEventSlim();
         using var resumeFirstRequest = new ManualResetEventSlim();
         byte[] finalExternalPixels = { 9, 8, 7, 6 };
-        session.AfterMutate = call =>
+        // Prepared-seam order: 1 = the paused first request, 2 and 3 = the test thread's request
+        // and its retry, 4 = the first request's retry, which finds the re-cached entry and then
+        // loses it once more before it can commit.
+        int preparedCalls = 0;
+        server.SharedFramePrepared = () =>
         {
-            if (call == 2)
+            switch (Interlocked.Increment(ref preparedCalls))
             {
-                firstValidationDone.Set();
-                if (!resumeFirstRequest.Wait(TimeSpan.FromSeconds(10)))
-                    throw new TimeoutException("test did not release the first cache validation");
-            }
-            else if (call == 6)
-            {
-                session.MutateInner(em =>
-                    em.SetImageData(1, KittyFormat.Rgba, 1, 1, finalExternalPixels));
+                case 1:
+                    firstValidationDone.Set();
+                    if (!resumeFirstRequest.Wait(TimeSpan.FromSeconds(10)))
+                        throw new TimeoutException("test did not release the first cache validation");
+                    break;
+                case 4:
+                    session.MutateLocked(em =>
+                        em.SetImageData(1, KittyFormat.Rgba, 1, 1, finalExternalPixels));
+                    break;
             }
         };
 
@@ -659,12 +642,13 @@ public class ControlServerFrameShmTests : IDisposable
         {
             Assert.True(firstValidationDone.Wait(TimeSpan.FromSeconds(10)),
                 "first request did not reach cache validation");
-            session.MutateInner(em =>
+            session.MutateLocked(em =>
                 em.SetImageData(1, KittyFormat.Rgba, 1, 1, new byte[] { 5, 6, 7, 8 }));
 
             // Re-cache the same sequence with a new image while the first request is paused. Its
-            // retry will accept this entry in phase 1, then the call-6 hook replaces it once more.
+            // retry will accept this entry in phase 1, then the seam hook replaces it once more.
             Assert.Contains("frame:1/1", server.Dispatch(request));
+            Assert.Equal(3, preparedCalls);
         }
         finally
         {
@@ -822,8 +806,10 @@ public class ControlServerFrameShmTests : IDisposable
             "{\"images\":[" + Image(p, newerSeq, newerSlot, id: 1) + "]}");
         Assert.Contains("frame:1/1", server.Dispatch(newerRequest));
 
-        // Replacing the image invalidates and removes the retransmit-cache entry during the next
-        // phase 1. Accepted sequence order is separate state and must remain authoritative.
+        // Replacing the image leaves the retransmit-cache entry in place: phase 1 still answers
+        // a hit from the dictionary, phase 2 finds the emulator's image is not the cached one,
+        // drops the entry and retries. Accepted sequence order is separate state and must remain
+        // authoritative through all of that.
         session.MutateLocked(em =>
             em.SetImageData(1, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 }));
         using var newerPrepared = new ManualResetEventSlim();
@@ -842,7 +828,7 @@ public class ControlServerFrameShmTests : IDisposable
         try
         {
             Assert.True(newerPrepared.Wait(TimeSpan.FromSeconds(10)),
-                "newer request did not finish cache invalidation and phase 1");
+                "newer request did not finish phase 1");
             olderResponse = server.Dispatch(Request(
                 "{\"images\":[" + Image(p, olderSeq, olderSlot, id: 1) + "]}"));
         }
@@ -991,6 +977,39 @@ public class ControlServerFrameShmTests : IDisposable
         Assert.Contains("retained pixel budget", ErrorOf(rejected));
         Assert.Single(session.Emulator.Images);
         Assert.Equal(1, Assert.Single(session.Emulator.Placements).ImageId);
+    }
+
+    [Fact]
+    public void ReplacingAnExistingIdIsAcceptedWhileAnotherPathHoldsTheSessionOverBudget()
+    {
+        // The budget is a ceiling on what shared frames may ADD, not a gate on the session's total:
+        // a Kitty or sixel image that arrived through the pty can put the pane over the limit on
+        // its own, and a producer replacing its own id then makes nothing worse, so it must not be
+        // locked out. Only a request that would grow the excess is refused.
+        using var session = new TerminalSession(80, 24);
+        long oneFrameBytes = Packed(0).LongLength;
+        var server = new ControlServer(
+            session,
+            ControlServer.MaxSharedFrameRequestBytes,
+            retainedSharedFrameByteLimit: oneFrameBytes,
+            ControlServer.MaxRetainedSharedFrameImages);
+        var p = NewProducer();
+
+        Assert.Contains("frame:1/1", server.Dispatch(Request(
+            "{\"images\":[" + Image(p, p.Publish(0xB1), p.Slot, id: 1) + "]}")));
+        // Something else (the pty stream, say) parks four frames' worth of pixels under another id.
+        session.MutateLocked(em => em.SetImageData(2, KittyFormat.Png, 0, 0, new byte[oneFrameBytes * 4]));
+
+        string replaced = server.Dispatch(Request(
+            "{\"images\":[" + Image(p, p.Publish(0xB2), p.Slot, id: 1) + "]}"));
+        Assert.Contains("frame:1/1", replaced);
+        Assert.Equal(Packed(0xB2), session.Emulator.Images[1].Data);
+        Assert.Equal(1, Assert.Single(session.Emulator.Placements).ImageId);
+
+        string grown = server.Dispatch(Request(
+            "{\"images\":[" + Image(p, p.Publish(0xB3), p.Slot, id: 3) + "]}"));
+        Assert.Contains("retained pixel budget", ErrorOf(grown));
+        Assert.Equal(2, session.Emulator.Images.Count);
     }
 
     [Fact]

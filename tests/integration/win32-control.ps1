@@ -64,7 +64,13 @@ if (-not $Exe) { "  SKIP  agwinterm build not found (build src\Agwinterm.Win32 o
 "  using: $(Split-Path $Exe -Leaf) from $(Split-Path $Exe -Parent)"
 
 # Do not inherit routing from the developer's current terminal. This process gets its own pipe and
-# every mutation below is sent only to the process this script starts.
+# every mutation below is sent only to the process this script starts. Dot-sourced or run from a
+# pane inside agwinterm, these are the caller's own routing variables, so they are put back at the
+# end rather than left pointing at a pipe that no longer exists.
+$savedEnv = @{}
+foreach ($name in 'AGWINTERM_SESSION_ID', 'AGWINTERM_PANE_ID', 'AGWINTERM_PIPE', 'AGWINTERM_APP_ID') {
+    $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
+}
 $env:AGWINTERM_SESSION_ID = $null
 $env:AGWINTERM_PANE_ID = $null
 $env:AGWINTERM_PIPE = $null
@@ -511,21 +517,26 @@ finally {
     if ($sessionId) {
         try { Invoke-Ctl @('session', 'close', $sessionId) | Out-Null } catch { }
     }
-    if (Test-Path -LiteralPath $captureFile) { Remove-Item -LiteralPath $captureFile -Force }
-    if (Test-Path -LiteralPath $releaseFile) { Remove-Item -LiteralPath $releaseFile -Force }
-    foreach ($mouseFile in @($mouseCellReadyFile, $mousePixelReadyFile, $mouseCellFile, $mousePixelFile)) {
-        if (Test-Path -LiteralPath $mouseFile) { Remove-Item -LiteralPath $mouseFile -Force }
+    # Every step here is guarded: $ErrorActionPreference is Stop, and a terminating error inside a
+    # finally abandons the rest of the block - the environment restore at the end included.
+    foreach ($file in @($captureFile, $releaseFile, $mouseCellReadyFile, $mousePixelReadyFile, $mouseCellFile, $mousePixelFile)) {
+        try { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force } } catch { }
     }
     if ($process) {
         try { $process.CloseMainWindow() | Out-Null } catch { }
-        if (-not $process.WaitForExit(2000)) {
-            Stop-Process -Id $process.Id -Force
-            $process.WaitForExit()
-        }
+        try {
+            if (-not $process.WaitForExit(2000)) {
+                Stop-Process -Id $process.Id -Force
+                $process.WaitForExit()
+            }
+        } catch { }
     }
     # Both directories were proved to be direct children of LocalApplicationData before launch.
     foreach ($dir in @($testAppDir, $envAppDir)) {
-        if ($dir -and (Test-Path -LiteralPath $dir)) { Remove-Item -LiteralPath $dir -Recurse -Force }
+        try { if ($dir -and (Test-Path -LiteralPath $dir)) { Remove-Item -LiteralPath $dir -Recurse -Force } } catch { }
+    }
+    foreach ($name in $savedEnv.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $savedEnv[$name])
     }
 }
 
