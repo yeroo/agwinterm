@@ -139,9 +139,10 @@ public class PtyHostTests : IDisposable
         Assert.True(inHistory || live.Contains("before-detach"),
             $"echo lost across detach/reattach (history={inHistory}, live={live.Length} chars)");
 
-        // The revived stream is fully interactive.
-        second.Data.Write("echo after-reattach\r"u8.ToArray()); second.Data.Flush();
-        Assert.Contains("after-reattach", ReadUntil(second.Data, s => s.Contains("after-reattach")));
+        // The revived stream is fully interactive. Retype rather than write once: the repaint
+        // jiggle above resizes the console, and input landing mid-resize is discarded the same way
+        // it is during init (this bit the full suite under parallel load; alone it never did).
+        Assert.Contains("after-reattach", TypeUntilEcho(second.Data, "echo after-reattach", "after-reattach"));
 
         client.Kill(id);
     }
