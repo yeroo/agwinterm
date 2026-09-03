@@ -601,8 +601,8 @@ public sealed class ControlServer : IDisposable
 
             long sig = ContentSignature(path);
             FrameCacheEntry? cacheEntry = null;
-            bool cached = sig != 0 && IsCurrentFrameCacheHit(
-                s, state, id, FrameSource.File, path, sig, out cacheEntry);
+            bool cached = sig != 0 && IsFrameCacheHit(
+                state, id, FrameSource.File, path, sig, out cacheEntry);
 
             byte[]? data = null;
             if (!cached)
@@ -620,7 +620,8 @@ public sealed class ControlServer : IDisposable
         bool invalidCache = false;
         s.MutateLocked(em =>
         {
-            // A child can replace an id between phase 1's cache check and this lock. Abort before
+            // Phase 1 trusted the cache dictionary alone; this is the only check that the emulator
+            // still holds the cached image. A child can replace an id at any time, so abort before
             // clearing placements; the one automatic retry below will transmit the pixels again.
             foreach (var op in ops.Where(op => op.data is null && op.cached is not null))
                 if (!em.Images.TryGetValue(op.id, out var image) || !ReferenceEquals(image, op.cached!.Image))
@@ -723,10 +724,11 @@ public sealed class ControlServer : IDisposable
             // The (id, name, seq) cache, the shm analogue of image.frame's content signature: a
             // repeated sequence from the same producer means "nothing changed, just re-place it".
             // Cache hits still validate the live mapping and header below; only the pixel copy is
-            // skipped. Seq 0 means "read whatever is in the slot" and is never cacheable.
+            // skipped, and phase 2 confirms the emulator still holds the image. Seq 0 means "read
+            // whatever is in the slot" and is never cacheable.
             FrameCacheEntry? cacheEntry = null;
-            bool cached = seq > 0 && IsCurrentFrameCacheHit(
-                s, state, id, FrameSource.SharedMemory, name, seq, out cacheEntry);
+            bool cached = seq > 0 && IsFrameCacheHit(
+                state, id, FrameSource.SharedMemory, name, seq, out cacheEntry);
 
             ShmFrame? frame = null;
             var request = new ShmFrameRequest(name, slot, seq, width, height, stride, format);
@@ -797,6 +799,8 @@ public sealed class ControlServer : IDisposable
                 }
             }
 
+            // The only liveness check for a cache hit (phase 1 read the dictionary alone): the
+            // emulator must still hold the very image the entry was recorded against.
             foreach (var op in ops.Where(op => op.frame is null && op.cached is not null))
                 if (!em.Images.TryGetValue(op.id, out var image) || !ReferenceEquals(image, op.cached!.Image))
                 { invalidCache = true; return; }
@@ -897,8 +901,15 @@ public sealed class ControlServer : IDisposable
         return true;
     }
 
-    private static bool IsCurrentFrameCacheHit(
-        ISession session,
+    /// <summary>
+    /// Phase-1 cache lookup: does the pane already hold this exact content under this id? Answers
+    /// from the cache dictionary alone and never takes the render lock — whether the emulator still
+    /// holds the cached image is settled in phase 2, under the one lock that also applies the frame
+    /// (a stale entry there aborts, is dropped, and the request is retried once with the pixels
+    /// re-read). Probing here as well would cost one lock round-trip per image per frame for a
+    /// check phase 2 has to repeat anyway.
+    /// </summary>
+    private static bool IsFrameCacheHit(
         Dictionary<int, FrameCacheEntry> state,
         int id,
         FrameSource source,
@@ -906,25 +917,14 @@ public sealed class ControlServer : IDisposable
         long token,
         out FrameCacheEntry? entry)
     {
-        FrameCacheEntry candidate;
         lock (state)
         {
             if (!state.TryGetValue(id, out var cached) || cached.Source != source ||
                 cached.Identity != identity || cached.Token != token)
             { entry = null; return false; }
-            candidate = cached;
+            entry = cached;
+            return true;
         }
-        entry = candidate;
-
-        bool current = false;
-        session.MutateLocked(em =>
-            current = em.Images.TryGetValue(id, out var image) && ReferenceEquals(image, candidate.Image));
-        if (current) return true;
-
-        lock (state)
-            if (state.TryGetValue(id, out var found) && ReferenceEquals(found, candidate)) state.Remove(id);
-        entry = null;
-        return false;
     }
 
     private static void RemoveInvalidCacheEntries(
