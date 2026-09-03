@@ -38,7 +38,7 @@ function Check([string]$name, [bool]$ok, [string]$detail = '') {
     else { $script:fail++; "  FAIL  $name$(if ($detail) { " — $detail" })" }
 }
 
-function Resolve-Binary([string]$explicit, [string]$name, [string]$projectDir) {
+function Resolve-Binary([string]$explicit, [string]$name, [string]$projectDir, [switch]$AllowInstalled) {
     $roots = @()
     if ($explicit) { $roots += $explicit }
     $built = Join-Path (Join-Path $PSScriptRoot '..\..') "src\$projectDir\bin"
@@ -46,7 +46,10 @@ function Resolve-Binary([string]$explicit, [string]$name, [string]$projectDir) {
         $roots += (Get-ChildItem -LiteralPath $built -Recurse -Filter $name -ErrorAction SilentlyContinue |
                    Sort-Object LastWriteTime -Descending | Select-Object -ExpandProperty FullName)
     }
-    $roots += "$env:LOCALAPPDATA\Programs\agwinterm\$name"
+    # The installed binary is acceptable for the ctl CLIENT only: it talks to the pipe named below
+    # and nothing else. The APP must be a build from this tree - an older installed agwinterm that
+    # does not honour --app-id would start against the user's real data directory with --no-restore.
+    if ($AllowInstalled) { $roots += "$env:LOCALAPPDATA\Programs\agwinterm\$name" }
     foreach ($candidate in $roots) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
     }
@@ -54,10 +57,10 @@ function Resolve-Binary([string]$explicit, [string]$name, [string]$projectDir) {
 }
 
 "== Win32 control-host integration =="
-$ctl = Resolve-Binary $env:AGWINTERMCTL 'agwintermctl.exe' 'Agwinterm.Ctl'
+$ctl = Resolve-Binary $env:AGWINTERMCTL 'agwintermctl.exe' 'Agwinterm.Ctl' -AllowInstalled
 $Exe = Resolve-Binary $Exe 'Agwinterm.Win32.exe' 'Agwinterm.Win32'
 if (-not $ctl) { "  SKIP  agwintermctl not found (set AGWINTERMCTL)"; exit ($Strict ? 1 : 0) }
-if (-not $Exe) { "  SKIP  agwinterm not found (pass -Exe)"; exit ($Strict ? 1 : 0) }
+if (-not $Exe) { "  SKIP  agwinterm build not found (build src\Agwinterm.Win32 or pass -Exe)"; exit ($Strict ? 1 : 0) }
 "  using: $(Split-Path $Exe -Leaf) from $(Split-Path $Exe -Parent)"
 
 # Do not inherit routing from the developer's current terminal. This process gets its own pipe and
@@ -65,19 +68,32 @@ if (-not $Exe) { "  SKIP  agwinterm not found (pass -Exe)"; exit ($Strict ? 1 : 
 $env:AGWINTERM_SESSION_ID = $null
 $env:AGWINTERM_PANE_ID = $null
 $env:AGWINTERM_PIPE = $null
-$env:AGWINTERM_APP_ID = $null
 $testToken = [guid]::NewGuid().ToString('N')
 $pipe = 'win32-control-' + $testToken.Substring(0, 12)
 $appId = 'agwinterm-win32-control-' + $testToken
+# Two throwaway identities, not one. Startup saves state synchronously (a workspace and a session
+# are created and SaveState runs before the pipe answers), so an app that ignored --app-id would
+# have rewritten its fallback identity's saved state before anything here could notice. A Release
+# build's fallback is AGWINTERM_APP_ID; point that at a SECOND unique directory so the fallback is
+# still nothing of the user's, then treat its appearance as the failure it is. (A Debug build's
+# fallback is the fixed "agwinterm-dev"; a build from this tree cannot fall that far, which is why
+# Resolve-Binary refuses an installed app above.)
+$envAppId = $appId + '-env'
+$env:AGWINTERM_APP_ID = $envAppId
 $localAppDataRoot = [IO.Path]::GetFullPath(
     [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)).TrimEnd('\')
-$testAppDir = [IO.Path]::GetFullPath((Join-Path $localAppDataRoot $appId))
-$testAppParent = [IO.Directory]::GetParent($testAppDir).FullName.TrimEnd('\')
-if (-not $testAppParent.Equals($localAppDataRoot, [StringComparison]::OrdinalIgnoreCase) -or
-    -not ([IO.Path]::GetFileName($testAppDir)).Equals($appId, [StringComparison]::Ordinal)) {
-    throw "refusing unsafe test app-data path: $testAppDir"
+function Resolve-TestAppDir([string]$id) {
+    $dir = [IO.Path]::GetFullPath((Join-Path $localAppDataRoot $id))
+    $parent = [IO.Directory]::GetParent($dir).FullName.TrimEnd('\')
+    if (-not $parent.Equals($localAppDataRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([IO.Path]::GetFileName($dir)).Equals($id, [StringComparison]::Ordinal)) {
+        throw "refusing unsafe test app-data path: $dir"
+    }
+    if (Test-Path -LiteralPath $dir) { throw "unique test app-data path already exists: $dir" }
+    return $dir
 }
-if (Test-Path -LiteralPath $testAppDir) { throw "unique test app-data path already exists: $testAppDir" }
+$testAppDir = Resolve-TestAppDir $appId
+$envAppDir = Resolve-TestAppDir $envAppId
 $captureFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-cover-id-" + [guid]::NewGuid().ToString('N') + '.txt')
 $releaseFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-release-pane-" + [guid]::NewGuid().ToString('N') + '.signal')
 $mouseCellReadyFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-mouse-cell-ready-" + [guid]::NewGuid().ToString('N') + '.signal')
@@ -125,11 +141,15 @@ try {
     if (-not $up) { throw 'instance never came up' }
 
     # The unique pipe proves control isolation only. Require the files seeded under the explicit
-    # app-id before the first mutation, so ignoring --app-id cannot silently fall back to real state.
+    # app-id before the first mutation this script sends. This runs after startup's own saves, which
+    # is why the env fallback above exists: a process that ignored --app-id wrote to $envAppDir, and
+    # that directory existing is the proof.
     $appDataAdopted = (Test-Path -LiteralPath $testAppDir -PathType Container) -and
         (Test-Path -LiteralPath (Join-Path $testAppDir 'agwinterm.conf') -PathType Leaf) -and
         (Test-Path -LiteralPath (Join-Path $testAppDir 'profiles.json') -PathType Leaf)
     Check 'the Win32 instance adopts its dedicated app-data namespace' $appDataAdopted $testAppDir
+    Check 'the Win32 instance did not fall back to the environment app-id' `
+        (-not (Test-Path -LiteralPath $envAppDir)) "--app-id was ignored; state went to $envAppDir"
     if (-not $appDataAdopted) { throw 'isolated instance did not seed its dedicated app-data directory' }
 
     # Reproduce the collision from the review: the initial pane shares the session id; a hidden
@@ -374,11 +394,41 @@ function Read-MouseReport([int]$terminator) {
 
         $process.Refresh()
         $hwnd = $process.MainWindowHandle
-        $overlayMetrics = if ($mouseOverlayId) {
-            Invoke-Ctl @('session', 'metrics', '--target', $mouseOverlayId)
-        } else { $null }
+        # A cover inherits its session's font size, so with nothing else done the cover's metrics
+        # equal the background pane's and a report encoded with the WRONG pane's metrics would still
+        # match. Zoom the cover alone until its cell width differs from the background's; the
+        # expectations below are then cover-specific, not merely cover-positioned. cellWidth is a
+        # whole pixel, so one point of zoom can round back to the same width - step until it moves.
+        $backgroundMetrics = Invoke-Ctl @('session', 'metrics', '--target', $survivorId)
+        $overlayMetrics = $null
+        if ($mouseOverlayId -and $backgroundMetrics.ok) {
+            $previousHeight = [double]$backgroundMetrics.result.cellHeight
+            for ($step = 0; $step -lt 6 -and $null -eq $overlayMetrics; $step++) {
+                $coverZoom = Invoke-Ctl @('font', 'inc', '--target', $mouseOverlayId)
+                if (-not $coverZoom.ok) { break }
+                for ($i = 0; $i -lt 40; $i++) {
+                    $candidate = Invoke-Ctl @('session', 'metrics', '--target', $mouseOverlayId)
+                    if (-not $candidate.ok) { Start-Sleep -Milliseconds 100; continue }
+                    if ([double]$candidate.result.cellWidth -ne [double]$backgroundMetrics.result.cellWidth) {
+                        $overlayMetrics = $candidate
+                        break
+                    }
+                    # The height moving is how a step is known to have landed before the next one.
+                    if ([double]$candidate.result.cellHeight -ne $previousHeight) {
+                        $previousHeight = [double]$candidate.result.cellHeight
+                        break
+                    }
+                    Start-Sleep -Milliseconds 100
+                }
+            }
+        }
+        $backgroundUntouched = Invoke-Ctl @('session', 'metrics', '--target', $survivorId)
+        $coverMetricsDistinct = $null -ne $overlayMetrics -and $backgroundUntouched.ok -and
+            [double]$backgroundUntouched.result.cellWidth -eq [double]$backgroundMetrics.result.cellWidth
+        Check 'the floating cover zooms independently of its background pane' $coverMetricsDistinct `
+            "background cellWidth=$($backgroundMetrics.result.cellWidth), cover cellWidth=$($overlayMetrics.result.cellWidth)"
         $mouseFixtureReady = $mouseOverlay.ok -and $hwnd -ne [IntPtr]::Zero -and
-            (Test-Path -LiteralPath $mouseCellReadyFile) -and $overlayMetrics.ok -and
+            (Test-Path -LiteralPath $mouseCellReadyFile) -and $coverMetricsDistinct -and
             $overlayMetrics.result.cols -gt 8 -and $overlayMetrics.result.widthPx -gt 0
         Check 'the floating cover mouse-reporting fixture becomes ready' $mouseFixtureReady
 
@@ -422,6 +472,14 @@ function Read-MouseReport([int]$terminator) {
             $coverWidthPx = [int]$overlayMetrics.result.widthPx
             $coverCellWidth = [int]$overlayMetrics.result.cellWidth
             $expectedCellMidpoint = [int][Math]::Floor($coverCols / 2.0) + 1
+            # The column the same click would encode with the BACKGROUND pane's cell width. The
+            # assertion below is only evidence of cover-specific metrics if that lands outside the
+            # +/-1 tolerance, so say so explicitly rather than let a narrow cover pass by accident.
+            $backgroundCellWidth = [double]$backgroundMetrics.result.cellWidth
+            $midpointViaBackground = [int][Math]::Floor(($coverWidthPx / 2.0) / $backgroundCellWidth) + 1
+            $metricsDistinguishable = [Math]::Abs($midpointViaBackground - $expectedCellMidpoint) -gt 1
+            Check 'cover and background metrics encode the midpoint to different columns' $metricsDistinguishable `
+                "cover=$expectedCellMidpoint, via background=$midpointViaBackground"
             $cellIsCoverRelative = $cellMatch.Success -and
                 [Math]::Abs($cellColumn - $expectedCellMidpoint) -le 1 -and
                 $cellColumn -lt $coverCols - 1
@@ -465,8 +523,10 @@ finally {
             $process.WaitForExit()
         }
     }
-    # $testAppDir was proved to be one direct child of LocalApplicationData before launch.
-    if (Test-Path -LiteralPath $testAppDir) { Remove-Item -LiteralPath $testAppDir -Recurse -Force }
+    # Both directories were proved to be direct children of LocalApplicationData before launch.
+    foreach ($dir in @($testAppDir, $envAppDir)) {
+        if ($dir -and (Test-Path -LiteralPath $dir)) { Remove-Item -LiteralPath $dir -Recurse -Force }
+    }
 }
 
 if ($fail) { "Win32 control-host integration: $fail FAILED"; exit 1 }
