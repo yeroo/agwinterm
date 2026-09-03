@@ -617,14 +617,15 @@ public sealed class ControlServer : IDisposable
         // Phase 2 (BRIEF lock): swap placements and register any new pixels — dictionary/list
         // updates only, microseconds, so a big image appearing never stalls the paint thread.
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        List<int>? staleIds = null;
+        HashSet<int>? staleIds = null;
         s.MutateLocked(em =>
         {
             // Phase 1 trusted the cache dictionary alone; this is the only check that the emulator
             // still holds the cached image. A child can replace an id at any time, so abort before
             // clearing placements; the one automatic retry below will transmit the pixels again.
-            // Every stale id is collected, not just the first, so the retry re-reads exactly those
-            // and a live sibling keeps its cache hit.
+            // Every stale id is collected, not just the first: a live sibling keeps its cache hit,
+            // so the retry (a full re-run of phase 1) re-reads only the stale ids plus whatever
+            // already missed the cache on this attempt.
             foreach (var op in ops.Where(op => op.data is null && op.cached is not null))
                 if (!em.Images.TryGetValue(op.id, out var image) || !ReferenceEquals(image, op.cached!.Image))
                     (staleIds ??= new()).Add(op.id);
@@ -757,7 +758,7 @@ public sealed class ControlServer : IDisposable
         // Phase 2 (BRIEF lock): dictionary/list swaps only, exactly as image.frame does - the
         // megabytes were already copied above, so the paint thread stalls for microseconds.
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        List<int>? staleIds = null;
+        HashSet<int>? staleIds = null;
         string? commitError = null;
         s.MutateLocked(em =>
         {
@@ -804,7 +805,8 @@ public sealed class ControlServer : IDisposable
 
             // The only liveness check for a cache hit (phase 1 read the dictionary alone): the
             // emulator must still hold the very image the entry was recorded against. All stale
-            // ids are collected so the retry copies only those out of shared memory.
+            // ids are collected so a live sibling keeps its cache hit: the retry re-runs phase 1
+            // and copies only the stale ids plus whatever already missed the cache this attempt.
             foreach (var op in ops.Where(op => op.frame is null && op.cached is not null))
                 if (!em.Images.TryGetValue(op.id, out var image) || !ReferenceEquals(image, op.cached!.Image))
                     (staleIds ??= new()).Add(op.id);
