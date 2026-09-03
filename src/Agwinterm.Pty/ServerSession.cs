@@ -306,6 +306,13 @@ public sealed class ServerSession : ISession
         lock (_sync) return Emulator.DumpRow(row);
     }
 
+    /// <summary>Thread-safe snapshot of the caret's grid position, read from the local replica
+    /// emulator — no pty-host round trip, so it can lag the host by the data pipe's latency.</summary>
+    public (int Row, int Col) SnapshotCursor()
+    {
+        lock (_sync) return (Emulator.CursorRow, Emulator.CursorCol);
+    }
+
     /// <summary>Stop viewing WITHOUT killing: cancel the read loop, which closes the data pipe (the
     /// host sees a detach) and leaves the child running for a later <see cref="TryAdopt"/>. The
     /// app-quit path. Never disposes the pipe directly — see ReadLoop's ownership rule (#118).</summary>

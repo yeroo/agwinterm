@@ -19,13 +19,14 @@ using System.Text.Json;
 //   agwintermctl session copy [--target ID]           (returns the selection text)
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
 //   agwintermctl selection all|copy|clear|finalize [--target ID]
+//   agwintermctl surface cursor [--target ID]         (caret column of a pane, as a bare integer)
 //   agwintermctl image show <path> [--row R] [--col C] [--id N] [--target ID]
 //   agwintermctl install hooks
 // Target defaults to $AGWINTERM_SESSION_ID (the current session) when not given.
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: agwintermctl <ping|tree|session|image|install> ... (see --help)");
+    Console.Error.WriteLine("usage: agwintermctl <ping|tree|session|surface|image|install> ... (see --help)");
     return 2;
 }
 
@@ -252,6 +253,14 @@ switch (area)
         break;
     case "config" when sub == "list": cmd = "config.list"; break;
     case "settings": cmd = "settings.open"; break;
+    case "surface":
+        // agwintermctl surface cursor [--target ID] — the caret column of a pane, as a bare integer.
+        // A pane id reports that pane; a session id/name reports its focused pane.
+        if (sub != "cursor")
+        { Console.Error.WriteLine("usage: agwintermctl surface cursor [--target ID]"); return 2; }
+        cmd = "surface.cursor";
+        target = DefaultTarget();
+        break;
     case "selection":
         // agwintermctl selection all|copy|clear|finalize [--target ID]
         if (sub is not ("all" or "copy" or "clear" or "finalize"))

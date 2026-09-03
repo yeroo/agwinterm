@@ -99,23 +99,23 @@ They are grouped by what they have in common: each one answers a question a call
 ## Implementation Steps
 
 ### Task 1: `surface.cursor`
-- [ ] add a thread-safe cursor read to `ISession` — `(int Row, int Col) SnapshotCursor()`, documented
+- [x] add a thread-safe cursor read to `ISession` — `(int Row, int Col) SnapshotCursor()`, documented
       as a snapshot under the same lock `SnapshotRow` uses
-- [ ] implement it in `TerminalSession` (`lock (_sync) return (Emulator.CursorRow, Emulator.CursorCol)`)
+- [x] implement it in `TerminalSession` (`lock (_sync) return (Emulator.CursorRow, Emulator.CursorCol)`)
       and in `ServerSession` identically, reading its replica emulator
-- [ ] add `case "surface.cursor"` to the **resolved-session** block of `ControlServer.Dispatch`,
+- [x] add `case "surface.cursor"` to the **resolved-session** block of `ControlServer.Dispatch`,
       returning the **column only, as a bare integer** — agterm's shape, so an agent written against
       either product gets the same reply. Row is deliberately not reported; a JSON object here would
       diverge from agterm for no caller we have
-- [ ] targeting: a **pane id** reports that pane (`Resolve` already does this); a **session** id or
+- [x] targeting: a **pane id** reports that pane (`Resolve` already does this); a **session** id or
       name reports its **focused** pane. Document that in the verb's comment — a cursor is a per-pane
       thing, and the focused pane is the only non-arbitrary answer for a session-wide target
-- [ ] add `surface cursor [--target <id>]` to `src/Agwinterm.Ctl/Program.cs`, printing the bare integer
-- [ ] tests in `tests/Agwinterm.Pty.Tests/`: a known column is reported; the column moves after the
+- [x] add `surface cursor [--target <id>]` to `src/Agwinterm.Ctl/Program.cs`, printing the bare integer
+- [x] tests in `tests/Agwinterm.Pty.Tests/`: a known column is reported; the column moves after the
       emulator is fed text; an unknown target returns `ok:false`; column `0` on a fresh session is
       reported as `0` and **not** confused with "no answer"
-- [ ] a test that pins the reply is a bare integer, not `{"col":N}` — this is the contract P8 mirrors
-- [ ] run the .NET suite — must pass before task 2
+- [x] a test that pins the reply is a bare integer, not `{"col":N}` — this is the contract P8 mirrors
+- [x] run the .NET suite — must pass before task 2
 
 ### Task 2: `statusChangedAt`
 - [ ] record the timestamp on **every** `SetStatus` call, not only when `changed` is true. The caller

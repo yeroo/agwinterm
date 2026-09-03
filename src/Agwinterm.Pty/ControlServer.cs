@@ -251,6 +251,13 @@ public sealed class ControlServer : IDisposable
                 "session.type" => HandleType(s, args),
                 "session.text" => HandleText(s, args),
                 "session.status" => HandleStatus(s, args),
+                // surface.cursor — the caret COLUMN as a bare integer (agterm's shape, so a script
+                // written against either product reads the same reply; a JSON object here would
+                // diverge for no caller we have, and the row is not what "is the composer empty"
+                // asks). Targeting follows Resolve: a PANE id reports that pane, a session id/name
+                // reports its FOCUSED pane — a cursor is a per-pane thing, and the focused pane is
+                // the only non-arbitrary answer for a session-wide target.
+                "surface.cursor" => OkRaw(s.SnapshotCursor().Col.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 "image.show" => HandleImageShow(s, args),
                 "image.sixel" => HandleImageSixel(s, args),
                 "image.clear" => HandleImageClear(s),

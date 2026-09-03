@@ -332,6 +332,12 @@ public sealed class TerminalSession : ISession
         lock (_sync) return Emulator.DumpRow(row);
     }
 
+    /// <summary>Thread-safe snapshot of the caret's grid position (same lock as <see cref="SnapshotRow"/>).</summary>
+    public (int Row, int Col) SnapshotCursor()
+    {
+        lock (_sync) return (Emulator.CursorRow, Emulator.CursorCol);
+    }
+
     /// <summary>In-process sessions cannot outlive the process — detach IS dispose here.</summary>
     public void Detach() => Dispose();
 

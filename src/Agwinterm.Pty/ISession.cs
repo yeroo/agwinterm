@@ -69,6 +69,11 @@ public interface ISession : IDisposable
     void Resize(int cols, int rows);
     /// <summary>Thread-safe text snapshot of one visible row.</summary>
     string SnapshotRow(int row);
+    /// <summary>Thread-safe snapshot of the caret position (0-based row/col in the visible grid),
+    /// taken under <see cref="SyncRoot"/> exactly like <see cref="SnapshotRow"/>. A snapshot, not a
+    /// live view: the pair is consistent with itself, and stale the moment the lock is released.
+    /// A server-backed session answers from its replica emulator, so this never round-trips.</summary>
+    (int Row, int Col) SnapshotCursor();
 
     /// <summary>Release the UI's hold WITHOUT necessarily killing (#105, Phase 2c): a server-backed
     /// session detaches — the child keeps running in the pty-host for a later adoption. An
