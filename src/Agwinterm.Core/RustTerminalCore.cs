@@ -86,6 +86,7 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     public bool MouseDrag => _info.MouseDrag != 0;
     public bool MouseMotion => _info.MouseMotion != 0;
     public bool MouseSgr => _info.MouseSgr != 0;
+    public bool MouseSgrPixels => _info.MouseSgrPixels != 0;
     public bool MouseReporting => MouseClick || MouseDrag || MouseMotion;
     public bool MouseReportsMotion => MouseDrag || MouseMotion;
     public bool BracketedPaste => _info.BracketedPaste != 0;
@@ -107,8 +108,9 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
         {
             _scrollbackMax = Math.Max(0, value);
             _rust.SetScrollbackMax(_scrollbackMax);
-            Sync();   // a LOWER cap trims the core at once; the mirror must not keep claiming
-                      // rows the core no longer has, or reads of them return stale text
+            // A lower cap trims the core at once; the mirror must not keep claiming rows the core
+            // no longer has, or reads of them return stale text.
+            Sync();
         }
     }
     public int HistoryCount => _histMirror.Count;
@@ -171,23 +173,36 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     // ---- images (ABI v8): surfaced from the Rust core; KittyImage pixels cached per id so the
     // renderer uploads a texture only once, refreshed on Sync when the id set changes. ----
     private readonly Dictionary<int, KittyImage> _imageCache = new();
+    private readonly Dictionary<int, ulong> _imageRevisions = new();
     private List<ImagePlacement> _placements = new();
 
-    private void SyncImages()
+    private void SyncImages(KittyImage? hostImage = null)
     {
         var metas = _rust.GetImageMetas();
-        // Add newly-transmitted images (fetch pixels once); drop images the core no longer holds.
+        // Fetch pixels only when native reports a new content revision. Stable ids are routinely
+        // replaced by terminal Kitty output, so presence alone is not a cache-validity signal.
         var live = new HashSet<int>(metas.Length);
         foreach (var m in metas)
         {
             live.Add(m.Id);
-            if (!_imageCache.ContainsKey(m.Id))
+            if (hostImage is not null && hostImage.Id == m.Id)
+            {
+                // Direct host frames already own their managed payload; native stores metadata only.
+                _imageCache[m.Id] = hostImage;
+                _imageRevisions[m.Id] = m.Revision;
+            }
+            else if (!_imageRevisions.TryGetValue(m.Id, out ulong revision) || revision != m.Revision)
+            {
                 _imageCache[m.Id] = new KittyImage(m.Id, (KittyFormat)m.Format, m.Width, m.Height,
                     _rust.GetImageData(m.Id, (int)m.DataLen));
+                _imageRevisions[m.Id] = m.Revision;
+            }
         }
-        if (_imageCache.Count > live.Count)
-            foreach (var id in _imageCache.Keys.Where(k => !live.Contains(k)).ToList())
-                _imageCache.Remove(id);
+        foreach (var id in _imageCache.Keys.Where(k => !live.Contains(k)).ToList())
+        {
+            _imageCache.Remove(id);
+            _imageRevisions.Remove(id);
+        }
 
         var pls = _rust.GetPlacements();
         var list = new List<ImagePlacement>(pls.Length);
@@ -202,8 +217,11 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
     public bool HasImage(int id) => _rust.HasImage(id);
     public void SetImageData(int id, KittyFormat format, int width, int height, byte[] data)
     {
-        _rust.SetImageData(id, (int)format, width, height, data);
-        SyncImages();
+        // The renderer consumes the managed cache below. Native needs only image presence and
+        // geometry for placement bookkeeping; copying the payload there would duplicate every raw
+        // frame while the caller holds the render lock.
+        _rust.SetImageMetadata(id, (int)format, width, height);
+        SyncImages(new KittyImage(id, format, width, height, data));
     }
     public void PlaceImage(int id, int row, int col, int cols, int rows,
         int srcX = 0, int srcY = 0, int srcW = 0, int srcH = 0)

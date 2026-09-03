@@ -38,7 +38,7 @@ Roughly: the **single-window core** (sessions, workspaces, splits, palettes, ren
 ## Core / VT / rendering
 
 - **Terminal engine.** agterm embeds **libghostty** (full VT, GPU render, shell I/O) — `agterm/Ghostty/*`. — agwinterm: **Done (own impl)**: C# VT engine (`Agwinterm.Core`) + Direct2D + ConPTY. Note: ours is a *subset* VT (no full ghostty completeness); good enough for shells + Kitty graphics. macOS-only: libghostty itself.
-- **Image protocols / graphics.** ghostty handles Kitty/sixel/iTerm2. — agwinterm: **Partial**: Kitty graphics via the control pipe (docxy), delivered out-of-band because ConPTY strips APC. No sixel/iTerm2. (M to add sixel.)
+- **Image protocols / graphics.** ghostty handles Kitty/sixel/iTerm2. — agwinterm: **Partial**: Kitty-compatible images and sixel decoding, delivered out-of-band through the control pipe because ConPTY strips APC/DCS. File-backed images and frames use `image.show`/`image.frame`; high-rate raw BGRA/RGBA frames use the versioned `image.frameshm` shared-memory transport. No iTerm2.
 
 ## Structure & concepts (`Session.swift`, `Workspace.swift`, README "Concepts")
 

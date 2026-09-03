@@ -730,297 +730,315 @@ internal partial class Program
         switch (_palette)
         {
             case PaletteKind.Windows:
-            {
-                foreach (var w in Windows())
                 {
-                    var sel = w.Id;
-                    string label = string.IsNullOrEmpty(w.Name) ? w.Id[..Math.Min(8, w.Id.Length)] : w.Name;
-                    _palAll.Add(new PalItem
+                    foreach (var w in Windows())
                     {
-                        Label = label + (w.Active ? "  (active)" : ""),
-                        Secondary = (w.Open ? "open" : "closed") + "  ·  " + w.Id[..Math.Min(8, w.Id.Length)],
-                        Search = $"{label} {w.Id}",
-                        Run = () => WindowSelect(sel),
-                    });
+                        var sel = w.Id;
+                        string label = string.IsNullOrEmpty(w.Name) ? w.Id[..Math.Min(8, w.Id.Length)] : w.Name;
+                        _palAll.Add(new PalItem
+                        {
+                            Label = label + (w.Active ? "  (active)" : ""),
+                            Secondary = (w.Open ? "open" : "closed") + "  ·  " + w.Id[..Math.Min(8, w.Id.Length)],
+                            Search = $"{label} {w.Id}",
+                            Run = () => WindowSelect(sel),
+                        });
+                    }
+                    if (_palAll.Count == 0) _palAll.Add(new PalItem { Label = "No windows", Run = null });
+                    break;
                 }
-                if (_palAll.Count == 0) _palAll.Add(new PalItem { Label = "No windows", Run = null });
-                break;
-            }
             case PaletteKind.Sessions:
-            {
-                foreach (var s in AllSessions())
                 {
-                    var sx = s;
-                    string cwd = PrettyCwd(SafeCwd(sx));
+                    foreach (var s in AllSessions())
+                    {
+                        var sx = s;
+                        string cwd = PrettyCwd(SafeCwd(sx));
+                        _palAll.Add(new PalItem
+                        {
+                            Label = sx.Name,
+                            Secondary = cwd.Length > 0 ? $"{sx.Ws.Name}  ·  {cwd}" : sx.Ws.Name,
+                            Search = $"{sx.Name} {sx.Ws.Name} {cwd}",
+                            Dot = AggStatus(sx),
+                            Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
+                        });
+                    }
+                    break;
+                }
+            case PaletteKind.Actions:
+                {
+                    void A(string label, string hint, Action run) => _palAll.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
+                    A("New Session", "Ctrl+Shift+T", () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true));
+                    A("New Session…", "", () => TogglePalette(PaletteKind.NewSession));   // pick a shell profile
+                    if (_active is not null) A("Duplicate Session", "", () => DuplicateSession(_active));   // same cwd + profile (#234)
+                    if (_closedSessions.Count > 0 || _closedWorkspaces.Count > 0)
+                    {
+                        long sSeq = _closedSessions.Count > 0 ? _closedSessions[^1].Seq : -1;
+                        long wSeq = _closedWorkspaces.Count > 0 ? _closedWorkspaces[^1].Seq : -1;
+                        string top = wSeq > sSeq ? $"workspace {_closedWorkspaces[^1].Name}" : _closedSessions[^1].Display;
+                        A($"Reopen Closed ({top})", "Ctrl+Shift+R", ReopenMostRecent);
+                        // Recent closed sessions, then closed workspaces (most-recent first), each reopenable directly.
+                        for (int ci = _closedSessions.Count - 1; ci >= 0 && ci >= _closedSessions.Count - 8; ci--)
+                        { var cs = _closedSessions[ci]; A($"Reopen Session — {cs.Display}", "", () => ReopenClosedSession(cs)); }
+                        for (int wi = _closedWorkspaces.Count - 1; wi >= 0 && wi >= _closedWorkspaces.Count - 8; wi--)
+                        { var cw = _closedWorkspaces[wi]; A($"Reopen Workspace — {cw.Name} ({cw.Sessions.Count})", "", () => ReopenClosedWorkspace(cw)); }
+                    }
+                    A("New Workspace", "Ctrl+Shift+N", () => CreateWorkspace(Guid.NewGuid().ToString(), null));
+                    A("New Window", "Ctrl+Alt+N", () => WindowNew(null));
+                    A("Toggle Fullscreen", "F11", ToggleFullscreen);
+                    A("Toggle Broadcast Input", "", ToggleBroadcast);   // typing fans out to the whole workspace
+                    A("Mark Mode (keyboard select)", "Ctrl+Shift+M", ToggleMarkMode);
+                    A("Toggle Read-Only Pane", "", () => { if (ActiveSurface() is { } rp) { rp.ReadOnly = !rp.ReadOnly; ShowToast(rp.ReadOnly ? "pane read-only ON" : "pane read-only off"); RequestRedraw(); } });
+                    A("Close Window", "", () => DestroyWindow(_hwnd));
+                    A("Switch Window…", "", () => TogglePalette(PaletteKind.Windows));
+                    A("Rename Active Session", "F2", () => { if (_active is not null) StartRename(_active); });
+                    A("Close Pane / Session", "Ctrl+Shift+W", CloseActivePane);
+                    A("Split Pane", "Ctrl+D", () => SplitOp("toggle"));
+                    A("Focus Left Pane", "Ctrl+Alt+Left", () => FocusPane(-1));
+                    A("Focus Right Pane", "Ctrl+Alt+Right", () => FocusPane(1));
+                    A("Delete Active Workspace", "", () => { if (_active is not null) DeleteWorkspace(_active.Ws); });
+                    A("Flag / Unflag Session", "Ctrl+Shift+F", () => { if (_active is not null) FlagOp(_active, "toggle"); });
+                    A("Show Flagged / All Sessions", "", ToggleFlaggedView);
+                    A("Focus Workspace", "", () => WorkspaceFocusOp("toggle"));
+                    A("Toggle Sidebar", "", ToggleSidebar);
+                    A("Select All", "Ctrl+Shift+A", () => { if (ActiveSurface() is { } p) SelectAll(p); });
+                    A("Copy Selection", "Ctrl+C", () => { if (ActiveSurface() is { } p && HasLiveSel(p)) CopySelection(p); });
+                    A("Paste", "Ctrl+V", () => { if (ActiveSurface() is { } p) PasteInto(p); });
+                    A("Next Session", "Ctrl+Tab", () => CycleSession(1));
+                    A("Previous Session", "Ctrl+Shift+Tab", () => CycleSession(-1));
+                    A("Next Attention", "Ctrl+Alt+Down", () => GoToNextAttention(1));
+                    A("Previous Attention", "Ctrl+Alt+Up", () => GoToNextAttention(-1));
+                    A("Increase Font Size", "Ctrl+=", () => ChangeFontSize(1));
+                    A("Decrease Font Size", "Ctrl+-", () => ChangeFontSize(-1));
+                    A("Reset Font Size", "Ctrl+0", () => ChangeFontSize(0));
+                    A("Scratch Terminal", "Ctrl+J", () => { if (_active is not null) ScratchOp(_active, "toggle"); });
+                    A("Quick Terminal", "Ctrl+`", () => QuickOp("toggle"));
+                    A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
+                    A("Prompt Engine…", "", () => TogglePalette(PaletteKind.PromptEngine));   // omp | starship | vanilla
+                                                                                              // Theme picker for the ACTIVE engine only (and only when that engine is installed).
+                    if (_config.PromptEngine == "omp" && OmpAvailable())
+                        A("oh-my-posh Theme…", "", () => TogglePalette(PaletteKind.Omp));
+                    if (_config.PromptEngine == "starship" && Agwinterm.Pty.StarshipPresets.Available())
+                        A("Starship Theme…", "", () => TogglePalette(PaletteKind.Starship));
+                    A("Install Nerd Font…", "", () => TogglePalette(PaletteKind.Fonts));   // omp/starship themes need one
+                    A("Settings…", "", OpenSettingsWindow);
+                    A("Custom Commands…", "Ctrl+Shift+O", () => TogglePalette(PaletteKind.Custom));
+                    // Opt-in integrations (agterm's Help-menu trio + shell) — the installer stays minimal.
+                    A("Install Command-Line Tool (PATH)", "", InstallCli);
+                    A("Install Agent Status Hooks", "", InstallHooks);
+                    A("Make Claude Sessions Resumable", "", MakeClaudeResumable);
+                    A("Restart Claude in YOLO Mode", "", RestartClaudeYoloActive);
                     _palAll.Add(new PalItem
                     {
-                        Label = sx.Name,
-                        Secondary = cwd.Length > 0 ? $"{sx.Ws.Name}  ·  {cwd}" : sx.Ws.Name,
-                        Search = $"{sx.Name} {sx.Ws.Name} {cwd}",
-                        Dot = AggStatus(sx),
-                        Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
+                        Label = "Update Claude Code" + (_claudeLatest is { } cl ? $"  — v{cl} available" : ""),
+                        Secondary = "runs `claude update` in an overlay, then restarts your Claude sessions",
+                        Search = "update claude code upgrade version",
+                        Run = () => ShowToast(UpdateClaudeCode(), 2500),
                     });
-                }
-                break;
-            }
-            case PaletteKind.Actions:
-            {
-                void A(string label, string hint, Action run) => _palAll.Add(new PalItem { Label = label, Hint = hint, Search = label, Run = run });
-                A("New Session", "Ctrl+Shift+T", () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true));
-                A("New Session…", "", () => TogglePalette(PaletteKind.NewSession));   // pick a shell profile
-                if (_active is not null) A("Duplicate Session", "", () => DuplicateSession(_active));   // same cwd + profile (#234)
-                if (_closedSessions.Count > 0 || _closedWorkspaces.Count > 0)
-                {
-                    long sSeq = _closedSessions.Count > 0 ? _closedSessions[^1].Seq : -1;
-                    long wSeq = _closedWorkspaces.Count > 0 ? _closedWorkspaces[^1].Seq : -1;
-                    string top = wSeq > sSeq ? $"workspace {_closedWorkspaces[^1].Name}" : _closedSessions[^1].Display;
-                    A($"Reopen Closed ({top})", "Ctrl+Shift+R", ReopenMostRecent);
-                    // Recent closed sessions, then closed workspaces (most-recent first), each reopenable directly.
-                    for (int ci = _closedSessions.Count - 1; ci >= 0 && ci >= _closedSessions.Count - 8; ci--)
-                    { var cs = _closedSessions[ci]; A($"Reopen Session — {cs.Display}", "", () => ReopenClosedSession(cs)); }
-                    for (int wi = _closedWorkspaces.Count - 1; wi >= 0 && wi >= _closedWorkspaces.Count - 8; wi--)
-                    { var cw = _closedWorkspaces[wi]; A($"Reopen Workspace — {cw.Name} ({cw.Sessions.Count})", "", () => ReopenClosedWorkspace(cw)); }
-                }
-                A("New Workspace", "Ctrl+Shift+N", () => CreateWorkspace(Guid.NewGuid().ToString(), null));
-                A("New Window", "Ctrl+Alt+N", () => WindowNew(null));
-                A("Toggle Fullscreen", "F11", ToggleFullscreen);
-                A("Toggle Broadcast Input", "", ToggleBroadcast);   // typing fans out to the whole workspace
-                A("Mark Mode (keyboard select)", "Ctrl+Shift+M", ToggleMarkMode);
-                A("Toggle Read-Only Pane", "", () => { if (ActiveSurface() is { } rp) { rp.ReadOnly = !rp.ReadOnly; ShowToast(rp.ReadOnly ? "pane read-only ON" : "pane read-only off"); RequestRedraw(); } });
-                A("Close Window", "", () => DestroyWindow(_hwnd));
-                A("Switch Window…", "", () => TogglePalette(PaletteKind.Windows));
-                A("Rename Active Session", "F2", () => { if (_active is not null) StartRename(_active); });
-                A("Close Pane / Session", "Ctrl+Shift+W", CloseActivePane);
-                A("Split Pane", "Ctrl+D", () => SplitOp("toggle"));
-                A("Focus Left Pane", "Ctrl+Alt+Left", () => FocusPane(-1));
-                A("Focus Right Pane", "Ctrl+Alt+Right", () => FocusPane(1));
-                A("Delete Active Workspace", "", () => { if (_active is not null) DeleteWorkspace(_active.Ws); });
-                A("Flag / Unflag Session", "Ctrl+Shift+F", () => { if (_active is not null) FlagOp(_active, "toggle"); });
-                A("Show Flagged / All Sessions", "", ToggleFlaggedView);
-                A("Focus Workspace", "", () => WorkspaceFocusOp("toggle"));
-                A("Toggle Sidebar", "", ToggleSidebar);
-                A("Select All", "Ctrl+Shift+A", () => { if (ActiveSurface() is { } p) SelectAll(p); });
-                A("Copy Selection", "Ctrl+C", () => { if (ActiveSurface() is { } p && HasLiveSel(p)) CopySelection(p); });
-                A("Paste", "Ctrl+V", () => { if (ActiveSurface() is { } p) PasteInto(p); });
-                A("Next Session", "Ctrl+Tab", () => CycleSession(1));
-                A("Previous Session", "Ctrl+Shift+Tab", () => CycleSession(-1));
-                A("Next Attention", "Ctrl+Alt+Down", () => GoToNextAttention(1));
-                A("Previous Attention", "Ctrl+Alt+Up", () => GoToNextAttention(-1));
-                A("Increase Font Size", "Ctrl+=", () => ChangeFontSize(1));
-                A("Decrease Font Size", "Ctrl+-", () => ChangeFontSize(-1));
-                A("Reset Font Size", "Ctrl+0", () => ChangeFontSize(0));
-                A("Scratch Terminal", "Ctrl+J", () => { if (_active is not null) ScratchOp(_active, "toggle"); });
-                A("Quick Terminal", "Ctrl+`", () => QuickOp("toggle"));
-                A("Select Theme…", "", () => TogglePalette(PaletteKind.Themes));
-                A("Prompt Engine…", "", () => TogglePalette(PaletteKind.PromptEngine));   // omp | starship | vanilla
-                // Theme picker for the ACTIVE engine only (and only when that engine is installed).
-                if (_config.PromptEngine == "omp" && OmpAvailable())
-                    A("oh-my-posh Theme…", "", () => TogglePalette(PaletteKind.Omp));
-                if (_config.PromptEngine == "starship" && Agwinterm.Pty.StarshipPresets.Available())
-                    A("Starship Theme…", "", () => TogglePalette(PaletteKind.Starship));
-                A("Install Nerd Font…", "", () => TogglePalette(PaletteKind.Fonts));   // omp/starship themes need one
-                A("Settings…", "", OpenSettingsWindow);
-                A("Custom Commands…", "Ctrl+Shift+O", () => TogglePalette(PaletteKind.Custom));
-                // Opt-in integrations (agterm's Help-menu trio + shell) — the installer stays minimal.
-                A("Install Command-Line Tool (PATH)", "", InstallCli);
-                A("Install Agent Status Hooks", "", InstallHooks);
-                A("Make Claude Sessions Resumable", "", MakeClaudeResumable);
-                A("Restart Claude in YOLO Mode", "", RestartClaudeYoloActive);
-                _palAll.Add(new PalItem
-                {
-                    Label = "Update Claude Code" + (_claudeLatest is { } cl ? $"  — v{cl} available" : ""),
-                    Secondary = "runs `claude update` in an overlay, then restarts your Claude sessions",
-                    Search = "update claude code upgrade version",
-                    Run = () => ShowToast(UpdateClaudeCode(), 2500),
-                });
-                _palAll.Add(new PalItem
-                {
-                    Label = "Update agwinterm" + (_appLatest is { } av ? $"  — v{av} available" : ""),
-                    Secondary = AppChannel() switch
+                    _palAll.Add(new PalItem
                     {
-                        Agwinterm.Pty.UpdateChannel.PackageManager => "managed by scoop/chocolatey — update with the package manager",
-                        Agwinterm.Pty.UpdateChannel.Installed => "downloads the new installer, restarts — sessions restore",
-                        _ => "swaps the portable exe, restarts — sessions restore",
-                    },
-                    Search = "update agwinterm upgrade version self",
-                    Run = () => ShowToast(UpdateAgwinterm(), 3000),
-                });
-                A("Install Agent Skill", "", InstallSkill);
-                A("Install Shell Integration", "", InstallShellIntegration);
-                A("Reload Keymap", "", ReloadKeymap);
-                break;
-            }
+                        Label = "Update agwinterm" + (_appLatest is { } av ? $"  — v{av} available" : ""),
+                        Secondary = AppChannel() switch
+                        {
+                            Agwinterm.Pty.UpdateChannel.PackageManager => "managed by scoop/chocolatey — update with the package manager",
+                            Agwinterm.Pty.UpdateChannel.Installed => "downloads the new installer, restarts — sessions restore",
+                            _ => "swaps the portable exe, restarts — sessions restore",
+                        },
+                        Search = "update agwinterm upgrade version self",
+                        Run = () => ShowToast(UpdateAgwinterm(), 3000),
+                    });
+                    A("Install Agent Skill", "", InstallSkill);
+                    A("Install Shell Integration", "", InstallShellIntegration);
+                    A("Reload Keymap", "", ReloadKeymap);
+                    break;
+                }
             case PaletteKind.Custom:
-            {
-                if (_commands.Count == 0)
                 {
-                    _palAll.Add(new PalItem { Label = "No custom commands", Secondary = "define them in keymap.conf", Run = null });
+                    if (_commands.Count == 0)
+                    {
+                        _palAll.Add(new PalItem { Label = "No custom commands", Secondary = "define them in keymap.conf", Run = null });
+                        break;
+                    }
+                    foreach (var c in _commands)
+                    {
+                        var cc = c;
+                        string sec = cc.Mode == "send" ? cc.Text : $"[{cc.Mode}]  {cc.Text}";
+                        _palAll.Add(new PalItem { Label = cc.Label, Secondary = sec, Search = $"{cc.Label} {cc.Text}", Run = () => RunCustomCommand(cc) });
+                    }
                     break;
                 }
-                foreach (var c in _commands)
-                {
-                    var cc = c;
-                    string sec = cc.Mode == "send" ? cc.Text : $"[{cc.Mode}]  {cc.Text}";
-                    _palAll.Add(new PalItem { Label = cc.Label, Secondary = sec, Search = $"{cc.Label} {cc.Text}", Run = () => RunCustomCommand(cc) });
-                }
-                break;
-            }
             case PaletteKind.Themes:
-            {
-                foreach (var th in _allThemes)
                 {
-                    var tx = th;
-                    _palAll.Add(new PalItem { Label = tx.Name, Search = tx.Name, Data = tx, Run = () => CommitTheme(tx) });
+                    foreach (var th in _allThemes)
+                    {
+                        var tx = th;
+                        _palAll.Add(new PalItem { Label = tx.Name, Search = tx.Name, Data = tx, Run = () => CommitTheme(tx) });
+                    }
+                    break;
                 }
-                break;
-            }
             case PaletteKind.Omp:
-            {
-                var themes = Agwinterm.Pty.OmpThemes.List();
-                if (themes.Count == 0)
                 {
-                    // The Store install ships no themes dir — offer the official pack (GitHub release).
-                    _palAll.Add(new PalItem { Label = "Download themes pack…",
-                        Secondary = "no themes on disk — fetch the official oh-my-posh themes from GitHub",
-                        Search = "download themes pack", Run = DownloadOmpThemes });
+                    var themes = Agwinterm.Pty.OmpThemes.List();
+                    if (themes.Count == 0)
+                    {
+                        // The Store install ships no themes dir — offer the official pack (GitHub release).
+                        _palAll.Add(new PalItem
+                        {
+                            Label = "Download themes pack…",
+                            Secondary = "no themes on disk — fetch the official oh-my-posh themes from GitHub",
+                            Search = "download themes pack",
+                            Run = DownloadOmpThemes
+                        });
+                        break;
+                    }
+                    foreach (var (nm, pth) in themes)
+                    {
+                        var p = pth; // applies live + persists so new sessions keep it
+                        _palAll.Add(new PalItem { Label = nm, Search = nm, Data = p, Run = () => ApplyOmp(p, persist: true) });
+                    }
+                    // Our downloaded pack in use: offer a refresh (new omp releases add/update themes).
+                    if (Directory.Exists(Path.Combine(AppDir, "omp-themes")))
+                        _palAll.Add(new PalItem
+                        {
+                            Label = "Update themes pack…",
+                            Secondary = "re-download the official themes from the latest oh-my-posh release",
+                            Search = "update refresh download themes pack",
+                            Run = DownloadOmpThemes
+                        });
                     break;
                 }
-                foreach (var (nm, pth) in themes)
-                {
-                    var p = pth; // applies live + persists so new sessions keep it
-                    _palAll.Add(new PalItem { Label = nm, Search = nm, Data = p, Run = () => ApplyOmp(p, persist: true) });
-                }
-                // Our downloaded pack in use: offer a refresh (new omp releases add/update themes).
-                if (Directory.Exists(Path.Combine(AppDir, "omp-themes")))
-                    _palAll.Add(new PalItem { Label = "Update themes pack…",
-                        Secondary = "re-download the official themes from the latest oh-my-posh release",
-                        Search = "update refresh download themes pack", Run = DownloadOmpThemes });
-                break;
-            }
             case PaletteKind.Starship:
-            {
-                var presets = Agwinterm.Pty.StarshipPresets.List();
-                if (presets.Count == 0)
                 {
-                    _palAll.Add(new PalItem { Label = "No starship presets found",
-                        Secondary = "install starship (https://starship.rs) so `starship preset --list` works", Run = null });
+                    var presets = Agwinterm.Pty.StarshipPresets.List();
+                    if (presets.Count == 0)
+                    {
+                        _palAll.Add(new PalItem
+                        {
+                            Label = "No starship presets found",
+                            Secondary = "install starship (https://starship.rs) so `starship preset --list` works",
+                            Run = null
+                        });
+                        break;
+                    }
+                    _palAll.Add(new PalItem
+                    {
+                        Label = "default",
+                        Secondary = "starship's built-in config",
+                        Search = "default",
+                        Data = "",
+                        Run = () => ApplyStarship("", persist: true)
+                    });
+                    foreach (var name in presets)
+                    {
+                        var n = name; // applies live + persists so new sessions keep it
+                        _palAll.Add(new PalItem { Label = n, Search = n, Data = n, Run = () => ApplyStarship(n, persist: true) });
+                    }
                     break;
                 }
-                _palAll.Add(new PalItem { Label = "default", Secondary = "starship's built-in config",
-                    Search = "default", Data = "", Run = () => ApplyStarship("", persist: true) });
-                foreach (var name in presets)
-                {
-                    var n = name; // applies live + persists so new sessions keep it
-                    _palAll.Add(new PalItem { Label = n, Search = n, Data = n, Run = () => ApplyStarship(n, persist: true) });
-                }
-                break;
-            }
             case PaletteKind.PromptEngine:
-            {
-                // Detected engine -> selecting switches to it; undetected -> selecting installs it
-                // (winget in an overlay terminal), then re-opening the picker offers the switch.
-                void E(string id, string label, bool detected, string readySecondary) => _palAll.Add(new PalItem
                 {
-                    Label = label + (_config.PromptEngine == id ? "  (current)" : detected ? "" : "  — install…"),
-                    Secondary = detected ? readySecondary : "not detected — select to install via winget (overlay shows progress)",
-                    Search = label + " install",
-                    Run = detected ? () => ApplyPromptEngine(id) : () => InstallPromptEngine(id),
-                });
-                E("omp", "oh-my-posh", OmpAvailable(), "theme picker + injection into new sessions");
-                E("starship", "Starship", Agwinterm.Pty.StarshipPresets.Available(), "preset picker + injection into new sessions");
-                _palAll.Add(new PalItem
-                {
-                    Label = "Vanilla" + (_config.PromptEngine == "vanilla" ? "  (current)" : ""),
-                    Secondary = "plain \"PS C:\\>\" prompt — overrides profile prompt customizations",
-                    Search = "vanilla plain default",
-                    Run = () => ApplyPromptEngine("vanilla"),
-                });
-                _palAll.Add(new PalItem
-                {
-                    Label = "Profile" + (_config.PromptEngine == "profile" ? "  (current)" : ""),
-                    Secondary = "no injection at all — whatever your $PROFILE sets up rules",
-                    Search = "profile none leave alone",
-                    Run = () => ApplyPromptEngine("profile"),
-                });
-                _palAll.Add(new PalItem
-                {
-                    Label = "Install Nerd Font…",
-                    Secondary = "omp/starship themes need a Nerd Font for their glyphs",
-                    Search = "install nerd font",
-                    Run = () => TogglePalette(PaletteKind.Fonts),
-                });
-                break;
-            }
+                    // Detected engine -> selecting switches to it; undetected -> selecting installs it
+                    // (winget in an overlay terminal), then re-opening the picker offers the switch.
+                    void E(string id, string label, bool detected, string readySecondary) => _palAll.Add(new PalItem
+                    {
+                        Label = label + (_config.PromptEngine == id ? "  (current)" : detected ? "" : "  — install…"),
+                        Secondary = detected ? readySecondary : "not detected — select to install via winget (overlay shows progress)",
+                        Search = label + " install",
+                        Run = detected ? () => ApplyPromptEngine(id) : () => InstallPromptEngine(id),
+                    });
+                    E("omp", "oh-my-posh", OmpAvailable(), "theme picker + injection into new sessions");
+                    E("starship", "Starship", Agwinterm.Pty.StarshipPresets.Available(), "preset picker + injection into new sessions");
+                    _palAll.Add(new PalItem
+                    {
+                        Label = "Vanilla" + (_config.PromptEngine == "vanilla" ? "  (current)" : ""),
+                        Secondary = "plain \"PS C:\\>\" prompt — overrides profile prompt customizations",
+                        Search = "vanilla plain default",
+                        Run = () => ApplyPromptEngine("vanilla"),
+                    });
+                    _palAll.Add(new PalItem
+                    {
+                        Label = "Profile" + (_config.PromptEngine == "profile" ? "  (current)" : ""),
+                        Secondary = "no injection at all — whatever your $PROFILE sets up rules",
+                        Search = "profile none leave alone",
+                        Run = () => ApplyPromptEngine("profile"),
+                    });
+                    _palAll.Add(new PalItem
+                    {
+                        Label = "Install Nerd Font…",
+                        Secondary = "omp/starship themes need a Nerd Font for their glyphs",
+                        Search = "install nerd font",
+                        Run = () => TogglePalette(PaletteKind.Fonts),
+                    });
+                    break;
+                }
             case PaletteKind.Fonts:
-            {
-                // Popular Nerd Fonts, installed via oh-my-posh's font tool (works for starship too —
-                // fonts are engine-agnostic). Selecting installs in an overlay AND points font-family
-                // at the new family so the terminal uses it once installed.
-                foreach (var (slug, family) in new[]
                 {
+                    // Popular Nerd Fonts, installed via oh-my-posh's font tool (works for starship too —
+                    // fonts are engine-agnostic). Selecting installs in an overlay AND points font-family
+                    // at the new family so the terminal uses it once installed.
+                    foreach (var (slug, family) in new[]
+                    {
                     ("meslo", "MesloLGM Nerd Font"),
                     ("jetbrainsmono", "JetBrainsMono Nerd Font"),
                     ("cascadiacode", "CaskaydiaCove Nerd Font"),
                     ("firacode", "FiraCode Nerd Font"),
                     ("hack", "Hack Nerd Font"),
                 })
-                {
-                    var (s, f) = (slug, family);
-                    bool current = string.Equals(_config.FontFamily, f, StringComparison.OrdinalIgnoreCase);
-                    _palAll.Add(new PalItem
                     {
-                        Label = f + (current ? "  (current font)" : ""),
-                        Secondary = $"oh-my-posh font install {s} + set font-family",
-                        Search = f + " " + s,
-                        Run = () => InstallNerdFont(s, f),
-                    });
+                        var (s, f) = (slug, family);
+                        bool current = string.Equals(_config.FontFamily, f, StringComparison.OrdinalIgnoreCase);
+                        _palAll.Add(new PalItem
+                        {
+                            Label = f + (current ? "  (current font)" : ""),
+                            Secondary = $"oh-my-posh font install {s} + set font-family",
+                            Search = f + " " + s,
+                            Run = () => InstallNerdFont(s, f),
+                        });
+                    }
+                    break;
                 }
-                break;
-            }
             case PaletteKind.NewSession:
-            {
-                foreach (var p in _profileCfg.Profiles)
                 {
-                    var name = p.Name;
-                    string cmd = p.Command + (p.Args is { Length: > 0 } aa ? " " + string.Join(" ", aa) : "");
-                    bool def = name.Equals(_profileCfg.Default, StringComparison.OrdinalIgnoreCase);
+                    foreach (var p in _profileCfg.Profiles)
+                    {
+                        var name = p.Name;
+                        string cmd = p.Command + (p.Args is { Length: > 0 } aa ? " " + string.Join(" ", aa) : "");
+                        bool def = name.Equals(_profileCfg.Default, StringComparison.OrdinalIgnoreCase);
+                        _palAll.Add(new PalItem
+                        {
+                            Label = name + (def ? "  (default)" : ""),
+                            Secondary = cmd,
+                            Search = name,
+                            Run = () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true, profileName: name),
+                        });
+                    }
                     _palAll.Add(new PalItem
                     {
-                        Label = name + (def ? "  (default)" : ""),
-                        Secondary = cmd,
-                        Search = name,
-                        Run = () => CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true, profileName: name),
+                        Label = "Open Directory…",
+                        Secondary = "pick a folder for a new session",
+                        Search = "open directory folder",
+                        Run = () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ActiveWorkspace(), true); },
                     });
+                    break;
                 }
-                _palAll.Add(new PalItem
-                {
-                    Label = "Open Directory…",
-                    Secondary = "pick a folder for a new session",
-                    Search = "open directory folder",
-                    Run = () => { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ActiveWorkspace(), true); },
-                });
-                break;
-            }
             case PaletteKind.Attention:
-            {
-                var att = AllSessions().Where(s => AggStatus(s) != AgentStatus.Idle)
-                    .OrderBy(s => AggStatus(s) == AgentStatus.Blocked ? 0 : AggStatus(s) == AgentStatus.Active ? 1 : 2)
-                    .ToList();
-                if (att.Count == 0) { _palAll.Add(new PalItem { Label = "No sessions need attention", Run = null }); break; }
-                foreach (var s in att)
                 {
-                    var sx = s;
-                    _palAll.Add(new PalItem
+                    var att = AllSessions().Where(s => AggStatus(s) != AgentStatus.Idle)
+                        .OrderBy(s => AggStatus(s) == AgentStatus.Blocked ? 0 : AggStatus(s) == AgentStatus.Active ? 1 : 2)
+                        .ToList();
+                    if (att.Count == 0) { _palAll.Add(new PalItem { Label = "No sessions need attention", Run = null }); break; }
+                    foreach (var s in att)
                     {
-                        Label = sx.Name,
-                        Secondary = $"{sx.Ws.Name}  ·  {AggStatus(sx).ToString().ToLowerInvariant()}",
-                        Search = $"{sx.Name} {sx.Ws.Name}",
-                        Dot = AggStatus(sx),
-                        Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
-                    });
+                        var sx = s;
+                        _palAll.Add(new PalItem
+                        {
+                            Label = sx.Name,
+                            Secondary = $"{sx.Ws.Name}  ·  {AggStatus(sx).ToString().ToLowerInvariant()}",
+                            Search = $"{sx.Name} {sx.Ws.Name}",
+                            Dot = AggStatus(sx),
+                            Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
+                        });
+                    }
+                    break;
                 }
-                break;
-            }
         }
     }
 

@@ -135,16 +135,16 @@ internal partial class Program
             case VK_ESCAPE: CloseMenuWindow(); return true;
             case VK_UP:
             case VK_DOWN:
-            {
-                int dir = vk == VK_DOWN ? 1 : -1, n = _menuItems.Count, i = _menuSel;
-                for (int step = 0; step < n; step++)
                 {
-                    i = ((i + dir) % n + n) % n;
-                    if (_menuItems[i].Run is not null) { _menuSel = i; break; }
+                    int dir = vk == VK_DOWN ? 1 : -1, n = _menuItems.Count, i = _menuSel;
+                    for (int step = 0; step < n; step++)
+                    {
+                        i = ((i + dir) % n + n) % n;
+                        if (_menuItems[i].Run is not null) { _menuSel = i; break; }
+                    }
+                    if (_menuHwnd != IntPtr.Zero) InvalidateRect(_menuHwnd, IntPtr.Zero, false);
+                    return true;
                 }
-                if (_menuHwnd != IntPtr.Zero) InvalidateRect(_menuHwnd, IntPtr.Zero, false);
-                return true;
-            }
             case VK_RETURN:
                 if (_menuSel >= 0 && _menuSel < _menuItems.Count && _menuItems[_menuSel].Run is { } run)
                 { CloseMenuWindow(); run(); }
@@ -194,32 +194,32 @@ internal partial class Program
         {
             case WM_MOUSEACTIVATE: return (IntPtr)MA_NOACTIVATE;   // never steal focus from the main window
             case WM_PAINT:
-            {
-                BeginPaint(hwnd, out PAINTSTRUCT ps);
-                try { self.RenderMenu(); } catch { /* rendering is best-effort; the menu closes on any click */ }
-                EndPaint(hwnd, ref ps);
-                return IntPtr.Zero;
-            }
+                {
+                    BeginPaint(hwnd, out PAINTSTRUCT ps);
+                    try { self.RenderMenu(); } catch { /* rendering is best-effort; the menu closes on any click */ }
+                    EndPaint(hwnd, ref ps);
+                    return IntPtr.Zero;
+                }
             case WM_MOUSEMOVE:
-            {
-                int i = self.MenuIndexAt(self.DipX(lParam), self.DipY(lParam));
-                if (i != self._menuSel) { self._menuSel = i; InvalidateRect(hwnd, IntPtr.Zero, false); }
-                return IntPtr.Zero;
-            }
+                {
+                    int i = self.MenuIndexAt(self.DipX(lParam), self.DipY(lParam));
+                    if (i != self._menuSel) { self._menuSel = i; InvalidateRect(hwnd, IntPtr.Zero, false); }
+                    return IntPtr.Zero;
+                }
             case WM_LBUTTONDOWN:
             case WM_RBUTTONDOWN:
-            {
-                // Outside the menu (coords can be negative under capture): dismiss and swallow.
-                int mx = self.DipX(lParam), my = self.DipY(lParam);   // vs DIP menu geometry
-                if (mx < 0 || my < 0 || mx >= self._menuW || my >= self._menuH) self.CloseMenuWindow();
-                return IntPtr.Zero;
-            }
+                {
+                    // Outside the menu (coords can be negative under capture): dismiss and swallow.
+                    int mx = self.DipX(lParam), my = self.DipY(lParam);   // vs DIP menu geometry
+                    if (mx < 0 || my < 0 || mx >= self._menuW || my >= self._menuH) self.CloseMenuWindow();
+                    return IntPtr.Zero;
+                }
             case WM_LBUTTONUP:
-            {
-                int i = self.MenuIndexAt(self.DipX(lParam), self.DipY(lParam));
-                if (i >= 0 && self._menuItems[i].Run is { } run) { self.CloseMenuWindow(); run(); }
-                return IntPtr.Zero;
-            }
+                {
+                    int i = self.MenuIndexAt(self.DipX(lParam), self.DipY(lParam));
+                    if (i >= 0 && self._menuItems[i].Run is { } run) { self.CloseMenuWindow(); run(); }
+                    return IntPtr.Zero;
+                }
             case WM_CAPTURECHANGED:
                 if (!self._menuClosing) self.CloseMenuWindow();   // capture stolen (alt-tab, other app) — dismiss
                 return IntPtr.Zero;

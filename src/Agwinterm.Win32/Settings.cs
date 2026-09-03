@@ -58,7 +58,6 @@ internal partial class Program
     private readonly List<int> _ddFiltered = new();
     private string _ddQuery = "";
     private int _ddSel;
-    private float _ddScroll;
     private Rect _ddPanel;
     private readonly List<(float y0, float y1, int idx)> _ddRows = new();
 
@@ -123,7 +122,8 @@ internal partial class Program
         Sec(0, "Default Terminal");
         _setRows.Add(new SetRow
         {
-            Kind = SW.Info, Tab = 0,
+            Kind = SW.Info,
+            Tab = 0,
             Label = DefTerm.IsRegisteredDefault()
                 ? "Console apps currently open in agwinterm."
                 : "Console apps currently open in the Windows default (conhost / Windows Terminal).",
@@ -167,7 +167,10 @@ internal partial class Program
         Sec(3, "Sound");
         _setRows.Add(new SetRow
         {
-            Kind = SW.Sound, Tab = 3, Key = "blocked-sound", Label = "Blocked sound",
+            Kind = SW.Sound,
+            Tab = 3,
+            Key = "blocked-sound",
+            Label = "Blocked sound",
             Opts = new[] { "None", "beep", "asterisk", "exclamation", "hand", "question", "Custom .wav…" },
             Vals = new[] { "None", "beep", "asterisk", "exclamation", "hand", "question", "__custom__" },
         });
@@ -349,97 +352,97 @@ internal partial class Program
         switch (r.Kind)
         {
             case SW.Toggle:
-            {
-                bool on = IsOn(ConfigValue(r.Key));
-                float tw = 40f, th = 22f, tx = rightX - tw, ty = y + (rowH - th) / 2f;
-                brush.Color = on ? ChromeAccent : Mix(PalBg, ChromeText, 0.25f);
-                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(tx, ty, tw, th), RadiusX = th / 2f, RadiusY = th / 2f }, brush);
-                brush.Color = new Color4(1f, 1f, 1f, 1f);
-                float kr = th / 2f - 3f, kcx = on ? tx + tw - kr - 3f : tx + kr + 3f;
-                rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(kcx, ty + th / 2f), kr, kr), brush);
-                r.Hx0 = tx; r.Hy0 = ty; r.Hx1 = tx + tw; r.Hy1 = ty + th;
-                break;
-            }
+                {
+                    bool on = IsOn(ConfigValue(r.Key));
+                    float tw = 40f, th = 22f, tx = rightX - tw, ty = y + (rowH - th) / 2f;
+                    brush.Color = on ? ChromeAccent : Mix(PalBg, ChromeText, 0.25f);
+                    rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(tx, ty, tw, th), RadiusX = th / 2f, RadiusY = th / 2f }, brush);
+                    brush.Color = new Color4(1f, 1f, 1f, 1f);
+                    float kr = th / 2f - 3f, kcx = on ? tx + tw - kr - 3f : tx + kr + 3f;
+                    rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(kcx, ty + th / 2f), kr, kr), brush);
+                    r.Hx0 = tx; r.Hy0 = ty; r.Hx1 = tx + tw; r.Hy1 = ty + th;
+                    break;
+                }
             case SW.Slider:
-            {
-                float sw = 180f, sx = rightX - sw, scy = y + rowH / 2f;
-                int.TryParse(ConfigValue(r.Key), out int v); v = Math.Clamp(v, r.Min, r.Max);
-                float trackX0 = sx, trackX1 = sx + sw - 44f;
-                float t = (float)(v - r.Min) / Math.Max(1, r.Max - r.Min);
-                float thumbX = trackX0 + (trackX1 - trackX0) * t;
-                brush.Color = Mix(PalBg, ChromeText, 0.22f);
-                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(trackX0, scy - 2f, trackX1 - trackX0, 4f), RadiusX = 2f, RadiusY = 2f }, brush);
-                brush.Color = ChromeAccent;
-                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(trackX0, scy - 2f, MathF.Max(0f, thumbX - trackX0), 4f), RadiusX = 2f, RadiusY = 2f }, brush);
-                rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(thumbX, scy), 7f, 7f), brush);
-                brush.Color = ChromeDim;
-                rt.DrawText(SliderLabel(r.Key, v), _uiSmall, new Rect(trackX1 + 8f, y, 40f, rowH), brush);
-                r.Hx0 = trackX0 - 6f; r.Hy0 = y; r.Hx1 = trackX1 + 6f; r.Hy1 = y + rowH;
-                break;
-            }
+                {
+                    float sw = 180f, sx = rightX - sw, scy = y + rowH / 2f;
+                    int.TryParse(ConfigValue(r.Key), out int v); v = Math.Clamp(v, r.Min, r.Max);
+                    float trackX0 = sx, trackX1 = sx + sw - 44f;
+                    float t = (float)(v - r.Min) / Math.Max(1, r.Max - r.Min);
+                    float thumbX = trackX0 + (trackX1 - trackX0) * t;
+                    brush.Color = Mix(PalBg, ChromeText, 0.22f);
+                    rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(trackX0, scy - 2f, trackX1 - trackX0, 4f), RadiusX = 2f, RadiusY = 2f }, brush);
+                    brush.Color = ChromeAccent;
+                    rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(trackX0, scy - 2f, MathF.Max(0f, thumbX - trackX0), 4f), RadiusX = 2f, RadiusY = 2f }, brush);
+                    rt.FillEllipse(new Ellipse(new System.Numerics.Vector2(thumbX, scy), 7f, 7f), brush);
+                    brush.Color = ChromeDim;
+                    rt.DrawText(SliderLabel(r.Key, v), _uiSmall, new Rect(trackX1 + 8f, y, 40f, rowH), brush);
+                    r.Hx0 = trackX0 - 6f; r.Hy0 = y; r.Hx1 = trackX1 + 6f; r.Hy1 = y + rowH;
+                    break;
+                }
             case SW.Dropdown:
             case SW.Sound:
-            {
-                float dw = 200f, dh = 26f, dx = rightX - dw, dy = y + (rowH - dh) / 2f;
-                brush.Color = Mix(PalBg, ChromeText, 0.10f);
-                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(dx, dy, dw, dh), RadiusX = 6f, RadiusY = 6f }, brush);
-                brush.Color = PalBorder;
-                rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(dx, dy, dw, dh), RadiusX = 6f, RadiusY = 6f }, brush, 1f);
-                brush.Color = ChromeText;
-                rt.DrawText(CurrentDropdownText(r), _uiSmall, new Rect(dx + 8f, dy, dw - 24f, dh), brush);
-                brush.Color = ChromeDim;
-                rt.DrawText(((char)0xE70D).ToString(), _iconSmall, new Rect(dx + dw - 20f, dy, 18f, dh), brush);  // ChevronDown
-                r.Hx0 = dx; r.Hy0 = dy; r.Hx1 = dx + dw; r.Hy1 = dy + dh;
-                break;
-            }
+                {
+                    float dw = 200f, dh = 26f, dx = rightX - dw, dy = y + (rowH - dh) / 2f;
+                    brush.Color = Mix(PalBg, ChromeText, 0.10f);
+                    rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(dx, dy, dw, dh), RadiusX = 6f, RadiusY = 6f }, brush);
+                    brush.Color = PalBorder;
+                    rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(dx, dy, dw, dh), RadiusX = 6f, RadiusY = 6f }, brush, 1f);
+                    brush.Color = ChromeText;
+                    rt.DrawText(CurrentDropdownText(r), _uiSmall, new Rect(dx + 8f, dy, dw - 24f, dh), brush);
+                    brush.Color = ChromeDim;
+                    rt.DrawText(((char)0xE70D).ToString(), _iconSmall, new Rect(dx + dw - 20f, dy, 18f, dh), brush);  // ChevronDown
+                    r.Hx0 = dx; r.Hy0 = dy; r.Hx1 = dx + dw; r.Hy1 = dy + dh;
+                    break;
+                }
             case SW.Color:
-            {
-                float w = 54f, h = 22f, x = rightX - w, cy = y + (rowH - h) / 2f;
-                brush.Color = SwatchColor(ConfigValue(r.Key));
-                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, cy, w, h), RadiusX = 5f, RadiusY = 5f }, brush);
-                brush.Color = PalBorder;
-                rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, cy, w, h), RadiusX = 5f, RadiusY = 5f }, brush, 1f);
-                r.Hx0 = x; r.Hy0 = cy; r.Hx1 = x + w; r.Hy1 = cy + h;
-                break;
-            }
+                {
+                    float w = 54f, h = 22f, x = rightX - w, cy = y + (rowH - h) / 2f;
+                    brush.Color = SwatchColor(ConfigValue(r.Key));
+                    rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, cy, w, h), RadiusX = 5f, RadiusY = 5f }, brush);
+                    brush.Color = PalBorder;
+                    rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, cy, w, h), RadiusX = 5f, RadiusY = 5f }, brush, 1f);
+                    r.Hx0 = x; r.Hy0 = cy; r.Hx1 = x + w; r.Hy1 = cy + h;
+                    break;
+                }
             case SW.Path:
-            {
-                float bw = 84f, bh = 26f, bx = rightX - bw, by = y + (rowH - bh) / 2f;
-                float fx = lblX, fw = bx - 10f - fx;
-                brush.Color = Mix(PalBg, ChromeText, 0.06f);
-                rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(fx, by, fw, bh), RadiusX = 5f, RadiusY = 5f }, brush);
-                brush.Color = ChromeDim;
-                string p = ConfigValue(r.Key); if (p.Length == 0) p = "(not set)";
-                rt.DrawText(p, _uiSmall, new Rect(fx + 8f, by, fw - 12f, bh), brush);
-                DrawPanelButton(rt, brush, bx, by, bw, bh, "Choose…");
-                r.Bx0 = bx; r.By0 = by; r.Bx1 = bx + bw; r.By1 = by + bh;
-                r.Hx0 = r.Hy0 = r.Hx1 = r.Hy1 = 0; // label handled by button
-                break;
-            }
+                {
+                    float bw = 84f, bh = 26f, bx = rightX - bw, by = y + (rowH - bh) / 2f;
+                    float fx = lblX, fw = bx - 10f - fx;
+                    brush.Color = Mix(PalBg, ChromeText, 0.06f);
+                    rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(fx, by, fw, bh), RadiusX = 5f, RadiusY = 5f }, brush);
+                    brush.Color = ChromeDim;
+                    string p = ConfigValue(r.Key); if (p.Length == 0) p = "(not set)";
+                    rt.DrawText(p, _uiSmall, new Rect(fx + 8f, by, fw - 12f, bh), brush);
+                    DrawPanelButton(rt, brush, bx, by, bw, bh, "Choose…");
+                    r.Bx0 = bx; r.By0 = by; r.Bx1 = bx + bw; r.By1 = by + bh;
+                    r.Hx0 = r.Hy0 = r.Hx1 = r.Hy1 = 0; // label handled by button
+                    break;
+                }
             case SW.Button:
-            {
-                float bw = MeasureText(r.Label, _uiSmall) + 32f, bh = 28f, bx = lblX, by = y + (rowH - bh) / 2f;
-                DrawPanelButton(rt, brush, bx, by, bw, bh, r.Label);
-                // buttons have no left label
-                r.Hx0 = bx; r.Hy0 = by; r.Hx1 = bx + bw; r.Hy1 = by + bh;
-                break;
-            }
+                {
+                    float bw = MeasureText(r.Label, _uiSmall) + 32f, bh = 28f, bx = lblX, by = y + (rowH - bh) / 2f;
+                    DrawPanelButton(rt, brush, bx, by, bw, bh, r.Label);
+                    // buttons have no left label
+                    r.Hx0 = bx; r.Hy0 = by; r.Hx1 = bx + bw; r.Hy1 = by + bh;
+                    break;
+                }
             case SW.Info:
-            {
-                brush.Color = ChromeDim;
-                rt.DrawText(r.Label, _uiSmall, new Rect(lblX, y, paneW - 2 * SetPad, rowH), brush);
-                r.Vis = false;
-                break;
-            }
+                {
+                    brush.Color = ChromeDim;
+                    rt.DrawText(r.Label, _uiSmall, new Rect(lblX, y, paneW - 2 * SetPad, rowH), brush);
+                    r.Vis = false;
+                    break;
+                }
             case SW.Diag:
-            {
-                var lines = _keymapDiag.Length == 0 ? new[] { "No issues." } : _keymapDiag;
-                float ly = y;
-                brush.Color = _keymapDiag.Length == 0 ? ChromeDim : new Color4(240 / 255f, 160 / 255f, 40 / 255f, 1f);
-                foreach (var line in lines) { rt.DrawText(line, _uiSmall, new Rect(lblX, ly, paneW - 2 * SetPad, 18f), brush); ly += 18f; }
-                r.Vis = false;
-                break;
-            }
+                {
+                    var lines = _keymapDiag.Length == 0 ? new[] { "No issues." } : _keymapDiag;
+                    float ly = y;
+                    brush.Color = _keymapDiag.Length == 0 ? ChromeDim : new Color4(240 / 255f, 160 / 255f, 40 / 255f, 1f);
+                    foreach (var line in lines) { rt.DrawText(line, _uiSmall, new Rect(lblX, ly, paneW - 2 * SetPad, 18f), brush); ly += 18f; }
+                    r.Vis = false;
+                    break;
+                }
         }
     }
 
@@ -482,7 +485,7 @@ internal partial class Program
 
     private void OpenDropdown(SetRow r)
     {
-        _ddRow = r; _ddQuery = ""; _ddSel = 0; _ddScroll = 0;
+        _ddRow = r; _ddQuery = ""; _ddSel = 0;
         FilterDropdown();
         // select the current value
         string cur = r.Kind == SW.Sound ? SoundDisplayName(ConfigValue(r.Key)) : ConfigValue(r.Key);
@@ -597,12 +600,12 @@ internal partial class Program
             switch (r.Kind)
             {
                 case SW.Toggle:
-                {
-                    bool on = !IsOn(ConfigValue(r.Key));
-                    ConfigSetInternal(r.Key, on ? "true" : "false");
-                    Uia.Announce($"{r.Label}, {(on ? "on" : "off")}");
-                    return;
-                }
+                    {
+                        bool on = !IsOn(ConfigValue(r.Key));
+                        ConfigSetInternal(r.Key, on ? "true" : "false");
+                        Uia.Announce($"{r.Label}, {(on ? "on" : "off")}");
+                        return;
+                    }
                 case SW.Slider: _setDragRow = r; SetCapture(_hwnd); SliderTo(r, mx); return;
                 case SW.Dropdown: case SW.Sound: OpenDropdown(r); return;
                 case SW.Color: PickColorKey(r.Key); return;
@@ -686,7 +689,8 @@ internal partial class Program
                 return true;
             case VK_PRIOR: CycleSetTab(-1); return true;   // PageUp → previous tab
             case VK_NEXT: CycleSetTab(1); return true;     // PageDown → next tab
-            case VK_RETURN: case VK_SPACE:
+            case VK_RETURN:
+            case VK_SPACE:
                 if (_setNav >= 0) ActivateHeader();        // Enter on a focused tab header switches to it
                 else ActivateSetFocus();
                 return true;
@@ -778,8 +782,14 @@ internal partial class Program
         };
         string kind = r.Kind switch
         {
-            SW.Toggle => "toggle", SW.Slider => "slider", SW.Dropdown or SW.Sound => "dropdown",
-            SW.Button => "button", SW.Color => "color", SW.Path => "folder", SW.Profile => "profile", _ => "",
+            SW.Toggle => "toggle",
+            SW.Slider => "slider",
+            SW.Dropdown or SW.Sound => "dropdown",
+            SW.Button => "button",
+            SW.Color => "color",
+            SW.Path => "folder",
+            SW.Profile => "profile",
+            _ => "",
         };
         Uia.Announce($"{r.Label}{(val.Length > 0 ? ", " + val : "")}, {kind}");
     }
@@ -861,9 +871,12 @@ internal partial class Program
             Marshal.WriteInt16(buf, 0, 0);
             var ofn = new OPENFILENAME
             {
-                lStructSize = Marshal.SizeOf<OPENFILENAME>(), hwndOwner = _hwnd,
+                lStructSize = Marshal.SizeOf<OPENFILENAME>(),
+                hwndOwner = _hwnd,
                 lpstrFilter = "WAV files\0*.wav\0All files\0*.*\0\0",
-                lpstrFile = buf, nMaxFile = 520, lpstrTitle = "Choose a .wav sound",
+                lpstrFile = buf,
+                nMaxFile = 520,
+                lpstrTitle = "Choose a .wav sound",
                 Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER,
             };
             return GetOpenFileNameW(ref ofn) ? Marshal.PtrToStringUni(buf) : null;

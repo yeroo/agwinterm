@@ -203,15 +203,15 @@ internal partial class Program
                 script = "oh-my-posh init pwsh --config '" + omp.Replace("'", "''") + "' | Invoke-Expression\n" + wrap;
                 break;
             case "starship":
-            {
-                string? cfgPath = Agwinterm.Pty.StarshipPresets.ConfigFor(_config.StarshipTheme, AppDir);
-                // UTF-8 both ways: console CP for native writes + the .NET encodings Windows
-                // PowerShell 5.1 uses to decode captured native output (starship's init captures).
-                script = "chcp 65001 >$null; $OutputEncoding=[Console]::InputEncoding=[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"
-                       + (cfgPath is not null ? "$env:STARSHIP_CONFIG='" + cfgPath.Replace("'", "''") + "'\n" : "")
-                       + "Invoke-Expression (&starship init powershell)\n" + wrap;
-                break;
-            }
+                {
+                    string? cfgPath = Agwinterm.Pty.StarshipPresets.ConfigFor(_config.StarshipTheme, AppDir);
+                    // UTF-8 both ways: console CP for native writes + the .NET encodings Windows
+                    // PowerShell 5.1 uses to decode captured native output (starship's init captures).
+                    script = "chcp 65001 >$null; $OutputEncoding=[Console]::InputEncoding=[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"
+                           + (cfgPath is not null ? "$env:STARSHIP_CONFIG='" + cfgPath.Replace("'", "''") + "'\n" : "")
+                           + "Invoke-Expression (&starship init powershell)\n" + wrap;
+                    break;
+                }
         }
         string enc = System.Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
         return new[] { "-NoLogo", "-NoExit", "-EncodedCommand", enc };
@@ -1129,10 +1129,25 @@ internal partial class Program
 
     private (Pane pane, Ses? ses, bool cover)? FindPaneById(string id)
     {
-        // Exact match first, then id prefix — the control API's documented target semantics
-        // (matches Resolve/PaneForTarget). Exact-only here made prefix-targeted verbs (e.g.
-        // `claude yolo --target <prefix>`) silently fall back to the ACTIVE pane instead.
+        // Pane-only commands (bind/restore) still accept exact ids and prefixes.
         return FindPaneBy(p => p.Id == id) ?? FindPaneBy(p => p.Id.StartsWith(id, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Resolve a pane-capable control target without letting a derived cover id shadow its owning
+    /// session id. The ordering is part of the control contract: exact pane, exact session, pane
+    /// prefix, then session prefix/name.
+    /// </summary>
+    private (Pane pane, Ses? ses, bool cover)? FindControlPane(string target)
+    {
+        if (FindPaneBy(p => p.Id == target) is { } exactPane) return exactPane;
+        if (FindSessionByExactId(target) is { } exactSession)
+            return (exactSession.ActivePane, exactSession, false);
+        if (FindPaneBy(p => p.Id.StartsWith(target, StringComparison.Ordinal)) is { } panePrefix)
+            return panePrefix;
+        if (FindSessionByPrefixOrName(target) is { } session)
+            return (session.ActivePane, session, false);
+        return null;
     }
 
     private (Pane pane, Ses? ses, bool cover)? FindPaneBy(Func<Pane, bool> match)
@@ -1612,7 +1627,7 @@ internal partial class Program
     }
 
     /// <summary>
-    /// Resolve a control-API target: id (exact), then id prefix, then NAME.
+    /// Resolve a session-only control target: id (exact), then id prefix, then NAME.
     /// </summary>
     /// <remarks>
     /// The name is what a person says and therefore what an agent is told — "run it in the build
@@ -1624,11 +1639,22 @@ internal partial class Program
     /// </remarks>
     private Ses? Find(string? target)
     {
+        if (string.IsNullOrEmpty(target) || target == "active") return _active;
+        return FindSessionByExactId(target) ?? FindSessionByPrefixOrName(target);
+    }
+
+    private Ses? FindSessionByExactId(string target)
+    {
+        lock (_workspaces)
+            return _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(x => x.Id == target);
+    }
+
+    private Ses? FindSessionByPrefixOrName(string target)
+    {
         lock (_workspaces)
         {
-            if (string.IsNullOrEmpty(target) || target == "active") return _active;
             var all = _workspaces.SelectMany(w => w.Sessions).ToList();
-            var byId = all.FirstOrDefault(x => x.Id == target) ?? all.FirstOrDefault(x => x.Id.StartsWith(target));
+            var byId = all.FirstOrDefault(x => x.Id.StartsWith(target, StringComparison.Ordinal));
             if (byId is not null) return byId;
             var named = all.Where(x => string.Equals(x.Name, target, StringComparison.OrdinalIgnoreCase)).ToList();
             return named.Count == 1 ? named[0] : null;

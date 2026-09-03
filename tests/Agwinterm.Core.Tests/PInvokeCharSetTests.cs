@@ -50,18 +50,18 @@ public class PInvokeCharSetTests
         int checkedCount = 0;
 
         foreach (var t in types)
-        foreach (var m in t.GetMethods(All))
-        {
-            if (!m.Attributes.HasFlag(MethodAttributes.PinvokeImpl)) continue;
-            var di = m.GetCustomAttribute<DllImportAttribute>();
-            if (di is null) continue;   // metadata-only import; nothing to assert
-            checkedCount++;
+            foreach (var m in t.GetMethods(All))
+            {
+                if (!m.Attributes.HasFlag(MethodAttributes.PinvokeImpl)) continue;
+                var di = m.GetCustomAttribute<DllImportAttribute>();
+                if (di is null) continue;   // metadata-only import; nothing to assert
+                checkedCount++;
 
-            var textParams = m.GetParameters().Where(p => IsText(p.ParameterType)).ToArray();
-            if (textParams.Length > 0 && di.CharSet != CharSet.Unicode)
-                offenders.Add($"{t.Name}.{m.Name} (CharSet={di.CharSet}, "
-                            + $"text params: {string.Join(", ", textParams.Select(p => p.Name))})");
-        }
+                var textParams = m.GetParameters().Where(p => IsText(p.ParameterType)).ToArray();
+                if (textParams.Length > 0 && di.CharSet != CharSet.Unicode)
+                    offenders.Add($"{t.Name}.{m.Name} (CharSet={di.CharSet}, "
+                                + $"text params: {string.Join(", ", textParams.Select(p => p.Name))})");
+            }
 
         Assert.True(checkedCount > 50, $"expected the UI's P/Invoke surface, found only {checkedCount}");
         Assert.True(offenders.Count == 0,

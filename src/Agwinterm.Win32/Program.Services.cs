@@ -1112,9 +1112,17 @@ internal partial class Program
 
     private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public string? RestoreCommand { get; set; } public List<string>? Buffer { get; set; } public string? BufferBlob { get; set; } }
     // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
-    private sealed class SessionState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; } public string? Profile { get; set; } public int Active { get; set; } public bool Flagged { get; set; } public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
+    private sealed class SessionState
+    {
+        public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; }
+        public string? Profile { get; set; }
+        public int Active { get; set; }
+        public bool Flagged { get; set; }
+        public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
         // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
-        public string? BgFile { get; set; } public int BgOpacity { get; set; } = 15; public string BgMode { get; set; } = "fit"; }
+        public string? BgFile { get; set; }
+        public int BgOpacity { get; set; } = 15; public string BgMode { get; set; } = "fit";
+    }
     private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
     private sealed class AppState
     {
@@ -1345,8 +1353,18 @@ internal partial class Program
                 var wss = new WorkspaceState { Id = id, Name = name, Expanded = expanded };
                 foreach (var s in sessions)
                 {
-                    var ss = new SessionState { Id = s.Id, Name = s.Name, CustomName = s.CustomName, Profile = s.ProfileName, Active = s.Active, Flagged = s.Flagged,
-                        BgFile = s.BgPath is null ? null : Path.GetFileName(s.BgPath), BgOpacity = s.BgOpacity, BgMode = s.BgMode };
+                    var ss = new SessionState
+                    {
+                        Id = s.Id,
+                        Name = s.Name,
+                        CustomName = s.CustomName,
+                        Profile = s.ProfileName,
+                        Active = s.Active,
+                        Flagged = s.Flagged,
+                        BgFile = s.BgPath is null ? null : Path.GetFileName(s.BgPath),
+                        BgOpacity = s.BgOpacity,
+                        BgMode = s.BgMode
+                    };
                     List<Pane> panes;
                     lock (_workspaces) panes = s.Panes.ToList();
                     foreach (var p in panes)

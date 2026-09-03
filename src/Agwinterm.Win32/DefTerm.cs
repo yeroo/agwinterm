@@ -143,7 +143,8 @@ internal static partial class DefTerm
     [LibraryImport("ole32.dll")] private static partial int CoRegisterClassObject(in Guid clsid, nint unk, int ctx, int flags, out uint cookie);
     [LibraryImport("ole32.dll")] private static partial int CoRevokeClassObject(uint cookie);
     [LibraryImport("kernel32.dll", SetLastError = true)] internal static partial int GetProcessId(nint process);
-    [LibraryImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool CreatePipe(out nint read, out nint write, nint sa, int size);
 }
 

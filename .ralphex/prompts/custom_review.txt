@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Ralphex 1.6.1 launches its custom-review executable with this rendered .txt
+# file as the only argument. Git Bash can execute the file regardless of its
+# extension; the quoted heredoc keeps every substituted value inert.
+exec "$(git rev-parse --show-toplevel)/tools/ralphex-revmux.sh" "$0"
+exit 127
+
+: <<'RALPHEX_REVIEW_CONTEXT'
+# custom review prompt
+# available variables:
+#   {{DIFF_INSTRUCTION}} - git diff command appropriate for current iteration
+#   {{GOAL}} - human-readable goal description
+#   {{PLAN_FILE}} - path to the plan file being executed
+#   {{PROGRESS_FILE}} - path to progress log with previous review iterations
+#   {{DEFAULT_BRANCH}} - default branch name
+# Previous-review content is intentionally omitted; Revmux owns round history.
+
+You are reviewing code changes for: {{GOAL}}
+
+## Get the Diff
+
+Run this command to see the changes:
+{{DIFF_INSTRUCTION}}
+
+## Plan
+
+Read {{PLAN_FILE}} for the intended behavior and success criteria.
+
+## Important
+
+- Review only the named diff and plan.
+- Report verified defects, not style preferences.
+- Revmux owns the finder output schema and prior-round context.
+RALPHEX_REVIEW_CONTEXT

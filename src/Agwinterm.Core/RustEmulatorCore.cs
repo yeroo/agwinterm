@@ -16,14 +16,14 @@ namespace Agwinterm.Core;
 /// </summary>
 public sealed unsafe class RustEmulatorCore : IDisposable
 {
-    public const uint RequiredAbi = 16;
+    public const uint RequiredAbi = 18;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Info
     {
         public uint Cols, Rows, CursorRow, CursorCol, CursorVisible, IsAltScreen, HistoryCount;
         public long ScrollGeneration;
-        public uint MouseClick, MouseDrag, MouseMotion, MouseSgr, BracketedPaste;
+        public uint MouseClick, MouseDrag, MouseMotion, MouseSgr, MouseSgrPixels, BracketedPaste;
         public int KeyboardFlags;
         public uint ScrollTop, ScrollBottom, MarkCount, FocusReporting, SynchronizedOutput, Win32InputMode, DynamicBg;
         public int CursorShape;
@@ -227,6 +227,7 @@ public sealed unsafe class RustEmulatorCore : IDisposable
     public struct NativeImageMeta
     {
         public int Id, Format, Width, Height;
+        public ulong Revision;
         public uint DataLen;
     }
 
@@ -283,6 +284,9 @@ public sealed unsafe class RustEmulatorCore : IDisposable
     {
         fixed (byte* p = data.Length == 0 ? new byte[1] : data) _setImageData(_handle, id, format, width, height, p, (uint)data.Length);
     }
+    /// <summary>Register an image for native placement bookkeeping without retaining its pixels.</summary>
+    public void SetImageMetadata(int id, int format, int width, int height)
+        => _setImageData(_handle, id, format, width, height, null, 0);
     public void PlaceImage(int id, int row, int col, int cols, int rows, int sx, int sy, int sw, int sh)
         => _placeImage(_handle, id, row, col, cols, rows, sx, sy, sw, sh);
     public bool PlaceSixel(byte[] data)

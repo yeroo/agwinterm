@@ -181,25 +181,25 @@ internal partial class UiaTextRange : ITextRangeProvider
                 if (_end == _start && _start > 0) _start--;
                 break;
             case TextUnit.Word:
-            {
-                var (ln, col) = s.LineColOf(_start);
-                string text = s.Lines[ln];
-                int ws = col, we = col;
-                while (ws > 0 && !char.IsWhiteSpace(text[ws - 1])) ws--;
-                while (we < text.Length && !char.IsWhiteSpace(text[we])) we++;
-                _start = s.LineStart[ln] + ws; _end = s.LineStart[ln] + we;
-                break;
-            }
+                {
+                    var (ln, col) = s.LineColOf(_start);
+                    string text = s.Lines[ln];
+                    int ws = col, we = col;
+                    while (ws > 0 && !char.IsWhiteSpace(text[ws - 1])) ws--;
+                    while (we < text.Length && !char.IsWhiteSpace(text[we])) we++;
+                    _start = s.LineStart[ln] + ws; _end = s.LineStart[ln] + we;
+                    break;
+                }
             case TextUnit.Document:
                 _start = 0; _end = s.TotalLength;
                 break;
             default: // Line / Paragraph / Page → the whole line
-            {
-                var (ln, _) = s.LineColOf(_start);
-                _start = s.LineStart[ln];
-                _end = s.LineStart[ln] + s.Lines[ln].Length;
-                break;
-            }
+                {
+                    var (ln, _) = s.LineColOf(_start);
+                    _start = s.LineStart[ln];
+                    _end = s.LineStart[ln] + s.Lines[ln].Length;
+                    break;
+                }
         }
     }
 

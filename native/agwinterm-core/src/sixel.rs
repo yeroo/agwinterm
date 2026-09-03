@@ -1,11 +1,7 @@
 //! Faithful port of Agwinterm.Core/Sixel.cs — DCS sixel payload → RGBA bitmap.
 //!
-//! Parity model for malformed input: the C# decoder wraps its parse loop in a
-//! forgiving catch — the first out-of-canvas write (after the 16384px clamp)
-//! throws and aborts the loop, returning whatever decoded so far. Rust cannot
-//! catch (panic=abort across FFI), so the same rule is explicit: the first
-//! out-of-canvas write or oversized request stops parsing and returns the
-//! partial result. Observable output is identical.
+//! Malformed drawing commands remain forgiving, but resource-limit violations
+//! reject the complete DCS in both cores instead of returning a partial image.
 
 pub struct Decoded {
     pub width: usize,
@@ -13,7 +9,10 @@ pub struct Decoded {
     pub rgba: Vec<u8>,
 }
 
-const MAX_DIM: usize = 16384; // matches the C# clamp
+const MAX_DIM: usize = 16_384;
+const MAX_CANVAS_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CANVAS_PIXELS: usize = MAX_CANVAS_BYTES / 4;
+const MAX_DECODE_WORK: usize = MAX_CANVAS_PIXELS;
 
 pub fn decode(dcs: &[u8]) -> Option<Decoded> {
     // The DCS payload is "P1;P2;P3 q <sixel-data>". Skip params up to and including 'q'.
@@ -28,8 +27,8 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
 
     // The VT-241 default 16-color palette; apps usually redefine what they use.
     const DEFAULTS: [u32; 16] = [
-        0x000000, 0x3333CC, 0xCC2121, 0x33CC33, 0xCC33CC, 0x33CCCC, 0xCCCC33, 0x878787,
-        0x424242, 0x545499, 0x994242, 0x549954, 0x995499, 0x549999, 0x999954, 0xCCCCCC,
+        0x000000, 0x3333CC, 0xCC2121, 0x33CC33, 0xCC33CC, 0x33CCCC, 0xCCCC33, 0x878787, 0x424242,
+        0x545499, 0x994242, 0x549954, 0x995499, 0x549999, 0x999954, 0xCCCCCC,
     ];
     let mut palette = [(0u8, 0u8, 0u8); 256];
     for (p, slot) in palette.iter_mut().enumerate() {
@@ -43,14 +42,19 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
     let (mut width, mut height) = (0usize, 0usize);
     let (mut cur_color, mut x, mut y) = (0usize, 0usize, 0usize);
 
-    // Grow-as-needed canvas (clamped). false = "would exceed even the clamp at this
-    // position" — the caller stops parsing, like the C# catch.
-    let mut ensure_size = |need_w: usize, need_h: usize,
-                           rgba: &mut Vec<u8>, canvas_w: &mut usize, canvas_h: &mut usize| {
-        let need_w = need_w.min(MAX_DIM);
-        let need_h = need_h.min(MAX_DIM);
+    // Grow as needed, but bound both dimensions and their product. A dimension-only
+    // limit permits a 16384x16384 (1 GiB) allocation from a tiny raster declaration.
+    let ensure_size = |need_w: usize,
+                       need_h: usize,
+                       rgba: &mut Vec<u8>,
+                       canvas_w: &mut usize,
+                       canvas_h: &mut usize|
+     -> bool {
+        if need_w == 0 || need_h == 0 || need_w > MAX_DIM || need_h > MAX_DIM {
+            return false;
+        }
         if need_w <= *canvas_w && need_h <= *canvas_h {
-            return;
+            return true;
         }
         let (mut nw, mut nh) = (*canvas_w, *canvas_h);
         while nw < need_w {
@@ -59,7 +63,17 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
         while nh < need_h {
             nh *= 2;
         }
-        let mut ng = vec![0u8; nw * nh * 4];
+        let Some(bytes) = nw.checked_mul(nh).and_then(|pixels| pixels.checked_mul(4)) else {
+            return false;
+        };
+        if bytes > MAX_CANVAS_BYTES {
+            return false;
+        }
+        let mut ng = Vec::new();
+        if ng.try_reserve_exact(bytes).is_err() {
+            return false;
+        }
+        ng.resize(bytes, 0);
         for row in 0..*canvas_h {
             ng[row * nw * 4..row * nw * 4 + *canvas_w * 4]
                 .copy_from_slice(&rgba[row * *canvas_w * 4..(row + 1) * *canvas_w * 4]);
@@ -67,6 +81,7 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
         *rgba = ng;
         *canvas_w = nw;
         *canvas_h = nh;
+        true
     };
 
     let read_int = |j: &mut usize| -> i64 {
@@ -86,31 +101,56 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
         }
     };
 
-    // put_sixel returns false when a write would land outside the (clamped) canvas —
-    // the C# equivalent throws there and the outer catch stops the parse.
+    let mut decode_work = 0usize;
+
+    // put_sixel returns false when the image or total decode-work budget would be exceeded.
     macro_rules! put_sixel {
         ($bits:expr, $repeat:expr) => {{
-            ensure_size(x + $repeat, y + 6, &mut rgba, &mut canvas_w, &mut canvas_h);
-            let (r, g, bl) = palette[cur_color];
+            let repeat: usize = $repeat;
             let mut ok = true;
-            'rep: for _ in 0..$repeat {
-                for row in 0..6usize {
-                    if ($bits & (1usize << row)) != 0 {
-                        let (px, py) = (x, y + row);
-                        if px >= canvas_w || py >= canvas_h {
-                            ok = false;
-                            break 'rep;
+            let work = repeat.checked_mul(6);
+            let need_w = x.checked_add(repeat);
+            let need_h = y.checked_add(6);
+            if let (Some(work), Some(need_w), Some(need_h)) = (work, need_w, need_h) {
+                if work > MAX_DECODE_WORK - decode_work || need_w > MAX_DIM || need_h > MAX_DIM {
+                    ok = false;
+                } else {
+                    decode_work += work;
+                    if $bits == 0 {
+                        // Zero-bit sixels only advance x; avoid a repeat-sized loop entirely.
+                        x = need_w;
+                    } else if !ensure_size(need_w, need_h, &mut rgba, &mut canvas_w, &mut canvas_h)
+                    {
+                        ok = false;
+                    } else {
+                        let (r, g, bl) = palette[cur_color];
+                        'rep: for _ in 0..repeat {
+                            for row in 0..6usize {
+                                if ($bits & (1usize << row)) != 0 {
+                                    let (px, py) = (x, y + row);
+                                    if px >= canvas_w || py >= canvas_h {
+                                        ok = false;
+                                        break 'rep;
+                                    }
+                                    let o = (py * canvas_w + px) * 4;
+                                    rgba[o] = r;
+                                    rgba[o + 1] = g;
+                                    rgba[o + 2] = bl;
+                                    rgba[o + 3] = 255;
+                                    if px + 1 > width {
+                                        width = px + 1;
+                                    }
+                                    if py + 1 > height {
+                                        height = py + 1;
+                                    }
+                                }
+                            }
+                            x += 1;
                         }
-                        let o = (py * canvas_w + px) * 4;
-                        rgba[o] = r;
-                        rgba[o + 1] = g;
-                        rgba[o + 2] = bl;
-                        rgba[o + 3] = 255;
-                        if px + 1 > width { width = px + 1; }
-                        if py + 1 > height { height = py + 1; }
                     }
                 }
-                x += 1;
+            } else {
+                ok = false;
             }
             ok
         }};
@@ -154,8 +194,17 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
             let ph = read_int(&mut i);
             skip(&mut i, b';');
             let pv = read_int(&mut i);
-            if ph > 0 && pv > 0 {
-                ensure_size(ph as usize, pv as usize, &mut rgba, &mut canvas_w, &mut canvas_h);
+            if ph > 0
+                && pv > 0
+                && !ensure_size(
+                    ph as usize,
+                    pv as usize,
+                    &mut rgba,
+                    &mut canvas_w,
+                    &mut canvas_h,
+                )
+            {
+                return None;
             }
         } else if b == b'!' {
             i += 1;
@@ -166,7 +215,7 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
                 let ok = put_sixel!(bits, repeat);
                 i += 1;
                 if !ok {
-                    break;
+                    return None;
                 }
             }
         } else if b == b'$' {
@@ -180,7 +229,7 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
             let ok = put_sixel!((b - 0x3F) as usize, 1);
             i += 1;
             if !ok {
-                break;
+                return None;
             }
         } else {
             i += 1;
@@ -190,23 +239,34 @@ pub fn decode(dcs: &[u8]) -> Option<Decoded> {
     if width == 0 || height == 0 {
         return None;
     }
-    let mut out = vec![0u8; width * height * 4];
+    let out_len = width.checked_mul(height)?.checked_mul(4)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(out_len).ok()?;
+    out.resize(out_len, 0);
     for row in 0..height {
         out[row * width * 4..(row + 1) * width * 4]
             .copy_from_slice(&rgba[row * canvas_w * 4..row * canvas_w * 4 + width * 4]);
     }
-    Some(Decoded { width, height, rgba: out })
+    Some(Decoded {
+        width,
+        height,
+        rgba: out,
+    })
 }
 
 fn hls_to_rgb(h: i32, l: i32, s: i32) -> (u8, u8, u8) {
     let ll = l as f64 / 100.0;
     let ss = s as f64 / 100.0;
-    let hh = (((h % 360) + 360) % 360) as f64 / 360.0;
+    let hh = h.rem_euclid(360) as f64 / 360.0;
     if ss == 0.0 {
         let v = (ll * 255.0) as u8;
         return (v, v, v);
     }
-    let q = if ll < 0.5 { ll * (1.0 + ss) } else { ll + ss - ll * ss };
+    let q = if ll < 0.5 {
+        ll * (1.0 + ss)
+    } else {
+        ll + ss - ll * ss
+    };
     let p = 2.0 * ll - q;
     let r = hue(p, q, hh + 1.0 / 3.0);
     let g = hue(p, q, hh);
@@ -214,11 +274,21 @@ fn hls_to_rgb(h: i32, l: i32, s: i32) -> (u8, u8, u8) {
     return ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
 
     fn hue(p: f64, q: f64, mut t: f64) -> f64 {
-        if t < 0.0 { t += 1.0; }
-        if t > 1.0 { t -= 1.0; }
-        if t < 1.0 / 6.0 { return p + (q - p) * 6.0 * t; }
-        if t < 1.0 / 2.0 { return q; }
-        if t < 2.0 / 3.0 { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            return p + (q - p) * 6.0 * t;
+        }
+        if t < 1.0 / 2.0 {
+            return q;
+        }
+        if t < 2.0 / 3.0 {
+            return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+        }
         p
     }
 }
@@ -244,15 +314,27 @@ mod tests {
 
     #[test]
     fn not_sixel() {
-        assert!(decode(b"$qwhatever-with-no-pixels").is_none() || true); // 'q' present but no pixels → None
+        assert!(decode(b"$q????").is_none()); // 'q' present but every sixel has zero bits
         assert!(decode(b"no-introducer-at-all!").is_none());
         assert!(decode(b"").is_none());
     }
 
     #[test]
     fn hostile_raster_does_not_hang() {
-        // The C# pre-fix infinite loop: giant declared size. Must return quickly (clamped).
+        // A giant declared size must be rejected before allocation.
         let r = decode(b"q\"1;1;2000000000;2000000000#1~");
-        assert!(r.is_some());
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn huge_zero_bit_repeat_is_rejected_without_looping() {
+        assert!(decode(b"q!2147483647?").is_none());
+    }
+
+    #[test]
+    fn zero_bit_repeat_advances_without_painting() {
+        let d = decode(b"q!5?@").unwrap();
+        assert_eq!((d.width, d.height), (6, 1));
+        assert_eq!(d.rgba[5 * 4 + 3], 255);
     }
 }

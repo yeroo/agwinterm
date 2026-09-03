@@ -46,6 +46,7 @@ public class RustEmulatorCoreTests
         Assert.Equal(cs.ScrollGeneration, info.ScrollGeneration);
         Assert.Equal(cs.BracketedPaste, info.BracketedPaste != 0);
         Assert.Equal(cs.MouseSgr, info.MouseSgr != 0);
+        Assert.Equal(cs.MouseSgrPixels, info.MouseSgrPixels != 0);
         Assert.Equal(cs.KeyboardFlags, info.KeyboardFlags);
         Assert.Equal(cs.Title, rust.Title);
         Assert.Equal(cs.Cwd, rust.Cwd);
@@ -236,6 +237,33 @@ public class RustEmulatorCoreTests
     }
 
     [Fact]
+    public void Adapter_SgrPixels_ModeAndDecrqm_MatchManagedCore()
+    {
+        if (!Available) return;
+        var mgHost = new RecordingHost();
+        var rsHost = new RecordingHost();
+        var cs = new TerminalEmulator(20, 5) { Host = mgHost };
+        using var rust = new RustTerminalCore(20, 5) { Host = rsHost };
+        void Feed(string s) { var b = System.Text.Encoding.ASCII.GetBytes(s); cs.Feed(b); rust.Feed(b); }
+
+        Feed("\x1b[?1016$p");
+        Assert.False(cs.MouseSgrPixels);
+        Assert.False(rust.MouseSgrPixels);
+
+        Feed("\x1b[?1016h\x1b[?1016$p");
+        Assert.True(cs.MouseSgrPixels);
+        Assert.True(rust.MouseSgrPixels);
+        Assert.Contains("\x1b[?1016h", rust.DumpModes());
+        Assert.Equal(cs.DumpModes(), rust.DumpModes());
+
+        Feed("\x1b[?1016l");
+        Assert.False(cs.MouseSgrPixels);
+        Assert.False(rust.MouseSgrPixels);
+        Assert.Equal(mgHost.Log, rsHost.Log);
+        Assert.Equal(new[] { "Respond|\x1b[?1016;2$y", "Respond|\x1b[?1016;1$y" }, rsHost.Log);
+    }
+
+    [Fact]
     public void Adapter_DynamicBackground_Osc11_MatchManagedCore()
     {
         if (!Available) return;
@@ -341,6 +369,80 @@ public class RustEmulatorCoreTests
         Assert.Equal(16, rust.Images[7].Data.Length);
         rust.ClearPlacements();
         Assert.Empty(rust.Placements);
+    }
+
+    [Fact]
+    public void Native_DirectImageMetadata_DoesNotRetainAPixelPayload()
+    {
+        if (!Available) return;
+        using var rust = new RustEmulatorCore(10, 4);
+
+        rust.SetImageMetadata(7, (int)KittyFormat.Bgra, 1920, 1080);
+
+        var image = Assert.Single(rust.GetImageMetas());
+        Assert.Equal((7, (int)KittyFormat.Bgra, 1920, 1080),
+            (image.Id, image.Format, image.Width, image.Height));
+        Assert.Equal(0u, image.DataLen);
+        Assert.True(rust.HasImage(7));
+    }
+
+    [Fact]
+    public void Adapter_DirectImageApi_RefreshesPixelsWhenAnIdIsReused()
+    {
+        if (!Available) return;
+        using var rust = new RustTerminalCore(10, 4);
+        byte[] first = { 1, 2, 3, 4 };
+        byte[] second = { 9, 8, 7, 6 };
+
+        rust.SetImageData(7, KittyFormat.Rgba, 1, 1, first);
+        Assert.Equal(first, rust.Images[7].Data);
+
+        rust.SetImageData(7, KittyFormat.Rgba, 1, 1, second);
+        Assert.Equal(second, rust.Images[7].Data);
+    }
+
+    [Fact]
+    public void Adapter_TerminalImageReplacesAHostImageWithTheSameId()
+    {
+        if (!Available) return;
+        using var rust = new RustTerminalCore(10, 4);
+        rust.SetImageData(7, KittyFormat.Bgra, 1, 1, new byte[] { 1, 2, 3, 255 });
+        KittyImage hostImage = rust.Images[7];
+
+        const string esc = "\x1b";
+        rust.Feed(System.Text.Encoding.ASCII.GetBytes(
+            $"{esc}_Ga=t,i=7,f=32,s=1,v=1;CQgHBg=={esc}\\"));
+
+        Assert.NotSame(hostImage, rust.Images[7]);
+        Assert.Equal(KittyFormat.Rgba, rust.Images[7].Format);
+        Assert.Equal(new byte[] { 9, 8, 7, 6 }, rust.Images[7].Data);
+    }
+
+    [Fact]
+    public void Adapter_CraftedApcF132_DoesNotProduceBgra()
+    {
+        if (!Available) return;
+        // Both cores clamp an APC f= to the Kitty wire range, so terminal output cannot name the
+        // host-only KittyFormat.Bgra and send the renderer down the no-swizzle path with RGBA
+        // bytes. The two must agree, or `emulator-core = rust` changes what a sequence means.
+        const string esc = "";
+        var bytes = System.Text.Encoding.ASCII.GetBytes($"{esc}_Ga=T,i=11,f=132,s=1,v=1;AAECAw=={esc}\\");
+        var cs = new TerminalEmulator(10, 4);
+        using var rust = new RustTerminalCore(10, 4);
+        cs.Feed(bytes); rust.Feed(bytes);
+        Assert.Equal(KittyFormat.Rgba, cs.Images[11].Format);
+        Assert.Equal(KittyFormat.Rgba, rust.Images[11].Format);
+    }
+
+    [Fact]
+    public void Adapter_BgraFromTheHostApi_SurvivesTheRoundTrip()
+    {
+        if (!Available) return;
+        // The clamp is on the parser only: image.frameshm sets BGRA through the host API and the
+        // format must come back out of the core unchanged.
+        using var rust = new RustTerminalCore(10, 4);
+        rust.SetImageData(9, KittyFormat.Bgra, 1, 1, new byte[] { 1, 2, 3, 255 });
+        Assert.Equal(KittyFormat.Bgra, rust.Images[9].Format);
     }
 
     [Fact]

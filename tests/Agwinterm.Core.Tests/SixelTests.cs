@@ -34,6 +34,26 @@ public class SixelTests
     }
 
     [Fact]
+    public void Decode_ZeroBitRepeatAdvancesWithoutPainting()
+    {
+        var (w, h, rgba) = Sixel.Decode(ToDcs("!5?@"))!.Value;
+        Assert.Equal((6, 1), (w, h));
+        Assert.Equal(255, rgba[(5 * 4) + 3]);
+    }
+
+    [Fact]
+    public void Decode_RejectsHugeZeroBitRepeat()
+    {
+        Assert.Null(Sixel.Decode(ToDcs("!2147483647?")));
+    }
+
+    [Fact]
+    public void Decode_RejectsRasterWhoseTotalCanvasIsTooLarge()
+    {
+        Assert.Null(Sixel.Decode(ToDcs("\"1;1;16384;16384#1~")));
+    }
+
+    [Fact]
     public void Emulator_SixelPlacesAnImage()
     {
         var t = new TerminalEmulator(40, 10);

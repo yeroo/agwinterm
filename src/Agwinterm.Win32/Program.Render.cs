@@ -32,46 +32,70 @@ internal partial class Program
     /// thread so the UI never blocks; only the cheap GPU upload runs here. An image simply
     /// appears on the next redraw once its pixels are ready. Called under the session lock.
     /// </summary>
-    private void DrawImages(ITerminalCore em, float ox, float oy, float cw, float ch)
+    private void DrawImages(ITerminalCore em, float ox, float oy, float cw, float ch, bool renderPlacements)
     {
         if (_rt is null) return;
+
+        _imageOwnersThisFrame.Add(em);
+        var live = new HashSet<KittyImage>(em.Images.Values, ReferenceEqualityComparer.Instance);
+        _imageDecodes.Publish(em, live);
+        if (!_imageCaches.TryGetValue(em, out var cache))
+        {
+            cache = new Dictionary<KittyImage, ID2D1Bitmap>(ReferenceEqualityComparer.Instance);
+            _imageCaches.Add(em, cache);
+        }
 
         // 1) Upload any pixels decoded on background threads (cheap; UI thread only).
         while (_decoded.TryDequeue(out var d))
         {
-            _decoding.Remove(d.img);
-            if (d.bgra is null || _imageCache.ContainsKey(d.img)) continue;
+            _imageDecodes.Complete(d.owner, d.img);
+            if (d.failed) _imageDecodes.Fail(d.owner, d.img);
+            if (d.bgra is null || !_imageDecodes.IsLatest(d.owner, d.img)) continue;
+            if (!_imageCaches.TryGetValue(d.owner, out var ownerCache))
+            {
+                ownerCache = new Dictionary<KittyImage, ID2D1Bitmap>(ReferenceEqualityComparer.Instance);
+                _imageCaches.Add(d.owner, ownerCache);
+            }
+            if (ownerCache.ContainsKey(d.img)) continue;
             try
             {
                 long t0 = Stopwatch.GetTimestamp();
                 var handle = GCHandle.Alloc(d.bgra, GCHandleType.Pinned);
-                try { _imageCache[d.img] = _rt.CreateBitmap(new SizeI(d.w, d.h), handle.AddrOfPinnedObject(), (uint)(d.w * 4), _bmpProps); }
+                try { ownerCache[d.img] = _rt.CreateBitmap(new SizeI(d.w, d.h), handle.AddrOfPinnedObject(), (uint)(d.w * 4), _bmpProps); }
                 finally { handle.Free(); }
                 _uploadCount++; _uploadMs += Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
                 Log($"uploaded id={d.img.Id} {d.w}x{d.h}");
             }
-            catch (Exception ex) { Log($"upload FAILED id={d.img.Id}: {ex.GetType().Name} {ex.Message}"); }
-        }
-
-        // 2) Prune textures whose image was retransmitted or deleted (bounds memory during scroll).
-        if (_imageCache.Count > 0)
-        {
-            var live = new HashSet<KittyImage>(em.Images.Values);
-            foreach (var stale in _imageCache.Keys.Where(k => !live.Contains(k)).ToList())
+            catch (Exception ex)
             {
-                _imageCache[stale].Dispose();
-                _imageCache.Remove(stale);
+                _imageDecodes.Fail(d.owner, d.img);
+                Log($"upload FAILED id={d.img.Id}: {ex.GetType().Name} {ex.Message}");
             }
         }
+
+        // 2) Prune textures whose image was retransmitted or deleted, but only for this pane.
+        if (cache.Count > 0)
+        {
+            foreach (var stale in cache.Keys.Where(k => !live.Contains(k)).ToList())
+            {
+                cache[stale].Dispose();
+                cache.Remove(stale);
+            }
+        }
+
+        if (!renderPlacements) return;
 
         // 3) Draw what's ready; kick off background decodes for what isn't.
         foreach (var p in em.Placements)
         {
             if (!em.Images.TryGetValue(p.ImageId, out var img)) continue;
-            if (!_imageCache.TryGetValue(img, out var bmp))
+            if (!cache.TryGetValue(img, out var bmp))
             {
-                if (_decoding.Add(img)) // not already decoding
-                    _ = Task.Run(() => DecodePixelsAsync(img));
+                // A frame stream may replace the same id faster than conversion/upload. Bound the
+                // retained sources and output buffers; a later draw schedules only the then-current
+                // object, naturally coalescing any intermediate frames that never got a slot.
+                if (_imageDecodes.TryStart(em, img, MaxConcurrentImageDecodes))
+                    _ = Task.Run(() => DecodePixelsAsync(em, img));
                 continue; // will render on a later frame once uploaded
             }
             float ix = ox + p.Col * cw;
@@ -87,6 +111,21 @@ internal partial class Program
             try { _rt.DrawBitmap(bmp, dest, 1f, BitmapInterpolationMode.Linear, src); }
             catch (Exception ex) { Log($"DrawBitmap FAILED: {ex.GetType().Name} {ex.Message}"); }
         }
+    }
+
+    /// <summary>Dispose textures for terminal cores not present in this completed render pass.</summary>
+    private void PruneHiddenImageOwners()
+    {
+        foreach (ITerminalCore owner in _imageCaches.Keys
+                     .Where(owner => !_imageOwnersThisFrame.Contains(owner)).ToList())
+        {
+            foreach (ID2D1Bitmap bitmap in _imageCaches[owner].Values)
+            {
+                try { bitmap.Dispose(); } catch { }
+            }
+            _imageCaches.Remove(owner);
+        }
+        _imageDecodes.RetainOwners(_imageOwnersThisFrame);
     }
 
     private static readonly BitmapProperties _bmpProps =
@@ -137,19 +176,19 @@ internal partial class Program
                             _rt.DrawBitmap(bmp, new Vortice.RawRectF(tx, ty, tx + iw, ty + ih), opacity, BitmapInterpolationMode.Linear, null);
                     break;
                 case "center":
-                {
-                    float cx = ox + (pw - iw) / 2f, cy = oy + (ph - ih) / 2f;
-                    _rt.DrawBitmap(bmp, new Vortice.RawRectF(cx, cy, cx + iw, cy + ih), opacity, BitmapInterpolationMode.Linear, null);
-                    break;
-                }
+                    {
+                        float cx = ox + (pw - iw) / 2f, cy = oy + (ph - ih) / 2f;
+                        _rt.DrawBitmap(bmp, new Vortice.RawRectF(cx, cy, cx + iw, cy + ih), opacity, BitmapInterpolationMode.Linear, null);
+                        break;
+                    }
                 default: // "fit" (letterbox) and "fill" (cover) — same math, min vs max scale; clip handles overflow.
-                {
-                    float scale = ses.BgMode == "fill" ? MathF.Max(pw / iw, ph / ih) : MathF.Min(pw / iw, ph / ih);
-                    float dw = iw * scale, dh = ih * scale;
-                    float dx = ox + (pw - dw) / 2f, dy = oy + (ph - dh) / 2f;
-                    _rt.DrawBitmap(bmp, new Vortice.RawRectF(dx, dy, dx + dw, dy + dh), opacity, BitmapInterpolationMode.Linear, null);
-                    break;
-                }
+                    {
+                        float scale = ses.BgMode == "fill" ? MathF.Max(pw / iw, ph / ih) : MathF.Min(pw / iw, ph / ih);
+                        float dw = iw * scale, dh = ih * scale;
+                        float dx = ox + (pw - dw) / 2f, dy = oy + (ph - dh) / 2f;
+                        _rt.DrawBitmap(bmp, new Vortice.RawRectF(dx, dy, dx + dw, dy + dh), opacity, BitmapInterpolationMode.Linear, null);
+                        break;
+                    }
             }
         }
         catch (Exception ex) { Log($"watermark draw FAILED {path}: {ex.Message}"); }
@@ -193,17 +232,24 @@ internal partial class Program
     }
 
     /// <summary>Background: decode to premultiplied BGRA pixels (no D2D), enqueue for UI upload, ask for a redraw.</summary>
-    private void DecodePixelsAsync(KittyImage img)
+    private void DecodePixelsAsync(ITerminalCore owner, KittyImage img)
     {
         try
         {
+            if (!_imageDecodes.IsLatest(owner, img))
+            {
+                _decoded.Enqueue((owner, img, null, 0, 0, false));
+                return;
+            }
             var (bgra, w, h) = DecodePixels(img);
-            _decoded.Enqueue((img, bgra, w, h));
+            _decoded.Enqueue(_imageDecodes.IsLatest(owner, img)
+                ? (owner, img, bgra, w, h, false)
+                : (owner, img, null, 0, 0, false));
         }
         catch (Exception ex)
         {
             Log($"decode FAILED id={img.Id} fmt={img.Format}: {ex.GetType().Name} {ex.Message}");
-            _decoded.Enqueue((img, null, 0, 0)); // signal failure so we stop retrying
+            _decoded.Enqueue((owner, img, null, 0, 0, true));
         }
         finally { RequestRedraw(); }
     }
@@ -233,39 +279,20 @@ internal partial class Program
             finally { gdi.UnlockBits(data); }
         }
 
-        return (ToPremultipliedBgra(img), img.Width, img.Height);
-    }
-
-    private static byte[] ToPremultipliedBgra(KittyImage img)
-    {
-        var d = img.Data;
-        var outb = new byte[img.Width * img.Height * 4];
-        if (img.Format == KittyFormat.Rgba)
-        {
-            for (int i = 0, j = 0; i + 3 < d.Length && j + 3 < outb.Length; i += 4, j += 4)
-            {
-                byte r = d[i], g = d[i + 1], b = d[i + 2], a = d[i + 3];
-                outb[j] = (byte)(b * a / 255); outb[j + 1] = (byte)(g * a / 255);
-                outb[j + 2] = (byte)(r * a / 255); outb[j + 3] = a;
-            }
-        }
-        else // Rgb: opaque
-        {
-            for (int i = 0, j = 0; i + 2 < d.Length && j + 3 < outb.Length; i += 3, j += 4)
-            {
-                outb[j] = d[i + 2]; outb[j + 1] = d[i + 1]; outb[j + 2] = d[i]; outb[j + 3] = 255;
-            }
-        }
-        return outb;
+        // Raw pixels: KittyPixels picks the swizzle (Rgb/Rgba) or no-swizzle (Bgra) route.
+        return (KittyPixels.ToPremultipliedBgra(img), img.Width, img.Height);
     }
 
     /// <summary>Dispose the device-bound render target + textures and rebuild them (after a device/GPU reset).</summary>
     private void RecreateTarget()
     {
-        foreach (var b in _imageCache.Values) { try { b.Dispose(); } catch { } }
-        _imageCache.Clear();
-        _decoding.Clear();
-        while (_decoded.TryDequeue(out _)) { }
+        foreach (var cache in _imageCaches.Values)
+            foreach (var b in cache.Values) { try { b.Dispose(); } catch { } }
+        _imageCaches.Clear();
+        _imageDecodes.RetryFailures();
+        // CPU decode work is device-independent. Keep its bounded in-flight/completed state so a
+        // run of device resets cannot clear in-flight accounting and launch another batch over it.
+        // Failed uploads may have been caused by the old device, so those exact images may retry.
         foreach (var b in _bgCache.Values) { try { b.Dispose(); } catch { } } // watermark textures are device-bound too
         _bgCache.Clear();
         _bgDecoding.Clear();
@@ -285,9 +312,11 @@ internal partial class Program
         if (_rt is null || _brush is null) return;
         long tStart = Stopwatch.GetTimestamp();
         _uploadCount = 0; _uploadMs = 0;
+        _imageOwnersThisFrame.Clear();
         try
         {
             RenderBody();
+            PruneHiddenImageOwners();
             Result end = _rt.EndDraw(out _, out _);
             if (end.Failure)
             {
@@ -522,8 +551,8 @@ internal partial class Program
                 }
             }
 
-            if (drawImages)
-                lock (session.SyncRoot) DrawImages(em, ox, oy, cw, ch);   // image placements read emulator state
+            if (!_noImages)
+                lock (session.SyncRoot) DrawImages(em, ox, oy, cw, ch, drawImages); // image state belongs to this pane
 
             if (off > 0) // scrollback position indicator on the pane's right edge
             {

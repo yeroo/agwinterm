@@ -138,13 +138,13 @@ internal abstract class UiaNodeBase
                 return me.Children.Length > 0 ? NodePtr(t, me.Children[^1]) : 0;
             case NavigateDirection.NextSibling:
             case NavigateDirection.PreviousSibling:
-            {
-                if (me.Parent < 0) return 0;
-                var sib = t.Nodes[me.Parent].Children;
-                int at = Array.IndexOf(sib, myIdx);
-                int to = direction == NavigateDirection.NextSibling ? at + 1 : at - 1;
-                return at >= 0 && to >= 0 && to < sib.Length ? NodePtr(t, sib[to]) : 0;
-            }
+                {
+                    if (me.Parent < 0) return 0;
+                    var sib = t.Nodes[me.Parent].Children;
+                    int at = Array.IndexOf(sib, myIdx);
+                    int to = direction == NavigateDirection.NextSibling ? at + 1 : at - 1;
+                    return at >= 0 && to >= 0 && to < sib.Length ? NodePtr(t, sib[to]) : 0;
+                }
         }
         return 0;
     }

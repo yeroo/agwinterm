@@ -395,11 +395,17 @@ internal partial class Program
 
     /// <summary>Report a mouse event given raw client pixels packed in lParam (button code already encoded).</summary>
     private void SendMousePx(int btn, IntPtr lParam, bool press)
-        => SendMouse(btn, DipX(lParam), DipY(lParam), press);   // cell mapping uses DIP metrics
+        => SendMouse(btn, DipX(lParam), DipY(lParam), LoWord(lParam), HiWord(lParam), press);
 
-    /// <summary>Origin (px) + metrics of the ACTIVE pane, for mouse→cell mapping.</summary>
+    /// <summary>Origin + metrics of the active terminal surface in DIPs, for mouse-to-cell mapping.</summary>
     private (float ox, float oy, float cw, float ch) ActivePaneView()
     {
+        if (_cover is { } cover)
+        {
+            var (x, y, _, _) = CoverRect();
+            var (_, cw, ch) = Metrics(cover.FontSize);
+            return (x, y, cw, ch);
+        }
         if (_active is not null)
             foreach (var (pane, x, y, _, _) in PaneLayout(_active))
                 if (ReferenceEquals(pane, _active.ActivePane)) { var (_, cw, ch) = Metrics(pane.FontSize); return (x, y, cw, ch); }
@@ -447,17 +453,15 @@ internal partial class Program
         RequestRedraw();
     }
 
-    /// <summary>Encode a mouse event (SGR or legacy) and send it to the child. Mirrors the WinUI shell.</summary>
-    private void SendMouse(int btn, int pxX, int pxY, bool press)
+    /// <summary>Encode a cell or SGR-Pixels mouse event and send it to the child.</summary>
+    private void SendMouse(int btn, int dipX, int dipY, int deviceX, int deviceY, bool press)
     {
         var em = _session?.Emulator;
         if (em is null || !em.MouseReporting) return;
         var (ox, oy, cw, ch) = ActivePaneView();
-        int col = Math.Clamp((int)((pxX - ox) / cw), 0, em.Screen.Cols - 1);
-        int row = Math.Clamp((int)((pxY - oy) / ch), 0, em.Screen.Rows - 1);
-        string seq = em.MouseSgr
-            ? $"\x1b[<{btn};{col + 1};{row + 1}{(press ? 'M' : 'm')}"
-            : "\x1b[M" + (char)(32 + (press ? btn : 3)) + (char)(33 + col) + (char)(33 + row);
+        string seq = MouseReport.EncodePointer(
+            btn, dipX, dipY, deviceX, deviceY, ox, oy, cw, ch, Scale,
+            em.Screen.Cols, em.Screen.Rows, press, em.MouseSgr, em.MouseSgrPixels);
         _session?.Write(Encoding.UTF8.GetBytes(seq));
     }
 
@@ -1257,9 +1261,18 @@ internal partial class Program
             VK_NEXT => mod > 1 ? $"\x1b[6;{mod}~" : "\x1b[6~",
             VK_INSERT => "\x1b[2~",
             VK_DELETE => "\x1b[3~",
-            0x70 => "\x1bOP", 0x71 => "\x1bOQ", 0x72 => "\x1bOR", 0x73 => "\x1bOS", // F1-F4
-            0x74 => "\x1b[15~", 0x75 => "\x1b[17~", 0x76 => "\x1b[18~", 0x77 => "\x1b[19~", // F5-F8
-            0x78 => "\x1b[20~", 0x79 => "\x1b[21~", 0x7A => "\x1b[23~", 0x7B => "\x1b[24~", // F9-F12
+            0x70 => "\x1bOP",
+            0x71 => "\x1bOQ",
+            0x72 => "\x1bOR",
+            0x73 => "\x1bOS", // F1-F4
+            0x74 => "\x1b[15~",
+            0x75 => "\x1b[17~",
+            0x76 => "\x1b[18~",
+            0x77 => "\x1b[19~", // F5-F8
+            0x78 => "\x1b[20~",
+            0x79 => "\x1b[21~",
+            0x7A => "\x1b[23~",
+            0x7B => "\x1b[24~", // F9-F12
             _ => null,
         };
         if (seq is not null) { Send(seq); return true; }
@@ -1311,8 +1324,22 @@ internal partial class Program
         string? fin = vk switch { VK_UP => "A", VK_DOWN => "B", VK_RIGHT => "C", VK_LEFT => "D", VK_HOME => "H", VK_END => "F", _ => null };
         if (fin is not null) return mods > 0 ? $"\x1b[1{m}{fin}" : $"\x1b[{fin}";
         // PgUp/Dn, Insert, Delete, F5-F12 — number-final CSI ~.
-        int num = vk switch { VK_PRIOR => 5, VK_NEXT => 6, VK_INSERT => 2, VK_DELETE => 3,
-            0x74 => 15, 0x75 => 17, 0x76 => 18, 0x77 => 19, 0x78 => 20, 0x79 => 21, 0x7A => 23, 0x7B => 24, _ => -1 };
+        int num = vk switch
+        {
+            VK_PRIOR => 5,
+            VK_NEXT => 6,
+            VK_INSERT => 2,
+            VK_DELETE => 3,
+            0x74 => 15,
+            0x75 => 17,
+            0x76 => 18,
+            0x77 => 19,
+            0x78 => 20,
+            0x79 => 21,
+            0x7A => 23,
+            0x7B => 24,
+            _ => -1
+        };
         if (num >= 0) return $"\x1b[{num}{m}~";
         // F1-F4.
         string? pf = vk switch { 0x70 => "P", 0x71 => "Q", 0x72 => "R", 0x73 => "S", _ => null };
@@ -1320,7 +1347,11 @@ internal partial class Program
         // Text/special keys → CSI codepoint u (Kitty uses the unshifted/base codepoint).
         int cp = vk switch
         {
-            VK_RETURN => 13, VK_TAB => 9, VK_BACK => 127, VK_ESCAPE => 27, VK_SPACE => 32,
+            VK_RETURN => 13,
+            VK_TAB => 9,
+            VK_BACK => 127,
+            VK_ESCAPE => 27,
+            VK_SPACE => 32,
             >= VK_A and <= VK_Z => 97 + (vk - VK_A),   // lowercase base letter
             >= 0x30 and <= 0x39 => vk,                  // digits
             _ => -1,

@@ -2,6 +2,8 @@ namespace Agwinterm.Core;
 
 public sealed class VtParser(IParserPerformer performer)
 {
+    internal const int MaxStringPayloadBytes = 8_000_000;
+    internal const int MaxCsiParameters = 256;
     private const char Replacement = '�';
 
     private ParserState _state = ParserState.Ground;
@@ -18,6 +20,8 @@ public sealed class VtParser(IParserPerformer performer)
     private readonly List<byte> _osc = new();   // raw payload bytes; UTF-8-decoded at dispatch
     private readonly List<byte> _dcs = new();   // DCS payload bytes (sixel etc.)
     private readonly System.Text.StringBuilder _apc = new();
+    private bool _oscDiscarding;
+    private bool _apcDiscarding;
 
     public void Feed(ReadOnlySpan<byte> bytes)
     {
@@ -43,8 +47,8 @@ public sealed class VtParser(IParserPerformer performer)
 
             case ParserState.Escape:
                 if (b == (byte)'[') { _state = ParserState.CsiEntry; ResetParams(); }
-                else if (b == (byte)']') { _state = ParserState.OscString; _osc.Clear(); }
-                else if (b == (byte)'_') { _state = ParserState.ApcString; _apc.Clear(); }
+                else if (b == (byte)']') { _state = ParserState.OscString; _osc.Clear(); _oscDiscarding = false; }
+                else if (b == (byte)'_') { _state = ParserState.ApcString; _apc.Clear(); _apcDiscarding = false; }
                 else if (b == (byte)'P') { _state = ParserState.DcsString; _dcs.Clear(); }   // DCS (sixel etc.)
                 else if (b is >= 0x30 and <= 0x7e) { performer.EscDispatch((char)b); _state = ParserState.Ground; }
                 else if (IsControl(b)) performer.Execute(b);
@@ -52,23 +56,31 @@ public sealed class VtParser(IParserPerformer performer)
                 break;
 
             case ParserState.OscString:
-                if (b == 0x07) { DispatchOsc(); _state = ParserState.Ground; } // BEL terminator
-                else _osc.Add(b);
+                if (b == 0x07) { FinishOsc(); _state = ParserState.Ground; } // BEL terminator
+                else if (!_oscDiscarding)
+                {
+                    if (_osc.Count < MaxStringPayloadBytes) _osc.Add(b);
+                    else { _osc.Clear(); _oscDiscarding = true; }
+                }
                 break;
 
             case ParserState.OscEsc:
-                DispatchOsc();
+                FinishOsc();
                 _state = ParserState.Ground;
                 if (b != (byte)'\\') Step(b); // not ST: reprocess this byte
                 break;
 
             case ParserState.ApcString:
-                if (b == 0x07) { DispatchApc(); _state = ParserState.Ground; } // BEL terminator
-                else _apc.Append((char)b);
+                if (b == 0x07) { FinishApc(); _state = ParserState.Ground; } // BEL terminator
+                else if (!_apcDiscarding)
+                {
+                    if (_apc.Length < MaxStringPayloadBytes) _apc.Append((char)b);
+                    else { _apc.Clear(); _apcDiscarding = true; }
+                }
                 break;
 
             case ParserState.ApcEsc:
-                DispatchApc();
+                FinishApc();
                 _state = ParserState.Ground;
                 if (b != (byte)'\\') Step(b);
                 break;
@@ -87,16 +99,20 @@ public sealed class VtParser(IParserPerformer performer)
             case ParserState.CsiEntry:
             case ParserState.CsiParam:
                 if (b is >= (byte)'0' and <= (byte)'9') { _current = _current * 10 + (b - '0'); _hasCurrent = true; _state = ParserState.CsiParam; }
-                else if (b == (byte)';') { PushParam(); _state = ParserState.CsiParam; }
+                else if (b == (byte)';')
+                {
+                    if (TryPushParam()) _state = ParserState.CsiParam;
+                    else DiscardCsi();
+                }
                 else if (b is >= 0x3c and <= 0x3f) { _csiPrefix = (char)b; } // private marker < = > ?
-                else if (b is >= 0x40 and <= 0x7e) { PushParamIfAny(); performer.CsiDispatch((char)b, _params, _csiPrefix); _state = ParserState.Ground; }
+                else if (b is >= 0x40 and <= 0x7e) FinishCsi(b);
                 else if (b is >= 0x20 and <= 0x2f) { _state = ParserState.CsiIntermediate; }
                 else if (IsControl(b)) performer.Execute(b);
                 else _state = ParserState.CsiIgnore;
                 break;
 
             case ParserState.CsiIntermediate:
-                if (b is >= 0x40 and <= 0x7e) { PushParamIfAny(); performer.CsiDispatch((char)b, _params, _csiPrefix); _state = ParserState.Ground; }
+                if (b is >= 0x40 and <= 0x7e) FinishCsi(b);
                 else if (b is >= 0x20 and <= 0x2f) { /* collect intermediates: ignored for now */ }
                 else _state = ParserState.CsiIgnore;
                 break;
@@ -145,10 +161,24 @@ public sealed class VtParser(IParserPerformer performer)
             performer.OscDispatch(command, text);
     }
 
+    private void FinishOsc()
+    {
+        if (!_oscDiscarding) DispatchOsc();
+        _osc.Clear();
+        _oscDiscarding = false;
+    }
+
     private void DispatchApc()
     {
         if (_apc.Length > 0)
             performer.ApcDispatch(_apc.ToString());
+    }
+
+    private void FinishApc()
+    {
+        if (!_apcDiscarding) DispatchApc();
+        _apc.Clear();
+        _apcDiscarding = false;
     }
 
     private void DispatchDcs()
@@ -201,16 +231,36 @@ public sealed class VtParser(IParserPerformer performer)
         _csiPrefix = '\0';
     }
 
-    private void PushParam()
+    private bool TryPushParam()
     {
+        if (_params.Count >= MaxCsiParameters) return false;
         _params.Add(_hasCurrent ? _current : 0);
         _current = 0;
         _hasCurrent = false;
+        return true;
     }
 
-    private void PushParamIfAny()
+    private bool TryPushParamIfAny()
     {
         if (_hasCurrent || _params.Count > 0)
-            _params.Add(_hasCurrent ? _current : 0);
+            return TryPushParam();
+        return true;
+    }
+
+    private void FinishCsi(byte final)
+    {
+        if (TryPushParamIfAny())
+            performer.CsiDispatch((char)final, _params, _csiPrefix);
+        else
+            ResetParams();
+        _state = ParserState.Ground;
+    }
+
+    private void DiscardCsi()
+    {
+        // A child can leave a CSI split across arbitrarily many reads. Drop the retained list as
+        // soon as it exceeds the bound, then ignore through the final byte (or a restarting ESC).
+        ResetParams();
+        _state = ParserState.CsiIgnore;
     }
 }
