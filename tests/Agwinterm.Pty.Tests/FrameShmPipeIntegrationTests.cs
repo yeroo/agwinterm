@@ -300,9 +300,10 @@ public class FrameShmPipeIntegrationTests : IDisposable
         var p = NewProducer();
         string request = CtlRequest(p, seq: 1, slot: 1, ("id", "7"), ("cols", "10"));
 
-        // The regression this guards is silent and total: ControlServer's GetInt throws on a
-        // string, so a quoted number would reject every frame with "requires an element of type
-        // 'Number'". Asserting on the serialized text is the only place that shape is visible.
+        // The regression this guards is total: ControlServer's TryNum rejects a quoted number
+        // ("'slot' must be a JSON number, not string"), so a CLI that serialized its numeric
+        // options as strings would have every frame refused. The wire text is where that shape
+        // is decided, so that is what gets asserted.
         Assert.Contains("\"slot\":1", request);
         Assert.Contains("\"seq\":1", request);
         Assert.Contains("\"id\":7", request);

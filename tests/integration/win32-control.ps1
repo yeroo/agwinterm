@@ -64,7 +64,13 @@ if (-not $Exe) { "  SKIP  agwinterm build not found (build src\Agwinterm.Win32 o
 "  using: $(Split-Path $Exe -Leaf) from $(Split-Path $Exe -Parent)"
 
 # Do not inherit routing from the developer's current terminal. This process gets its own pipe and
-# every mutation below is sent only to the process this script starts.
+# every mutation below is sent only to the process this script starts. Dot-sourced or run from a
+# pane inside agwinterm, these are the caller's own routing variables, so they are put back at the
+# end rather than left pointing at a pipe that no longer exists.
+$savedEnv = @{}
+foreach ($name in 'AGWINTERM_SESSION_ID', 'AGWINTERM_PANE_ID', 'AGWINTERM_PIPE', 'AGWINTERM_APP_ID') {
+    $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
+}
 $env:AGWINTERM_SESSION_ID = $null
 $env:AGWINTERM_PANE_ID = $null
 $env:AGWINTERM_PIPE = $null
@@ -526,6 +532,9 @@ finally {
     # Both directories were proved to be direct children of LocalApplicationData before launch.
     foreach ($dir in @($testAppDir, $envAppDir)) {
         if ($dir -and (Test-Path -LiteralPath $dir)) { Remove-Item -LiteralPath $dir -Recurse -Force }
+    }
+    foreach ($name in $savedEnv.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $savedEnv[$name])
     }
 }
 
