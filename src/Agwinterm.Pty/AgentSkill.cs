@@ -77,7 +77,9 @@ public static class AgentSkill
         - `agwintermctl workspace collapse [WS] [--target WS]` / `workspace expand [WS]` — collapse/expand a single workspace's session list (default: active)
 
         ## Read a session's output
-        - `agwintermctl session text [--target <id>]`            — dump the session's visible buffer as plain text (great for reading command output)
+        - `agwintermctl session text [--lines N] [--target <id>]` — dump the pane as plain text. Without `--lines` that is the
+          visible screen; `--lines N` returns the last N lines ending at the bottom of the screen, reaching back into
+          scrollback — which is where a launch banner or an error printed before a full-screen app started still lives
         - `agwintermctl session copy [--target <id>]`            — return the session's current mouse text selection ("" if none)
         - `agwintermctl session search "<term>"`                 — open the find bar over the active session; returns "N of M" (or "no matches")
         - `agwintermctl session search --next|--prev|--close`    — step matches / close the find bar
@@ -91,7 +93,10 @@ public static class AgentSkill
         - config `copy-on-select = true` auto-copies each finished selection (no Ctrl+C needed)
 
         ## Type into a session
-        - `agwintermctl session type "npm test" --target <id>`   — send keystrokes (newline = Enter)
+        - `agwintermctl session type "npm test" --target <id>`   — send keystrokes (newline = Enter). Control bytes are
+          REFUSED, not stripped: a NUL would truncate your command while its Return still fired. Add `--allow-control`
+          when you really mean one (an escape sequence for a TUI, a lone ^C). `session write` is NOT the way — it
+          injects into the display and never reaches the shell
 
         ## Scratch & quick terminals
         - `agwintermctl session scratch on|off|toggle [--target <id>]` — a per-session extra shell drawn over that session's content (opens in the session's cwd; stays alive when hidden; not restored)

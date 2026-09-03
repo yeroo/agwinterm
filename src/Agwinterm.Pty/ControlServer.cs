@@ -263,9 +263,17 @@ public sealed class ControlServer : IDisposable
                 case "session.scratch": return host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
                 case "quick": host.Quick(GetString(args, "op") ?? "toggle"); return Ok("quick");
                 case "session.overlay":
-                    return Ok(host.SessionOverlay(target, GetString(args, "action") ?? "open",
+                {
+                    // A refusal has to answer ok:false, or a caller that checks `ok` reads "I would
+                    // not do that" as "done" — the exact dishonesty the refusal exists to end. The
+                    // host marks one by prefixing REFUSE_PREFIX; everything else is a result string.
+                    string ovl = host.SessionOverlay(target, GetString(args, "action") ?? "open",
                         GetString(args, "command"), GetInt(args, "size-percent", 0),
-                        GetBool(args, "wait"), GetBool(args, "block")));
+                        GetBool(args, "wait"), GetBool(args, "block"));
+                    return ovl.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+                        ? Err(ovl[ISessionHost.RefusePrefix.Length..])
+                        : Ok(ovl);
+                }
                 case "notify":
                     return host.Notify(target, GetString(args, "title"), GetString(args, "body") ?? "")
                         ? Ok("notified") : Err("session not found");
@@ -311,7 +319,7 @@ public sealed class ControlServer : IDisposable
             {
                 "session.write" => HandleWrite(s, args),
                 "session.type" => HandleType(s, args),
-                "session.text" => HandleText(s),
+                "session.text" => HandleText(s, args),
                 "session.status" => HandleStatus(s, args),
                 "session.metrics" => HandleSessionMetrics(host, s, target),
                 "image.show" => HandleImageShow(s, args),
@@ -444,21 +452,60 @@ public sealed class ControlServer : IDisposable
         return Ok("written");
     }
 
+    /// <summary>Type text as if the user had. Newlines become CR (the Enter convention); every other
+    /// control byte is REFUSED.
+    ///
+    /// Why refuse rather than strip: a control byte in typed text reaches the shell's line editor
+    /// before anything parses it, and the damage is silent. agterm hardened this in v0.25.0 after a
+    /// NUL truncated an injection and the call still answered ok - the shortened line kept its
+    /// Return and ran. Stripping produces that same shortened line; refusing tells the caller its
+    /// text was not what it thought.
+    ///
+    /// TAB stays (completion is typing). A caller that genuinely means the control byte - an escape
+    /// sequence for a TUI, a lone ^C - passes allow-control and gets exactly what it asked for.
+    ///
+    /// It does NOT get sent to session.write, whatever an earlier version of this message said:
+    /// session.write injects into the emulator and never reaches the shell (ISession.Inject), so as
+    /// a way to deliver bytes to a program it does not work at all. Pointing a caller at a verb that
+    /// silently cannot do the job is worse than the refusal it was meant to soften.</summary>
     private static string HandleType(ISession s, JsonElement args)
     {
         string text = (GetString(args, "text") ?? "").Replace("\r\n", "\r").Replace('\n', '\r');
+        if (!GetBool(args, "allow-control") && FirstControlByte(text) is { } bad)
+            return Err($"session.type refuses control byte 0x{(int)bad:X2} at index {text.IndexOf(bad)} " +
+                       "(CR, LF and TAB are fine) - pass --allow-control if you mean it");
         s.Write(Encoding.UTF8.GetBytes(text));
         return Ok("typed");
     }
 
-    /// <summary>Dump the target session's active-pane buffer as plain text (trailing blank lines trimmed).</summary>
-    private static string HandleText(ISession s)
+    /// <summary>The first C0/DEL control character that is not CR, LF or TAB, or null.</summary>
+    private static char? FirstControlByte(string text)
     {
+        foreach (char c in text)
+            if ((c < ' ' || c == '\u007f') && c != '\r' && c != '\n' && c != '\t') return c;
+        return null;
+    }
+
+    /// <summary>Dump the target session's active-pane buffer as plain text (trailing blank lines
+    /// trimmed). `lines` reaches back into scrollback: the last N lines ending at the bottom of the
+    /// visible screen, so an N larger than the screen height picks up history. Omitted (or 0) keeps
+    /// the old meaning exactly - the visible screen.
+    ///
+    /// Scrollback matters because the interesting part is usually already gone: a launch banner, a
+    /// version, an error printed before a full-screen app took the alt screen. An agent reading a
+    /// pane it did not watch could reach none of it.</summary>
+    private static string HandleText(ISession s, JsonElement args)
+    {
+        int want = GetInt(args, "lines", 0);
         var sb = new StringBuilder();
         lock (s.SyncRoot)
         {
             var em = s.Emulator;
-            for (int r = 0; r < em.Screen.Rows; r++) sb.Append(em.DumpRow(r)).Append('\n');
+            int rows = em.Screen.Rows, hist = em.HistoryCount;
+            int take = want <= 0 ? rows : Math.Min(want, rows + hist);
+            // Absolute numbering: [0, hist) is scrollback, then the live rows.
+            for (int abs = hist + rows - take; abs < hist + rows; abs++)
+                sb.Append(abs < hist ? em.DumpHistoryRow(abs) : em.DumpRow(abs - hist)).Append('\n');
         }
         return Ok(sb.ToString().TrimEnd('\n'));
     }

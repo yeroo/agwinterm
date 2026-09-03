@@ -1,5 +1,8 @@
 # agterm → agwinterm gap analysis — July 2026 refresh
 
+> **Superseded (2026-09-02):** current parity against agterm **v0.26.0** is tracked in **[agterm-parity.md](agterm-parity.md)**. This file compares against the July 2026 waves and is history.
+
+
 Snapshot date: **2026-07-07**. Three inputs, all evidence-based:
 
 1. **agterm's merged PRs #1–#161** (the ~60 feature/fix PRs of 2026-07-01…07-07 post-date our

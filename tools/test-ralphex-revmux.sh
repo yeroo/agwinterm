@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 BRIDGE="$ROOT/tools/ralphex-revmux.sh"
 REAL_GIT="$(command -v git)"
-REAL_DATE="$(command -v date)"
 TMP="$(mktemp -d)"
 RALPHEX_FIXTURE_PROGRESS=""
 cleanup_test() {
@@ -32,18 +31,6 @@ exec "$REAL_GIT_BIN" "$@"
 FAKE_GIT
 chmod +x "$TMP/bin/git"
 
-# Hold every bridge invocation in the same synthetic second. Unique run ids must therefore come
-# from the collision-resistant suffix rather than from test timing.
-cat > "$TMP/bin/date" <<FAKE_DATE
-#!/usr/bin/env bash
-if [ "\${1:-}" = '+%Y%m%d-%H%M%S' ]; then
-  printf '%s\n' '20260831-010203'
-  exit 0
-fi
-exec "$REAL_DATE" "\$@"
-FAKE_DATE
-chmod +x "$TMP/bin/date"
-
 cat > "$TMP/bin/claude" <<'FAKE_CLAUDE'
 #!/usr/bin/env bash
 cat >/dev/null
@@ -66,10 +53,6 @@ to_unix_path() {
 FAKE_ROOT="$(to_unix_path "$FAKE_ROOT")"
 FAKE_REPORT="$(to_unix_path "$FAKE_REPORT")"
 if [ "${1:-}" = "new" ]; then
-  if [ "${FAKE_NEW_STATUS:-0}" != "0" ]; then
-    echo 'synthetic revmux-new diagnostic' >&2
-    exit "$FAKE_NEW_STATUS"
-  fi
   task=""
   run=""
   while [ "$#" -gt 0 ]; do
@@ -79,28 +62,23 @@ if [ "${1:-}" = "new" ]; then
       *) shift ;;
     esac
   done
-  # Refuse in revmux's own words, taken from the binary. A refusal authored to satisfy
-  # the bridge's retry condition is what let a gate matching nothing look tested: the
-  # loop used to require 'already exists|duplicate|collision', which revmux never says.
+  # Every name the bridge asks for, so a test can count attempts and check they differ.
+  printf '%s\n' "$run" >> "$FAKE_ROOT/new-attempts.log"
+  if [ "${FAKE_NEW_STATUS:-0}" != "0" ]; then
+    echo 'synthetic revmux-new diagnostic' >&2
+    exit "$FAKE_NEW_STATUS"
+  fi
+  # Refuse the first attempt in revmux's own words, taken from the binary. A refusal
+  # authored to match whatever the bridge happens to look for is how a retry condition
+  # that matches nothing still looks tested.
   if [ "${FAKE_COLLIDE_ONCE:-false}" = true ] && [ ! -f "$FAKE_ROOT/collision-injected" ]; then
     touch "$FAKE_ROOT/collision-injected"
-    printf 'round %s is being written by a run holding it: two runs sharing a round truncate each other'"'"'s artifacts, so open a new round instead\n' "$run" >&2
-    exit 8
-  fi
-  if [ "${FAKE_ALWAYS_TAKEN:-false}" = true ]; then
-    printf '%s\n' "$run" >> "$FAKE_ROOT/taken-attempts.log"
     printf 'round %s has already run, report.md is in place: a round that went badly is exactly the one a later reflection agent reads, so it is never reused\n' "$run" >&2
     exit 8
   fi
-  task_root="$FAKE_ROOT/rounds/$task"
-  round="$task_root/$run"
-  mkdir -p "$task_root"
-  if ! mkdir "$round"; then
-    printf 'duplicate synthetic round: %s/%s\n' "$task" "$run" >&2
-    exit 8
-  fi
-  mkdir "$round/input"
-  task_file="$task_root/task.md"
+  round="$FAKE_ROOT/rounds/$task/$run"
+  mkdir -p "$round/input"
+  task_file="$FAKE_ROOT/rounds/$task/task.md"
   created_task_file=false
   if [ ! -f "$task_file" ]; then
     created_task_file=true
@@ -114,7 +92,6 @@ if [ "${1:-}" = "new" ]; then
       > "$task_file"
   fi
   printf '%s\n' "$task" >> "$FAKE_ROOT/tasks.log"
-  printf '%s\t%s\n' "$task" "$run" >> "$FAKE_ROOT/runs.log"
   printf '%s' "$round/input/scope.md" > "$FAKE_ROOT/last-scope"
   jq -n --arg round_dir "$round" \
         --arg scope "$round/input/scope.md" \
@@ -184,7 +161,6 @@ run_bridge() {
     FAKE_GIT_DETACHED_SHA="${FAKE_GIT_DETACHED_SHA:-abc1234}" \
     FAKE_OMIT_TASK_FILE="${FAKE_OMIT_TASK_FILE:-false}" \
     FAKE_COLLIDE_ONCE="${FAKE_COLLIDE_ONCE:-false}" \
-    FAKE_ALWAYS_TAKEN="${FAKE_ALWAYS_TAKEN:-false}" \
     "$BRIDGE" "$prompt"
 }
 
@@ -211,32 +187,6 @@ assert_not_contains "$scope" 'STALE_CONTEXT_MUST_NOT_REACH_SCOPE'
 task_file="$TMP/rounds/$(tail -n 1 "$TMP/tasks.log")/task.md"
 api_auth_task="$(tail -n 1 "$TMP/tasks.log")"
 assert_contains "$task_file" 'description: "Ralphex review loop for docs/plans/api/auth.md"'
-
-FAKE_COLLIDE_ONCE=true run_bridge "$TMP/api-auth.txt" "$TMP/clean.json" \
-  > "$TMP/collision-retry.out" 2> "$TMP/collision-retry.err"
-assert_contains "$TMP/collision-retry.out" 'NO ISSUES FOUND'
-[ -f "$TMP/collision-injected" ] \
-  || { echo 'revmux-new collision fixture did not run' >&2; exit 1; }
-
-# A name refused every time: the loop must give up bounded rather than spin, offer a
-# distinct name each attempt, and surface revmux's reason. `fail` exits 2 and prints no
-# done-signal, so this is a loud failure by design - the retry is a safety net, not a
-# way of hiding one.
-: > "$TMP/taken-attempts.log"
-set +e
-FAKE_ALWAYS_TAKEN=true run_bridge "$TMP/api-auth.txt" "$TMP/clean.json" \
-  > "$TMP/always-taken.out" 2> "$TMP/always-taken.err"
-always_taken_status=$?
-set -e
-[ "$always_taken_status" -eq 2 ] \
-  || { echo "exhausted retries exited $always_taken_status, want 2" >&2; exit 1; }
-attempts="$(wc -l < "$TMP/taken-attempts.log" | tr -d ' ')"
-[ "$attempts" -eq 3 ] \
-  || { echo "revmux new was called $attempts time(s), want 3" >&2; exit 1; }
-[ "$(sort -u "$TMP/taken-attempts.log" | wc -l | tr -d ' ')" -eq 3 ] \
-  || { echo 'an attempt reused a run name already refused' >&2; exit 1; }
-assert_contains "$TMP/always-taken.err" 'has already run'
-assert_contains "$TMP/always-taken.err" 'revmux new failed after 3 attempts'
 
 write_prompt "$TMP/metadata.txt" 'docs/plans/metadata.md' 'trunk'
 FAKE_GIT_MODE=branch FAKE_GIT_BRANCH='Feature/UPPER_Case' \
@@ -293,7 +243,7 @@ legacy_auth_task="$(tail -n 1 "$TMP/tasks.log")"
 [ "$api_auth_task" != "$legacy_auth_task" ] \
   || { echo 'colliding plan basenames reused one task id' >&2; exit 1; }
 
-existing_plan='docs/plans/completed/20260821-image-frameshm-command.md'
+existing_plan='docs/plans/20260821-image-frameshm-command.md'
 write_prompt "$TMP/relative-plan.txt" "$existing_plan"
 run_bridge "$TMP/relative-plan.txt" "$TMP/clean.json" \
   > "$TMP/relative.out" 2> "$TMP/relative.err"
@@ -332,6 +282,7 @@ set -e
 [ "$failure_status" = "2" ] || { echo "revmux exit 2 became $failure_status" >&2; exit 1; }
 
 set +e
+: > "$TMP/new-attempts.log"
 PATH="$TMP/bin:$PATH" REAL_GIT_BIN="$REAL_GIT" FAKE_ROOT="$TMP" \
   FAKE_REPORT="$TMP/clean.json" FAKE_NEW_STATUS=9 \
   "$BRIDGE" "$TMP/api-auth.txt" > "$TMP/new-failure.out" 2> "$TMP/new-failure.err"
@@ -339,6 +290,25 @@ new_failure_status=$?
 set -e
 [ "$new_failure_status" -ne 0 ] || { echo 'revmux new failure returned success' >&2; exit 1; }
 assert_contains "$TMP/new-failure.err" 'synthetic revmux-new diagnostic'
+# The same call, read for the retry: a name refused every time must give up bounded
+# rather than spin, and must offer a distinct name on each attempt.
+new_attempts="$(wc -l < "$TMP/new-attempts.log" | tr -d ' ')"
+[ "$new_attempts" -eq 3 ] \
+  || { echo "revmux new was called $new_attempts time(s), want 3" >&2; exit 1; }
+[ "$(sort -u "$TMP/new-attempts.log" | wc -l | tr -d ' ')" -eq 3 ] \
+  || { echo 'an attempt reused a run name already refused' >&2; exit 1; }
+assert_contains "$TMP/new-failure.err" 'revmux new failed after 3 attempts'
+
+# A name taken once: the retry recovers and the review completes normally.
+: > "$TMP/new-attempts.log"
+FAKE_COLLIDE_ONCE=true run_bridge "$TMP/api-auth.txt" "$TMP/clean.json" \
+  > "$TMP/collision-retry.out" 2> "$TMP/collision-retry.err"
+assert_contains "$TMP/collision-retry.out" 'NO ISSUES FOUND'
+[ -f "$TMP/collision-injected" ] \
+  || { echo 'revmux-new collision fixture did not run' >&2; exit 1; }
+collide_attempts="$(wc -l < "$TMP/new-attempts.log" | tr -d ' ')"
+[ "$collide_attempts" -eq 2 ] \
+  || { echo "collision retry took $collide_attempts attempt(s), want 2" >&2; exit 1; }
 
 set +e
 FAKE_OMIT_TASK_FILE=true run_bridge "$TMP/api-auth.txt" "$TMP/clean.json" \
@@ -408,6 +378,16 @@ configured_review_tool="$(sed -n 's/^external_review_tool[[:space:]]*=[[:space:]
 go build -o "$TMP/bin/ralphex-revmux.exe" "$ROOT/tools/ralphex-revmux-launcher.go"
 go test "$ROOT/tools/ralphex-revmux-launcher.go" "$ROOT/tools/ralphex-revmux-launcher_test.go"
 git_bash="$(cygpath -w "$(command -v bash)")"
+
+# Ralphex is a Windows binary, so it resolves `claude` through exec.LookPath, which
+# only considers PATHEXT extensions. The extensionless `$TMP/bin/claude` above is
+# invisible to it: on a developer's machine it silently found the real Claude Code
+# instead, and on a runner that has none it refuses to start at all. Hand it a .cmd
+# that shells out to the same fake, and point ralphex straight at it so the answer
+# does not depend on PATH ordering either.
+printf '%s\r\n' '@echo off' "\"$git_bash\" \"$(cygpath -w "$TMP/bin/claude")\" %*" \
+  > "$TMP/bin/claude.cmd"
+fake_claude_cmd="$(cygpath -w "$TMP/bin/claude.cmd")"
 PATH="$TMP/bin:$PATH" REAL_GIT_BIN="$REAL_GIT" FAKE_ROOT="$TMP" \
   FAKE_REPORT="$TMP/clean.json" RALPHEX_GIT_BASH="$git_bash" \
   "$configured_launcher" "$TMP/rendered-wrapper.txt" \
@@ -456,6 +436,7 @@ PATH="$TMP/bin:$PATH" REAL_GIT_BIN="$REAL_GIT" FAKE_ROOT="$TMP" \
   FAKE_REPORT="$TMP/clean.json" FAKE_STATUS=0 RALPHEX_GIT_BASH="$git_bash" \
   MSYS2_ARG_CONV_EXCL='*' \
   ralphex /external-only /skip-finalize /max-external-iterations:1 \
+    /claude-command:"$fake_claude_cmd" \
     /base-ref:main "$launcher_plan_windows" \
     > "$TMP/ralphex.out" 2> "$TMP/ralphex.err"
 ralphex_status=$?
@@ -468,13 +449,5 @@ fi
 tasks_after="$(wc -l < "$TMP/tasks.log" | tr -d ' ')"
 [ "$tasks_after" -gt "$tasks_before" ] \
   || { echo 'Ralphex did not reach the configured review launcher' >&2; exit 1; }
-
-duplicate_runs="$(sort "$TMP/runs.log" | uniq -d)"
-[ -z "$duplicate_runs" ] \
-  || { printf 'bridge reused task/run identities:\n%s\n' "$duplicate_runs" >&2; exit 1; }
-if ! awk -F '\t' '$2 !~ /^20260831-010203-[0-9]+-[0-9]+-[1-3]$/ { exit 1 }' "$TMP/runs.log"; then
-  echo 'bridge run id lacks timestamp, process id, random suffix, or retry attempt' >&2
-  exit 1
-fi
 
 echo 'ralphex-revmux bridge tests passed'

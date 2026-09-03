@@ -29,7 +29,10 @@ jobs:
           $bin = Join-Path $env:RUNNER_TEMP 'ralphex-bin'
           New-Item -ItemType Directory -Force -Path $bin | Out-Null
           $env:GOBIN = $bin
-          go install github.com/umputun/ralphex@v1.6.1
+          # The command is the module path plus the main package, which lives under
+          # cmd/ - the module root holds no package, so the bare module path fails with
+          # "found, but does not contain package".
+          go install github.com/umputun/ralphex/cmd/ralphex@v1.6.1
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Ralphex-Revmux bridge fixtures

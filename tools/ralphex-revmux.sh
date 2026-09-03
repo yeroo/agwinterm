@@ -100,9 +100,11 @@ RUN_STAMP="$(date +%Y%m%d-%H%M%S)"
 PATHS_JSON=""
 NEW_OK=false
 for attempt in 1 2 3; do
-  # The timestamp is readable but not unique: two external reviews can start in the same second
-  # for the same deterministic task. PID plus Bash's per-process random value separates them;
-  # the attempt suffix guarantees that a reported collision gets a fresh name on retry.
+  # The timestamp reads well in a directory listing but is not unique, and the task name
+  # above is deterministic per plan: two external reviews of one plan opening in the same
+  # second ask revmux for the same round, and it refuses the second. The PID plus bash's
+  # per-process $RANDOM separates concurrent callers; the attempt suffix gives a refused
+  # name a genuinely fresh one to retry with.
   RUN="$RUN_STAMP-$$-${RANDOM:-0}-$attempt"
   # The 2> below opens with O_TRUNC before revmux execs, so only the last attempt's
   # refusal survives to the tail. That is the intent, but it is the redirect doing it:
@@ -111,16 +113,13 @@ for attempt in 1 2 3; do
     NEW_OK=true
     break
   fi
-  # Every failure retries, deliberately, rather than only the ones whose wording reads
-  # like a taken name. This loop used to gate the retry on
-  # `grep -Eqi 'already exists|duplicate|collision'` and revmux says none of those: its
-  # four refusals for a name it will not open are "has already run", "is being written
-  # by a run holding it", "was claimed by a run that never came back" and "is reserved".
-  # The gate matched nothing, so the retry never ran, and correcting it to those four
-  # phrases only moves the next silent breakage to the next wording change. Two of the
-  # messages end by advising "open a new round instead", which is what a retry does.
-  # A failure a fresh name cannot cure costs two extra sub-second calls; the attempt cap
-  # is what bounds this loop, not the wording.
+  # Every failure retries, rather than only the ones whose wording reads like a taken
+  # name. revmux's four refusals for a name it will not open are "has already run", "is
+  # being written by a run holding it", "was claimed by a run that never came back" and
+  # "is reserved" - so a wording gate is both easy to get wrong and quiet when it is,
+  # which is exactly what happened on feat/image-frameshm-control. Two of those messages
+  # end by advising "open a new round instead", which is what a retry does. A failure a
+  # fresh name cannot cure costs two extra sub-second calls; the attempt cap bounds this.
 done
 if [ "$NEW_OK" != true ]; then
   tail -n 20 "$NEW_LOG" >&2

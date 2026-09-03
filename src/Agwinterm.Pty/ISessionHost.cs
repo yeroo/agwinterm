@@ -48,6 +48,11 @@ public sealed record PaneMetricsSnapshot(int Cols, int Rows, int CellWidth, int 
 /// </summary>
 public interface ISessionHost
 {
+    /// <summary>Marker a host puts in front of a verb's result to mean "refused, and here is why" —
+    /// the control server turns it into an ok:false error. Needed where the host returns a string
+    /// rather than a bool, so a refusal cannot be mistaken for a result.</summary>
+    public const string RefusePrefix = "refuse:";
+
     ISession? Resolve(string? target);
 
     /// <summary>The full workspace→session tree.</summary>
@@ -155,7 +160,9 @@ public interface ISessionHost
 
     /// <summary>Select the target pane's whole buffer (scrollback + live grid).</summary>
     string SelectionAll(string? target);
-    /// <summary>Copy the target pane's current selection to the Windows clipboard.</summary>
+    /// <summary>Copy the target pane's current selection to the Windows clipboard. A live selection
+    /// whose cells hold no text — a full-screen app repainted over them — copies nothing and leaves
+    /// the clipboard untouched, answering "nothing to copy".</summary>
     string SelectionCopy(string? target);
     /// <summary>Clear the target pane's selection.</summary>
     string SelectionClear(string? target);

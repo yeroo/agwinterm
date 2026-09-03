@@ -1,5 +1,8 @@
 # agwinterm roadmap — closing the agterm gap
 
+> **Superseded (2026-09-02):** current parity against agterm **v0.26.0** is tracked in **[agterm-parity.md](agterm-parity.md)**. This file compares against agterm v0.10.2 and is history.
+
+
 Execution plan to close every gap in [agterm-gap-analysis.md](agterm-gap-analysis.md).
 Ordered by value ÷ effort and by dependency. Effort: S (hours) / M (a day-ish) / L (multi-day).
 
