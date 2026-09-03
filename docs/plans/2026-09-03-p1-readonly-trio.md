@@ -138,16 +138,16 @@ They are grouped by what they have in common: each one answers a question a call
 - [x] run the .NET suite — must pass before task 3
 
 ### Task 3: `agwintermctl version`
-- [ ] add a `version` verb to `src/Agwinterm.Ctl/Program.cs` reporting two things on separate,
+- [x] add a `version` verb to `src/Agwinterm.Ctl/Program.cs` reporting two things on separate,
       greppable lines: the **CLI** (its version and `Environment.ProcessPath`, the resolved path of
       the executable that actually ran) and the **app** serving the pipe (from `ping`, plus the pipe
       name it tried)
-- [ ] **exit 0 and still print the CLI half when no app answers**, marking the app half unavailable.
+- [x] **exit 0 and still print the CLI half when no app answers**, marking the app half unavailable.
       A diagnostic that fails when the thing being diagnosed is down is the one case it exists for
-- [ ] `--json` for the machine-readable form, matching how `tree` offers one
-- [ ] tests: the CLI half is produced without any app running; the pipe name appears in the output;
+- [x] `--json` for the machine-readable form, matching how `tree` offers one
+- [x] tests: the CLI half is produced without any app running; the pipe name appears in the output;
       `--json` parses
-- [ ] run the .NET suite — must pass before task 4
+- [x] run the .NET suite — must pass before task 4
 
 ### Task 4: QA cases and the agent-facing docs
 - [ ] add `qa/control-read.md` with cases for all three, following `qa/selection.md`'s style — prose

@@ -5,6 +5,7 @@ using System.Text.Json;
 // agwintermctl — drive agwinterm's control API from the shell (agterm's agtermctl analog).
 // Usage:
 //   agwintermctl ping
+//   agwintermctl version [--json]                  (the CLI that ran + the app serving the pipe)
 //   agwintermctl tree [--json]
 //   agwintermctl session new [--cwd DIR] [--name NAME] [--no-select]
 //   agwintermctl session select <target>
@@ -26,7 +27,7 @@ using System.Text.Json;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: agwintermctl <ping|tree|session|surface|image|install> ... (see --help)");
+    Console.Error.WriteLine("usage: agwintermctl <ping|version|tree|session|surface|image|install> ... (see --help)");
     return 2;
 }
 
@@ -61,6 +62,7 @@ var cargs = new Dictionary<string, object?>();
 switch (area)
 {
     case "ping": cmd = "ping"; break;
+    case "version": cmd = "version"; break;   // handled locally, below: needs the resolved pipe name
     case "tree": cmd = "tree"; break;
     case "events": // agwintermctl events [--since CURSOR] [--limit N] — poll status/notification/session/tree events
         cmd = "events";
@@ -386,6 +388,17 @@ string requestJson = JsonSerializer.Serialize(req);
 string pipeName = options.TryGetValue("socket", out var s) ? s
     : options.TryGetValue("pipe", out var pp) ? pp
     : Environment.GetEnvironmentVariable("AGWINTERM_PIPE") ?? "agwinterm";
+
+// `version` answers "which binary did I run, and which app did it reach". The app half is a ping,
+// but the CLI half must survive a dead pipe — that is the case the command exists for — so it is
+// rendered locally and exits 0 either way.
+if (cmd == "version")
+{
+    var report = Agwinterm.Pty.VersionReport.Build(pipeName);
+    Console.WriteLine(jsonOut ? Agwinterm.Pty.VersionReport.RenderJson(report)
+                              : Agwinterm.Pty.VersionReport.RenderText(report));
+    return 0;
+}
 
 try
 {
