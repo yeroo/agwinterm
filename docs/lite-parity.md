@@ -8,6 +8,8 @@ says otherwise and gives the reason.
 - Verb lists below were **extracted from both dispatchers** on 2026-09-02, not written from memory:
   85 verbs in agwinterm, 41 in agliteterm.
 - Update this file in the PR that closes an item.
+- The verbs below are cut into runnable batches (P6–P12) in
+  [plans/2026-09-03-parity-batches.md](plans/2026-09-03-parity-batches.md).
 
 The control API is the half that has to match exactly: `tests/conformance/control-api.json` in this
 repo is the canonical contract, agliteterm's CI checks its copy against it, and an agent written
