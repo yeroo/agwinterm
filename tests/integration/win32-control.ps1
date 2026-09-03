@@ -517,21 +517,23 @@ finally {
     if ($sessionId) {
         try { Invoke-Ctl @('session', 'close', $sessionId) | Out-Null } catch { }
     }
-    if (Test-Path -LiteralPath $captureFile) { Remove-Item -LiteralPath $captureFile -Force }
-    if (Test-Path -LiteralPath $releaseFile) { Remove-Item -LiteralPath $releaseFile -Force }
-    foreach ($mouseFile in @($mouseCellReadyFile, $mousePixelReadyFile, $mouseCellFile, $mousePixelFile)) {
-        if (Test-Path -LiteralPath $mouseFile) { Remove-Item -LiteralPath $mouseFile -Force }
+    # Every step here is guarded: $ErrorActionPreference is Stop, and a terminating error inside a
+    # finally abandons the rest of the block - the environment restore at the end included.
+    foreach ($file in @($captureFile, $releaseFile, $mouseCellReadyFile, $mousePixelReadyFile, $mouseCellFile, $mousePixelFile)) {
+        try { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force } } catch { }
     }
     if ($process) {
         try { $process.CloseMainWindow() | Out-Null } catch { }
-        if (-not $process.WaitForExit(2000)) {
-            Stop-Process -Id $process.Id -Force
-            $process.WaitForExit()
-        }
+        try {
+            if (-not $process.WaitForExit(2000)) {
+                Stop-Process -Id $process.Id -Force
+                $process.WaitForExit()
+            }
+        } catch { }
     }
     # Both directories were proved to be direct children of LocalApplicationData before launch.
     foreach ($dir in @($testAppDir, $envAppDir)) {
-        if ($dir -and (Test-Path -LiteralPath $dir)) { Remove-Item -LiteralPath $dir -Recurse -Force }
+        try { if ($dir -and (Test-Path -LiteralPath $dir)) { Remove-Item -LiteralPath $dir -Recurse -Force } } catch { }
     }
     foreach ($name in $savedEnv.Keys) {
         [Environment]::SetEnvironmentVariable($name, $savedEnv[$name])

@@ -524,6 +524,29 @@ public class ControlServerFrameShmTests : IDisposable
         Assert.Equal(Packed(0xE0), session.Emulator.Images[1].Data);
     }
 
+    // Two cached ids, one replaced behind the verb's back: the retry copies that one out of shared
+    // memory and the live sibling keeps its cache hit - the burst this cache exists to avoid.
+    [Fact]
+    public void OnlyTheStaleIdIsRecopiedWhenASiblingIsStillLive()
+    {
+        var (server, session) = New();
+        var a = NewProducer();
+        var b = NewProducer();
+        long seqA = a.Publish(0xA1);
+        long seqB = b.Publish(0xB1);
+        string request = Request("{\"images\":[" + Image(a, seqA, a.Slot, id: 1) + "," +
+            Image(b, seqB, b.Slot, id: 2, row: 6) + "]}");
+        Assert.Contains("frame:2/2", server.Dispatch(request));
+        Assert.Contains("frame:2/0", server.Dispatch(request));
+
+        session.MutateLocked(em => em.SetImageData(2, KittyFormat.Rgba, 1, 1, new byte[] { 1, 2, 3, 4 }));
+
+        Assert.Contains("frame:2/1", server.Dispatch(request));
+        Assert.Equal(Packed(0xA1), session.Emulator.Images[1].Data);
+        Assert.Equal(Packed(0xB1), session.Emulator.Images[2].Data);
+        Assert.Equal(2, session.Emulator.Placements.Count);
+    }
+
     [Fact]
     public void ACacheReplacementBetweenValidationAndCommitRetransmitsOnce()
     {
