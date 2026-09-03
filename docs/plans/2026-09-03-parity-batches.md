@@ -25,8 +25,11 @@ without a **Shipped** line below has not started.
 - **Every batch exits the same way:** its own tests, the QA cases in `qa/` (both products have them),
   the full suite green, then revmux — **two rounds minimum**; the second round is where criticals have
   historically surfaced.
-- **Releases happen at wave boundaries**, not per batch. Only `*.*.9` / `*.*.18` / `*.*.27` reach
-  Chocolatey and winget.
+- **A release follows every agwinterm batch that adds a verb.** agliteterm's CI proves the contract
+  against the *released* `agwintermctl` (its `fetch-native.ps1` takes the `latest` release), so a lite
+  mirror cannot go green until the verb it mirrors has shipped in a CLI. Only `*.*.9` / `*.*.18` /
+  `*.*.27` reach Chocolatey and winget; a per-batch release skips those numbers unless a package
+  checkpoint is intended (P1 shipped as 0.17.10, 0.17.9 skipped).
 
 ## Blocked on a decision from you
 
@@ -45,7 +48,8 @@ Three contract questions gate their batches. They are cheap to answer and expens
 ### P1 · agwinterm · the read-only trio
 `surface.cursor` · `statusChangedAt` on the tree's session node · `agwintermctl version`
 
-**Shipped:** #221 — plan at [completed/2026-09-03-p1-readonly-trio.md](completed/2026-09-03-p1-readonly-trio.md).
+**Shipped:** #221 — plan at [completed/2026-09-03-p1-readonly-trio.md](completed/2026-09-03-p1-readonly-trio.md);
+contract step #223; released as **v0.17.10** (#224). Mirror: agliteterm P1-lite.
 
 Three small, read-only additions with no persistence and no renderer risk. First because this is the
 only batch that makes **our own tooling less fragile** rather than merely less laborious:
