@@ -1,0 +1,15 @@
+# Shell scripts are run by bash, which fails on a CR: a CRLF checkout gives
+# "$'\r': command not found" on the first line. Pin them to LF whatever the
+# user's core.autocrlf says.
+*.sh text eol=lf
+
+# Batch files are the mirror image: cmd.exe mis-parses a multi-line if-block in
+# an LF-only file, so these must be CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Keep the project-local automation configuration stable across checkouts and
+# easy to compare with its generated defaults.
+.ralphex/config text eol=lf
+.ralphex/prompts/*.txt text eol=lf
+.revmux/*.md text eol=lf
