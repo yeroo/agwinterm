@@ -150,18 +150,25 @@ They are grouped by what they have in common: each one answers a question a call
 - [x] run the .NET suite — must pass before task 4
 
 ### Task 4: QA cases and the agent-facing docs
-- [ ] add `qa/control-read.md` with cases for all three, following `qa/selection.md`'s style — prose
+- [x] add `qa/control-read.md` with cases for all three, following `qa/selection.md`'s style — prose
       for the steps, machinery for the oracle
-- [ ] `surface.cursor` case must prove the number **tracks reality**: feed a known prompt into a
+- [x] `surface.cursor` case must prove the number **tracks reality**: feed a known prompt into a
       sandbox pane, assert the column matches, type more, assert it moved. A case that only asserts
       "an integer came back" is the vacuous pass this QA system exists to prevent
-- [ ] `statusChangedAt` case: set a status, read the tree, assert the age is small; wait, re-assert
+- [x] `statusChangedAt` case: set a status, read the tree, assert the age is small; wait, re-assert
       the same status, assert the age went **back down**
-- [ ] `version` case: assert it names the sandbox instance's pipe, and assert the no-app path exits 0
-- [ ] add the three verbs to `src/Agwinterm.Pty/AgentSkill.cs` — it documents only what the app
+- [x] `version` case: assert it names the sandbox instance's pipe, and assert the no-app path exits 0
+- [x] add the three verbs to `src/Agwinterm.Pty/AgentSkill.cs` — it documents only what the app
       implements, and an agent that cannot see a verb will not use it
-- [ ] add them to the `agwintermctl` section of `README.md` (`:207`)
-- [ ] run the QA cases against a sandbox build — must pass before task 5
+- [x] add them to the `agwintermctl` section of `README.md` (`:207`)
+- [x] run the QA cases against a sandbox build — must pass before task 5
+- ⚠️ **Task 1's targeting claim was half wrong, and the QA run caught it.** A session's **id** is also
+      its **first pane's** id, so `Resolve` matches it as a pane: an id target reports pane 0 whatever
+      `focusedPane` says. Only a session **name** reaches the focused pane. Pre-existing `Resolve`
+      behaviour, shared by `session.text` / `session.type` — which is the guarantee that actually
+      matters, since the pane you check is then the pane you type into. The comment in
+      `ControlServer.cs`, `AgentSkill.cs` and `README.md` now say that instead; the case in
+      `qa/control-read.md` pins both halves together.
 
 ### Task 5: [Final] Verify acceptance criteria
 - [ ] verify every requirement in Overview is implemented

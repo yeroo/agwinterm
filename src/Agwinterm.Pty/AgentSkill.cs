@@ -53,7 +53,11 @@ public static class AgentSkill
         PowerShell-profile bridge that marks any command matching `$env:AGWINTERM_AGENT_RE` active/completed.
 
         ## Manage sessions & workspaces
-        - `agwintermctl tree --json`                              — list workspaces+sessions (id, name, active, status)
+        - `agwintermctl tree --json`                              — list workspaces+sessions (id, name, active, status,
+          `statusChangedAt` = epoch SECONDS of that session's last status write — its liveness clock. Every status
+          write restamps it, including a re-assert of the same status, so `now - statusChangedAt` is how long ago
+          the agent last said anything: a large age next to `"status":"active"` means the hook died, not that
+          work is still running. Always present, even for an idle session that never set one)
         - `agwintermctl events [--since CURSOR] [--limit N]`      — poll the event log (status/notification/session/tree changes); returns {cursor, events:[{seq,type,session,info}]}. Pass the returned cursor as --since next poll.
         - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"] [--profile NAME] [--no-select] [--wait]`
           `--no-select` creates the session in the background without stealing focus or changing the current selection.
@@ -70,6 +74,10 @@ public static class AgentSkill
         - `agwintermctl session output [--target ID]` — the LAST COMPLETED command's output (FTCS marks;
           pwsh sessions emit them automatically) — cleaner than parsing `session text` yourself
         - `agwintermctl sidebar state` — read-back: `visible tree` | `hidden flagged` | … (`ping` reports the app version)
+        - `agwintermctl version [--json]` — which CLI binary you just ran (version + its resolved path) and which app
+          answered (version + pipe), on two greppable lines, `cli` and `app`. Several agwintermctl.exe can coexist and
+          none need be on PATH; this says which one this was. It exits 0 and still prints the `cli` half when no app
+          answers, marking the app `unavailable` — that is the case it exists for
         - `agwintermctl session go next|prev|first|last|next-attention|prev-attention` — move the active session
         - `agwintermctl session move --to up|down|top|bottom`     — reorder within its workspace
         - `agwintermctl session move <workspace-id>`             — relocate to another workspace
@@ -81,6 +89,12 @@ public static class AgentSkill
           visible screen; `--lines N` returns the last N lines ending at the bottom of the screen, reaching back into
           scrollback — which is where a launch banner or an error printed before a full-screen app started still lives
         - `agwintermctl session copy [--target <id>]`            — return the session's current mouse text selection ("" if none)
+        - `agwintermctl surface cursor [--target <id>]`          — the caret COLUMN of a pane, as a bare integer.
+          Use it before typing into ANOTHER agent's composer: an empty composer parks the caret at a known
+          column, so a different column means a draft is sitting there and you should not send. A pane id
+          reports that pane; a session NAME reports its focused pane. (A session's id is also its first pane's
+          id, so an id targets that pane — same as `session text`/`session type`, so the pane you check is the
+          pane you type into.) Reading rendered text and guessing at placeholder strings is what this replaces
         - `agwintermctl session search "<term>"`                 — open the find bar over the active session; returns "N of M" (or "no matches")
         - `agwintermctl session search --next|--prev|--close`    — step matches / close the find bar
 

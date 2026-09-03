@@ -254,9 +254,12 @@ public sealed class ControlServer : IDisposable
                 // surface.cursor — the caret COLUMN as a bare integer (agterm's shape, so a script
                 // written against either product reads the same reply; a JSON object here would
                 // diverge for no caller we have, and the row is not what "is the composer empty"
-                // asks). Targeting follows Resolve: a PANE id reports that pane, a session id/name
-                // reports its FOCUSED pane — a cursor is a per-pane thing, and the focused pane is
-                // the only non-arbitrary answer for a session-wide target.
+                // asks). Targeting follows Resolve, exactly as session.text/session.type do, so the
+                // pane you CHECK is the pane you then type into: a pane id reports that pane, and a
+                // session NAME reports its focused pane — a cursor is a per-pane thing, and focus is
+                // the only non-arbitrary answer for a session-wide target. Note a session's id is
+                // also its first pane's id, so an id target reports pane 0 regardless of focus
+                // (pre-existing Resolve behaviour, verified in qa/control-read.md).
                 "surface.cursor" => OkRaw(s.SnapshotCursor().Col.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 "image.show" => HandleImageShow(s, args),
                 "image.sixel" => HandleImageSixel(s, args),
