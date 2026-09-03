@@ -31,12 +31,27 @@ public static class StatusAggregate
     /// <summary>Epoch seconds of the last status write on the pane that won <see cref="Winner"/>.
     /// Where several panes tie at the winning severity the most recent wins: a session is as fresh
     /// as its freshest contributor to the status being shown. Empty set = 0.</summary>
-    public static long WinnerChangedAt(IEnumerable<ISession> panes)
+    public static long WinnerChangedAt(IEnumerable<ISession> panes) => WinnerAndChangedAt(panes).ChangedAt;
+
+    /// <summary><see cref="Winner"/> and <see cref="WinnerChangedAt"/> from ONE pass over the panes,
+    /// reading each pane's status and stamp together. Statuses are written without a lock — a hook
+    /// reply, a keystroke, the control API — so a second scan looking for "the severity that won"
+    /// could find it gone and fall through to 0, the one value the stamp exists never to report (a
+    /// consumer reads 0 as an agent silent since 1970). The tree uses this form so its
+    /// <c>status</c> and <c>statusChangedAt</c> come from the same reading of the same pane.</summary>
+    public static (AgentStatus Status, long ChangedAt) WinnerAndChangedAt(IEnumerable<ISession> panes)
     {
-        var list = panes as IReadOnlyCollection<ISession> ?? panes.ToList();
-        int win = Severity(Winner(list));
+        var best = AgentStatus.Idle;
+        int win = -1;
         long at = 0;
-        foreach (var p in list) if (Severity(p.Status) == win && p.StatusChangedAt > at) at = p.StatusChangedAt;
-        return at;
+        foreach (var p in panes)
+        {
+            var status = p.Status;
+            long stamp = p.StatusChangedAt;
+            int sev = Severity(status);
+            if (sev > win) { win = sev; best = status; at = stamp; }
+            else if (sev == win && stamp > at) at = stamp;
+        }
+        return (best, at);
     }
 }

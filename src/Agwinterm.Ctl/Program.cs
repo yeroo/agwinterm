@@ -27,7 +27,7 @@ using System.Text.Json;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: agwintermctl <ping|version|tree|session|surface|image|install> ... (see --help)");
+    Console.Error.WriteLine("usage: agwintermctl <ping|version|tree|session|surface|image|install> ... (see README.md, \"Control it from anything\")");
     return 2;
 }
 
@@ -257,7 +257,8 @@ switch (area)
     case "settings": cmd = "settings.open"; break;
     case "surface":
         // agwintermctl surface cursor [--target ID] — the caret column of a pane, as a bare integer.
-        // A pane id reports that pane; a session id/name reports its focused pane.
+        // A pane id selects that pane — and the session id IS pane 0's id, so it selects pane 0
+        // regardless of focus; only a unique session NAME resolves to the focused pane.
         if (sub != "cursor")
         { Console.Error.WriteLine("usage: agwintermctl surface cursor [--target ID]"); return 2; }
         cmd = "surface.cursor";

@@ -94,6 +94,22 @@ public class StatusChangedAtTests
     }
 
     [Fact]
+    public void TheSingleSessionConvenienceHost_CarriesTheRealStamp()
+    {
+        // new ControlServer(ISession) wraps the session in SingleSessionHost, whose Tree builds its
+        // one snapshot positionally — the only place a forgotten named argument silently reports 0.
+        using var session = new TerminalSession(80, 24);
+        using var server = new ControlServer(session);
+
+        var n = Node(server, "single");
+        Assert.InRange(n.GetProperty("statusChangedAt").GetInt64(), Now - 5, Now + 5);
+
+        session.SetStatus(AgentStatus.Blocked);
+        session.BackdateStatus(Now - 90);
+        Assert.Equal(Now - 90, Node(server, "single").GetProperty("statusChangedAt").GetInt64());
+    }
+
+    [Fact]
     public void TreeStampMovesWhenTheStatusVerbWrites()
     {
         var host = new FakeSessionHost();

@@ -176,14 +176,18 @@ internal partial class Program
             lock (_workspaces)
                 return _workspaces.Select(w => new WorkspaceSnapshot(
                     w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
-                    w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), AggStatus(s),
-                        s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
-                        FocusedPane: Math.Clamp(s.Active, 0, Math.Max(0, s.Panes.Count - 1)), PaneCount: s.Panes.Count,
-                        StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
-                        SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
-                        PaneIds: s.Panes.Select(p => p.Id).ToList(),
-                        RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList(),
-                        StatusChangedAt: AggStatusAt(s))).ToList()
+                    w.Sessions.Select(s =>
+                    {
+                        var (status, statusChangedAt) = AggStatusAndAt(s);
+                        return new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), status,
+                            s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
+                            FocusedPane: Math.Clamp(s.Active, 0, Math.Max(0, s.Panes.Count - 1)), PaneCount: s.Panes.Count,
+                            StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
+                            SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
+                            PaneIds: s.Panes.Select(p => p.Id).ToList(),
+                            RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList(),
+                            StatusChangedAt: statusChangedAt);
+                    }).ToList()
                 )).ToList();
         }
 

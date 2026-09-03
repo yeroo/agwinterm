@@ -70,6 +70,28 @@ public class VersionReportTests
     }
 
     [Fact]
+    public async Task AMutePipe_IsUnavailableWithinTheBudget_NotAHang()
+    {
+        // Something owns the name and accepts the connection but never answers — a starved thread
+        // pool, or a stranger behind --pipe. The budget must bound the read too, or `version`
+        // prints nothing at all in the one situation it exists for.
+        string pipe = "agwinterm-test-mute-" + Guid.NewGuid().ToString("N");
+        using var server = new System.IO.Pipes.NamedPipeServerStream(
+            pipe, System.IO.Pipes.PipeDirection.InOut, 1,
+            System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous);
+        var accepted = server.WaitForConnectionAsync();
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var r = VersionReport.Build(pipe, timeoutMs: 500);
+        started.Stop();
+
+        Assert.False(r.AppAvailable);
+        Assert.InRange(started.ElapsedMilliseconds, 0, 5000);
+        Assert.Contains("unavailable", VersionReport.RenderText(r));
+        await accepted.WaitAsync(TimeSpan.FromSeconds(5));   // it really did connect; the read is what gave up
+    }
+
+    [Fact]
     public void AppHalf_ReportsTheServingApp_WhenOneAnswers()
     {
         string pipe = "agwinterm-test-version-" + Guid.NewGuid().ToString("N");

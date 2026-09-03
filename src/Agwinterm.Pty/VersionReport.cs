@@ -26,9 +26,14 @@ public static class VersionReport
         public string PipePath => @"\\.\pipe\" + Pipe;
     }
 
-    /// <summary>The CLI's own version — the entry assembly's informational version, stamped by the
-    /// release build via -p:Version ("1.0.0" in unstamped dev builds), without build metadata.</summary>
-    public static string CliVersion()
+    /// <summary>The CLI's own version — see <see cref="EntryAssemblyVersion"/>.</summary>
+    public static string CliVersion() => EntryAssemblyVersion();
+
+    /// <summary>The entry assembly's informational version, stamped by the release build via
+    /// -p:Version ("1.0.0" in unstamped dev builds), without build metadata. The one formatting rule
+    /// behind both lines `version` prints — the CLI's own, and the app's as `ping` reports it — so
+    /// the two can never drift apart in the output whose purpose is comparing them.</summary>
+    internal static string EntryAssemblyVersion()
     {
         string v = System.Reflection.Assembly.GetEntryAssembly()?
             .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
@@ -42,17 +47,26 @@ public static class VersionReport
     /// half, since several builds of the same name coexist here.</summary>
     public static string CliPath() => Environment.ProcessPath ?? "(unknown)";
 
-    /// <summary>Ping <paramref name="pipeName"/>; returns the app's reply, or null if nothing answered.</summary>
+    /// <summary>Ping <paramref name="pipeName"/>; returns the app's reply, or null if nothing answered
+    /// within <paramref name="timeoutMs"/>. The budget covers the whole probe, not just the connect:
+    /// a process that owns the name but never replies — a starved thread pool, a stranger behind
+    /// <c>--pipe</c> — must not hang the one command that exists for the app being unhealthy.</summary>
     public static string? Probe(string pipeName, int timeoutMs = 3000)
     {
         try
         {
-            using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut);
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+            // Asynchronous so the read below can actually be cancelled: a synchronous pipe handle
+            // ignores the token once the read has started.
+            using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
             pipe.Connect(timeoutMs);
+            int remainingMs = timeoutMs - (int)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            if (remainingMs <= 0) return null;
+            using var cts = new CancellationTokenSource(remainingMs);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true };
             using var reader = new StreamReader(pipe, Encoding.UTF8, false, 1024, leaveOpen: true);
             writer.WriteLine("{\"cmd\":\"ping\"}");
-            string? response = reader.ReadLine();
+            string? response = reader.ReadLineAsync(cts.Token).AsTask().GetAwaiter().GetResult();
             if (response is null) return null;
             using var doc = JsonDocument.Parse(response);
             var root = doc.RootElement;

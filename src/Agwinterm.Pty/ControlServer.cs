@@ -567,17 +567,10 @@ public sealed class ControlServer : IDisposable
         => args.ValueKind == JsonValueKind.Object && args.TryGetProperty(key, out var v)
            && (v.ValueKind == JsonValueKind.True || (v.ValueKind == JsonValueKind.String && v.GetString() is "true" or "1"));
 
-    /// <summary>App version for `ping` — the entry assembly's informational version (stamped by the
-    /// release build scripts via -p:Version; "1.0.0" in unstamped dev builds), without metadata.</summary>
-    private static string AppVersion()
-    {
-        string v = System.Reflection.Assembly.GetEntryAssembly()?
-            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
-            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
-            .FirstOrDefault()?.InformationalVersion ?? "dev";
-        int plus = v.IndexOf('+');
-        return plus > 0 ? v[..plus] : v;
-    }
+    /// <summary>App version for `ping` — the entry assembly's informational version, formatted by
+    /// the same rule `agwintermctl version` applies to its own half (see
+    /// <see cref="VersionReport.EntryAssemblyVersion"/>).</summary>
+    private static string AppVersion() => VersionReport.EntryAssemblyVersion();
 
     private static string Ok(string result) => $"{{\"ok\":true,\"result\":{JsonSerializer.Serialize(result)}}}";
     private static string OkRaw(string rawResult) => $"{{\"ok\":true,\"result\":{rawResult}}}";

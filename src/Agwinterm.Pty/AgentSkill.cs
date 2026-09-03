@@ -54,10 +54,12 @@ public static class AgentSkill
 
         ## Manage sessions & workspaces
         - `agwintermctl tree --json`                              — list workspaces+sessions (id, name, active, status,
-          `statusChangedAt` = epoch SECONDS of that session's last status write — its liveness clock. Every status
-          write restamps it, including a re-assert of the same status, so `now - statusChangedAt` is how long ago
-          the agent last said anything: a large age next to `"status":"active"` means the hook died, not that
-          work is still running. Always present, even for an idle session that never set one)
+          `statusChangedAt` = epoch SECONDS of the last status write on the pane whose status the node is
+          showing — its liveness clock. Every status write to that pane restamps it, including a re-assert of
+          the same status, so `now - statusChangedAt` is how long ago that agent last said anything: a large
+          age next to `"status":"active"` means the hook died, not that work is still running. In a split
+          session the age is the winning pane's, so a write to the other pane does not move it. Always
+          present, even for an idle session that never set one)
         - `agwintermctl events [--since CURSOR] [--limit N]`      — poll the event log (status/notification/session/tree changes); returns {cursor, events:[{seq,type,session,info}]}. Pass the returned cursor as --since next poll.
         - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"] [--profile NAME] [--no-select] [--wait]`
           `--no-select` creates the session in the background without stealing focus or changing the current selection.
