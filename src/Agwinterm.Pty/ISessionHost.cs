@@ -239,7 +239,8 @@ public sealed class SingleSessionHost : ISessionHost
     public ISession? Resolve(string? target) => _session;
     public IReadOnlyList<WorkspaceSnapshot> Tree() =>
         new[] { new WorkspaceSnapshot("ws", "workspace", true,
-            new[] { new SessionSnapshot("single", "session", true, _session.Status) }) };
+            new[] { new SessionSnapshot("single", "session", true, _session.Status,
+                                        StatusChangedAt: _session.StatusChangedAt) }) };
     public WindowStateSnapshot WindowState() => new(true, false, false, false, "ws", "single");
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false) => "single";

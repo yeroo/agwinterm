@@ -91,7 +91,9 @@ public static class AgentSkill
         - `agwintermctl session copy [--target <id>]`            — return the session's current mouse text selection ("" if none)
         - `agwintermctl surface cursor [--target <id>]`          — the caret COLUMN of a pane, as a bare integer.
           Use it before typing into ANOTHER agent's composer: an empty composer parks the caret at a known
-          column, so a different column means a draft is sitting there and you should not send. A pane id
+          column, so a different column means a draft is sitting there and you should not send. After a
+          print into the last column the answer equals the pane width (the wrap is deferred), so do not
+          use it as an index into a `session text` row without clamping. A pane id
           reports that pane; a session NAME reports its focused pane. (A session's id is also its first pane's
           id, so an id targets that pane — same as `session text`/`session type`, so the pane you check is the
           pane you type into.) Reading rendered text and guessing at placeholder strings is what this replaces

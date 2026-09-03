@@ -21,6 +21,40 @@ public class SurfaceCursorTests
     private static void Feed(TerminalSession s, string text) => s.Inject(Encoding.UTF8.GetBytes(text));
 
     [Fact]
+    public void ServerSession_AnswersFromItsReplica()
+    {
+        // A fresh install runs `--default-session-host server-rust`, so this is the backend the verb
+        // meets in the field. The replica is fed from the host's raw stream; Inject is that feed, and
+        // no host is needed because an unstarted ServerSession never touches the wire.
+        using var backend = new ServerSessionBackend("agwinterm-test-" + Guid.NewGuid().ToString("N")[..8], exePath: null);
+        using var session = new ServerSession(backend, "pane-1", 80, 24);
+        using var server = new ControlServer(session);
+
+        Assert.Equal(0, Cursor(server).GetProperty("result").GetInt32());
+
+        session.Inject(Encoding.UTF8.GetBytes("> draft"));
+        Assert.Equal(7, Cursor(server).GetProperty("result").GetInt32());
+
+        session.Inject(Encoding.UTF8.GetBytes("\r"));
+        Assert.Equal(0, Cursor(server).GetProperty("result").GetInt32());
+    }
+
+    [Fact]
+    public void PrintIntoTheLastColumn_ReportsTheWidth_UntilTheNextPrintWraps()
+    {
+        // Deferred wrap: both cores leave the caret ONE PAST the last cell after filling a row, and
+        // wrap on the next print. The verb reports that honestly, so the doc has to say so too.
+        using var session = new TerminalSession(10, 4);
+        using var server = new ControlServer(session);
+
+        Feed(session, "0123456789");
+        Assert.Equal(10, Cursor(server).GetProperty("result").GetInt32());
+
+        Feed(session, "x");
+        Assert.Equal(1, Cursor(server).GetProperty("result").GetInt32());
+    }
+
+    [Fact]
     public void FreshSession_ReportsColumnZero_NotAnAbsentAnswer()
     {
         using var session = new TerminalSession(80, 24);

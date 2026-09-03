@@ -146,7 +146,7 @@ notarisation. agwinterm has its own UIA path.
 
 Not a one-way list. Ours have, and agterm's control surface does not appear to: `session.readonly`,
 shell `profiles`, `omp` theme control, `claude.adopt` / `claude.yolo` / `claude.update`,
-`app.update`, and — since P1 — `surface.cursor` reporting a **live** caret rather than a cached one.
+`app.update`.
 
 **Not on `main`, despite an earlier version of this section claiming otherwise:** `session.metrics`
 (live cell and pixel geometry) and `image.frameshm` (shared-memory frame delivery, which ConPTY

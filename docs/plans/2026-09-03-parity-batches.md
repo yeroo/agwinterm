@@ -4,8 +4,9 @@ The gap lists in [agterm-parity.md](../agterm-parity.md) and [lite-parity.md](..
 *what* is missing. This file says **in what order it gets built**, split so each part is one ralphex
 plan, one branch, one PR — run with review steps disabled, then reviewed by revmux.
 
-Nothing here is implemented. Each `P<n>` becomes its own plan file in this directory when it is its
-turn; expanding all of them up front would just produce stale plans.
+Each `P<n>` becomes its own plan file in this directory when it is its turn, and moves to
+`completed/` when it ships; expanding all of them up front would just produce stale plans. A batch
+without a **Shipped** line below has not started.
 
 ## The rules the split obeys
 
@@ -38,6 +39,8 @@ Three contract questions gate their batches. They are cheap to answer and expens
 
 ### P1 · agwinterm · the read-only trio
 `surface.cursor` · `statusChangedAt` on the tree's session node · `agwintermctl version`
+
+**Shipped:** #221 — plan at [completed/2026-09-03-p1-readonly-trio.md](completed/2026-09-03-p1-readonly-trio.md).
 
 Three small, read-only additions with no persistence and no renderer risk. First because this is the
 only batch that makes **our own tooling less fragile** rather than merely less laborious:

@@ -1,7 +1,7 @@
 # P1 — the read-only trio: `surface.cursor`, `statusChangedAt`, `agwintermctl version`
 
 Batch **P1** of the parity programme in
-[2026-09-03-parity-batches.md](2026-09-03-parity-batches.md). Closes items 1, 2 and 8 of
+[2026-09-03-parity-batches.md](../2026-09-03-parity-batches.md). Closes items 1, 2 and 8 of
 [agterm-parity.md](../agterm-parity.md).
 
 ## Overview
