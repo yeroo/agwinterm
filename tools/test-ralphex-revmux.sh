@@ -378,6 +378,16 @@ configured_review_tool="$(sed -n 's/^external_review_tool[[:space:]]*=[[:space:]
 go build -o "$TMP/bin/ralphex-revmux.exe" "$ROOT/tools/ralphex-revmux-launcher.go"
 go test "$ROOT/tools/ralphex-revmux-launcher.go" "$ROOT/tools/ralphex-revmux-launcher_test.go"
 git_bash="$(cygpath -w "$(command -v bash)")"
+
+# Ralphex is a Windows binary, so it resolves `claude` through exec.LookPath, which
+# only considers PATHEXT extensions. The extensionless `$TMP/bin/claude` above is
+# invisible to it: on a developer's machine it silently found the real Claude Code
+# instead, and on a runner that has none it refuses to start at all. Hand it a .cmd
+# that shells out to the same fake, and point ralphex straight at it so the answer
+# does not depend on PATH ordering either.
+printf '%s\r\n' '@echo off' "\"$git_bash\" \"$(cygpath -w "$TMP/bin/claude")\" %*" \
+  > "$TMP/bin/claude.cmd"
+fake_claude_cmd="$(cygpath -w "$TMP/bin/claude.cmd")"
 PATH="$TMP/bin:$PATH" REAL_GIT_BIN="$REAL_GIT" FAKE_ROOT="$TMP" \
   FAKE_REPORT="$TMP/clean.json" RALPHEX_GIT_BASH="$git_bash" \
   "$configured_launcher" "$TMP/rendered-wrapper.txt" \
@@ -426,6 +436,7 @@ PATH="$TMP/bin:$PATH" REAL_GIT_BIN="$REAL_GIT" FAKE_ROOT="$TMP" \
   FAKE_REPORT="$TMP/clean.json" FAKE_STATUS=0 RALPHEX_GIT_BASH="$git_bash" \
   MSYS2_ARG_CONV_EXCL='*' \
   ralphex /external-only /skip-finalize /max-external-iterations:1 \
+    /claude-command:"$fake_claude_cmd" \
     /base-ref:main "$launcher_plan_windows" \
     > "$TMP/ralphex.out" 2> "$TMP/ralphex.err"
 ralphex_status=$?
