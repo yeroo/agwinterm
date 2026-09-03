@@ -74,23 +74,24 @@ Adoption is the interesting one: pointing the terminal at an already-running Cla
 ### Everything else
 `broadcast` · `notify` · `dashboard` · `restore.clear` · `workspace.move`
 
-### Owed by P8: the read-only trio agwinterm shipped in P1
+### Being mirrored now: the read-only trio agwinterm shipped in P1
 `surface.cursor` — the only *verb* of the three, and so the only one counted above. The other two
 are a tree node FIELD (`statusChangedAt`) and a CLI verb (`agwintermctl version`), owed just as much
 and invisible to a verb count.
 
-Landed in agwinterm as **#221** (batch P1), so this is now a gap in the strict sense: three
-read-only answers an agent gets from one product and not the other. `surface.cursor` is the one that
-changes behaviour rather than convenience — it is the check before typing into another agent's
-composer, and without it a caller has to guess emptiness from rendered text.
+Landed in agwinterm as **#221** (batch P1). The lite mirror is agliteterm's
+`docs/plans/2026-09-03-p1-lite-mirror.md` (batch **P1-lite**), in flight the same day: the two
+products now advance batch by batch rather than lite catching up in one P8 after wave 1.
+`surface.cursor` is the one that changes behaviour rather than convenience — it is the check before
+typing into another agent's composer, and without it a caller has to guess emptiness from rendered
+text. lite has no `version` verb to add: `agwintermctl version` reports the app from `ping`, and
+lite's `ping` answered a hard-coded `"agliteterm 0.1"`, so the mirror of that item is a truthful
+`ping`.
 
-The conformance steps for all three are **P8's** work as well, deliberately: adding them to
-`tests/conformance/control-api.json` before lite answers them would turn agliteterm's CI red for
-weeks, so agwinterm shipped the verbs and the shared contract file was left untouched. Whoever runs
-P8 adds the verbs and the steps in the same PR.
-
-**Size:** small in lite. The cursor read is a local emulator query, `statusChangedAt` is one field
-stamped where status is written, and `version` is a presentation change over the existing ping.
+The conformance step for `surface.cursor` (a new `integer` result kind in the runner) is in the
+canonical file as of this PR — agwinterm-first, as the contract rule says. Until P1-lite merges,
+agliteterm's `check-contract` is red by design; that is the gate, not a bug. `statusChangedAt` is a
+nested tree field the shape runner cannot express, so each product pins it in its own tests.
 
 ---
 

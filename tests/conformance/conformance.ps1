@@ -99,6 +99,10 @@ function Test-Shape($resp, [string]$kind, $fields) {
     $r = $resp.result
     switch ($kind) {
         'string' { if ($r -isnot [string]) { return "result is $($r.GetType().Name), expected string" } }
+        # A bare JSON number with no fraction. ConvertFrom-Json gives [long] for a whole number and
+        # [double] once there is a decimal point, and a quoted "12" stays a [string] — so the type
+        # check alone separates `12` from `"12"` and `12.0`, which is the whole contract here.
+        'integer' { if ($r -isnot [int] -and $r -isnot [long]) { return "result is $($r.GetType().Name), expected a bare integer" } }
         'object' {
             if ($r -isnot [psobject]) { return "result is not an object" }
             foreach ($f in $fields) { if ($r.PSObject.Properties.Name -notcontains $f) { return "result is missing '$f'" } }

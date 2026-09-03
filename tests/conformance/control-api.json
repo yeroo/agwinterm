@@ -12,7 +12,7 @@
     "Steps run in order and share state — a session must exist before anything can select it — and",
     "{placeholders} carry captured values forward.",
     "",
-    "The full app implements a superset (38 verbs here; it also has search, output, readonly, bind,",
+    "The full app implements a superset (41 verbs here; it also has search, output, readonly, bind,",
     "background, theme.*, config.*, install.*, ...). Those are deliberately NOT in this file: this is",
     "the shared floor both products stand on, not an inventory of either one."
   ],
@@ -146,6 +146,17 @@
       ],
       "result": "string",
       "note": "the visible buffer. A string even when the pane is empty."
+    },
+    {
+      "verb": "surface.cursor",
+      "args": [
+        "surface",
+        "cursor",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "integer",
+      "note": "the caret COLUMN of the pane, bare, as agterm reports it. Row is deliberately absent; a caller checking 'is that composer empty' compares one number. Value is not compared: it is a shell prompt's width."
     },
     {
       "verb": "session.output",
