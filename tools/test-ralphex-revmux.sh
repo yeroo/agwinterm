@@ -6,9 +6,11 @@ BRIDGE="$ROOT/tools/ralphex-revmux.sh"
 REAL_GIT="$(command -v git)"
 TMP="$(mktemp -d)"
 RALPHEX_FIXTURE_PROGRESS=""
+RALPHEX_FIXTURE_PLAN=""
 cleanup_test() {
   rm -rf -- "$TMP"
   [ -z "$RALPHEX_FIXTURE_PROGRESS" ] || rm -f -- "$RALPHEX_FIXTURE_PROGRESS"
+  [ -z "$RALPHEX_FIXTURE_PLAN" ] || rm -f -- "$RALPHEX_FIXTURE_PLAN"
 }
 trap cleanup_test EXIT
 
@@ -243,7 +245,14 @@ legacy_auth_task="$(tail -n 1 "$TMP/tasks.log")"
 [ "$api_auth_task" != "$legacy_auth_task" ] \
   || { echo 'colliding plan basenames reused one task id' >&2; exit 1; }
 
-existing_plan='docs/plans/20260821-image-frameshm-command.md'
+# The bridge relativizes an absolute plan path only when the file exists under the repo root,
+# so this case needs a real file there. A throwaway one: naming a shipped plan tied the fixture
+# to that document's location, and moving it to docs/plans/completed/ broke CI. It lives under
+# the ignored progress directory because the launcher fixture below insists on a clean worktree.
+existing_plan=".ralphex/progress/ralphex-fixture-plan-$$.md"
+RALPHEX_FIXTURE_PLAN="$ROOT/$existing_plan"
+mkdir -p "$(dirname "$RALPHEX_FIXTURE_PLAN")"
+printf '# fixture plan\n' > "$RALPHEX_FIXTURE_PLAN"
 write_prompt "$TMP/relative-plan.txt" "$existing_plan"
 run_bridge "$TMP/relative-plan.txt" "$TMP/clean.json" \
   > "$TMP/relative.out" 2> "$TMP/relative.err"
