@@ -305,7 +305,11 @@ public sealed class ControlServer : IDisposable
                 sb.Append("{\"id\":").Append(JsonSerializer.Serialize(n.Id))
                   .Append(",\"name\":").Append(JsonSerializer.Serialize(n.Name))
                   .Append(",\"active\":").Append(n.Active ? "true" : "false")
-                  .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()));
+                  .Append(",\"status\":").Append(JsonSerializer.Serialize(n.Status.ToString().ToLowerInvariant()))
+                  // Always emitted, even at 0 (unlike the flags below): a caller distinguishing
+                  // "this agent is working" from "its hook died an hour ago" gains nothing from an
+                  // absent field, and would have to guess which of the two absence meant.
+                  .Append(",\"statusChangedAt\":").Append(n.StatusChangedAt.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 if (n.Overlay) sb.Append(",\"overlay\":true");
                 if (n.Flagged) sb.Append(",\"flagged\":true");
                 if (n.Background) sb.Append(",\"background\":true");

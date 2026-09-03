@@ -11,11 +11,19 @@ internal sealed class FakeSessionHost : ISessionHost
     internal sealed class Sess
     {
         public string Id = "", Name = "";
-        public AgentStatus Status = AgentStatus.Idle;
+        /// <summary>Aggregated from the panes, exactly as the app does — so the tree's status and its
+        /// age always describe the same pane.</summary>
+        public AgentStatus Status => StatusAggregate.Winner(Panes);
         public bool Flagged, Overlay, ReadOnly;
         public string? AgentResume;
         public int Notifications, PaneCount = 1, FocusedPane, OverlaySize;
         public List<double> Ratios = new() { 1.0 };
+        /// <summary>The session's panes, so the tree can aggregate status + its age the way the app
+        /// does. One pane unless a test splits it via <see cref="AddPane"/>.</summary>
+        public readonly List<ISession> Panes = new() { new TerminalSession(80, 24) };
+        public long StatusChangedAt => StatusAggregate.WinnerChangedAt(Panes);
+        /// <summary>Split this session: adds a pane and returns it, for the multi-pane status cases.</summary>
+        public ISession AddPane() { var p = new TerminalSession(80, 24); Panes.Add(p); PaneCount = Panes.Count; return p; }
     }
     internal sealed class Ws { public string Id = "", Name = ""; public List<Sess> Sessions = new(); }
 
@@ -24,7 +32,6 @@ internal sealed class FakeSessionHost : ISessionHost
     internal Sess? ActiveSess;
     internal bool SidebarVisible = true, Fullscreen, Maximized, QuickVisible, Broadcast;
     internal readonly Dictionary<string, string> Config = new();
-    private readonly TerminalSession _session = new(80, 24);
     private int _idSeq;
 
     public FakeSessionHost()
@@ -43,12 +50,19 @@ internal sealed class FakeSessionHost : ISessionHost
         t is null or "active" ? ActiveWs
         : Workspaces.FirstOrDefault(w => w.Id == t || w.Id.StartsWith(t) || string.Equals(w.Name, t, StringComparison.OrdinalIgnoreCase));
 
-    public ISession? Resolve(string? target) => Find(target) is not null ? _session : null;
+    // A pane, not a session: the resolved handle is the session's FOCUSED pane, matching the app's
+    // Resolve. Per-session panes are what let the tree's statusChangedAt aggregate for real.
+    public ISession? Resolve(string? target)
+    {
+        var s = Find(target);
+        return s is null ? null : s.Panes[Math.Clamp(s.FocusedPane, 0, s.Panes.Count - 1)];
+    }
 
     public IReadOnlyList<WorkspaceSnapshot> Tree() => Workspaces.Select(w => new WorkspaceSnapshot(
         w.Id, w.Name, ReferenceEquals(w, ActiveWs),
         w.Sessions.Select(s => new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, ActiveSess), s.Status,
-            s.Overlay, s.Notifications, s.Flagged, false, s.FocusedPane, s.PaneCount, false, s.OverlaySize, s.Ratios)).ToList())).ToList();
+            s.Overlay, s.Notifications, s.Flagged, false, s.FocusedPane, s.PaneCount, false, s.OverlaySize, s.Ratios,
+            StatusChangedAt: s.StatusChangedAt)).ToList())).ToList();
 
     public WindowStateSnapshot WindowState() =>
         new(SidebarVisible, Fullscreen, Maximized, QuickVisible, ActiveWs.Name, ActiveSess?.Name);

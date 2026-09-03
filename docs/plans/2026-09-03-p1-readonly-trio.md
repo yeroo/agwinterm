@@ -118,24 +118,24 @@ They are grouped by what they have in common: each one answers a question a call
 - [x] run the .NET suite — must pass before task 2
 
 ### Task 2: `statusChangedAt`
-- [ ] record the timestamp on **every** `SetStatus` call, not only when `changed` is true. The caller
+- [x] record the timestamp on **every** `SetStatus` call, not only when `changed` is true. The caller
       asking is "is this agent's hook still alive", and a hook re-asserting `active` every 30 s is
       exactly the liveness signal that matters — collapsing repeats would report the wrong age. Put
       that reasoning in a comment; it is the one decision here someone will later think is a bug
-- [ ] expose it on `ISession` as epoch seconds; implement in `TerminalSession` and `ServerSession`.
+- [x] expose it on `ISession` as epoch seconds; implement in `TerminalSession` and `ServerSession`.
       Initialise it at construction, so a session whose status was never written reports its own age
       rather than `0` or null
-- [ ] add `StatusChangedAt` to `SessionSnapshot` (`ISessionHost.cs:8`) as an optional parameter, in
+- [x] add `StatusChangedAt` to `SessionSnapshot` (`ISessionHost.cs:8`) as an optional parameter, in
       keeping with the record's existing shape
-- [ ] fill it in `Program.ControlHost.Tree()` from **the pane whose status won `AggStatus`**, so the
+- [x] fill it in `Program.ControlHost.Tree()` from **the pane whose status won `AggStatus`**, so the
       age describes the status actually shown. Where several panes tie at the winning severity, use
       the most recent — a session is "as fresh as" its freshest contributor
-- [ ] emit `"statusChangedAt":<epoch seconds>` in `HandleTree` **always**, not only when non-default:
+- [x] emit `"statusChangedAt":<epoch seconds>` in `HandleTree` **always**, not only when non-default:
       a consumer that has to distinguish "absent" from "old" gains nothing from the omission
-- [ ] tests: a session that has had a status written reports a plausible epoch; writing the *same*
+- [x] tests: a session that has had a status written reports a plausible epoch; writing the *same*
       status again moves the timestamp; the winning pane's timestamp is the one reported when panes
       disagree; the field is present for an idle session
-- [ ] run the .NET suite — must pass before task 3
+- [x] run the .NET suite — must pass before task 3
 
 ### Task 3: `agwintermctl version`
 - [ ] add a `version` verb to `src/Agwinterm.Ctl/Program.cs` reporting two things on separate,

@@ -117,13 +117,13 @@ internal partial class Program
 
     /// <summary>Session status for display: the most attention-worthy status across ALL panes
     /// (Blocked &gt; Completed &gt; Active &gt; Idle) — a background pane's state must not be invisible.</summary>
-    private static AgentStatus AggStatus(Ses s)
-    {
-        static int Sev(AgentStatus a) => a switch { AgentStatus.Blocked => 3, AgentStatus.Completed => 2, AgentStatus.Active => 1, _ => 0 };
-        AgentStatus best = AgentStatus.Idle;
-        foreach (var p in s.Panes) if (Sev(p.S.Status) > Sev(best)) best = p.S.Status;
-        return best;
-    }
+    private static AgentStatus AggStatus(Ses s) => StatusAggregate.Winner(s.Panes.Select(p => p.S));
+
+    /// <summary>Epoch seconds of the last status write on the pane whose status won
+    /// <see cref="AggStatus"/> — so the age describes the status the tree actually reports, not some
+    /// other pane's. Where several panes tie at the winning severity the most recent wins: a session
+    /// is as fresh as its freshest contributor to the status being shown.</summary>
+    private static long AggStatusAt(Ses s) => StatusAggregate.WinnerChangedAt(s.Panes.Select(p => p.S));
 
     /// <summary>True if any pane of the session has an attention-worthy status with blink set.</summary>
     private static bool AggBlink(Ses s)

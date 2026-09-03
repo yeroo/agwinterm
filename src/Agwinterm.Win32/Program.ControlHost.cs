@@ -182,7 +182,8 @@ internal partial class Program
                         StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
                         SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
                         PaneIds: s.Panes.Select(p => p.Id).ToList(),
-                        RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList())).ToList()
+                        RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList(),
+                        StatusChangedAt: AggStatusAt(s))).ToList()
                 )).ToList();
         }
 

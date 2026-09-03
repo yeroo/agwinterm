@@ -37,6 +37,10 @@ public interface ISession : IDisposable
     bool AutoReset { get; }
     event Action? StatusChanged;
     event Action<string?>? SoundRequested;
+    /// <summary>Unix epoch SECONDS at which this session's status was last WRITTEN (not merely
+    /// changed) — the liveness clock behind the tree's <c>statusChangedAt</c>. Initialised at
+    /// construction, so a session whose status was never written reports its own age rather than 0.</summary>
+    long StatusChangedAt { get; }
     void SetStatus(AgentStatus status, bool blink = false, bool autoReset = false,
         bool sound = false, string? soundName = null);
     void NotifyActivity();
