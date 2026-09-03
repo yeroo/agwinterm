@@ -29,9 +29,17 @@ named as such rather than left to look like a backlog nobody is working on.
 | `session.write` (display injection) in lite | — | lite #15 *(open)* |
 | Per-session split panes (lite matched agwinterm) | — | lite #13 |
 | `session.new --workspace` in lite | — | lite #13 |
+| `surface.cursor` — the caret column | 0.24.0 | agwinterm #220 *(P1)*, lite: P8 |
+| `statusChangedAt` on the tree's session node | 0.25.0 | agwinterm #220 *(P1)*, lite: P8 |
+| `agwintermctl version` | 0.25.0 | agwinterm #220 *(P1)*, lite: P8 |
 
 The overlay entry is the *honesty* half only: a pane id is now refused rather than silently widened.
 Pane-scoped overlays themselves are still open, below.
+
+The last three were items **1, 2 and 8** of the open list before P1 closed them; the list below is
+renumbered, so read that plan's "closes items 1, 2 and 8" against this note rather than against the
+current numbering. Their agliteterm mirrors are batch **P8**, tracked in
+[lite-parity.md](lite-parity.md) — agwinterm-first, so the contract is fixed before it is copied.
 
 ---
 
@@ -39,36 +47,14 @@ Pane-scoped overlays themselves are still open, below.
 
 Everything here is portable. Ordered by what costs us work today.
 
-### 1. `surface.cursor` — the caret column
-**agterm 0.24.0.** Reports a surface's cursor column as a bare integer.
-
-The only gap that makes tooling *weaker* rather than more laborious. It is the last check before
-typing into another agent's composer: the caret rests at a known column in an empty box, so anything
-else means a draft is sitting there and the send should refuse. Without it, `AI/bin/peer-chat.py`
-proves emptiness from rendered text against a whitelist of each agent's placeholder string — which
-fails both ways (an unrecognised placeholder refuses a safe send; a draft that looks like a
-placeholder reads as empty) and rots as agents change their prompt chrome.
-
-**Shape:** `agwintermctl surface cursor --target <pane-id>` printing a bare integer.
-**Size:** small. The emulator already tracks `CursorRow`/`CursorCol`.
-
-### 2. `statusChangedAt` on the tree's session node
-**agterm 0.25.0.** Epoch seconds recording when a status was last written.
-
-`tree --json` reports `"status":"active"` with no age, so nothing can tell a working agent from one
-whose hook died forty minutes ago. `AI/state/agents.json` keeps a `last_seen` per agent purely
-because of this — shadow state that exists to answer a question the tree should answer.
-
-**Size:** small. One field on `SessionSnapshot`, set where status is written.
-
-### 3. `session.context` — per-session descriptive text
+### 1. `session.context` — per-session descriptive text
 **agterm 0.26.0.** Text set over the API, shown in the title bar and tree, persisted across restarts.
 
 "What is this pane for" is currently guessable only from a name that also has to be short.
 
 **Size:** small, plus one field in the restore format (lite: an additive line type, the way `P` was).
 
-### 4. Pane-scoped overlays, and reading an overlay
+### 2. Pane-scoped overlays, and reading an overlay
 **agterm 0.24.0 (`session.overlay.copy`, `session.overlay.text`), pane scoping 2026-08-01.**
 
 An overlay covers the whole session, so a review TUI aimed at the right pane blanks the left pane the
@@ -78,13 +64,13 @@ overlay, so an overlay's own output cannot be read at all.
 
 **Size:** medium (the scoping is real work in the renderer); the two read verbs are small.
 
-### 5. `session.swap`
+### 3. `session.swap`
 **agterm 0.26.0.** Exchange the split panes, preserving axis, ratio, focus, overlays and status
 ownership. We cannot swap at all. Our peer tooling addresses panes by id rather than by side, so this
 is convenience here rather than a blocker.
 **Size:** small–medium.
 
-### 6. Splits are thinner than theirs
+### 4. Splits are thinner than theirs
 - **Horizontal splits** (0.23.0): an axis on `session.split`, surviving restore. Ours is
   `on|off|toggle` only.
 - **`session.split.close`** (0.23.0): destroys the pane. agwinterm's `off` and lite's unsplit already
@@ -93,17 +79,11 @@ is convenience here rather than a blocker.
   handle on a hidden split shell. agwinterm should do the same — a small, real gap *within* our own
   family.
 
-### 7. `sidebar.width`, `restore.capture`
+### 5. `sidebar.width`, `restore.capture`
 **agterm 0.26.0.** Set/report the sidebar divider (distinguishing a clamped request from an honoured
 one); fill captured-command slots on demand rather than only at exit. Both small.
 
-### 8. `agwintermctl version`
-**agterm 0.25.0.** Reports which app is serving the socket **and the resolved path of the CLI that
-ran**. This machine has `agwintermctl.exe` in the install directory and in two source build trees,
-and none of them on `PATH` — exactly the confusion this catches.
-**Size:** small.
-
-### 9. `--stdin` on `session type` / `quick type`, rejecting invalid UTF-8
+### 6. `--stdin` on `session type` / `quick type`, rejecting invalid UTF-8
 **agterm 0.26.0.** We have no `--stdin` at all, so text with quotes or newlines has to survive a
 command line. Worth pairing with the control-byte refusal already shipped.
 
@@ -111,27 +91,27 @@ command line. Worth pairing with the control-byte refusal already shipped.
 
 ## Open — UI
 
-### 10. `control.pick` — the native picker, driven over the API
+### 7. `control.pick` — the native picker, driven over the API
 **agterm 2026-07-28.** Half the agterm cookbook is built on it: project launcher, workspace picker,
 conversation picker, backlog picker, SQLite browser. Nothing here can do that without shipping a
 picker binary of its own.
 **The biggest single capability gap.** Size: large.
 
-### 11. `session.hud` and `--position`
+### 8. `session.hud` and `--position`
 **agterm 0.22.0 / 0.24.0.** A transient overlay for status an agent wants seen without printing into
 the terminal, anchored to one of nine positions. Size: medium.
 
-### 12. Quick terminal: screen percentage, and a global hotkey
+### 9. Quick terminal: screen percentage, and a global hotkey
 **agterm 0.24.0 / 0.25.0.** Sizes as 40–90% of the screen, and a system-wide hotkey summons it over
 any app. Ours is a fixed size with no global hotkey. Size: medium (the hotkey is a `RegisterHotKey`
 and a policy decision about stealing a chord system-wide).
 
-### 13. Workspace navigation and keymap alternatives
+### 10. Workspace navigation and keymap alternatives
 **agterm 0.23.0 / 0.24.0.** `workspace.go next|prev`, `toggle_workspace_collapse`, and keymap entries
 that accept several chords for one action separated by `|` (a native chord *and* a tmux-style
 leader). We have `session go`; workspaces are keyboard-unreachable without a chord. Size: small.
 
-### 14. Smaller things from 0.26
+### 11. Smaller things from 0.26
 Cursor shape and blink settings; sidebar tooltips revealing truncated names; the tree naming the
 shell holding each pane's foreground process; `session.restore` reporting which pane received the
 content; `session.overlay.open` validating `--size-percent` as 1–100 (we clamp silently instead).
@@ -165,9 +145,14 @@ notarisation. agwinterm has its own UIA path.
 ## Where we are ahead
 
 Not a one-way list. Ours have, and agterm's control surface does not appear to: `session.readonly`,
-`session.metrics` (live cell and pixel geometry), `image.frameshm` (shared-memory frame delivery,
-which ConPTY makes necessary), shell `profiles`, `omp` theme control, `claude.adopt` / `claude.yolo`
-/ `claude.update`, and `app.update`.
+shell `profiles`, `omp` theme control, `claude.adopt` / `claude.yolo` / `claude.update`,
+`app.update`, and — since P1 — `surface.cursor` reporting a **live** caret rather than a cached one.
+
+**Not on `main`, despite an earlier version of this section claiming otherwise:** `session.metrics`
+(live cell and pixel geometry) and `image.frameshm` (shared-memory frame delivery, which ConPTY
+makes necessary). Both live only on the unmerged local branch `feat/image-frameshm-control`. They
+are a lead, not a shipped advantage, and counting unmerged work as parity is how a tracker starts
+lying — the same failure mode as leaving a closed item marked missing.
 
 ## agliteterm, against agwinterm
 

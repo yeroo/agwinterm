@@ -107,4 +107,97 @@ public class SurfaceCursorTests
         Assert.True(r.GetProperty("ok").GetBoolean());
         Assert.Equal(JsonValueKind.Number, r.GetProperty("result").ValueKind);
     }
+
+    // ---- targeting a split session: the asymmetry qa/control-read.md found ----
+
+    [Fact]
+    public void MultiPaneSession_ByNAME_ReportsTheFOCUSEDPane()
+    {
+        var host = new FakeSessionHost();
+        using var server = new ControlServer(host);
+        var s = host.ActiveSess!;
+        Feed((TerminalSession)s.Panes[0], "left");
+        Feed((TerminalSession)s.AddPane(), "right-hand-side");
+        s.FocusedPane = 1;
+
+        // A cursor is a per-pane thing; focus is the only non-arbitrary answer for a whole session.
+        Assert.Equal(15, Cursor(server, "session 1").GetProperty("result").GetInt32());
+    }
+
+    [Fact]
+    public void MultiPaneSession_ByID_ReportsPaneZero_BecauseTheIdIsPaneZeros()
+    {
+        var host = new FakeSessionHost();
+        using var server = new ControlServer(host);
+        var s = host.ActiveSess!;
+        Feed((TerminalSession)s.Panes[0], "left");
+        Feed((TerminalSession)s.AddPane(), "right-hand-side");
+        s.FocusedPane = 1;
+
+        // Not a bug and not focus-blindness: a session's id IS its first pane's id, so Resolve
+        // matches it as a pane. session.text / session.type widen the same way, which is the
+        // guarantee that matters — the pane you check is the pane you then type into.
+        Assert.Equal(4, Cursor(server, "s1").GetProperty("result").GetInt32());
+    }
+
+    [Fact]
+    public void APaneIdPrefix_ReachesThatPane()
+    {
+        var host = new FakeSessionHost();
+        using var server = new ControlServer(host);
+        var s = host.ActiveSess!;
+        Feed((TerminalSession)s.Panes[0], "left");
+        Feed((TerminalSession)s.AddPane(), "right-hand-side");
+        string prefix = s.PaneIds[1][..6];   // how an agent abbreviates the id the tree gave it
+
+        Assert.Equal(15, Cursor(server, prefix).GetProperty("result").GetInt32());
+        Assert.Equal(15, Cursor(server, s.PaneIds[1]).GetProperty("result").GetInt32());
+    }
+
+    [Fact]
+    public void AnAmbiguousName_IsRefused_RatherThanGuessed()
+    {
+        var host = new FakeSessionHost();
+        using var server = new ControlServer(host);
+        host.NewSession("session 1", null, null);   // a second session sharing the first one's name
+
+        // Reading the wrong terminal's caret then typing into it is the failure this prevents.
+        Assert.False(Cursor(server, "session 1").GetProperty("ok").GetBoolean());
+    }
+
+    [Fact]
+    public async Task APaneWhoseChildHasEXITED_StillReportsItsCaret()
+    {
+        using var session = new TerminalSession(80, 24);
+        using var server = new ControlServer(session);
+        await session.StartAsync("cmd.exe", new[] { "/c", "exit" }, verbatimCommandLine: false);
+        Assert.True(WaitFor(() => session.HasExited), "the child never exited");
+
+        // A dead child does not un-address the pane: the grid is still there to be read, and a caller
+        // deciding whether to type is exactly the one who must not get an error here instead of a number.
+        var r = Cursor(server);
+        Assert.True(r.GetProperty("ok").GetBoolean());
+        Assert.Equal(JsonValueKind.Number, r.GetProperty("result").ValueKind);
+    }
+
+    private static bool WaitFor(Func<bool> cond, int timeoutMs = 15000)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs) { if (cond()) return true; Thread.Sleep(50); }
+        return cond();
+    }
+
+    [Fact]
+    public void ASessionRemovedFromTheTree_IsRefused_NotAnsweredFromAStaleHandle()
+    {
+        var host = new FakeSessionHost();
+        using var server = new ControlServer(host);
+        Assert.True(Cursor(server, "s1").GetProperty("ok").GetBoolean());
+
+        host.CloseSession("s1");
+
+        var r = Cursor(server, "s1");
+        Assert.False(r.GetProperty("ok").GetBoolean());
+        Assert.Equal("no session", r.GetProperty("error").GetString());
+    }
 }

@@ -6,7 +6,8 @@ says otherwise and gives the reason.
 
 - agwinterm **0.17.7** released (main ahead), agliteterm **0.17.13** released.
 - Verb lists below were **extracted from both dispatchers** on 2026-09-02, not written from memory:
-  85 verbs in agwinterm, 41 in agliteterm.
+  85 verbs in agwinterm, 41 in agliteterm — 86 and 41 since agwinterm #220 added
+  `surface.cursor`. The rest of that batch is a tree FIELD and a CLI verb, so neither moves this count.
 - Update this file in the PR that closes an item.
 - The verbs below are cut into runnable batches (P6–P12) in
   [plans/2026-09-03-parity-batches.md](plans/2026-09-03-parity-batches.md).
@@ -18,7 +19,7 @@ product's purpose justifies it.
 
 ---
 
-## Control API: 44 verbs agliteterm does not answer
+## Control API: 45 verbs agliteterm does not answer
 
 Grouped by what they cost an agent, not alphabetically.
 
@@ -67,6 +68,24 @@ Adoption is the interesting one: pointing the terminal at an already-running Cla
 
 ### Everything else
 `broadcast` · `notify` · `dashboard` · `restore.clear` · `workspace.move`
+
+### Owed by P8: the read-only trio agwinterm shipped in P1
+`surface.cursor` — the only *verb* of the three, and so the only one counted above. The other two
+are a tree node FIELD (`statusChangedAt`) and a CLI verb (`agwintermctl version`), owed just as much
+and invisible to a verb count.
+
+Landed in agwinterm as **#220** (batch P1), so this is now a gap in the strict sense: three
+read-only answers an agent gets from one product and not the other. `surface.cursor` is the one that
+changes behaviour rather than convenience — it is the check before typing into another agent's
+composer, and without it a caller has to guess emptiness from rendered text.
+
+The conformance steps for all three are **P8's** work as well, deliberately: adding them to
+`tests/conformance/control-api.json` before lite answers them would turn agliteterm's CI red for
+weeks, so agwinterm shipped the verbs and the shared contract file was left untouched. Whoever runs
+P8 adds the verbs and the steps in the same PR.
+
+**Size:** small in lite. The cursor read is a local emulator query, `statusChangedAt` is one field
+stamped where status is written, and `version` is a presentation change over the existing ping.
 
 ---
 

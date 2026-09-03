@@ -171,17 +171,47 @@ They are grouped by what they have in common: each one answers a question a call
       `qa/control-read.md` pins both halves together.
 
 ### Task 5: [Final] Verify acceptance criteria
-- [ ] verify every requirement in Overview is implemented
-- [ ] verify the edge cases: a target that names a multi-pane session; a pane id prefix; a session
+- [x] verify every requirement in Overview is implemented
+- [x] verify the edge cases: a target that names a multi-pane session; a pane id prefix; a session
       that has exited; the alt screen (a column is a column — assert no special-casing crept in)
-- [ ] confirm `tests/conformance/control-api.json` is **unchanged** (`git diff` must be empty for it)
-- [ ] run the full .NET suite, the Rust suite, and `tools/check-abi.ps1` — nothing in this batch
+- [x] confirm `tests/conformance/control-api.json` is **unchanged** (`git diff` must be empty for it)
+- [x] run the full .NET suite, the Rust suite, and `tools/check-abi.ps1` — nothing in this batch
       should move the core ABI, and a change there means something went wrong
-- [ ] tick items 1, 2 and 8 in `docs/agterm-parity.md`, moving them to the **Closed** table with the
+- [x] tick items 1, 2 and 8 in `docs/agterm-parity.md`, moving them to the **Closed** table with the
       PR number, and note in `docs/lite-parity.md` that P8 owes the mirror
-- [ ] **correct the factual error** in `agterm-parity.md`'s "Where we are ahead": it claims
+- [x] **correct the factual error** in `agterm-parity.md`'s "Where we are ahead": it claims
       `session.metrics` (live cell and pixel geometry) exists. No such verb is on `main` — it lives
       on the unmerged local branch `feat/image-frameshm-control`. Either say so or drop the claim
+
+**What the verification found.**
+
+- ➕ **`FakeSessionHost.Resolve` did not resolve the way the app does**, so the targeting the ⚠️ note
+  above describes was untestable — the double looked up a session by id and returned its *focused*
+  pane, reaching an answer the app never gives. It now models pane ids (pane 0 sharing the session
+  id, as `Program.Sessions.cs` does it) and resolves in the app's order: active surface, then any
+  pane by id or id-prefix, then a **single** session by name. Six targeting cases in
+  `SurfaceCursorTests` are what that unlocked, including the two halves of the asymmetry — a name
+  reaches the focused pane, an id reaches pane 0 — plus an ambiguous name being refused rather than
+  guessed.
+- ➕ **A pane whose child has exited still reports its caret.** A dead child does not un-address the
+  pane, and a caller deciding whether to type must get a number rather than an error. A session
+  *removed from the tree* is the case that is refused, and the two are now pinned apart.
+- The alt screen was already covered and needed no change: `AltScreen_IsNotSpecialCased`.
+- `image.frameshm` was **the same factual error** as `session.metrics` and is corrected with it —
+  both live only on `feat/image-frameshm-control`. The open list is renumbered now that items 1, 2
+  and 8 are closed, with a note in the Closed table so this plan's "closes items 1, 2 and 8" still
+  reads true.
+- ⚠️ **The three pty-host detach/adopt tests flake under full-suite CPU contention, and did so on the
+  untouched baseline too** — verified by restoring both test files from `HEAD` and re-running. One
+  contributing cause was real and is fixed: two orphaned `agwinterm-ptyhost.exe` from earlier runs
+  held the release binary open, so `cargo build --release` could not replace it and the tests ran a
+  **stale** host. Kill the orphans, rebuild, and the suite goes green. Same family as flake classes
+  #2/#3 in the build-gotchas notes; not P1's doing.
+- Final state: **349 .NET tests green** (196 core + 153 pty), the Rust suite green (28), ABI **v16**
+  with both declarations agreeing, and `tests/conformance/control-api.json` byte-identical to `main`.
+- `version` smoke-tested against a dead pipe end-to-end: both lines printed, `--json` parsed, exit 0.
+  The CLI half reports `1.0.0` in a dev build by design — release builds stamp it via `-p:Version`,
+  and the resolved path is the half that answers "which binary did I just run".
 
 ## Technical Details
 
