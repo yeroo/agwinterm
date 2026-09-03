@@ -81,12 +81,14 @@ public class VersionReportTests
             System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous);
         var accepted = server.WaitForConnectionAsync();
 
-        var started = System.Diagnostics.Stopwatch.StartNew();
-        var r = VersionReport.Build(pipe, timeoutMs: 500);
-        started.Stop();
+        // Bound the call itself: Build is synchronous and the whole budget lives inside Probe, so
+        // if the hang this guards against comes back (a sync write or a sync pipe handle), an
+        // assertion after the call is never reached and the suite just stops. A timed wait turns
+        // that into a red test with a name.
+        var build = Task.Run(() => VersionReport.Build(pipe, timeoutMs: 500));
+        var r = await build.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.False(r.AppAvailable);
-        Assert.InRange(started.ElapsedMilliseconds, 0, 5000);
         Assert.Contains("unavailable", VersionReport.RenderText(r));
         await accepted.WaitAsync(TimeSpan.FromSeconds(5));   // it really did connect; the read is what gave up
     }

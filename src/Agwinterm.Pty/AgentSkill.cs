@@ -60,8 +60,9 @@ public static class AgentSkill
           age next to `"status":"active"` means the hook died, not that work is still running. In a split
           session the age belongs to the pane whose status won: a write to a pane that LOSES the
           aggregate does not move it, but panes tied at the winning status all do, so two panes both
-          `active` report the freshest of the two — check each pane before calling one dead. Always
-          present, even for an idle session that never set one)
+          `active` report the freshest of the two: the session-level age cannot tell a dead hook
+          from a live one beside it, and no verb reports the stamp per pane. Always present, even
+          for an idle session that never set one)
         - `agwintermctl events [--since CURSOR] [--limit N]`      — poll the event log (status/notification/session/tree changes); returns {cursor, events:[{seq,type,session,info}]}. Pass the returned cursor as --since next poll.
         - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"] [--profile NAME] [--no-select] [--wait]`
           `--no-select` creates the session in the background without stealing focus or changing the current selection.
@@ -95,9 +96,12 @@ public static class AgentSkill
         - `agwintermctl session copy [--target <id>]`            — return the session's current mouse text selection ("" if none)
         - `agwintermctl surface cursor [--target <id>]`          — the caret COLUMN of a pane, as a bare integer.
           Use it before typing into ANOTHER agent's composer: an empty composer parks the caret at a known
-          column, so a different column means a draft is sitting there and you should not send. After a
-          print into the last column the answer equals the pane width (the wrap is deferred), so do not
-          use it as an index into a `session text` row without clamping. A pane id
+          column, so a different column means a draft is sitting there and you should not send. The same
+          column is necessary, not sufficient: a draft whose length is an exact multiple of the pane width
+          wraps the caret back to the column it started at, so back a match with `session text` of the
+          composer row before typing. After a print into the last column the answer equals the pane width
+          (the wrap is deferred), so do not use it as an index into a `session text` row without clamping.
+          A pane id
           reports that pane; a session NAME reports its focused pane. (A session's id is also its first pane's
           id, so an id targets that pane — same as `session text`/`session type`, so the pane you check is the
           pane you type into.) Reading rendered text and guessing at placeholder strings is what this replaces
