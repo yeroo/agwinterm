@@ -63,9 +63,10 @@ public static class VersionReport
             int remainingMs = timeoutMs - (int)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             if (remainingMs <= 0) return null;
             using var cts = new CancellationTokenSource(remainingMs);
-            using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true };
+            // The write is bounded too, not just the read: the app's server pipes have no buffer of
+            // their own, so an owner that accepted but never reads blocks even these 16 bytes.
+            pipe.WriteAsync(Encoding.UTF8.GetBytes("{\"cmd\":\"ping\"}\n"), cts.Token).AsTask().GetAwaiter().GetResult();
             using var reader = new StreamReader(pipe, Encoding.UTF8, false, 1024, leaveOpen: true);
-            writer.WriteLine("{\"cmd\":\"ping\"}");
             string? response = reader.ReadLineAsync(cts.Token).AsTask().GetAwaiter().GetResult();
             if (response is null) return null;
             using var doc = JsonDocument.Parse(response);

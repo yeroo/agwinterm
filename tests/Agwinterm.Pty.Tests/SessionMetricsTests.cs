@@ -112,12 +112,13 @@ public class SessionMetricsTests
     {
         var (server, host) = New();
         string second = host.NewSession("second", null, null);
-        string secondPane = "p-" + second;
+        // Pane 0 shares its session's id, exactly as the app does it, so the session id IS the
+        // pane id here; a unique prefix of it must resolve the same way.
         host.MetricsBySession[second] = new PaneMetricsSnapshot(40, 12, 11, 22, 440, 264);
         Assert.True(host.SelectSession("s1"));
         host.CellW = 9; host.CellH = 19; host.PaneW = 720; host.PaneH = 456;
 
-        foreach (string target in new[] { secondPane, secondPane[..^1] })
+        foreach (string target in new[] { second, second[..^1] })
         {
             var r = Metrics(server, target);
             Assert.Equal(11, r.GetProperty("cellWidth").GetInt32());
