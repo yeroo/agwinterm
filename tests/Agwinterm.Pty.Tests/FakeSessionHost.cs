@@ -68,9 +68,13 @@ internal sealed class FakeSessionHost : ISessionHost
         t is null or "active" ? ActiveSess
         : Workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s =>
             s.Id == t || s.Id.StartsWith(t) || s.PaneIds.Any(p => p == t || p.StartsWith(t)));
+    // The app's FindWs: null/""/"active" = the active workspace, else an id or an id PREFIX — and
+    // never a name. The fake used to match names here too, so a test that placed a session by
+    // `--workspace <name>` passed against the fake while the app refused it: the same double-drift
+    // P1's verification found in Resolve. Names are reached only through workspaceName on NewSession.
     private Ws? FindWs(string? t) =>
-        t is null or "active" ? ActiveWs
-        : Workspaces.FirstOrDefault(w => w.Id == t || w.Id.StartsWith(t) || string.Equals(w.Name, t, StringComparison.OrdinalIgnoreCase));
+        string.IsNullOrEmpty(t) || t == "active" ? ActiveWs
+        : Workspaces.FirstOrDefault(w => w.Id == t) ?? Workspaces.FirstOrDefault(w => w.Id.StartsWith(t, StringComparison.Ordinal));
 
     // A pane, not a session, and in the app's order: active surface, then ANY pane by id or id
     // prefix, then a session by name -> its FOCUSED pane. Because pane 0 shares the session id, an
@@ -129,12 +133,33 @@ internal sealed class FakeSessionHost : ISessionHost
             : new PaneMetricsSnapshot(session.Panes[0].Cols, session.Panes[0].Rows, CellW, CellH, PaneW, PaneH);
     }
 
+    // Mirrors Program.ControlHost.NewSession step for step: --workspace is an id / id-prefix and an
+    // unknown one is REFUSED; --workspace-name is a case-insensitive name, unknown is refused unless
+    // --create-workspace, which creates it; both refusals happen before a session (or an id) exists.
+    // The pair of flags is refused by the server first; a direct caller passing both gets the id,
+    // as in the app. The wording is the shared SessionNewWorkspaces, so a test asserts the app's text.
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
     {
-        var w = FindWs(workspace) ?? ActiveWs;
+        Ws? w;
+        if (!string.IsNullOrEmpty(workspace))
+        {
+            w = FindWs(workspace);
+            if (w is null) return ISessionHost.RefusePrefix + SessionNewWorkspaces.UnknownId(workspace);
+        }
+        else if (!string.IsNullOrEmpty(workspaceName))
+        {
+            w = Workspaces.FirstOrDefault(x => string.Equals(x.Name, workspaceName, StringComparison.OrdinalIgnoreCase));
+            if (w is null)
+            {
+                if (!createWorkspace) return ISessionHost.RefusePrefix + SessionNewWorkspaces.UnknownName(workspaceName);
+                w = new Ws { Id = "w" + (++_idSeq + 100), Name = workspaceName }; Workspaces.Add(w);
+            }
+        }
+        else w = ActiveWs;
         var s = new Sess { Id = "s" + (++_idSeq + 100), Name = string.IsNullOrEmpty(name) ? $"session {w.Sessions.Count + 1}" : name }.Seed();
-        w.Sessions.Add(s); ActiveSess = s; ActiveWs = w;
+        w.Sessions.Add(s);
+        if (!noSelect) { ActiveSess = s; ActiveWs = w; }
         return s.Id;
     }
 

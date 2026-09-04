@@ -249,26 +249,40 @@ internal partial class Program
             : null;
     }
 
+    // The workspace is resolved HERE, synchronously, before an id exists — as SessionToWorkspace and
+    // WorkspaceSelect already do through FindWs. Before P2 the id was minted first, returned at once,
+    // and the posted lambda resolved the workspace afterwards with a silent fallback to the active
+    // one: the reply was committed before the question was asked, so an unknown --workspace could
+    // only ever "succeed". Now an unknown one is refused (decision 1; SessionNewWorkspaces) and
+    // nothing is posted, so no session exists behind an ok:false reply. Only the creation itself
+    // (and, with --create-workspace, the new workspace) still runs on the UI thread.
+    // --workspace beside --workspace-name is refused by the server before this is reached; if a
+    // direct caller passes both anyway, the id wins, exactly as it did before P2.
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
     {
+        Workspace? ws = null;
+        string? newWorkspaceName = null;   // set = create this workspace on the UI thread, then the session in it
+        if (!string.IsNullOrEmpty(workspace))
+        {
+            ws = FindWs(workspace);   // id, id-prefix, or "active"; never a name
+            if (ws is null) return ISessionHost.RefusePrefix + SessionNewWorkspaces.UnknownId(workspace);
+        }
+        else if (!string.IsNullOrEmpty(workspaceName))
+        {
+            lock (_workspaces) ws = _workspaces.FirstOrDefault(w => string.Equals(w.Name, workspaceName, StringComparison.OrdinalIgnoreCase));
+            if (ws is null)
+            {
+                if (!createWorkspace) return ISessionHost.RefusePrefix + SessionNewWorkspaces.UnknownName(workspaceName);
+                newWorkspaceName = workspaceName;
+            }
+        }
         string id = Guid.NewGuid().ToString();
         Post(() =>
         {
-            Workspace ws;
-            if (!string.IsNullOrEmpty(workspace))
-                lock (_workspaces)
-                    ws = _workspaces.FirstOrDefault(w => w.Id == workspace)
-                         ?? _workspaces.FirstOrDefault(w => w.Id.StartsWith(workspace)) ?? ActiveWorkspace();
-            else if (!string.IsNullOrEmpty(workspaceName))
-            {
-                Workspace? byName;
-                lock (_workspaces) byName = _workspaces.FirstOrDefault(w => string.Equals(w.Name, workspaceName, StringComparison.OrdinalIgnoreCase));
-                ws = byName ?? (createWorkspace ? CreateWorkspace(Guid.NewGuid().ToString(), workspaceName) : ActiveWorkspace());
-            }
-            else ws = ActiveWorkspace();
+            Workspace target = ws ?? (newWorkspaceName is not null ? CreateWorkspace(Guid.NewGuid().ToString(), newWorkspaceName) : ActiveWorkspace());
             // --no-select creates the session in the background, leaving the current focus/selection (agterm #250).
-            CreateSession(id, name, cwd, ws, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
+            CreateSession(id, name, cwd, target, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
         });
         return id;
     }

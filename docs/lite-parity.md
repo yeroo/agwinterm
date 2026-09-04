@@ -105,10 +105,12 @@ Not a one-way list, and these should move the other way.
   their row from the same offset on either screen; agwinterm pins the alt screen to 0. Both are
   self-consistent (highlight and clipboard agree either way), so this is a difference to decide about
   rather than a defect — see `qa/product.md` in the lite repo.
-- **An unknown workspace is refused, not silently swapped** for the active one on `session.new`.
-  agwinterm falls back. Silently falling back is how a caller ends up believing it placed a session
-  somewhere it did not; **agwinterm should probably refuse too**, which is a contract change worth
-  making deliberately.
+- ~~**An unknown workspace is refused, not silently swapped** for the active one on `session.new`.
+  agwinterm falls back.~~ **Matched in batch P2** (`feat/p2-honesty`; the PR number is recorded in
+  `plans/2026-09-03-parity-batches.md` when it ships): agwinterm now refuses an unknown `--workspace`
+  id/prefix, and an unknown `--workspace-name` without `--create-workspace`, with `ok:false` and no
+  session created — and refuses the two flags together. lite had it right first; this was decision 1
+  of the parity programme, answered "refuse" because one script has to work against both products.
 
 ---
 

@@ -69,6 +69,11 @@ public static class AgentSkill
           `--wait` (with `--command`) holds the session on "press any key" after the command exits, so its final output stays readable.
           — create a session (prints its id). `--command` runs that program as the session process (argv-style, no shell) instead of the shell.
           `--profile NAME` picks a shell profile (default = Windows PowerShell).
+          `--workspace` is a workspace id (or unique id prefix; `tree --json` lists them), `--workspace-name` its sidebar label
+          (case-insensitive). **An unknown workspace is refused** (`ok:false`, no session created) — it is never swapped for the
+          active workspace: an unknown id, or an unknown name without `--create-workspace`, is an error that names the value.
+          `--workspace-name NAME --create-workspace` creates the workspace when it does not exist and reuses it when it does.
+          `--workspace` and `--workspace-name` together are refused; pass one. Omit both to create in the active workspace.
         - `agwintermctl session duplicate [ID]` — clone a session (same cwd + shell profile) as a new session (default: active).
         - `agwintermctl session restore "<command>" --target PANE` — pin a command to re-run on every restart for that pane; `none` clears.
           The target is mandatory (no active-pane default: a pin outlives whatever is active now; inside a session `AGWINTERM_SESSION_ID`

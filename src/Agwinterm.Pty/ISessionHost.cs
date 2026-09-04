@@ -86,7 +86,11 @@ public interface ISessionHost
     /// Create a session; returns its id. Optionally in a workspace (by id/prefix via
     /// <paramref name="workspace"/>, or by sidebar label via <paramref name="workspaceName"/> +
     /// <paramref name="createWorkspace"/>), running <paramref name="command"/> as its process
-    /// instead of the shell.
+    /// instead of the shell. A workspace that does not resolve — an unknown id/prefix, or an
+    /// unknown name without <paramref name="createWorkspace"/> — is <b>refused</b> with
+    /// <see cref="RefusePrefix"/> + the <see cref="SessionNewWorkspaces"/> wording, and no session
+    /// is created; it is never swapped for the active workspace (P2, decision 1). The host resolves
+    /// the workspace before it mints the id, so a refusal cannot leave an orphan behind ok:false.
     /// </summary>
     string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false);

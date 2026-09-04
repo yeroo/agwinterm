@@ -201,8 +201,21 @@ public sealed class ControlServer : IDisposable
                 case "tree": return HandleTree(host);
                 case "window.state": return HandleWindowState(host);
                 case "session.new":
-                    return Ok(host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace"),
-                    GetString(args, "command"), GetString(args, "workspace-name"), GetBool(args, "create-workspace"), GetString(args, "profile"), GetBool(args, "no-select"), GetBool(args, "wait")));
+                {
+                    // An unknown workspace is REFUSED, not swapped for the active one (P2, decision 1;
+                    // SessionNewWorkspaces has the why). The host resolves the workspace before it
+                    // mints an id, so a refusal leaves no session behind it; the pair of flags is
+                    // refused here, before the host is asked, because the host cannot see both were
+                    // given once one has won.
+                    string? workspace = GetString(args, "workspace"), workspaceName = GetString(args, "workspace-name");
+                    if (!string.IsNullOrEmpty(workspace) && !string.IsNullOrEmpty(workspaceName))
+                        return Err(SessionNewWorkspaces.TwoSources(workspace, workspaceName));
+                    string created = host.NewSession(GetString(args, "name"), GetString(args, "cwd"), workspace,
+                        GetString(args, "command"), workspaceName, GetBool(args, "create-workspace"), GetString(args, "profile"), GetBool(args, "no-select"), GetBool(args, "wait"));
+                    return created.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+                        ? Err(created[ISessionHost.RefusePrefix.Length..])
+                        : Ok(created);
+                }
                 case "session.duplicate": return Ok(host.DuplicateSession(target));
                 case "profiles.list": return Ok(host.ProfilesList());
                 case "profiles.reload": return Ok(host.ProfilesReload());

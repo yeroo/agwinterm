@@ -7,7 +7,8 @@ using System.Text.Json;
 //   agwintermctl ping
 //   agwintermctl version [--json]                  (the CLI that ran + the app serving the pipe)
 //   agwintermctl tree [--json]
-//   agwintermctl session new [--cwd DIR] [--name NAME] [--no-select]
+//   agwintermctl session new [--cwd DIR] [--name NAME] [--workspace ID|--workspace-name NAME [--create-workspace]] [--no-select]
+//                                                  (an unknown workspace is refused, never swapped for the active one)
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]

@@ -217,6 +217,7 @@ agwintermctl window state                    # sidebar/fullscreen/active read-ba
 agwintermctl sidebar width 300               # move the divider; the reply is the width in effect
 agwintermctl session status blocked --sound  # report agent status (a dot + bell in the UI)
 agwintermctl session new --name build --workspace-name CI --create-workspace
+agwintermctl session new --workspace no-such   # refused, no session: an unknown workspace is never swapped for the active one
 agwintermctl session type "npm test`n"       # type into the active session
 @"
 say "hi"
