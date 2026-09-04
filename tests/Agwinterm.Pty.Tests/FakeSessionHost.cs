@@ -30,6 +30,10 @@ internal sealed class FakeSessionHost : ISessionHost
         /// reaches pane 0 whatever <see cref="FocusedPane"/> says, and only a NAME reaches the
         /// focused pane — the asymmetry qa/control-read.md pins.</summary>
         public readonly List<string> PaneIds = new();
+        /// <summary>session.restore pins, keyed by pane id — what the app keeps in Pane.RestoreCommand.
+        /// The tree's <c>restoreCommands</c> is built from here, so a test reads a pin back the way a
+        /// caller does, and a refused call is asserted to have left this empty.</summary>
+        public readonly Dictionary<string, string> RestorePins = new();
         /// <summary>Split this session: adds a pane and returns it, for the multi-pane status cases.</summary>
         public ISession AddPane()
         {
@@ -73,14 +77,22 @@ internal sealed class FakeSessionHost : ISessionHost
     // then type into). Per-session panes are what let the tree's statusChangedAt aggregate for real.
     public ISession? Resolve(string? target)
     {
-        var sessions = Workspaces.SelectMany(w => w.Sessions).ToList();
         if (target is null or "active") return Focused(ActiveSess);
+        return FindPane(target) is { } hit ? hit.s.Panes[hit.pane] : null;
+    }
+
+    /// <summary>The one resolver behind <see cref="Resolve"/> and <see cref="SessionRestore"/>, as
+    /// FindControlPane is behind both in the app: the pane index a target lands on, and its session.
+    /// "active" is not a pane here — the verbs that default to it do so before calling this.</summary>
+    private (Sess s, int pane)? FindPane(string target)
+    {
+        var sessions = Workspaces.SelectMany(w => w.Sessions).ToList();
         foreach (var pred in new Func<string, bool>[] { id => id == target, id => id.StartsWith(target, StringComparison.Ordinal) })
             foreach (var s in sessions)
                 for (int i = 0; i < s.Panes.Count; i++)
-                    if (i < s.PaneIds.Count && pred(s.PaneIds[i])) return s.Panes[i];
+                    if (i < s.PaneIds.Count && pred(s.PaneIds[i])) return (s, i);
         var named = sessions.Where(s => string.Equals(s.Name, target, StringComparison.OrdinalIgnoreCase)).ToList();
-        return named.Count == 1 ? Focused(named[0]) : null;   // an ambiguous name resolves to nothing
+        return named.Count == 1 ? (named[0], Math.Clamp(named[0].FocusedPane, 0, named[0].Panes.Count - 1)) : null;   // an ambiguous name resolves to nothing
     }
 
     private static ISession? Focused(Sess? s) =>
@@ -93,6 +105,8 @@ internal sealed class FakeSessionHost : ISessionHost
             var (status, statusChangedAt) = s.StatusAndChangedAt;   // one reading, as Program.ControlHost.Tree does
             return new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, ActiveSess), status,
                 s.Overlay, s.Notifications, s.Flagged, false, s.FocusedPane, s.PaneCount, false, s.OverlaySize, s.Ratios,
+                PaneIds: s.PaneIds,
+                RestoreCommands: s.PaneIds.Select(id => s.RestorePins.TryGetValue(id, out var pin) ? pin : "").ToList(),   // "" = none, as the app's snapshot spells it
                 StatusChangedAt: statusChangedAt);
         }).ToList())).ToList();
 
@@ -131,7 +145,16 @@ internal sealed class FakeSessionHost : ISessionHost
         return s.Id;
     }
     public bool WorkspaceCollapse(string? target, bool expand) { var w = FindWs(target) ?? ActiveWs; return w is not null; }
-    public bool SessionRestore(string? target, string command) => Find(target) is not null;
+    // Real, not a stub: the pin is stored per pane and read back through the tree, so the verb's
+    // reply ("which pane got it") can be checked against what a later caller would see.
+    public RestorePinTarget? SessionRestore(string target, string? command)
+    {
+        if (string.IsNullOrEmpty(target) || target == "active") return null;
+        if (FindPane(target) is not { } hit) return null;
+        string paneId = hit.s.PaneIds[hit.pane];
+        if (command is null) hit.s.RestorePins.Remove(paneId); else hit.s.RestorePins[paneId] = command;
+        return new RestorePinTarget(paneId, hit.s.Id);
+    }
     public string Events(long since, int limit) => "{\"cursor\":0,\"events\":[]}";
 
     public bool SelectSession(string target) { var s = Find(target); if (s is null) return false; ActiveSess = s; ActiveWs = Workspaces.First(w => w.Sessions.Contains(s)); return true; }

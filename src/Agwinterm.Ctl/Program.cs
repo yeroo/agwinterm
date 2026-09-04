@@ -21,6 +21,8 @@ using System.Text.Json;
 //       newlines, a leading -- or runs of spaces are sent; invalid UTF-8 is refused, nothing sent; one
 //       trailing newline is dropped. "quick type" is `session type --target quick:` — the quick pane's id)
 //   agwintermctl session write <text...> [--target ID]                    (also takes --stdin)
+//   agwintermctl session restore <command...>|none --target PANE          (pin a command re-run on every restart;
+//       target mandatory; replies {action,pane,session}; read back in `tree --json` as restoreCommands)
 //   agwintermctl session copy [--target ID]           (returns the selection text)
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
 //   agwintermctl selection all|copy|clear|finalize [--target ID]

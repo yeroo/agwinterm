@@ -67,10 +67,15 @@ public static class AgentSkill
         - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"] [--profile NAME] [--no-select] [--wait]`
           `--no-select` creates the session in the background without stealing focus or changing the current selection.
           `--wait` (with `--command`) holds the session on "press any key" after the command exits, so its final output stays readable.
-        - `agwintermctl session duplicate [ID]` — clone a session (same cwd + shell profile) as a new session (default: active).
-        - `agwintermctl session restore "<command>" [--target PANE]` — pin a command to re-run on every restart for that pane (`none` clears). Surfaced per-pane in `tree --json` as `restoreCommands`.
           — create a session (prints its id). `--command` runs that program as the session process (argv-style, no shell) instead of the shell.
           `--profile NAME` picks a shell profile (default = Windows PowerShell).
+        - `agwintermctl session duplicate [ID]` — clone a session (same cwd + shell profile) as a new session (default: active).
+        - `agwintermctl session restore "<command>" --target PANE` — pin a command to re-run on every restart for that pane; `none` clears.
+          The target is mandatory (no active-pane default: a pin outlives whatever is active now; inside a session `AGWINTERM_SESSION_ID`
+          is the pane). Replies `{action:"pinned"|"cleared", pane, session[, command]}` naming the pane it landed on — a session
+          NAME lands on its focused pane, a session ID on its first pane, exactly as `session type` does. Read it back in
+          `tree --json` as `restoreCommands`: an object keyed by pane id listing only pinned panes (absent when none).
+          An unknown target, or a scratch/overlay/quick pane (never restored), is refused and nothing is pinned.
         - `agwintermctl profiles list` — shell profiles (cmd, Windows PowerShell, PowerShell 7, Git Bash, WSL:*, custom); `* ` marks the default.
           Profiles live in `%LOCALAPPDATA%\agwinterm\profiles.json` (auto-seeded from detected shells; edit to add your own — name/command/args/cwd/icon/env); `agwintermctl profiles reload` re-reads it.
         - `agwintermctl session select <id>` / `session close <id>`

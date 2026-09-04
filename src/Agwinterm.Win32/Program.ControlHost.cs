@@ -651,16 +651,29 @@ internal partial class Program
         return true;
     }
 
-    // Pin (or clear) a restore command on a specific pane, keyed by pane id (agterm #271). Persisted so
-    // restart always re-runs it. Empty/"none" clears the pin. Returns false if the pane isn't found.
-    public bool SessionRestore(string? target, string command)
+    // Pin (or clear, command = null) a restore command on a specific pane (agterm #271). Persisted so
+    // restart always re-runs it. Resolves through FindControlPane, the path every other content verb
+    // uses (exact pane, exact session, pane prefix, session prefix/name) rather than the FindPaneById
+    // it used before P2. For every target the old resolver accepted — an exact pane id or a pane-id
+    // prefix — the two agree: pane 0 shares its session's id, so the exact-session step can only ever
+    // repeat the exact-pane hit, and the prefix step is the same predicate in the same order. The one
+    // thing that changed is that a session NAME now reaches that session's focused pane instead of
+    // being refused. The empty / "active" refusal and the ""/"none" folding live in ControlServer,
+    // where the fake host can exercise them. Returns the pane the pin landed on, so the reply can
+    // name it; null = nothing matched, and nothing was pinned.
+    public RestorePinTarget? SessionRestore(string target, string? command)
     {
-        if (string.IsNullOrEmpty(target)) return false;
-        var hit = FindPaneById(target!);
-        if (hit is null) return false;
-        string? val = string.IsNullOrWhiteSpace(command) || command.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : command;
-        Post(() => { hit.Value.pane.RestoreCommand = val; SaveState(); });
-        return true;
+        if (string.IsNullOrEmpty(target) || target == "active") return null;
+        var hit = FindControlPane(target);
+        if (hit is null) return null;
+        // A scratch / overlay / quick cover is not in the saved tree, so a pin on one would answer
+        // ok and then vanish at the next restart — the exact "succeeded, did nothing" this batch
+        // exists to end. Refuse it with the pane named, and pin nothing.
+        if (hit.Value.cover)
+            return new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses?.Id ?? hit.Value.pane.Id,
+                Refusal: $"'{hit.Value.pane.Id}' is a scratch/overlay/quick pane, which is never restored; a pin there would be lost at the next restart. Nothing pinned.");
+        Post(() => { hit.Value.pane.RestoreCommand = command; SaveState(); });
+        return new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses!.Id);
     }
 
     // ---- Control-API event bus (agterm #273): a bounded, cursor-polled log of status / notification /

@@ -16,6 +16,12 @@ public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentS
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
 
+/// <summary>Where a <c>session.restore</c> call landed: the pane the target resolved to and the session
+/// that owns it, so the reply can name both — a split has several panes and the caller cannot otherwise
+/// tell which one now carries the pin. <see cref="Refusal"/> non-null means the pane exists but cannot
+/// carry a pin (a scratch / overlay / quick cover is never restored) and nothing was changed.</summary>
+public sealed record RestorePinTarget(string PaneId, string SessionId, string? Refusal = null);
+
 /// <summary>Window-level UI state for the control-API read side (sidebar/fullscreen/zoom/quick-terminal
 /// visibility + which workspace/session is active).</summary>
 public sealed record WindowStateSnapshot(bool SidebarVisible, bool Fullscreen, bool Maximized,
@@ -203,8 +209,12 @@ public interface ISessionHost
     /// agent resumes its own session. <paramref name="agent"/> = "" or "none" clears the binding.
     /// Returns false if the target pane isn't found.</summary>
     bool SessionBind(string? target, string agent);
-    /// <summary>Pin (or clear with ""/"none") a restore command on a pane; re-run every restart. (agterm #271)</summary>
-    bool SessionRestore(string? target, string command);
+    /// <summary>Pin a restore command on a pane, re-run every restart (agterm #271); <paramref name="command"/>
+    /// null clears. The server has already refused an empty / "active" target and folded ""/"none" into
+    /// null. Resolves <paramref name="target"/> the way every other content verb does (exact pane, exact
+    /// session, pane prefix, session prefix/name) and returns the pane it landed on; null = nothing matched,
+    /// and nothing was pinned.</summary>
+    RestorePinTarget? SessionRestore(string target, string? command);
     /// <summary>Poll the event log for events after <paramref name="since"/> (0 = all buffered), up to
     /// <paramref name="limit"/> (0 = no cap). Returns JSON {cursor, events:[{seq,type,session?,info?}]}. (agterm #273)</summary>
     string Events(long since, int limit);
@@ -321,7 +331,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool Notify(string? target, string? title, string body) => false;
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;
-    public bool SessionRestore(string? target, string command) => false;
+    public RestorePinTarget? SessionRestore(string target, string? command) => null;
     public string Events(long since, int limit) => "{\"cursor\":0,\"events\":[]}";
     public string AdoptClaude() => "unsupported";
     public string RestartClaudeYolo(string? target) => "unsupported";
