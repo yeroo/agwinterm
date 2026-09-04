@@ -138,6 +138,10 @@ public static class AgentSkill
         - `agwintermctl session overlay open "<command>" [--size-percent N] [--wait] [--block] [--target <id>]`
           — run `<command>` in a throwaway terminal over the session; it vanishes when the program exits, leaving the session untouched. Returns the overlay id.
           `--size-percent N` (1..100) makes it a centered floating panel over a dimmed session (default = full content region). The session gets a `* (overlay)` tag in `tree`.
+          The range is VALIDATED, not clamped: `0`, `-5`, `150`, `sixty` and a quoted `"60"` are each refused (`ok:false`,
+          the value and the range named) and NO overlay opens — read `tree` to confirm. To ask for the full region, omit
+          the flag; there is no number that means it. The same rule applies to `overlay resize --size-percent N`, whose
+          reply `resized N%` is always the N you asked for.
         - `--wait` keeps the panel after the program exits (shows "press any key to close") instead of auto-dismissing.
         - `--block` waits for the program to exit and returns `exit N` (its exit code). Good for `lazygit`, `htop`, an editor, or any pick-a-thing helper you want to run and read the result of.
         - `agwintermctl session overlay close [--target <id>]`   — dismiss the overlay now.

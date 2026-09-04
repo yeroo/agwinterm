@@ -182,14 +182,18 @@ internal sealed class FakeSessionHost : ISessionHost
     public string SessionSearch(string? target, string? query, string? action) => "no matches";
     public bool SessionScratch(string? target, string op) => Find(target) is not null;
     public void Quick(string op) { QuickVisible = op switch { "on" => true, "off" => false, "toggle" => !QuickVisible, _ => QuickVisible }; }
+    // Mirrors the app: no clamp, because ControlServer.TryOverlaySize refuses out-of-range before the
+    // host is reached. The range check here is the fake's own tripwire — a test that drives the host
+    // directly with a bad size must see a refusal, not a silently-coerced panel.
     public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
     {
         var s = Find(target); if (s is null) return "no session";
+        if (sizePercent is < 0 or > 100) return ISessionHost.RefusePrefix + $"size-percent {sizePercent} is outside 0..100";
         switch (action)
         {
             case "close": s.Overlay = false; s.OverlaySize = 0; return "closed";
-            case "resize": if (!s.Overlay) return "no overlay"; s.OverlaySize = Math.Clamp(sizePercent, 0, 100); return $"resized {s.OverlaySize}%";
-            default: if (string.IsNullOrWhiteSpace(command)) return "no command"; s.Overlay = true; s.OverlaySize = Math.Clamp(sizePercent, 0, 100); return s.Id;
+            case "resize": if (!s.Overlay) return "no overlay"; s.OverlaySize = sizePercent; return $"resized {s.OverlaySize}%";
+            default: if (string.IsNullOrWhiteSpace(command)) return "no command"; s.Overlay = true; s.OverlaySize = sizePercent; return s.Id;
         }
     }
     public bool Notify(string? target, string? title, string body) { var s = Find(target); if (s is null) return false; s.Notifications++; return true; }

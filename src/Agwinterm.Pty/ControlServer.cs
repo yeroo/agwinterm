@@ -267,8 +267,12 @@ public sealed class ControlServer : IDisposable
                     // A refusal has to answer ok:false, or a caller that checks `ok` reads "I would
                     // not do that" as "done" — the exact dishonesty the refusal exists to end. The
                     // host marks one by prefixing REFUSE_PREFIX; everything else is a result string.
+                    // size-percent is validated, not clamped. Before P2, `0`, `-5`, `150` and the
+                    // string "sixty" (0 from GetInt) all opened a full-screen overlay and answered
+                    // ok:true — three silent coercions between the shell and the panel.
+                    if (!TryOverlaySize(args, out int sizePercent, out string? sizeErr)) return Err(sizeErr!);
                     string ovl = host.SessionOverlay(target, GetString(args, "action") ?? "open",
-                        GetString(args, "command"), GetInt(args, "size-percent", 0),
+                        GetString(args, "command"), sizePercent,
                         GetBool(args, "wait"), GetBool(args, "block"));
                     return ovl.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
                         ? Err(ovl[ISessionHost.RefusePrefix.Length..])
@@ -975,6 +979,26 @@ public sealed class ControlServer : IDisposable
         value = n;
         return true;
     }
+
+    /// <summary>
+    /// The strict reader for session.overlay's <c>size-percent</c>. Three cases, none folded into
+    /// another: <b>absent</b> keeps today's meaning (0 = the full content region); <b>present and
+    /// 1..100</b> is the centered panel size; <b>present and anything else</b> — 0, negative, above
+    /// 100, a float, a string — is refused with the value and the range named. A caller who wrote
+    /// <c>--size-percent 0</c> meaning "full" is told that omitting the flag is how to ask for that,
+    /// because the refusal is the only place they will read it.
+    /// </summary>
+    internal static bool TryOverlaySize(JsonElement args, out int sizePercent, out string? error)
+    {
+        sizePercent = 0; error = null;
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty(OverlaySizeKey, out var v)) return true;
+        if (v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out long n) && n >= 1 && n <= 100)
+        { sizePercent = (int)n; return true; }
+        error = $"{OverlaySizeKey} {v.GetRawText()} is not a whole number in 1..100; " +
+                $"omit --{OverlaySizeKey} to use the full content region";
+        return false;
+    }
+    internal const string OverlaySizeKey = "size-percent";
 
     /// <summary>32-bit <see cref="TryNum(JsonElement, string, long, out long, ref string?)"/>.</summary>
     private static bool TryNum(JsonElement el, string key, int def, out int value, ref string? error)

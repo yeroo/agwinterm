@@ -600,7 +600,10 @@ internal partial class Program
                 {
                     var ses = FindSesForTarget(target);
                     if (ses?.Overlay is null) return "no overlay";
-                    int sp = Math.Clamp(sizePercent, 0, 100);   // 0 = full content region; 1..100 = centered panel
+                    // No clamp: ControlServer.TryOverlaySize refused anything outside 0..100 before
+                    // this ran, so the N reported is always the N the caller asked for. A clamp here
+                    // could only hide a bug upstream now. 0 = full content region; 1..100 = centered panel.
+                    int sp = sizePercent;
                     Post(() => { ses.OverlaySizePercent = sp; if (ReferenceEquals(_ovlOwner, ses)) RegridCover(); RequestRedraw(); });
                     return $"resized {sp}%";
                 }

@@ -228,7 +228,7 @@ agwintermctl surface cursor --target <pane>  # the caret column of a pane, as a 
 agwintermctl version                         # which CLI ran, and which app answered the pipe
 ```
 
-Three of those answer a question a script would otherwise have to guess at:
+Five of those answer a question a script would otherwise have to guess at:
 
 - `surface cursor` returns the caret **column** and nothing else, so "is that agent's composer empty
   before I type into it" is a comparison, not a hunt for its placeholder text. A different column is
@@ -254,6 +254,10 @@ Three of those answer a question a script would otherwise have to guess at:
   nothing is sent; `--stdin` beside positional text or `--select` is refused as ambiguous. There is no
   `quick type` verb here: the quick terminal is a pane whose id starts with `quick:`, so it is
   `session type --stdin --target quick:`.
+- `session overlay open --size-percent N` and `overlay resize --size-percent N` take 1..100 and
+  **refuse** anything else, naming the value and the range. `0`, `150` and `sixty` used to open a
+  full-screen overlay and report success; now nothing opens and `ok` is false. Omit the flag for the
+  full content region. `resized N%` is always the N that was asked for.
 
 Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
 Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.

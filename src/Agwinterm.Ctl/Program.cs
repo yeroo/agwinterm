@@ -217,7 +217,18 @@ switch (area)
                 cargs["action"] = rest.Count > 0 ? rest[0] : "open";
                 if (rest.Count > 1) cargs["command"] = string.Join(' ', rest.Skip(1));
                 else if (Opt("command") is { } ovcmd) cargs["command"] = ovcmd;
-                if (int.TryParse(Opt("size-percent"), out var sp)) cargs["size-percent"] = sp;
+                // An unparseable --size-percent is refused, not dropped: `--size-percent sixty` used to
+                // open a FULL-SCREEN overlay and report success. The range (1..100) is the server's
+                // call, so its refusal names the value and the way to ask for the full region.
+                if (Opt("size-percent") is { } spText)
+                {
+                    if (!int.TryParse(spText, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out var sp))
+                    {
+                        Console.Error.WriteLine($"--size-percent needs a whole number in 1..100, not '{spText}'; omit it for the full content region");
+                        return 2;
+                    }
+                    cargs["size-percent"] = sp;
+                }
                 if (options.ContainsKey("wait")) cargs["wait"] = true;
                 if (options.ContainsKey("block")) cargs["block"] = true;
                 break;

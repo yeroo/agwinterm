@@ -734,7 +734,7 @@ internal partial class Program
         string id = ses.Id + ":overlay:" + Guid.NewGuid().ToString("N")[..6];
         var pane = CreatePane(id, ses.Ws, CwdOf(ses), ses.FontSize, command, shellWrap: true, extraEnv: extraEnv);
         ses.Overlay = pane;
-        ses.OverlaySizePercent = Math.Clamp(sizePercent, 0, 100);
+        ses.OverlaySizePercent = sizePercent;   // validated at the control API (TryOverlaySize); in-app callers pass literals
         ses.OverlayWait = wait;
         ses.OverlayExited = false;
         if (ReferenceEquals(ses, _active)) { _cover = pane; _coverKind = 3; _ovlOwner = ses; SyncSession(); RegridCover(); }
