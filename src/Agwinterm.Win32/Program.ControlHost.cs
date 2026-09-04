@@ -300,6 +300,16 @@ internal partial class Program
         string id = Guid.NewGuid().ToString();
         Post(() =>
         {
+            // The resolve above ran on the pipe thread; this runs on the UI thread some milliseconds
+            // later, and in between the user (or a posted workspace.delete) can have removed `ws`
+            // from the list. CreateSession would still add the session to that detached Workspace
+            // object: not in the tree, not findable by any verb, yet SetActive would make it the
+            // active session - a phantom behind an id the caller already holds. The id is committed,
+            // so a refusal is no longer possible; the active workspace is the least-wrong home for a
+            // session that has to exist somewhere the caller can see it.
+            bool gone;
+            lock (_workspaces) gone = ws is not null && !_workspaces.Contains(ws);
+            if (gone) ws = ActiveWorkspace();
             Workspace target = ws ?? CreateWorkspace(Guid.NewGuid().ToString(), newWorkspaceName);
             // --no-select creates the session in the background, leaving the current focus/selection (agterm #250).
             CreateSession(id, name, cwd, target, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
