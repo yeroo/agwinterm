@@ -94,10 +94,10 @@ agliteterm's `check-contract` is red by design; that is the gate, not a bug. `st
 nested tree field the shape runner cannot express, so each product pins it in its own tests.
 
 ### Mirrored: what P2 (agwinterm #226) owed lite — P2-lite shipped
-Batch **P2-lite** — agliteterm branch `feat/p2-lite-mirror`, plan
-`docs/plans/2026-09-04-p2-lite-mirror.md` there (the PR number goes here when it opens; two lite
-reports, #23 a pane collapsing to 2 columns and #24 the window coming to the front on its own, rode
-along) — delivered the four things P2 owed, one of them a new verb:
+Batch **P2-lite** — agliteterm **#26** (2026-09-04; plan `docs/plans/2026-09-04-p2-lite-mirror.md`
+there; two lite reports, #23 a pane collapsing to 2 columns and #24 the window coming to the front
+on its own, rode along and close with it) — delivered the four things P2 owed, one of them a new
+verb:
 
 - **`--stdin` on `session type` / `session write`** — the shared CLI's half; lite's decoder is
   unchanged and is proved against it (a quote, a newline, two spaces and a leading `--` round-trip
