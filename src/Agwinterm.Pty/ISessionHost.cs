@@ -172,8 +172,10 @@ public interface ISessionHost
     /// <summary>Reorder a workspace among its siblings: dir = up|down|top|bottom.</summary>
     bool WorkspaceReorder(string? target, string dir);
 
-    /// <summary>Split the active session: op = on|off|toggle.</summary>
-    void Split(string op);
+    /// <summary>Split the targeted session (null/"active" = the active one): op = on|off|toggle.
+    /// False when the target names no session. Splitting a session that is not the active one
+    /// does not move focus to it: the split appears when the user next selects that session.</summary>
+    bool Split(string? target, string op);
     /// <summary>Move pane focus in the active session: dir = left|right|other.</summary>
     void FocusPaneDir(string dir);
     /// <summary>Set the active session's split: an absolute left ratio (0..1) or grow left/right by N columns.</summary>
@@ -349,7 +351,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool WorkspaceCollapse(string? target, bool expand) => false;
     public bool WorkspaceSelect(string? target) => false;
     public bool WorkspaceReorder(string? target, string dir) => false;
-    public void Split(string op) { }
+    public bool Split(string? target, string op) => false;
     public void FocusPaneDir(string dir) { }
     public void ResizeSplit(double? ratio, int growLeft, int growRight) { }
     public IReadOnlyList<string> ThemeList() => Array.Empty<string>();

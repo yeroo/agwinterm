@@ -224,7 +224,7 @@ public static class AgentSkill
           then the follow-up key. Drive/observe it with `agwintermctl command leader state|begin|cancel|key:<chord>`.
 
         ## Splits, font, sidebar, theme
-        - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
+        - `agwintermctl session split on|off|toggle [--target <id>]` (the target session, not the active one) · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
         - `agwintermctl font inc|dec|reset [--target <id>]`      — font zoom; target a session (active pane) or a specific split/scratch/quick pane by its id (see `tree` paneIds)
         - `agwintermctl dashboard [<id> ...] [--close] [--font-size N]` — grid overlay of live sessions (no ids = most-recent; `--close` dismisses; Ctrl+Shift+D toggles it in the UI)
         - `agwintermctl sidebar show|hide|toggle|expand|collapse` (`on`/`off` are aliases of show/hide). An op the sidebar

@@ -1194,10 +1194,8 @@ internal partial class Program
 
     // ---- Splits ----
 
-    private void SplitActivePane()
+    private void SplitPane(Ses ses)
     {
-        var ses = _active;
-        if (ses is null) return;
         if (ses.Panes.Count >= 2) return;   // agterm model: strictly primary + one split (no 3+ panes)
         var cur = ses.ActivePane;
         string? cwd = string.IsNullOrEmpty(cur.StartCwd) ? null : cur.StartCwd;
@@ -1206,8 +1204,11 @@ internal partial class Program
         cur.Ratio = half; np.Ratio = half;
         int idx = ses.Panes.IndexOf(cur);
         lock (_workspaces) ses.Panes.Insert(idx + 1, np);   // exclude the control-pipe reader mid-enumeration (issue #85)
-        ses.Active = idx + 1;            // focus the new pane
-        _session = ses.S;
+        ses.Active = idx + 1;            // focus the new pane, within its session
+        // Only the active session's focused pane is the window's focused surface. Pointing
+        // `_session` at a pane of some other session would leave the window focused on a
+        // surface that is not on screen.
+        if (ReferenceEquals(ses, _active)) _session = ses.S;
         RegridSession(ses);
         RequestRedraw();
         SaveState();
@@ -1523,28 +1524,34 @@ internal partial class Program
         }
     }
 
-    private void SplitOp(string op)
+    /// <summary>The keyboard, the title-bar button and the palette all split the active session.</summary>
+    private void SplitOp(string op) => SplitOp(op, _active);
+
+    /// <summary>Split or collapse <paramref name="ses"/>. The control API reaches this with a
+    /// resolved target, which need not be the active session: `session split on --target X` from
+    /// an agent's pane used to split whatever the user happened to be looking at.</summary>
+    private void SplitOp(string op, Ses? ses)
     {
-        int panes = _active?.Panes.Count ?? 1;
+        if (ses is null) return;
+        int panes = ses.Panes.Count;
         switch (op)
         {
-            case "on": if (panes <= 1) SplitActivePane(); break;
-            case "off": if (panes > 1) CollapseToSinglePane(); break;
-            default: if (panes > 1) CollapseToSinglePane(); else SplitActivePane(); break; // toggle
+            case "on": if (panes <= 1) SplitPane(ses); break;
+            case "off": if (panes > 1) CollapseToSinglePane(ses); break;
+            default: if (panes > 1) CollapseToSinglePane(ses); else SplitPane(ses); break; // toggle
         }
     }
 
     /// <summary>Collapse the active session to just its focused pane (dispose the rest).</summary>
-    private void CollapseToSinglePane()
+    private void CollapseToSinglePane(Ses ses)
     {
-        var ses = _active;
-        if (ses is null || ses.Panes.Count <= 1) return;
+        if (ses.Panes.Count <= 1) return;
         var keep = ses.Panes[0];   // agterm: collapsing the split keeps the primary (left) pane, not whichever is focused
         foreach (var p in ses.Panes) if (!ReferenceEquals(p, keep)) { try { p.S.Dispose(); } catch { } }
         // Clear+Add as one atomic step so the control-pipe reader never sees an empty pane list (issue #85).
         lock (_workspaces) { ses.Panes.Clear(); ses.Panes.Add(keep); }
         keep.Ratio = 1f; ses.Active = 0;
-        _session = ses.S;
+        if (ReferenceEquals(ses, _active)) _session = ses.S;
         RegridSession(ses); RequestRedraw(); SaveState();
     }
 
