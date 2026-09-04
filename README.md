@@ -216,6 +216,7 @@ agwintermctl tree --json                     # workspace/session tree (+ splits,
 agwintermctl window state                    # sidebar/fullscreen/active read-back
 agwintermctl sidebar width 300               # move the divider; the reply is the width in effect
 agwintermctl session status blocked --sound  # report agent status (a dot + bell in the UI)
+agwintermctl session new --name build        # from a pane: lands in THAT pane's workspace, not the last-clicked one
 agwintermctl session new --name build --workspace-name CI --create-workspace
 agwintermctl session new --workspace no-such   # refused, no session: an unknown workspace is never swapped for the active one
 agwintermctl session type "npm test`n"       # type into the active session
@@ -231,7 +232,7 @@ agwintermctl surface cursor --target <pane>  # the caret column of a pane, as a 
 agwintermctl version                         # which CLI ran, and which app answered the pipe
 ```
 
-Six of those answer a question a script would otherwise have to guess at:
+Eight of those answer a question a script would otherwise have to guess at:
 
 - `surface cursor` returns the caret **column** and nothing else, so "is that agent's composer empty
   before I type into it" is a comparison, not a hunt for its placeholder text. A different column is
@@ -273,6 +274,14 @@ Six of those answer a question a script would otherwise have to guess at:
   persisted but reported `applied:false` rather than as a width nobody can see. `sidebar state` now
   reads `visible tree 220`: visibility, mode and width. And a `sidebar` op the app cannot do is
   refused instead of acknowledged (`on`/`off` are real aliases of `show`/`hide`).
+
+- `session new` with no `--workspace` creates the session **in the caller's own workspace**: the CLI
+  sends the pane it runs in (its `AGWINTERM_SESSION_ID`), and the session goes next to it. Before,
+  it went to the *active* workspace, a global the UI moves on every click, so an agent creating
+  several sessions scattered them wherever the user had last clicked. An agent gets sessions beside
+  itself unless it says otherwise, and `--workspace` / `--workspace-name` are how it says otherwise.
+  Only a CLI with no pane identity, or one whose pane has since been closed, still lands in the
+  active workspace; a stale caller is not refused, because that would break a working script.
 
 Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
 Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.

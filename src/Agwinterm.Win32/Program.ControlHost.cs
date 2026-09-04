@@ -258,8 +258,13 @@ internal partial class Program
     // (and, with --create-workspace, the new workspace) still runs on the UI thread.
     // --workspace beside --workspace-name is refused by the server before this is reached; if a
     // direct caller passes both anyway, the id wins, exactly as it did before P2.
+    // With NEITHER named, the answer is the CALLER's workspace (task 5a): `caller` is the pane that
+    // ran `session new` (the CLI sends its AGWINTERM_SESSION_ID), so an agent gets sessions next to
+    // itself however the user has clicked around meanwhile. Only a missing or stale caller reaches
+    // the active workspace, and that too is read here, synchronously, rather than inside the Post.
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
+        string? caller = null)
     {
         Workspace? ws = null;
         string? newWorkspaceName = null;   // set = create this workspace on the UI thread, then the session in it
@@ -277,10 +282,25 @@ internal partial class Program
                 newWorkspaceName = workspaceName;
             }
         }
+        else
+        {
+            // Nothing named: the workspace of the caller's own pane. A scratch/overlay pane belongs
+            // to the session it covers; the quick terminal belongs to no workspace and falls through.
+            // A caller that does not resolve — the pane was closed after it typed the command, a
+            // script run from an unrelated shell, a pane in another window — is NOT refused: that
+            // would break a working script in order to fix a preference.
+            if (!string.IsNullOrEmpty(caller) && FindPaneById(caller) is { ses: { } owner }) ws = owner.Ws;
+            // The active workspace is the LAST answer, not the first. "Active" is a global the UI
+            // rewrites on every click, every selection and every workspace.new over the API, so an
+            // agent creating several sessions used to scatter them wherever the user had last
+            // clicked. Reading it here rather than in the Post at least pins it to the moment of the
+            // call instead of to whenever the UI thread gets round to the lambda.
+            ws ??= ActiveWorkspace();
+        }
         string id = Guid.NewGuid().ToString();
         Post(() =>
         {
-            Workspace target = ws ?? (newWorkspaceName is not null ? CreateWorkspace(Guid.NewGuid().ToString(), newWorkspaceName) : ActiveWorkspace());
+            Workspace target = ws ?? CreateWorkspace(Guid.NewGuid().ToString(), newWorkspaceName);
             // --no-select creates the session in the background, leaving the current focus/selection (agterm #250).
             CreateSession(id, name, cwd, target, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
         });

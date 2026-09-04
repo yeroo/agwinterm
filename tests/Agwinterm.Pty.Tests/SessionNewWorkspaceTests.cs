@@ -17,6 +17,13 @@ namespace Agwinterm.Pty.Tests;
 /// change. The wording asserted is <see cref="SessionNewWorkspaces"/>, which the app's host shares
 /// with the fake, and the fake's FindWs resolves id / id-prefix / "active" and never a name — exactly
 /// the app's — so a test here cannot pass against a fake that accepts what the app refuses.
+///
+/// The second half (task 5a): with NO workspace argument the session lands in the CALLER's own
+/// workspace — <c>caller</c> is the pane that ran <c>session new</c>, the CLI sends its
+/// AGWINTERM_SESSION_ID — and the active workspace is the last answer, reached only with no caller
+/// or a stale one. "Active" is a global the UI moves on every click, which is how an agent creating
+/// several sessions scattered them wherever the user had last clicked; the regression test is the
+/// one that selects a session elsewhere BETWEEN two creates, not the first create alone.
 /// </summary>
 public class SessionNewWorkspaceTests
 {
@@ -35,6 +42,10 @@ public class SessionNewWorkspaceTests
     }
 
     private static JsonElement SessionNew(ControlServer server, Dictionary<string, object> args) => Dispatch(server, "session.new", args);
+
+    /// <summary>A targeted verb (session.select / session.close), for moving the ACTIVE workspace the way a click does.</summary>
+    private static JsonElement Targeted(ControlServer server, string cmd, string target) =>
+        JsonDocument.Parse(server.Dispatch($"{{\"cmd\":{JsonSerializer.Serialize(cmd)},\"target\":{JsonSerializer.Serialize(target)}}}")).RootElement;
 
     private static bool Ok(JsonElement r) => r.GetProperty("ok").GetBoolean();
     private static string Error(JsonElement r) => r.GetProperty("error").GetString() ?? "";
@@ -250,5 +261,174 @@ public class SessionNewWorkspaceTests
         var r = SessionNew(server, new() { ["workspace"] = "", ["workspace-name"] = "" });
         Assert.True(Ok(r));
         Assert.Equal("w1", WorkspaceOf(host, Result(r)).Id);
+    }
+
+    // ---- task 5a: no workspace argument = the CALLER's workspace, active last ----
+
+    /// <summary>An "agent" pane in a second workspace B, with the fake's default workspace A (w1)
+    /// left ACTIVE — the setup of the reported bug. Returns (B's id, the agent's pane id).</summary>
+    private static (string wid, string agent) AgentInB(ControlServer server, FakeSessionHost host)
+    {
+        string wid = SecondWorkspace(server, "B");
+        string agent = Result(SessionNew(server, new() { ["name"] = "agent", ["workspace"] = wid }));
+        host.ActiveWs = host.Workspaces.First(w => w.Id == "w1");   // the user clicks back into A
+        host.ActiveSess = host.ActiveWs.Sessions[0];
+        return (wid, agent);
+    }
+
+    [Fact]
+    public void CallerInB_ActiveIsA_LandsInB()
+    {
+        var (server, host) = New();
+        var (wid, agent) = AgentInB(server, host);
+        Assert.Equal("w1", host.ActiveWs.Id);   // precondition: active is NOT where the caller is
+
+        var r = SessionNew(server, new() { ["name"] = "child", ["caller"] = agent });
+        Assert.True(Ok(r));
+        Assert.Equal(wid, WorkspaceOf(host, Result(r)).Id);
+        Assert.Single(host.Workspaces.First(w => w.Id == "w1").Sessions);   // A did not get it
+        Assert.Equal(2, host.Workspaces.Count);
+    }
+
+    [Fact]
+    public void CallerIsASplitPane_LandsInThatPanesWorkspace()
+    {
+        // The env var is per PANE (a split pane has its own id), and a split pane's id is not a session id.
+        var (server, host) = New();
+        var (wid, agent) = AgentInB(server, host);
+        var agentSess = host.Workspaces.SelectMany(w => w.Sessions).Single(s => s.Id == agent);
+        agentSess.AddPane();
+        string paneId = agentSess.PaneIds[1];
+        Assert.NotEqual(agent, paneId);
+
+        var r = SessionNew(server, new() { ["caller"] = paneId });
+        Assert.True(Ok(r));
+        Assert.Equal(wid, WorkspaceOf(host, Result(r)).Id);
+    }
+
+    [Fact]
+    public void ExplicitWorkspace_WinsOverTheCaller()
+    {
+        var (server, host) = New();
+        var (wid, agent) = AgentInB(server, host);
+        var r = SessionNew(server, new() { ["caller"] = agent, ["workspace"] = "w1" });
+        Assert.True(Ok(r));
+        Assert.Equal("w1", WorkspaceOf(host, Result(r)).Id);
+        Assert.Single(host.Workspaces.First(w => w.Id == wid).Sessions);   // B kept only the agent
+    }
+
+    [Fact]
+    public void ExplicitWorkspaceName_WinsOverTheCaller()
+    {
+        var (server, host) = New();
+        var (wid, agent) = AgentInB(server, host);
+        var r = SessionNew(server, new() { ["caller"] = agent, ["workspace-name"] = "workspace 1" });
+        Assert.True(Ok(r));
+        Assert.Equal("w1", WorkspaceOf(host, Result(r)).Id);
+        Assert.Single(host.Workspaces.First(w => w.Id == wid).Sessions);
+    }
+
+    [Fact]
+    public void ExplicitWorkspaceName_WithCreate_WinsOverTheCaller_AndCreates()
+    {
+        var (server, host) = New();
+        var (_, agent) = AgentInB(server, host);
+        var r = SessionNew(server, new() { ["caller"] = agent, ["workspace-name"] = "fresh", ["create-workspace"] = true });
+        Assert.True(Ok(r));
+        Assert.Equal("fresh", WorkspaceOf(host, Result(r)).Name);
+        Assert.Equal(3, host.Workspaces.Count);
+    }
+
+    [Fact]
+    public void UnknownCaller_FallsBackToActive_AndCreates_NotRefused()
+    {
+        // A script run from an unrelated shell, or an id from another window: the active workspace,
+        // and a session — refusing here would break a working script to fix a preference.
+        var (server, host) = New();
+        SecondWorkspace(server);
+        int before = SessionCount(host);
+        var r = SessionNew(server, new() { ["name"] = "orphan-not", ["caller"] = "no-such-pane" });
+        Assert.True(Ok(r));
+        Assert.Equal(host.ActiveWs.Id, WorkspaceOf(host, Result(r)).Id);
+        Assert.Equal(before + 1, SessionCount(host));
+        Assert.Contains(host.Workspaces.SelectMany(w => w.Sessions), s => s.Name == "orphan-not");
+    }
+
+    [Fact]
+    public void ClosedCaller_FallsBackToActive_AndCreates()
+    {
+        // The agent that typed the command was closed before the reply: its id no longer resolves.
+        var (server, host) = New();
+        var (wid, agent) = AgentInB(server, host);
+        Assert.True(Ok(Targeted(server, "session.close", agent)));
+        Assert.Empty(host.Workspaces.First(w => w.Id == wid).Sessions);
+
+        var r = SessionNew(server, new() { ["name"] = "after-close", ["caller"] = agent });
+        Assert.True(Ok(r));
+        Assert.Equal("w1", WorkspaceOf(host, Result(r)).Id);   // active, not B, and not refused
+    }
+
+    [Fact]
+    public void NoCallerAndNoArgument_IsTheActiveWorkspace_Unchanged()
+    {
+        // Today's behaviour for a caller with no identity: the active workspace. `caller: ""` is how
+        // a CLI outside any pane would spell it if it sent the key at all.
+        var (server, host) = New();
+        string wid = SecondWorkspace(server);
+        host.ActiveWs = host.Workspaces.First(w => w.Id == wid);
+        Assert.Equal(wid, WorkspaceOf(host, Result(SessionNew(server, new() { ["name"] = "a" }))).Id);
+        Assert.Equal(wid, WorkspaceOf(host, Result(SessionNew(server, new() { ["name"] = "b", ["caller"] = "" }))).Id);
+    }
+
+    [Fact]
+    public void SelectingASessionElsewhere_BetweenTwoCreates_DoesNotMoveTheSecond()
+    {
+        // THE reported bug: an agent creates several sessions, the user clicks around in between,
+        // and the later ones land wherever was last clicked. A first-create-only test passes
+        // against the old code whenever the agent's workspace happens to be active.
+        var (server, host) = New();
+        var (wid, agent) = AgentInB(server, host);
+
+        string first = Result(SessionNew(server, new() { ["name"] = "first", ["caller"] = agent }));
+        Assert.Equal(wid, WorkspaceOf(host, first).Id);
+        Assert.Equal(wid, host.ActiveWs.Id);   // creating selected it, so B is active now — the easy case
+
+        Assert.True(Ok(Targeted(server, "session.select", "s1")));
+        Assert.Equal("w1", host.ActiveWs.Id);   // the user selected a session in A
+
+        string second = Result(SessionNew(server, new() { ["name"] = "second", ["caller"] = agent }));
+        Assert.Equal(wid, WorkspaceOf(host, second).Id);   // still B
+        Assert.Single(host.Workspaces.First(w => w.Id == "w1").Sessions);
+        Assert.Equal(3, host.Workspaces.First(w => w.Id == wid).Sessions.Count);   // agent, first, second
+    }
+
+    [Fact]
+    public void WorkspaceNewOverTheApi_BetweenTwoCreates_DoesNotMoveTheSecond()
+    {
+        // lite's workspace.new rewrites g_activeWs; the fake models that by moving ActiveWs by hand.
+        // One agent creating a workspace must not redirect another agent's next bare `session new`.
+        var (server, host) = New();
+        var (wid, agent) = AgentInB(server, host);
+        string first = Result(SessionNew(server, new() { ["caller"] = agent }));
+        string third = SecondWorkspace(server, "C");
+        host.ActiveWs = host.Workspaces.First(w => w.Id == third); host.ActiveSess = null;
+
+        string second = Result(SessionNew(server, new() { ["caller"] = agent }));
+        Assert.Equal(wid, WorkspaceOf(host, first).Id);
+        Assert.Equal(wid, WorkspaceOf(host, second).Id);
+        Assert.Empty(host.Workspaces.First(w => w.Id == third).Sessions);
+    }
+
+    [Fact]
+    public void CallerIsNeverASessionName()
+    {
+        // The value is a pane's own id from its environment; a name that happens to match must not
+        // resolve (the app's FindPaneById does not read names, and neither may the fake here).
+        var (server, host) = New();
+        var (wid, _) = AgentInB(server, host);
+        var r = SessionNew(server, new() { ["caller"] = "agent" });   // "agent" is the session's NAME
+        Assert.True(Ok(r));
+        Assert.Equal("w1", WorkspaceOf(host, Result(r)).Id);   // active, not B
+        Assert.Single(host.Workspaces.First(w => w.Id == wid).Sessions);
     }
 }

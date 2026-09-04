@@ -207,11 +207,18 @@ public sealed class ControlServer : IDisposable
                     // mints an id, so a refusal leaves no session behind it; the pair of flags is
                     // refused here, before the host is asked, because the host cannot see both were
                     // given once one has won.
+                    // `caller` is the pane that ran the command (the CLI sends its AGWINTERM_SESSION_ID);
+                    // with no workspace named, the session lands in THAT pane's workspace, and only a
+                    // missing or stale caller falls back to the active one (P2, task 5a). It is a
+                    // separate arg and not the target on purpose: session.new is dispatched here, in
+                    // the targetless block, and a target would move it into the resolved-session block
+                    // below, where an unknown value is "session not found" rather than a fallback.
                     string? workspace = GetString(args, "workspace"), workspaceName = GetString(args, "workspace-name");
                     if (!string.IsNullOrEmpty(workspace) && !string.IsNullOrEmpty(workspaceName))
                         return Err(SessionNewWorkspaces.TwoSources(workspace, workspaceName));
                     string created = host.NewSession(GetString(args, "name"), GetString(args, "cwd"), workspace,
-                        GetString(args, "command"), workspaceName, GetBool(args, "create-workspace"), GetString(args, "profile"), GetBool(args, "no-select"), GetBool(args, "wait"));
+                        GetString(args, "command"), workspaceName, GetBool(args, "create-workspace"), GetString(args, "profile"), GetBool(args, "no-select"), GetBool(args, "wait"),
+                        caller: GetString(args, "caller"));
                     return created.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
                         ? Err(created[ISessionHost.RefusePrefix.Length..])
                         : Ok(created);

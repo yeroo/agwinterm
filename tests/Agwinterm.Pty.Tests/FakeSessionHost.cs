@@ -92,14 +92,27 @@ internal sealed class FakeSessionHost : ISessionHost
     /// "active" is not a pane here — the verbs that default to it do so before calling this.</summary>
     private (Sess s, int pane)? FindPane(string target)
     {
+        if (FindPaneById(target) is { } byId) return byId;
         var sessions = Workspaces.SelectMany(w => w.Sessions).ToList();
-        foreach (var pred in new Func<string, bool>[] { id => id == target, id => id.StartsWith(target, StringComparison.Ordinal) })
-            foreach (var s in sessions)
-                for (int i = 0; i < s.Panes.Count; i++)
-                    if (i < s.PaneIds.Count && pred(s.PaneIds[i])) return (s, i);
         var named = sessions.Where(s => string.Equals(s.Name, target, StringComparison.OrdinalIgnoreCase)).ToList();
         return named.Count == 1 ? (named[0], Math.Clamp(named[0].FocusedPane, 0, named[0].Panes.Count - 1)) : null;   // an ambiguous name resolves to nothing
     }
+
+    /// <summary>The app's FindPaneById: a pane by exact id, then by id prefix, and never by a
+    /// session name. This is how a <c>caller</c> on session.new resolves (the value is a pane's own
+    /// AGWINTERM_SESSION_ID, never a name), so the fake must not reach a pane by name there either.</summary>
+    private (Sess s, int pane)? FindPaneById(string id)
+    {
+        var sessions = Workspaces.SelectMany(w => w.Sessions).ToList();
+        foreach (var pred in new Func<string, bool>[] { pid => pid == id, pid => pid.StartsWith(id, StringComparison.Ordinal) })
+            foreach (var s in sessions)
+                for (int i = 0; i < s.Panes.Count; i++)
+                    if (i < s.PaneIds.Count && pred(s.PaneIds[i])) return (s, i);
+        return null;
+    }
+
+    /// <summary>The workspace a session lives in — what the app reads as <c>Ses.Ws</c>.</summary>
+    internal Ws WorkspaceOf(Sess s) => Workspaces.First(w => w.Sessions.Contains(s));
 
     private static ISession? Focused(Sess? s) =>
         s is null ? null : s.Panes[Math.Clamp(s.FocusedPane, 0, s.Panes.Count - 1)];
@@ -138,8 +151,12 @@ internal sealed class FakeSessionHost : ISessionHost
     // --create-workspace, which creates it; both refusals happen before a session (or an id) exists.
     // The pair of flags is refused by the server first; a direct caller passing both gets the id,
     // as in the app. The wording is the shared SessionNewWorkspaces, so a test asserts the app's text.
+    // With neither flag: the CALLER's pane's workspace (caller = a pane id, exact or prefix, the way
+    // the app's FindPaneById reads it), and only when there is no caller or it no longer resolves,
+    // the active workspace — the last answer, not the first (task 5a).
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
+        string? caller = null)
     {
         Ws? w;
         if (!string.IsNullOrEmpty(workspace))
@@ -156,7 +173,8 @@ internal sealed class FakeSessionHost : ISessionHost
                 w = new Ws { Id = "w" + (++_idSeq + 100), Name = workspaceName }; Workspaces.Add(w);
             }
         }
-        else w = ActiveWs;
+        else if (!string.IsNullOrEmpty(caller) && FindPaneById(caller) is { } callerPane) w = WorkspaceOf(callerPane.s);
+        else w = ActiveWs;   // no caller, or a stale one: not refused
         var s = new Sess { Id = "s" + (++_idSeq + 100), Name = string.IsNullOrEmpty(name) ? $"session {w.Sessions.Count + 1}" : name }.Seed();
         w.Sessions.Add(s);
         if (!noSelect) { ActiveSess = s; ActiveWs = w; }

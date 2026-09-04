@@ -8,6 +8,7 @@ using System.Text.Json;
 //   agwintermctl version [--json]                  (the CLI that ran + the app serving the pipe)
 //   agwintermctl tree [--json]
 //   agwintermctl session new [--cwd DIR] [--name NAME] [--workspace ID|--workspace-name NAME [--create-workspace]] [--no-select]
+//       (no workspace given = the workspace of the pane running this CLI; the active one only when there is none)
 //                                                  (an unknown workspace is refused, never swapped for the active one)
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
@@ -144,6 +145,12 @@ switch (area)
                 if (Opt("profile") is { } prof) cargs["profile"] = prof;
                 if (options.ContainsKey("no-select")) cargs["no-select"] = true;   // create in background, keep focus
                 if (options.ContainsKey("wait")) cargs["wait"] = true;             // hold on "press any key" after --command exits
+                // Who is asking: the pane this CLI runs in, the same AGWINTERM_SESSION_ID every other
+                // verb defaults its target to. With no --workspace the session lands in THAT pane's
+                // workspace, not in whatever the user last clicked. Sent as `caller`, not as the
+                // target: session.new is targetless on the server, and a target would make an
+                // unknown value "session not found" instead of the active-workspace fallback.
+                if (Environment.GetEnvironmentVariable("AGWINTERM_SESSION_ID") is { Length: > 0 } callerPane) cargs["caller"] = callerPane;
                 target = null; // new isn't targeted
                 break;
             case "select":

@@ -91,9 +91,19 @@ public interface ISessionHost
     /// <see cref="RefusePrefix"/> + the <see cref="SessionNewWorkspaces"/> wording, and no session
     /// is created; it is never swapped for the active workspace (P2, decision 1). The host resolves
     /// the workspace before it mints the id, so a refusal cannot leave an orphan behind ok:false.
+    /// <para>With neither workspace argument the session lands in the workspace of the
+    /// <paramref name="caller"/>'s pane — the pane that ran <c>session new</c>, which the CLI sends
+    /// from its <c>AGWINTERM_SESSION_ID</c> — so an agent gets sessions next to itself. The ACTIVE
+    /// workspace is the <b>last</b> answer, not the first: it is a global the UI rewrites on every
+    /// click and selection, and reading it made a bare <c>session new</c> land wherever the user
+    /// had last clicked (P2, task 5a). It is used only when there is no caller, or the caller's pane
+    /// no longer exists (the agent that typed the command has since been closed, or a script from an
+    /// unrelated shell); a stale caller is <b>not</b> refused, because refusing would break a working
+    /// script to fix a preference. Resolved synchronously, before the creation is posted.</para>
     /// </summary>
     string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false);
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
+        string? caller = null);
 
     /// <summary>Clone a session (same cwd + shell profile); returns the new session id. (agterm #234)</summary>
     string DuplicateSession(string? target);
@@ -306,7 +316,8 @@ public sealed class SingleSessionHost : ISessionHost
                                         StatusChangedAt: _session.StatusChangedAt) }) };
     public WindowStateSnapshot WindowState() => new(true, false, false, false, "ws", "single");
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false) => "single";
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
+        string? caller = null) => "single";
     public string DuplicateSession(string? target) => "";
     public string ProfilesList() => "Windows PowerShell";
     public string ProfilesReload() => "0 profiles loaded";
