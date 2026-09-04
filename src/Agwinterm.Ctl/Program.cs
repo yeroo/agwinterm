@@ -17,7 +17,10 @@ using System.Text.Json;
 //   agwintermctl session metrics [<pane-id>] [--json] (live cell + pane pixel metrics)
 //   agwintermctl session text [--lines N] [--target ID]   (N reaches into scrollback; default = screen)
 //   agwintermctl session type <text...> [--allow-control] [--target ID]   (control bytes refused unless allowed)
-//   agwintermctl session write <text...> [--target ID]
+//   agwintermctl session type --stdin [--allow-control] [--target ID]     (text = stdin, as bytes: how quotes,
+//       newlines, a leading -- or runs of spaces are sent; invalid UTF-8 is refused, nothing sent; one
+//       trailing newline is dropped. "quick type" is `session type --target quick:` — the quick pane's id)
+//   agwintermctl session write <text...> [--target ID]                    (also takes --stdin)
 //   agwintermctl session copy [--target ID]           (returns the selection text)
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
 //   agwintermctl selection all|copy|clear|finalize [--target ID]
@@ -164,6 +167,23 @@ switch (area)
                 if (options.ContainsKey("allow-control")) cargs["allow-control"] = true;
                 goto case "write";
             case "write":
+                // --stdin: the text is standard input, as bytes. Positionals are joined with one
+                // space and the splitter eats a leading "--", so quotes, newlines, runs of spaces and
+                // a "--flag" as text only survive this way. Two sources for one field is an
+                // ambiguity we refuse rather than resolve: --stdin with positional text or --select
+                // is an error. Invalid UTF-8 exits non-zero and sends NOTHING — the server's own
+                // reader would have replaced the bad bytes with U+FFFD and answered ok.
+                if (options.ContainsKey("stdin"))
+                {
+                    // The splitter hands "--stdin" the next bare word as its value, so a positional
+                    // after it shows up as Opt("stdin") != "true" rather than in `rest`.
+                    if (rest.Count > 0 || Opt("stdin") != "true" || Opt("select") is not null)
+                    { Console.Error.WriteLine($"session {sub}: --stdin cannot be combined with positional text or --select (one source for the text, not two)"); return 2; }
+                    var stdinText = Agwinterm.Pty.StdinText.Read(Console.OpenStandardInput());
+                    if (!stdinText.Ok) { Console.Error.WriteLine($"session {sub} --stdin: {stdinText.Error}; nothing was sent"); return 2; }
+                    cargs["text"] = stdinText.Text;
+                    break;
+                }
                 // --select <text> (agterm parity): text may come via --select instead of positionals.
                 cargs["text"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("select") ?? "");
                 break;

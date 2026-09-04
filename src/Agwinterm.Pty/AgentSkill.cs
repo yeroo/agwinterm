@@ -121,6 +121,14 @@ public static class AgentSkill
           REFUSED, not stripped: a NUL would truncate your command while its Return still fired. Add `--allow-control`
           when you really mean one (an escape sequence for a TUI, a lone ^C). `session write` is NOT the way — it
           injects into the display and never reaches the shell
+        - `agwintermctl session type --stdin --target <id>`      — the text is STDIN, as bytes. This is how text with
+          quotes, newlines, runs of spaces or a leading `--` is sent: positionals are re-joined with one space and
+          the option parser eats a leading `--`, both silently. Pipe a here-string (`@"..."@ | agwintermctl session
+          type --stdin --target <id>`) or redirect a file. Exactly one trailing newline is dropped (the one the
+          shell adds), so end the text with TWO newlines to press Enter. Invalid UTF-8 is refused with the byte
+          offset and NOTHING is sent (exit 2). `--stdin` with positional text or `--select` is refused as ambiguous.
+          `--allow-control` still applies. There is no `quick type` verb: the quick terminal is a pane whose id starts
+          with `quick:`, so `session type --stdin --target quick:` types into it (once `quick on` has created it)
 
         ## Scratch & quick terminals
         - `agwintermctl session scratch on|off|toggle [--target <id>]` — a per-session extra shell drawn over that session's content (opens in the session's cwd; stays alive when hidden; not restored)

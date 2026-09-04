@@ -217,6 +217,9 @@ agwintermctl window state                    # sidebar/fullscreen/active read-ba
 agwintermctl session status blocked --sound  # report agent status (a dot + bell in the UI)
 agwintermctl session new --name build --workspace-name CI --create-workspace
 agwintermctl session type "npm test`n"       # type into the active session
+@"
+say "hi"
+"@ | agwintermctl session type --stdin   # text with quotes/newlines: stdin as bytes (see below)
 agwintermctl session overlay open "git diff" --size-percent 60
 agwintermctl dashboard build test deploy     # grid overview of chosen sessions
 agwintermctl theme set "Tokyo Night"         # retint the whole window
@@ -244,6 +247,13 @@ Three of those answer a question a script would otherwise have to guess at:
   `agwintermctl.exe` can coexist off `PATH`) and the `app` that answered (version and pipe). It exits 0
   and still prints the `cli` line when nothing is listening, which is the case it exists for. `--json`
   gives the machine-readable form.
+- `session type --stdin` takes the text from standard input as bytes, so quotes, newlines, runs of
+  spaces and a leading `--` arrive intact: the argv form re-joins positionals with one space and the
+  option parser eats a leading `--`, both silently. Exactly one trailing newline is dropped (the one
+  the shell adds), so end with two to press Enter. Invalid UTF-8 is refused with its byte offset and
+  nothing is sent; `--stdin` beside positional text or `--select` is refused as ambiguous. There is no
+  `quick type` verb here: the quick terminal is a pane whose id starts with `quick:`, so it is
+  `session type --stdin --target quick:`.
 
 Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
 Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.
