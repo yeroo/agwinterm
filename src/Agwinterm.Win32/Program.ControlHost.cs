@@ -447,8 +447,34 @@ internal partial class Program
 
     public void SidebarOp(string op) => Post(() => SidebarOpInternal(op));
 
+    // "<visible|hidden> <tree|flagged> <width>": the width is _sidebarWShown, the one in effect when
+    // shown — beside "hidden" it is the width the next show will use, not a claim that it is on screen.
     public string SidebarState() => InvokeOnUi(() =>
-        (_sidebarW > 0 ? "visible" : "hidden") + " " + (_sidebarMode == SidebarMode.Flagged ? "flagged" : "tree"));
+        (_sidebarW > 0 ? "visible" : "hidden") + " " + (_sidebarMode == SidebarMode.Flagged ? "flagged" : "tree")
+        + " " + (int)_sidebarWShown);
+
+    // sidebar.width. No clamp: ControlServer.TrySidebarWidth has refused anything outside
+    // SidebarWidths.Min..Max, so a value here is one the chrome can draw. A set while visible goes
+    // through SidebarWidthChanged, the same re-layout ToggleSidebar uses; a set while hidden only
+    // updates the remembered width (and persists it), and the snapshot's Visible=false is what the
+    // server turns into "remembered, not applied". InvokeOnUi, not Post: the reply must describe the
+    // width after the change, not the width at the moment the request was queued.
+    public Agwinterm.Pty.SidebarWidthSnapshot SidebarWidth(int? set)
+    {
+        Agwinterm.Pty.SidebarWidthSnapshot? snap = null;
+        InvokeOnUi(() =>
+        {
+            if (set is { } w)
+            {
+                _sidebarWShown = w;
+                if (_sidebarW > 0) { _sidebarW = w; SidebarWidthChanged(); }
+                else SaveState();
+            }
+            snap = new Agwinterm.Pty.SidebarWidthSnapshot((int)_sidebarWShown, _sidebarW > 0);
+            return "";
+        });
+        return snap ?? new Agwinterm.Pty.SidebarWidthSnapshot((int)_sidebarWShown, _sidebarW > 0);
+    }
 
     public string BroadcastOp(string op) => InvokeOnUi(() =>
     {

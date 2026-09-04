@@ -83,7 +83,13 @@ public static class AgentSkill
         - `agwintermctl session seen [--target ID]` — clear a session's unseen-notification badge headlessly
         - `agwintermctl session output [--target ID]` — the LAST COMPLETED command's output (FTCS marks;
           pwsh sessions emit them automatically) — cleaner than parsing `session text` yourself
-        - `agwintermctl sidebar state` — read-back: `visible tree` | `hidden flagged` | … (`ping` reports the app version)
+        - `agwintermctl sidebar state` — read-back `<visible|hidden> <tree|flagged> <width>`, e.g. `visible tree 220`:
+          visibility, view mode and width (DIP) in one call (`ping` reports the app version)
+        - `agwintermctl sidebar width [N]` — read (no N) or set the sidebar width in device-independent pixels. Replies
+          `{width, visible[, applied[, note]]}` with the width ACTUALLY in effect, so compare `width` with what you asked
+          for. N outside 120..600 is REFUSED with the range named (nothing moves), never clamped — `sidebar hide` is how
+          you ask for no sidebar. A set while the sidebar is hidden is remembered and persisted but not applied
+          (`applied:false` + a note); it takes effect on the next `sidebar show`. Persists across restarts.
         - `agwintermctl version [--json]` — which CLI binary you just ran (version + its resolved path) and which app
           answered (version + pipe), on two greppable lines, `cli` and `app`. Several agwintermctl.exe can coexist and
           none need be on PATH; this says which one this was. It exits 0 and still prints the `cli` half when no app
@@ -204,7 +210,9 @@ public static class AgentSkill
         - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
         - `agwintermctl font inc|dec|reset [--target <id>]`      — font zoom; target a session (active pane) or a specific split/scratch/quick pane by its id (see `tree` paneIds)
         - `agwintermctl dashboard [<id> ...] [--close] [--font-size N]` — grid overlay of live sessions (no ids = most-recent; `--close` dismisses; Ctrl+Shift+D toggles it in the UI)
-        - `agwintermctl sidebar show|hide|toggle|expand|collapse`
+        - `agwintermctl sidebar show|hide|toggle|expand|collapse` (`on`/`off` are aliases of show/hide). An op the sidebar
+          cannot do is REFUSED (`ok:false`, nothing changed) — it used to answer `ok` and do nothing. `sidebar width [N]`
+          reads/sets the width (see "Read the state").
         - `agwintermctl session background set <image> [--opacity 0..100] [--mode fit|fill|center|tile]` — a faint per-session
           watermark drawn behind the terminal (the image is copied into app data); `session background clear` removes it.
           Per-session (honors `--target`/`--window`); persists; `tree` reports `"background":true`.

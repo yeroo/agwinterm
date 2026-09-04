@@ -214,6 +214,7 @@ agwinterm is scriptable through a local named pipe speaking newline-delimited JS
 ```powershell
 agwintermctl tree --json                     # workspace/session tree (+ splits, badges, overlays)
 agwintermctl window state                    # sidebar/fullscreen/active read-back
+agwintermctl sidebar width 300               # move the divider; the reply is the width in effect
 agwintermctl session status blocked --sound  # report agent status (a dot + bell in the UI)
 agwintermctl session new --name build --workspace-name CI --create-workspace
 agwintermctl session type "npm test`n"       # type into the active session
@@ -264,6 +265,13 @@ Six of those answer a question a script would otherwise have to guess at:
   exactly as `session type` does), and `action` is `pinned` or `cleared` (`none` clears). The target
   is mandatory, because a pin outlives whatever pane is active now. `tree --json` reads the pins back
   as `restoreCommands`, an object keyed by pane id that lists only pinned panes.
+- `sidebar width [N]` reads or sets the sidebar width in device-independent pixels and replies
+  `{width, visible, applied}` with the width **actually in effect**, so a script compares what it
+  asked for with what it got. Outside 120..600 is refused with the range named and nothing moves
+  (`sidebar hide` is how to ask for none). A set while the sidebar is hidden is remembered and
+  persisted but reported `applied:false` rather than as a width nobody can see. `sidebar state` now
+  reads `visible tree 220`: visibility, mode and width. And a `sidebar` op the app cannot do is
+  refused instead of acknowledged (`on`/`off` are real aliases of `show`/`hide`).
 
 Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
 Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.

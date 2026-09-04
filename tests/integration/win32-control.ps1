@@ -319,6 +319,47 @@ try {
         }
 
         Invoke-Ctl @('quick', 'off') | Out-Null
+        Start-Sleep -Milliseconds 500
+
+        # sidebar.width must move the divider, not just a number. The unit tests see the fake host
+        # only; here the proof is live geometry: the active session's measured width (session.metrics,
+        # columns x cell width) shrinks when the sidebar widens, because the grid derives from the
+        # divider. Then the persisted half: the width lands in this instance's state file, which is
+        # what a restart reads. Then the refusal: out of range answers ok:false and the width stays.
+        Invoke-Ctl @('sidebar', 'show') | Out-Null
+        Start-Sleep -Milliseconds 400
+        $widthBefore = Invoke-Ctl @('sidebar', 'width')
+        $metricsBefore = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+        $widthSet = Invoke-Ctl @('sidebar', 'width', '320')
+        Start-Sleep -Milliseconds 500
+        $metricsAfter = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+        $stateAfter = Invoke-Ctl @('sidebar', 'state')
+        Check 'sidebar.width reads the default before any set' `
+            ($widthBefore.ok -and $widthBefore.result.width -eq 220 -and $widthBefore.result.visible) `
+            "result=$($widthBefore | ConvertTo-Json -Compress)"
+        Check 'sidebar.width replies with the width in effect and that it was applied' `
+            ($widthSet.ok -and $widthSet.result.width -eq 320 -and $widthSet.result.visible -and $widthSet.result.applied) `
+            "result=$($widthSet | ConvertTo-Json -Compress)"
+        Check 'sidebar.width moved the divider (the active pane got narrower)' `
+            ($metricsBefore.ok -and $metricsAfter.ok -and $metricsAfter.result.widthPx -lt $metricsBefore.result.widthPx) `
+            "widthPx before=$($metricsBefore.result.widthPx) after=$($metricsAfter.result.widthPx)"
+        Check 'sidebar state carries the width' ($stateAfter.ok -and [string]$stateAfter.result -eq 'visible tree 320') `
+            "state=$($stateAfter.result)"
+        $stateFile = Get-ChildItem -LiteralPath (Join-Path $testAppDir 'windows') -Filter '*.json' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $persisted = $stateFile -and ((Get-Content -LiteralPath $stateFile.FullName -Raw) -match '"SidebarWidth":\s*320')
+        Check 'sidebar.width is persisted to the state file (what a restart reads)' $persisted `
+            "file=$($stateFile.FullName)"
+        $widthRefused = Invoke-Ctl @('sidebar', 'width', '5')
+        $widthAfterRefusal = Invoke-Ctl @('sidebar', 'width')
+        Check 'sidebar.width refuses out of range and the divider stays where it was' `
+            ((-not $widthRefused.ok) -and ([string]$widthRefused.error).Contains('120..600') -and $widthAfterRefusal.result.width -eq 320) `
+            "error=$($widthRefused.error) width=$($widthAfterRefusal.result.width)"
+        $badOp = Invoke-Ctl @('sidebar', 'sideways')
+        Check 'a sidebar op the app cannot do is refused, not acknowledged' `
+            ((-not $badOp.ok) -and ([string]$badOp.error).Contains('sideways')) "reply=$($badOp | ConvertTo-Json -Compress)"
+        Invoke-Ctl @('sidebar', 'width', '220') | Out-Null
+
         Invoke-Ctl @('sidebar', 'hide') | Out-Null
         Start-Sleep -Milliseconds 500
 

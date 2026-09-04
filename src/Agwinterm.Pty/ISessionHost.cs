@@ -22,6 +22,12 @@ public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IRea
 /// carry a pin (a scratch / overlay / quick cover is never restored) and nothing was changed.</summary>
 public sealed record RestorePinTarget(string PaneId, string SessionId, string? Refusal = null);
 
+/// <summary>What <c>sidebar width</c> reports: <see cref="Width"/> is the width the sidebar has in
+/// DIP — on screen when <see cref="Visible"/>, remembered and applied on the next show when not. The
+/// two together are what lets the server say "remembered, not applied" for a set while hidden instead
+/// of reporting a width nobody can see.</summary>
+public sealed record SidebarWidthSnapshot(int Width, bool Visible);
+
 /// <summary>Window-level UI state for the control-API read side (sidebar/fullscreen/zoom/quick-terminal
 /// visibility + which workspace/session is active).</summary>
 public sealed record WindowStateSnapshot(bool SidebarVisible, bool Fullscreen, bool Maximized,
@@ -120,8 +126,20 @@ public interface ISessionHost
     /// <summary>Clear a session's unseen-notification badge without visiting it (headless "seen").</summary>
     bool SessionSeen(string? target);
 
-    /// <summary>Sidebar state read-back: "visible tree" | "hidden flagged" | ….</summary>
+    /// <summary>Sidebar state read-back: <c>"&lt;visible|hidden&gt; &lt;tree|flagged&gt; &lt;width&gt;"</c>,
+    /// e.g. "visible tree 220" — visibility, mode and width in one call. The width is the one in
+    /// effect when shown (see <see cref="SidebarWidth"/>); "hidden" beside it says it is not on screen.</summary>
     string SidebarState();
+
+    /// <summary>sidebar.width: read (<paramref name="set"/> null) or set the sidebar width in DIP and
+    /// report the width actually in effect afterwards. The server has already refused anything outside
+    /// <see cref="SidebarWidths.Min"/>..<see cref="SidebarWidths.Max"/>, so the host stores and applies
+    /// without clamping — a clamp here could only hide a bug. A set while the sidebar is hidden is
+    /// remembered (it is what the next show uses, and it is persisted) but the divider does not move;
+    /// the snapshot's <see cref="SidebarWidthSnapshot.Visible"/> false is how the server knows to say so.
+    /// A set while visible goes through the same re-layout the toggle does: the content origin, the
+    /// grid, hit-testing and the column count all derive from the width.</summary>
+    SidebarWidthSnapshot SidebarWidth(int? set);
 
     /// <summary>Broadcast-input toggle for the frontmost window: op = on|off|toggle|state. Returns "on"/"off".</summary>
     string BroadcastOp(string op);
@@ -151,7 +169,10 @@ public interface ISessionHost
     bool ThemeSet(string name);
     string KeymapReload();
     string RestoreClear();
-    /// <summary>Sidebar: op = show|hide|toggle|expand|collapse.</summary>
+    /// <summary>Sidebar: op = show|hide|toggle|expand|collapse|mode:tree|mode:flagged|mode:toggle. The
+    /// server refuses anything else before calling (and folds on/off into show/hide), so an op that
+    /// reaches here is one the host handles — before P2 an unknown op fell through the host's switch
+    /// and the verb still answered ok:true.</summary>
     void SidebarOp(string op);
 
     /// <summary>Set a config key (persists to agwinterm.conf + applies live). Returns an ack.</summary>
@@ -297,7 +318,8 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionToWorkspace(string? target, string workspace) => false;
     public bool SessionRename(string? target, string name) => false;
     public bool SessionSeen(string? target) => false;
-    public string SidebarState() => "visible tree";
+    public string SidebarState() => $"visible tree {SidebarWidths.Default}";
+    public SidebarWidthSnapshot SidebarWidth(int? set) => new(SidebarWidths.Default, true);
     public string BroadcastOp(string op) => "off";
     public string ReadOnlyOp(string? target, string op) => "off";
     public string SessionOutput(string? target) => "";

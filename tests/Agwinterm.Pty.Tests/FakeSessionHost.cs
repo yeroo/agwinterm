@@ -50,6 +50,8 @@ internal sealed class FakeSessionHost : ISessionHost
     internal Ws ActiveWs;
     internal Sess? ActiveSess;
     internal bool SidebarVisible = true, QuickVisible, Broadcast;
+    /// <summary>The app's _sidebarWShown: the width the sidebar has when visible, kept while hidden.</summary>
+    internal int SidebarW = SidebarWidths.Default;
     internal readonly Dictionary<string, string> Config = new();
     private int _idSeq;
 
@@ -176,7 +178,19 @@ internal sealed class FakeSessionHost : ISessionHost
     public bool SessionToWorkspace(string? target, string workspace) { var s = Find(target); var w = FindWs(workspace); if (s is null || w is null) return false; Workspaces.First(x => x.Sessions.Contains(s)).Sessions.Remove(s); w.Sessions.Add(s); return true; }
     public bool SessionRename(string? target, string name) { var s = Find(target); if (s is null || string.IsNullOrWhiteSpace(name)) return false; s.Name = name; return true; }
     public bool SessionSeen(string? target) { var s = Find(target); if (s is null) return false; s.Notifications = 0; return true; }
-    public string SidebarState() => SidebarVisible ? "visible tree" : "hidden tree";
+    public string SidebarState() => $"{(SidebarVisible ? "visible" : "hidden")} tree {SidebarW}";
+    // Mirrors the app: no clamp, because ControlServer.TrySidebarWidth refuses out-of-range before the
+    // host is reached. The range check is the fake's own tripwire — a test that drives the host
+    // directly with a bad width must blow up, not see a silently-stored value.
+    public SidebarWidthSnapshot SidebarWidth(int? set)
+    {
+        if (set is { } w)
+        {
+            if (!SidebarWidths.InRange(w)) throw new ArgumentOutOfRangeException(nameof(set), w, "the server should have refused this");
+            SidebarW = w;
+        }
+        return new SidebarWidthSnapshot(SidebarW, SidebarVisible);
+    }
     public string BroadcastOp(string op) { Broadcast = op switch { "on" => true, "off" => false, "toggle" => !Broadcast, _ => Broadcast }; return Broadcast ? "on" : "off"; }
     public string ReadOnlyOp(string? target, string op) { var s = Find(target); if (s is null) return "off"; s.ReadOnly = op switch { "on" => true, "off" => false, "toggle" => !s.ReadOnly, _ => s.ReadOnly }; return s.ReadOnly ? "on" : "off"; }
     public string SessionOutput(string? target) => "";
@@ -191,7 +205,21 @@ internal sealed class FakeSessionHost : ISessionHost
     public bool ThemeSet(string name) => name is "dark" or "light";
     public string KeymapReload() => "reloaded";
     public string RestoreClear() => "cleared";
-    public void SidebarOp(string op) { SidebarVisible = op switch { "show" => true, "hide" => false, "toggle" => !SidebarVisible, _ => SidebarVisible }; }
+    /// <summary>Like the app's SidebarOpInternal switch: show/hide/toggle move visibility, the rest
+    /// (expand/collapse/mode:*) are handled without visible state here. Anything else is a bug —
+    /// the server refuses unknown ops (and folds on/off) before this is called — so it throws
+    /// rather than falling through the way the app used to.</summary>
+    public void SidebarOp(string op)
+    {
+        switch (op)
+        {
+            case "show": SidebarVisible = true; break;
+            case "hide": SidebarVisible = false; break;
+            case "toggle": SidebarVisible = !SidebarVisible; break;
+            case "expand" or "collapse" or "mode:tree" or "mode:flagged" or "mode:toggle": break;
+            default: throw new ArgumentException($"the server should have refused sidebar op '{op}'", nameof(op));
+        }
+    }
     public string ConfigSet(string key, string value) { Config[key] = value; return "set"; }
     public string ConfigGet(string key) => Config.TryGetValue(key, out var v) ? v : "";
     public string ConfigList() => string.Join("\n", Config.Select(kv => $"{kv.Key} = {kv.Value}"));

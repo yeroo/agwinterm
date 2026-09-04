@@ -251,6 +251,14 @@ public sealed class ControlServer : IDisposable
                     {
                         string op = GetString(args, "op") ?? "toggle";
                         if (op is "state" or "get") return Ok(host.SidebarState());   // read-back, no mutation
+                        if (op == "width") return HandleSidebarWidth(host, args);
+                        // on/off are the conformance file's spelling (control-api.json's `sidebar on`
+                        // step). Before P2 they "passed" only because the verb answered ok:true for ANY
+                        // op, including ones the host's switch fell straight through; now they are real
+                        // aliases, and an op the host cannot do is refused instead of acknowledged.
+                        op = op switch { "on" => "show", "off" => "hide", _ => op };
+                        if (Array.IndexOf(SidebarOps, op) < 0)
+                            return Err($"sidebar: unknown op '{op}'. One of: show|hide|toggle|expand|collapse|state|width|mode tree|mode flagged|mode toggle (on/off = show/hide). Nothing changed.");
                         host.SidebarOp(op); return Ok("sidebar");
                     }
                 case "session.copy": return Ok(host.SessionCopy(target)); // selection text (host-side), "" if none
@@ -1050,6 +1058,57 @@ public sealed class ControlServer : IDisposable
         return false;
     }
     internal const string OverlaySizeKey = "size-percent";
+
+    /// <summary>Every op the hosts' SidebarOp switch handles (on/off are folded into show/hide before
+    /// this is consulted). Anything else is refused; before P2 it was acknowledged and ignored.</summary>
+    private static readonly string[] SidebarOps =
+        { "show", "hide", "toggle", "expand", "collapse", "mode:tree", "mode:flagged", "mode:toggle" };
+
+    /// <summary>
+    /// sidebar.width: read the sidebar width, or set it and report the width ACTUALLY IN EFFECT
+    /// afterwards. The reply is an object, not the word "sidebar":
+    /// <c>{width, visible[, applied[, note]]}</c>. <c>width</c> is the sidebar's width in DIP — on
+    /// screen when <c>visible</c>, otherwise the width the next show will use. On a set,
+    /// <c>applied</c> says whether the divider moved now; a set while the sidebar is hidden is
+    /// remembered (and persisted) but not applied, and <c>note</c> says so rather than reporting a
+    /// width the user cannot see. A caller compares what it asked for with <c>width</c>: a
+    /// legitimate difference (a host with a minimum of its own) is visible without pretending the
+    /// number was honoured. Out of range is <b>refused</b> with the range named, the same rule
+    /// --size-percent has, so the API has one answer to "out of range" rather than two; a refusal
+    /// changes nothing.
+    /// </summary>
+    private static string HandleSidebarWidth(ISessionHost host, JsonElement args)
+    {
+        if (!TrySidebarWidth(args, out int? set, out string? err)) return Err(err!);
+        var snap = host.SidebarWidth(set);
+        var sb = new StringBuilder("{\"width\":").Append(snap.Width)
+            .Append(",\"visible\":").Append(snap.Visible ? "true" : "false");
+        if (set is not null)
+        {
+            sb.Append(",\"applied\":").Append(snap.Visible ? "true" : "false");
+            if (!snap.Visible)
+                sb.Append(",\"note\":\"sidebar is hidden: width remembered, not applied; it takes effect on the next `sidebar show`\"");
+        }
+        return OkRaw(sb.Append('}').ToString());
+    }
+
+    /// <summary>
+    /// The strict reader for sidebar.width's <c>width</c>. Three cases, none folded into another:
+    /// <b>absent</b> is a read; <b>present and <see cref="SidebarWidths.Min"/>..<see cref="SidebarWidths.Max"/></b>
+    /// is a set; <b>present and anything else</b> — 0, negative, too wide, a float, a string — is
+    /// refused with the value and the range named (<see cref="SidebarWidths.Refusal"/>). Same shape
+    /// as <see cref="TryOverlaySize"/>: a non-number must not become 0 on the way in.
+    /// </summary>
+    internal static bool TrySidebarWidth(JsonElement args, out int? width, out string? error)
+    {
+        width = null; error = null;
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty(SidebarWidthKey, out var v)) return true;
+        if (v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out long n) && SidebarWidths.InRange(n))
+        { width = (int)n; return true; }
+        error = SidebarWidths.Refusal(v.GetRawText());
+        return false;
+    }
+    internal const string SidebarWidthKey = "width";
 
     /// <summary>32-bit <see cref="TryNum(JsonElement, string, long, out long, ref string?)"/>.</summary>
     private static bool TryNum(JsonElement el, string key, int def, out int value, ref string? error)

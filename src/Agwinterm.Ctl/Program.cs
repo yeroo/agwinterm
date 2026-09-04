@@ -12,7 +12,11 @@ using System.Text.Json;
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]
 //   agwintermctl session seen [--target ID]        (clear the unseen-notification badge)
-//   agwintermctl sidebar state                      (read-back: "visible tree" | "hidden flagged" | ...)
+//   agwintermctl sidebar state                      (read-back: "visible tree 220" = visibility, mode, width)
+//   agwintermctl sidebar width [N]                  (read, or set, the sidebar width in DIP; replies {width,visible[,applied]}
+//       with the width actually in effect; outside 120..600 is refused, not clamped; set while hidden = remembered)
+//   agwintermctl sidebar show|hide|toggle|expand|collapse|mode <tree|flagged|toggle>   (on/off = show/hide; anything
+//       else is refused rather than acknowledged)
 //   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
 //   agwintermctl session metrics [<pane-id>] [--json] (live cell + pane pixel metrics)
 //   agwintermctl session text [--lines N] [--target ID]   (N reaches into scrollback; default = screen)
@@ -318,10 +322,29 @@ switch (area)
         break;
     case "sidebar":
         cmd = "sidebar";
-        // `sidebar mode tree|flagged|toggle` switches the view mode; otherwise show|hide|toggle|expand|collapse.
-        cargs["op"] = sub == "mode"
-            ? "mode:" + (rest.Count > 0 ? rest[0] : "toggle")
-            : (sub.Length > 0 ? sub : "toggle");
+        // `sidebar width [N]` reads (no N) or sets the width; `sidebar mode tree|flagged|toggle`
+        // switches the view mode; otherwise show|hide|toggle|expand|collapse (on/off = show/hide).
+        if (sub == "width")
+        {
+            cargs["op"] = "width";
+            if (rest.Count > 0)
+            {
+                // An unparseable width is refused here, not dropped into a read: `sidebar width wide`
+                // answering with the current width would look like a successful set. The range is the
+                // server's call (one refusal text, shared with the fake host's tests), so only the
+                // "not a number at all" case is caught before the request is built.
+                if (!int.TryParse(rest[0], System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out var sw))
+                {
+                    Console.Error.WriteLine(Agwinterm.Pty.SidebarWidths.Refusal($"'{rest[0]}'"));
+                    return 2;
+                }
+                cargs["width"] = sw;
+            }
+        }
+        else
+            cargs["op"] = sub == "mode"
+                ? "mode:" + (rest.Count > 0 ? rest[0] : "toggle")
+                : (sub.Length > 0 ? sub : "toggle");
         break;
     case "quick":
         cmd = "quick";
