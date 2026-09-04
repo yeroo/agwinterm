@@ -321,6 +321,23 @@ try {
         Invoke-Ctl @('quick', 'off') | Out-Null
         Start-Sleep -Milliseconds 500
 
+        # --stdin two-sources guard, every spelling revmux found (P2 r1: a boolean flag swallowing the
+        # positional; r2: any other flag, a misspelt flag, a bare "true"). The CLI must exit 2 and send
+        # NOTHING — the pane's text is the oracle, not the exit code alone.
+        $stdinBefore = (Invoke-Ctl @('session', 'text', '--target', $survivorId)).result
+        foreach ($shape in @(
+                @('--stdin', '--allow-control', 'from argv'),
+                @('--stdin', '--wait', 'from argv'),
+                @('--stdin', '--allow-controll', 'from argv'),
+                @('--stdin', 'true'))) {
+            $out = 'from pipe' | & $ctl session type @shape --target $survivorId --pipe $pipe 2>&1
+            $code = $LASTEXITCODE
+            Check "session type --stdin refuses a swallowed positional ($($shape -join ' '))" ($code -eq 2 -and ("$out" -match 'one source')) "exit $code, output: $out"
+        }
+        Start-Sleep -Milliseconds 300
+        $stdinAfter = (Invoke-Ctl @('session', 'text', '--target', $survivorId)).result
+        Check 'and typed nothing for any of them' ($stdinAfter -eq $stdinBefore) "text changed"
+
         # sidebar.width must move the divider, not just a number. The unit tests see the fake host
         # only; here the proof is live geometry: the active session's measured width (session.metrics,
         # columns x cell width) shrinks when the sidebar widens, because the grid derives from the

@@ -665,6 +665,10 @@ internal partial class Program
                $"the whole session. Pass the session id ({ses.Id}) to cover it, or omit --target.";
     }
 
+    // One wording for "the target names no session", shared by open, resize and a targeted close,
+    // and by FakeSessionHost — the unit suite asserts wording, so the two hosts must not drift.
+    private const string NoSessionRefusal = ISessionHost.RefusePrefix + "no session matches that target; nothing opened, resized or closed";
+
     public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
     {
         if (action != "result" && OverlayTargetRefusal(target) is { } refusal) return refusal;
@@ -674,12 +678,16 @@ internal partial class Program
                 return _lastOverlayExit;
             case "close":
                 {
-                    // Idempotent, and deliberately NOT a refusal: a caller closing an overlay wants
-                    // "no overlay open" to be true afterwards, and it is. The conformance contract
-                    // runs `session overlay close` with nothing open and expects ok (control-api.json,
-                    // the session.overlay step), so this one stays a plain string. Resize and open
-                    // below are different: nothing the caller asked for happened.
+                    // Two states used to share one answer. A SESSION that exists and has no overlay
+                    // is idempotent and deliberately NOT a refusal: the caller wants "no overlay
+                    // open" to be true afterwards, and it is; the conformance contract runs `session
+                    // overlay close` with nothing open (and no --target) and expects ok. A named
+                    // target that resolves to NOTHING is different — a typo'd id, a session that has
+                    // exited — because the overlay the caller meant may still be up, and ok would say
+                    // it is gone. Empty / "active" stays ok even with no active session, so a bare
+                    // close in an empty window is not contract-dependent on a session existing.
                     var ses = FindSesForTarget(target);
+                    if (ses is null && !string.IsNullOrEmpty(target) && target != "active") return NoSessionRefusal;
                     if (ses?.Overlay is null) return "no overlay";
                     Post(() => CloseOverlayOf(ses));
                     return "closed";
@@ -687,9 +695,11 @@ internal partial class Program
             case "resize":
                 {
                     var ses = FindSesForTarget(target);
-                    // A refusal, not a string: before P2's review this came back as ok:true "no
+                    // Refusals, not strings: before P2's review both came back as ok:true "no
                     // overlay", and a script branching on ok proceeded as if the resize had happened.
-                    if (ses?.Overlay is null) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
+                    // Same split as close: no session at all is not "open one first".
+                    if (ses is null) return NoSessionRefusal;
+                    if (ses.Overlay is null) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
                     // No clamp: ControlServer.TryOverlaySize refused anything outside 0..100 before
                     // this ran, so the N reported is always the N the caller asked for. A clamp here
                     // could only hide a bug upstream now. 0 = full content region; 1..100 = centered panel.
@@ -699,18 +709,18 @@ internal partial class Program
                 }
             default: // "open"
                 {
-                    // Both refusals (same reason as resize above): nothing was opened.
+                    // Both refusals (same reason as resize above): nothing was opened. The command
+                    // is checked first, then the session — the fake host checks in the same order.
                     if (string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened";
-                    const string noSession = ISessionHost.RefusePrefix + "no session matches that target; nothing opened";
                     if (block)
                     {
                         // Open on the UI thread, then wait (on this pipe thread) for the program to exit.
-                        string opened = InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? noSession : OverlayOpen(s, command!, sizePercent, false); });
+                        string opened = InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, command!, sizePercent, false); });
                         if (opened.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) return opened;
                         _overlayDone.Wait();
                         return _lastOverlayExit;   // "exit N"
                     }
-                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? noSession : OverlayOpen(s, command!, sizePercent, wait); });
+                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, command!, sizePercent, wait); });
                 }
         }
     }
@@ -757,35 +767,33 @@ internal partial class Program
     // session's active pane — the better answer in both cases. The empty / "active" refusal and the
     // ""/"none" folding live in ControlServer, where the fake host can exercise them.
     //
-    // Resolve, validate, write and save happen in ONE UI-thread hop: resolved on the pipe thread
-    // and written in a later Post, the pane could exit or be closed by another client in between,
-    // the removal would run first, the write would land on a detached pane, SaveState would
-    // serialise no pin — and the caller would already hold a structured "pinned" naming that pane.
-    // Returns the pane the pin landed on, so the reply can name it; null = nothing matched, and
-    // nothing was pinned.
+    // Resolve, validate, write and save happen in ONE UI-thread hop, and that hop travels the
+    // POSTED queue (InvokeOnUiQueued), not SendMessage: resolved on the pipe thread and written in a
+    // later Post, the pane could exit or be closed by another client in between, the removal would
+    // run first, the write would land on a detached pane, SaveState would serialise no pin — and
+    // the caller would already hold a structured "pinned" naming that pane. A SendMessage hop
+    // (InvokeOnUi) closes most of that window but not all of it: Windows dispatches a sent message
+    // AHEAD of messages already posted, so a pane-exit removal that is queued but not yet run would
+    // still be overtaken (revmux r2 of P2). FIFO with the removals is the only ordering that makes
+    // the resolve inside the hop the truth. Returns the pane the pin landed on, so the reply can
+    // name it; null = nothing matched, and nothing was pinned.
     public RestorePinTarget? SessionRestore(string target, string? command)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return null;
-        RestorePinTarget? result = null;
-        InvokeOnUi(() =>
+        return InvokeOnUiQueued<RestorePinTarget?>(() =>
         {
             var hit = FindControlPane(target);
-            if (hit is null) return "";
+            if (hit is null) return null;
             // A scratch / overlay / quick cover is not in the saved tree, so a pin on one would answer
             // ok and then vanish at the next restart — the exact "succeeded, did nothing" this batch
             // exists to end. Refuse it with the pane named, and pin nothing.
             if (hit.Value.cover)
-            {
-                result = new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses?.Id ?? hit.Value.pane.Id,
+                return new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses?.Id ?? hit.Value.pane.Id,
                     Refusal: $"'{hit.Value.pane.Id}' is a scratch/overlay/quick pane, which is never restored; a pin there would be lost at the next restart. Nothing pinned.");
-                return "";
-            }
             hit.Value.pane.RestoreCommand = command;
             SaveState();
-            result = new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses!.Id);
-            return "";
+            return new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses!.Id);
         });
-        return result;
     }
 
     // ---- Control-API event bus (agterm #273): a bounded, cursor-polled log of status / notification /

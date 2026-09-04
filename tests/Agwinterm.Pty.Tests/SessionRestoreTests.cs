@@ -95,8 +95,10 @@ public class SessionRestoreTests
         Assert.Equal(p1, Str(r, "pane"));
     }
 
-    /// <summary>The one thing the shared resolver adds over the old pane-only one: a session NAME now
-    /// reaches that session's focused pane, as it does for session.type — and the reply says which.</summary>
+    /// <summary>A session NAME reaches that session's focused pane through the shared resolver, as it
+    /// does for session.type — and the reply says which. (Not the resolver's only change from the old
+    /// pane-only lookup: see the SessionRestore comment in Program.ControlHost.cs for the closed-pane-0
+    /// case, which no unit host can stage.)</summary>
     [Fact]
     public void NameTarget_LandsOnFocusedPane_AndTheReplySaysWhich()
     {

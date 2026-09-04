@@ -52,6 +52,10 @@ if (args.Length == 0)
 // Split into positionals and --options.
 var positionals = new List<string>();
 var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+// Which options CONSUMED the token after them. The splitter cannot tell a flag from a valued option,
+// so `--wait "text"` gives --wait the text; verbs that must know whether a bare word was swallowed
+// (session type --stdin) ask this set rather than guessing from the value ("true" is also a word).
+var valued = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 bool jsonOut = false;
 for (int i = 0; i < args.Length; i++)
 {
@@ -60,8 +64,10 @@ for (int i = 0; i < args.Length; i++)
     else if (a.StartsWith("--"))
     {
         string key = a[2..];
-        string val = (i + 1 < args.Length && !args[i + 1].StartsWith("--")) ? args[++i] : "true";
+        bool takes = i + 1 < args.Length && !args[i + 1].StartsWith("--");
+        string val = takes ? args[++i] : "true";
         options[key] = val;
+        if (takes) valued.Add(key);
     }
     else positionals.Add(a);
 }
@@ -189,13 +195,15 @@ switch (area)
                 // reader would have replaced the bad bytes with U+FFFD and answered ok.
                 if (options.ContainsKey("stdin"))
                 {
-                    // The splitter hands "--stdin" the next bare word as its value, so a positional
-                    // after it shows up as Opt("stdin") != "true" rather than in `rest`.
-                    // ...and a valueless flag sitting between --stdin and the positional gives THAT
-                    // flag the text instead: `--stdin --allow-control "from argv"` leaves rest empty,
-                    // Opt("stdin") == "true", and Opt("allow-control") == "from argv". Same refusal.
-                    if (rest.Count > 0 || Opt("stdin") != "true" || Opt("select") is not null
-                        || (options.ContainsKey("allow-control") && Opt("allow-control") != "true"))
+                    // The splitter hands ANY option the next bare word as its value, so positional
+                    // text can hide behind `--stdin "text"`, `--allow-control "text"`, `--wait
+                    // "text"`, a misspelt flag, or even `--stdin true`. Detect the SHAPE — an option
+                    // that swallowed a word and is not one that takes a value on this verb — rather
+                    // than the value or a flag name (revmux r1 and r2 of P2 each found a spelling
+                    // the previous check missed).
+                    string[] takesValue = { "target", "window", "pipe" };
+                    bool swallowed = valued.Any(k => !takesValue.Contains(k, StringComparer.OrdinalIgnoreCase));
+                    if (rest.Count > 0 || swallowed || Opt("select") is not null)
                     { Console.Error.WriteLine($"session {sub}: --stdin cannot be combined with positional text or --select (one source for the text, not two)"); return 2; }
                     var stdinText = Agwinterm.Pty.StdinText.Read(Console.OpenStandardInput());
                     if (!stdinText.Ok) { Console.Error.WriteLine($"session {sub} --stdin: {stdinText.Error}; nothing was sent"); return 2; }

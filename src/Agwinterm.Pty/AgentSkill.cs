@@ -168,6 +168,10 @@ public static class AgentSkill
         - `--block` waits for the program to exit and returns `exit N` (its exit code). Good for `lazygit`, `htop`, an editor, or any pick-a-thing helper you want to run and read the result of.
         - `agwintermctl session overlay close [--target <id>]`   — dismiss the overlay now.
         - `agwintermctl session overlay result`                 — the last overlay's `exit N` (or `no overlay`).
+        - What is REFUSED (`ok:false`, nothing happened): `open` with no command, `open` / `resize` / a targeted
+          `close` whose `--target` matches no session, and `resize` on a session with no overlay open. Only `close`
+          on a session that exists and has no overlay answers `ok` ("no overlay") — closing nothing leaves "no overlay
+          open" true. These three used to answer `ok:true` with the failure as the result text; branch on `ok`.
 
         ## Notify the user (desktop notification)
         - `agwintermctl notify "build finished" [--title "npm"] [--target <id>]`

@@ -182,6 +182,23 @@ public class OverlaySizeTests
         Assert.Equal("no overlay", close.GetProperty("result").GetString());
     }
 
+    /// <summary>The state close does NOT get to call ok: a named target that matches no session at
+    /// all. A typo'd id, or a session that has exited — the overlay the caller meant may still be up,
+    /// and "no overlay" would say it is gone. Resize on the same target says the same thing, not
+    /// "open one first" on a session that does not exist. (revmux r2 of P2)</summary>
+    [Fact]
+    public void CloseOrResize_OnATargetThatMatchesNoSession_IsRefused()
+    {
+        var (server, _) = New();
+        foreach (var action in new[] { "close", "resize" })
+        {
+            var r = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.overlay\",\"target\":\"no-such-session\",\"args\":{\"action\":\"" + action + "\",\"size-percent\":50}}")).RootElement;
+            Assert.False(r.GetProperty("ok").GetBoolean());
+            Assert.Contains("no session", r.GetProperty("error").GetString());
+            Assert.DoesNotContain("open one first", r.GetProperty("error").GetString());
+        }
+    }
+
     /// <summary>The strict reader itself, at the unit: the three cases the verb distinguishes.</summary>
     [Fact]
     public void TryOverlaySize_DistinguishesAbsentValidAndInvalid()

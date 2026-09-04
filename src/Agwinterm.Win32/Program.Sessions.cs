@@ -1668,6 +1668,28 @@ internal partial class Program
         PostMessageW(_hwnd, WM_APP_ACTION, IntPtr.Zero, IntPtr.Zero);
     }
 
+    // Synchronous UI-thread invoke that is FIFO with everything already Post()ed. InvokeOnUi below
+    // rides SendMessageW, and Windows dispatches a sent message AHEAD of messages already posted, so
+    // a verb that must observe an earlier posted action (a pane removal after its child exited, a
+    // session.close) has to travel the same queue as that action. Blocks the calling pipe thread
+    // until the UI thread reaches the action, like InvokeOnUi; never call it ON the UI thread (the
+    // queue would wait for itself). An exception in fn surfaces on the caller, not in the UI loop.
+    private T InvokeOnUiQueued<T>(Func<T> fn)
+    {
+        T result = default!;
+        Exception? failure = null;
+        using var done = new ManualResetEventSlim(false);
+        Post(() =>
+        {
+            try { result = fn(); }
+            catch (Exception ex) { failure = ex; }
+            finally { done.Set(); }
+        });
+        done.Wait();
+        if (failure is not null) throw new InvalidOperationException("UI-thread action failed: " + failure.Message, failure);
+        return result;
+    }
+
     // Synchronous UI-thread invoke (for control verbs that mutate UI state AND return a value,
     // e.g. session.search). SendMessageW blocks the caller until the UI thread runs the func.
     private Func<string>? _syncFn;

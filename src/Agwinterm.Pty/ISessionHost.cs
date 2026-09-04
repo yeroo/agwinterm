@@ -224,11 +224,15 @@ public interface ISessionHost
     void Quick(string op);
 
     /// <summary>
-    /// Overlay control. action = open|close|result. For open: run <paramref name="command"/> in an
-    /// ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
+    /// Overlay control. action = open|close|resize|result. For open: run <paramref name="command"/> in
+    /// an ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
     /// floating panel; wait = keep it after the program exits (press a key to close); block = wait for
-    /// the program to exit and return its status. Returns the session id (open), "exit N" (block/result),
-    /// "closed", or "no overlay".
+    /// the program to exit and return its status. Returns the session id (open), "exit N"
+    /// (block/result), "closed", "resized N%", or "no overlay" (close on a session that exists and has
+    /// no overlay — idempotent, deliberately ok). A FAILURE is signalled by prefixing
+    /// <see cref="RefusePrefix"/>, which the server turns into ok:false: open with no command; a
+    /// non-empty target that matches no session (open, resize, close); resize with no overlay open.
+    /// A second host that returns those as plain strings reproduces the ok:true-on-failure P2 removed.
     /// </summary>
     string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block);
 
