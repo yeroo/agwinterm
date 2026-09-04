@@ -249,26 +249,83 @@ internal partial class Program
             : null;
     }
 
+    // The workspace is resolved HERE, synchronously, before an id exists — as SessionToWorkspace and
+    // WorkspaceSelect already do through FindWs. Before P2 the id was minted first, returned at once,
+    // and the posted lambda resolved the workspace afterwards with a silent fallback to the active
+    // one: the reply was committed before the question was asked, so an unknown --workspace could
+    // only ever "succeed". Now an unknown one is refused (decision 1; SessionNewWorkspaces) and
+    // nothing is posted, so no session exists behind an ok:false reply. Only the creation itself
+    // (and, with --create-workspace, the new workspace) still runs on the UI thread.
+    // --workspace beside --workspace-name is refused by the server before this is reached; if a
+    // direct caller passes both anyway, the id wins, exactly as it did before P2.
+    // With NEITHER named, the answer is the CALLER's workspace (task 5a): `caller` is the pane that
+    // ran `session new` (the CLI sends its AGWINTERM_SESSION_ID), so an agent gets sessions next to
+    // itself however the user has clicked around meanwhile. Only a missing or stale caller reaches
+    // the active workspace, and that too is read here, synchronously, rather than inside the Post.
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false)
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
+        string? caller = null)
     {
+        Workspace? ws = null;
+        string? newWorkspaceName = null;   // set = create this workspace on the UI thread, then the session in it
+        if (!string.IsNullOrEmpty(workspace))
+        {
+            ws = FindWs(workspace);   // id, id-prefix, or "active"; never a name
+            if (ws is null) return ISessionHost.RefusePrefix + SessionNewWorkspaces.UnknownId(workspace);
+        }
+        else if (!string.IsNullOrEmpty(workspaceName))
+        {
+            lock (_workspaces) ws = _workspaces.FirstOrDefault(w => string.Equals(w.Name, workspaceName, StringComparison.OrdinalIgnoreCase));
+            if (ws is null)
+            {
+                if (!createWorkspace) return ISessionHost.RefusePrefix + SessionNewWorkspaces.UnknownName(workspaceName);
+                newWorkspaceName = workspaceName;
+            }
+        }
+        else
+        {
+            // Nothing named: the workspace of the caller's own pane. A scratch/overlay pane belongs
+            // to the session it covers; the quick terminal belongs to no workspace and falls through.
+            // A caller that does not resolve — the pane was closed after it typed the command, a
+            // script run from an unrelated shell, a pane in another window — is NOT refused: that
+            // would break a working script in order to fix a preference.
+            if (!string.IsNullOrEmpty(caller) && FindPaneById(caller) is { ses: { } owner }) ws = owner.Ws;
+            // The active workspace is the LAST answer, not the first. "Active" is a global the UI
+            // rewrites on every click, every selection and every workspace.new over the API, so an
+            // agent creating several sessions used to scatter them wherever the user had last
+            // clicked. Reading it here rather than in the Post at least pins it to the moment of the
+            // call instead of to whenever the UI thread gets round to the lambda.
+            ws ??= ActiveWorkspace();
+        }
         string id = Guid.NewGuid().ToString();
         Post(() =>
         {
-            Workspace ws;
-            if (!string.IsNullOrEmpty(workspace))
-                lock (_workspaces)
-                    ws = _workspaces.FirstOrDefault(w => w.Id == workspace)
-                         ?? _workspaces.FirstOrDefault(w => w.Id.StartsWith(workspace)) ?? ActiveWorkspace();
-            else if (!string.IsNullOrEmpty(workspaceName))
+            // The resolve above ran on the pipe thread; this runs on the UI thread some milliseconds
+            // later, and in between the user (or a posted workspace.delete) can have removed `ws`
+            // from the list. CreateSession would still add the session to that detached Workspace
+            // object: not in the tree, not findable by any verb, yet SetActive would make it the
+            // active session - a phantom behind an id the caller already holds. The id is committed,
+            // so a refusal is no longer possible; the active workspace is the least-wrong home for a
+            // session that has to exist somewhere the caller can see it.
+            bool gone;
+            lock (_workspaces) gone = ws is not null && !_workspaces.Contains(ws);
+            if (gone) ws = ActiveWorkspace();
+            Workspace target;
+            if (ws is not null) target = ws;
+            else
             {
-                Workspace? byName;
-                lock (_workspaces) byName = _workspaces.FirstOrDefault(w => string.Equals(w.Name, workspaceName, StringComparison.OrdinalIgnoreCase));
-                ws = byName ?? (createWorkspace ? CreateWorkspace(Guid.NewGuid().ToString(), workspaceName) : ActiveWorkspace());
+                // The name lookup ran on the pipe thread and MISSED; the create happens here. Two
+                // `--workspace-name build --create-workspace` calls dispatched while the UI thread
+                // was busy (a modal menu, a drag, a heavy repaint) both missed up there, and before
+                // P2 hoisted the lookup they could not both create, because the whole resolve-or-
+                // create ran in this lambda and lambdas are serial on the UI thread. So look the
+                // name up AGAIN here, where every create happens and nothing can interleave: the
+                // second lambda finds the first one's workspace and reuses it. (revmux r1 Major.)
+                lock (_workspaces) target = _workspaces.FirstOrDefault(w => string.Equals(w.Name, newWorkspaceName, StringComparison.OrdinalIgnoreCase))!;
+                target ??= CreateWorkspace(Guid.NewGuid().ToString(), newWorkspaceName!);
             }
-            else ws = ActiveWorkspace();
             // --no-select creates the session in the background, leaving the current focus/selection (agterm #250).
-            CreateSession(id, name, cwd, ws, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
+            CreateSession(id, name, cwd, target, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
         });
         return id;
     }
@@ -447,8 +504,34 @@ internal partial class Program
 
     public void SidebarOp(string op) => Post(() => SidebarOpInternal(op));
 
+    // "<visible|hidden> <tree|flagged> <width>": the width is _sidebarWShown, the one in effect when
+    // shown — beside "hidden" it is the width the next show will use, not a claim that it is on screen.
     public string SidebarState() => InvokeOnUi(() =>
-        (_sidebarW > 0 ? "visible" : "hidden") + " " + (_sidebarMode == SidebarMode.Flagged ? "flagged" : "tree"));
+        (_sidebarW > 0 ? "visible" : "hidden") + " " + (_sidebarMode == SidebarMode.Flagged ? "flagged" : "tree")
+        + " " + (int)_sidebarWShown);
+
+    // sidebar.width. No clamp: ControlServer.TrySidebarWidth has refused anything outside
+    // SidebarWidths.Min..Max, so a value here is one the chrome can draw. A set while visible goes
+    // through SidebarWidthChanged, the same re-layout ToggleSidebar uses; a set while hidden only
+    // updates the remembered width (and persists it), and the snapshot's Visible=false is what the
+    // server turns into "remembered, not applied". InvokeOnUi, not Post: the reply must describe the
+    // width after the change, not the width at the moment the request was queued.
+    public Agwinterm.Pty.SidebarWidthSnapshot SidebarWidth(int? set)
+    {
+        Agwinterm.Pty.SidebarWidthSnapshot? snap = null;
+        InvokeOnUi(() =>
+        {
+            if (set is { } w)
+            {
+                _sidebarWShown = w;
+                if (_sidebarW > 0) { _sidebarW = w; SidebarWidthChanged(); }
+                else SaveState();
+            }
+            snap = new Agwinterm.Pty.SidebarWidthSnapshot((int)_sidebarWShown, _sidebarW > 0);
+            return "";
+        });
+        return snap ?? new Agwinterm.Pty.SidebarWidthSnapshot((int)_sidebarWShown, _sidebarW > 0);
+    }
 
     public string BroadcastOp(string op) => InvokeOnUi(() =>
     {
@@ -582,6 +665,10 @@ internal partial class Program
                $"the whole session. Pass the session id ({ses.Id}) to cover it, or omit --target.";
     }
 
+    // One wording for "the target names no session", shared by open, resize and a targeted close,
+    // and by FakeSessionHost — the unit suite asserts wording, so the two hosts must not drift.
+    private const string NoSessionRefusal = ISessionHost.RefusePrefix + "no session matches that target; nothing opened, resized or closed";
+
     public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
     {
         if (action != "result" && OverlayTargetRefusal(target) is { } refusal) return refusal;
@@ -591,7 +678,16 @@ internal partial class Program
                 return _lastOverlayExit;
             case "close":
                 {
+                    // Two states used to share one answer. A SESSION that exists and has no overlay
+                    // is idempotent and deliberately NOT a refusal: the caller wants "no overlay
+                    // open" to be true afterwards, and it is; the conformance contract runs `session
+                    // overlay close` with nothing open (and no --target) and expects ok. A named
+                    // target that resolves to NOTHING is different — a typo'd id, a session that has
+                    // exited — because the overlay the caller meant may still be up, and ok would say
+                    // it is gone. Empty / "active" stays ok even with no active session, so a bare
+                    // close in an empty window is not contract-dependent on a session existing.
                     var ses = FindSesForTarget(target);
+                    if (ses is null && !string.IsNullOrEmpty(target) && target != "active") return NoSessionRefusal;
                     if (ses?.Overlay is null) return "no overlay";
                     Post(() => CloseOverlayOf(ses));
                     return "closed";
@@ -599,22 +695,32 @@ internal partial class Program
             case "resize":
                 {
                     var ses = FindSesForTarget(target);
-                    if (ses?.Overlay is null) return "no overlay";
-                    int sp = Math.Clamp(sizePercent, 0, 100);   // 0 = full content region; 1..100 = centered panel
+                    // Refusals, not strings: before P2's review both came back as ok:true "no
+                    // overlay", and a script branching on ok proceeded as if the resize had happened.
+                    // Same split as close: no session at all is not "open one first".
+                    if (ses is null) return NoSessionRefusal;
+                    if (ses.Overlay is null) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
+                    // No clamp: ControlServer.TryOverlaySize refused anything outside 0..100 before
+                    // this ran, so the N reported is always the N the caller asked for. A clamp here
+                    // could only hide a bug upstream now. 0 = full content region; 1..100 = centered panel.
+                    int sp = sizePercent;
                     Post(() => { ses.OverlaySizePercent = sp; if (ReferenceEquals(_ovlOwner, ses)) RegridCover(); RequestRedraw(); });
                     return $"resized {sp}%";
                 }
             default: // "open"
                 {
-                    if (string.IsNullOrWhiteSpace(command)) return "no command";
+                    // Both refusals (same reason as resize above): nothing was opened. The command
+                    // is checked first, then the session — the fake host checks in the same order.
+                    if (string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened";
                     if (block)
                     {
                         // Open on the UI thread, then wait (on this pipe thread) for the program to exit.
-                        InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? "no session" : OverlayOpen(s, command!, sizePercent, false); });
+                        string opened = InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, command!, sizePercent, false); });
+                        if (opened.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) return opened;
                         _overlayDone.Wait();
                         return _lastOverlayExit;   // "exit N"
                     }
-                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? "no session" : OverlayOpen(s, command!, sizePercent, wait); });
+                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, command!, sizePercent, wait); });
                 }
         }
     }
@@ -648,16 +754,46 @@ internal partial class Program
         return true;
     }
 
-    // Pin (or clear) a restore command on a specific pane, keyed by pane id (agterm #271). Persisted so
-    // restart always re-runs it. Empty/"none" clears the pin. Returns false if the pane isn't found.
-    public bool SessionRestore(string? target, string command)
+    // Pin (or clear, command = null) a restore command on a specific pane (agterm #271). Persisted so
+    // restart always re-runs it. Resolves through FindControlPane, the path every other content verb
+    // uses (exact pane, exact session, pane prefix, session prefix/name) rather than the FindPaneById
+    // it used before P2. While pane 0 still exists the two agree for every target the old resolver
+    // accepted: pane 0 shares its session's id, so the exact-session step only repeats the exact-
+    // pane hit, and the prefix step is the same predicate in the same order. Two things changed. A
+    // session NAME now reaches that session's focused pane instead of being refused. And once pane 0
+    // has been CLOSED in a split (split panes get fresh ids, and closing the focused pane can remove
+    // index 0), a session id or id-prefix that the old resolver either refused or steered onto a
+    // scratch/overlay cover pane ("<id>:scratch:…" matched the prefix step) now resolves to the
+    // session's active pane — the better answer in both cases. The empty / "active" refusal and the
+    // ""/"none" folding live in ControlServer, where the fake host can exercise them.
+    //
+    // Resolve, validate, write and save happen in ONE UI-thread hop, and that hop travels the
+    // POSTED queue (InvokeOnUiQueued), not SendMessage: resolved on the pipe thread and written in a
+    // later Post, the pane could exit or be closed by another client in between, the removal would
+    // run first, the write would land on a detached pane, SaveState would serialise no pin — and
+    // the caller would already hold a structured "pinned" naming that pane. A SendMessage hop
+    // (InvokeOnUi) closes most of that window but not all of it: Windows dispatches a sent message
+    // AHEAD of messages already posted, so a pane-exit removal that is queued but not yet run would
+    // still be overtaken (revmux r2 of P2). FIFO with the removals is the only ordering that makes
+    // the resolve inside the hop the truth. Returns the pane the pin landed on, so the reply can
+    // name it; null = nothing matched, and nothing was pinned.
+    public RestorePinTarget? SessionRestore(string target, string? command)
     {
-        if (string.IsNullOrEmpty(target)) return false;
-        var hit = FindPaneById(target!);
-        if (hit is null) return false;
-        string? val = string.IsNullOrWhiteSpace(command) || command.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : command;
-        Post(() => { hit.Value.pane.RestoreCommand = val; SaveState(); });
-        return true;
+        if (string.IsNullOrEmpty(target) || target == "active") return null;
+        return InvokeOnUiQueued<RestorePinTarget?>(() =>
+        {
+            var hit = FindControlPane(target);
+            if (hit is null) return null;
+            // A scratch / overlay / quick cover is not in the saved tree, so a pin on one would answer
+            // ok and then vanish at the next restart — the exact "succeeded, did nothing" this batch
+            // exists to end. Refuse it with the pane named, and pin nothing.
+            if (hit.Value.cover)
+                return new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses?.Id ?? hit.Value.pane.Id,
+                    Refusal: $"'{hit.Value.pane.Id}' is a scratch/overlay/quick pane, which is never restored; a pin there would be lost at the next restart. Nothing pinned.");
+            hit.Value.pane.RestoreCommand = command;
+            SaveState();
+            return new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses!.Id);
+        });
     }
 
     // ---- Control-API event bus (agterm #273): a bounded, cursor-polled log of status / notification /

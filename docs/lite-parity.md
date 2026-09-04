@@ -93,6 +93,28 @@ canonical file as of this PR — agwinterm-first, as the contract rule says. Unt
 agliteterm's `check-contract` is red by design; that is the gate, not a bug. `statusChangedAt` is a
 nested tree field the shape runner cannot express, so each product pins it in its own tests.
 
+### Being mirrored next: what P2 (agwinterm #226) owes lite
+Batch **P2-lite** owes three things, none of them a new verb:
+
+- **`--stdin` on `session type` / `session write`**, refusing invalid UTF-8 client-side with the
+  byte offset named, sending nothing, stripping exactly one trailing newline, and refusing `--stdin`
+  beside positional text. The detection has to be in the CLI: a JSON request is text by the time a
+  server reads it, so the server cannot see the bad bytes at all.
+- **`--size-percent` validated as 1–100, not clamped** — absent means the full region, anything else
+  outside the range is refused with the value, the range and the way to ask for full named. No
+  overlay opens or resizes on a refusal.
+- **A bare `session new` lands in the caller's own workspace** (P2 task 5a, and the item Boris is
+  actually feeling — the report came from agliteterm on the work laptop). lite's `newSession()` reads
+  `g_activeWs`, which every click, selection and API `workspace.new` rewrites; the mirror adds a
+  `caller` argument to the dispatcher (the CLI already sends `AGWINTERM_SESSION_ID`) and resolves
+  that pane's workspace before creating, with *active* as the last fallback rather than the first.
+
+`session.new`'s **refusal** of an unknown workspace needs no mirror — lite had it first, which is why
+decision 1 went that way. `session.restore`'s pane reply and `sidebar.width` are agwinterm-only until
+P9 / P10 bring those verbs to lite at all. The conformance steps for `session new --workspace
+no-such-workspace`, `--size-percent` and `sidebar width` land in a small sibling contract PR after
+#226 merges, so `check-contract` is red by design for the gap between that merge and P2-lite.
+
 ---
 
 ## Where agliteterm is AHEAD
@@ -105,10 +127,12 @@ Not a one-way list, and these should move the other way.
   their row from the same offset on either screen; agwinterm pins the alt screen to 0. Both are
   self-consistent (highlight and clipboard agree either way), so this is a difference to decide about
   rather than a defect — see `qa/product.md` in the lite repo.
-- **An unknown workspace is refused, not silently swapped** for the active one on `session.new`.
-  agwinterm falls back. Silently falling back is how a caller ends up believing it placed a session
-  somewhere it did not; **agwinterm should probably refuse too**, which is a contract change worth
-  making deliberately.
+- ~~**An unknown workspace is refused, not silently swapped** for the active one on `session.new`.
+  agwinterm falls back.~~ **Matched in batch P2** (agwinterm **#226**): agwinterm now refuses an
+  unknown `--workspace`
+  id/prefix, and an unknown `--workspace-name` without `--create-workspace`, with `ok:false` and no
+  session created — and refuses the two flags together. lite had it right first; this was decision 1
+  of the parity programme, answered "refuse" because one script has to work against both products.
 
 ---
 

@@ -129,6 +129,9 @@ internal partial class Program : ISessionHost, IWindowHost
     private int _divLeft;                             // left-pane index of the divider being dragged
     // Actions queued from the pipe (background) thread to run on the UI thread.
     private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
+    /// <summary>Cancelled in WM_DESTROY: every pipe thread parked in InvokeOnUiQueued wakes and
+    /// answers "window closed" instead of waiting for a message loop that will never run its action.</summary>
+    private readonly CancellationTokenSource _uiGone = new();
 
     // Chrome geometry (custom title bar + status bar, drawn in Direct2D).
     // Compact toolbar (agterm) shrinks the custom title bar; read live so a config toggle reflows everything.
@@ -139,9 +142,16 @@ internal partial class Program : ISessionHost, IWindowHost
     private static float TitleBarH => ToolbarModeResolved switch { "hidden" => 0f, "compact" => 30f, _ => 40f };
     private static bool ToolbarHidden => ToolbarModeResolved == "hidden";
     private const float FooterH = 34f;       // toolbar at the bottom of the sidebar
-    private const float SidebarWFull = 220f;
+    // The default and the 120..600 range live in Agwinterm.Pty.SidebarWidths, with the chrome
+    // geometry that derives them, so the control server can refuse an out-of-range `sidebar width`
+    // before this assembly is reached.
+    private const float SidebarWFull = Agwinterm.Pty.SidebarWidths.Default;
     private const float CaptionBtnW = 46f;   // native min/max/close hit width
-    private float _sidebarW = SidebarWFull;            // 0 when collapsed
+    private float _sidebarW = SidebarWFull;            // 0 when collapsed; otherwise == _sidebarWShown
+    // The width the sidebar has when shown. `sidebar width` sets THIS; ToggleSidebar copies it into
+    // _sidebarW on show, and it is what the state file's SidebarWidth carries — so a width set while
+    // hidden is remembered across the next show and a restart instead of being lost to SidebarWFull.
+    private float _sidebarWShown = SidebarWFull;
 
     // Sidebar view mode + workspace focus (Wave D1). Tree = the normal workspace→session outline;
     // Flagged = a flat working-set of every flagged session across all workspaces. Focus (tree only)

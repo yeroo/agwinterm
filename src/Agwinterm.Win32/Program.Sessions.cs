@@ -734,7 +734,7 @@ internal partial class Program
         string id = ses.Id + ":overlay:" + Guid.NewGuid().ToString("N")[..6];
         var pane = CreatePane(id, ses.Ws, CwdOf(ses), ses.FontSize, command, shellWrap: true, extraEnv: extraEnv);
         ses.Overlay = pane;
-        ses.OverlaySizePercent = Math.Clamp(sizePercent, 0, 100);
+        ses.OverlaySizePercent = sizePercent;   // validated at the control API (TryOverlaySize); in-app callers pass literals
         ses.OverlayWait = wait;
         ses.OverlayExited = false;
         if (ReferenceEquals(ses, _active)) { _cover = pane; _coverKind = 3; _ovlOwner = ses; SyncSession(); RegridCover(); }
@@ -1661,11 +1661,46 @@ internal partial class Program
         }
     }
 
-    /// <summary>Run an action on the UI thread (pipe callbacks arrive on a background thread).</summary>
-    private void Post(Action a)
+    /// <summary>Run an action on the UI thread (pipe callbacks arrive on a background thread).
+    /// Returns whether the wake-up message was posted — false once the window is gone, when the
+    /// action sits in the queue and nothing will ever run it.</summary>
+    private bool Post(Action a)
     {
         _uiActions.Enqueue(a);
-        PostMessageW(_hwnd, WM_APP_ACTION, IntPtr.Zero, IntPtr.Zero);
+        return PostMessageW(_hwnd, WM_APP_ACTION, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    // Synchronous UI-thread invoke that is FIFO with everything already Post()ed. InvokeOnUi below
+    // rides SendMessageW, and Windows dispatches a sent message AHEAD of messages already posted, so
+    // a verb that must observe an earlier posted action (a pane removal after its child exited, a
+    // session.close) has to travel the same queue as that action. Blocks the calling pipe thread
+    // until the UI thread reaches the action; never call it ON the UI thread (the queue would wait
+    // for itself — today only ControlServer.Dispatch, on a pipe thread, reaches it).
+    //
+    // NOT like InvokeOnUi in one way that matters (revmux r3 of P2): a SendMessage to a dead window
+    // returns at once, a posted action to one is never run. So this wait is bounded three ways —
+    // the post itself failing (the window is already gone), WM_DESTROY cancelling _uiGone (it went
+    // while we waited), and a timeout as the last backstop (a message loop that is alive but never
+    // pumps, which a pipe client must not be hostage to). Each ends in a throw, which Dispatch turns
+    // into an error reply. After the timeout the action may still run later; the reply says so.
+    private static readonly TimeSpan UiQueuedTimeout = TimeSpan.FromSeconds(15);
+    private T InvokeOnUiQueued<T>(Func<T> fn)
+    {
+        var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool posted = Post(() =>
+        {
+            try { tcs.TrySetResult(fn()); }
+            catch (Exception ex) { tcs.TrySetException(ex); }
+        });
+        if (!posted) throw new InvalidOperationException("the window is closing; nothing was applied");
+        try
+        {
+            if (!tcs.Task.Wait((int)UiQueuedTimeout.TotalMilliseconds, _uiGone.Token))
+                throw new TimeoutException($"the window did not run the request within {UiQueuedTimeout.TotalSeconds:0}s; it may still run later, and this reply cannot say whether it did");
+        }
+        catch (OperationCanceledException) { throw new InvalidOperationException("the window closed before the request ran; nothing was applied"); }
+        catch (AggregateException ae) when (ae.InnerException is not null) { throw new InvalidOperationException("UI-thread action failed: " + ae.InnerException.Message, ae.InnerException); }
+        return tcs.Task.Result;
     }
 
     // Synchronous UI-thread invoke (for control verbs that mutate UI state AND return a value,

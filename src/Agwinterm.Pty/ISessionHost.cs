@@ -16,6 +16,18 @@ public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentS
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
 
+/// <summary>Where a <c>session.restore</c> call landed: the pane the target resolved to and the session
+/// that owns it, so the reply can name both — a split has several panes and the caller cannot otherwise
+/// tell which one now carries the pin. <see cref="Refusal"/> non-null means the pane exists but cannot
+/// carry a pin (a scratch / overlay / quick cover is never restored) and nothing was changed.</summary>
+public sealed record RestorePinTarget(string PaneId, string SessionId, string? Refusal = null);
+
+/// <summary>What <c>sidebar width</c> reports: <see cref="Width"/> is the width the sidebar has in
+/// DIP — on screen when <see cref="Visible"/>, remembered and applied on the next show when not. The
+/// two together are what lets the server say "remembered, not applied" for a set while hidden instead
+/// of reporting a width nobody can see.</summary>
+public sealed record SidebarWidthSnapshot(int Width, bool Visible);
+
 /// <summary>Window-level UI state for the control-API read side (sidebar/fullscreen/zoom/quick-terminal
 /// visibility + which workspace/session is active).</summary>
 public sealed record WindowStateSnapshot(bool SidebarVisible, bool Fullscreen, bool Maximized,
@@ -74,10 +86,24 @@ public interface ISessionHost
     /// Create a session; returns its id. Optionally in a workspace (by id/prefix via
     /// <paramref name="workspace"/>, or by sidebar label via <paramref name="workspaceName"/> +
     /// <paramref name="createWorkspace"/>), running <paramref name="command"/> as its process
-    /// instead of the shell.
+    /// instead of the shell. A workspace that does not resolve — an unknown id/prefix, or an
+    /// unknown name without <paramref name="createWorkspace"/> — is <b>refused</b> with
+    /// <see cref="RefusePrefix"/> + the <see cref="SessionNewWorkspaces"/> wording, and no session
+    /// is created; it is never swapped for the active workspace (P2, decision 1). The host resolves
+    /// the workspace before it mints the id, so a refusal cannot leave an orphan behind ok:false.
+    /// <para>With neither workspace argument the session lands in the workspace of the
+    /// <paramref name="caller"/>'s pane — the pane that ran <c>session new</c>, which the CLI sends
+    /// from its <c>AGWINTERM_SESSION_ID</c> — so an agent gets sessions next to itself. The ACTIVE
+    /// workspace is the <b>last</b> answer, not the first: it is a global the UI rewrites on every
+    /// click and selection, and reading it made a bare <c>session new</c> land wherever the user
+    /// had last clicked (P2, task 5a). It is used only when there is no caller, or the caller's pane
+    /// no longer exists (the agent that typed the command has since been closed, or a script from an
+    /// unrelated shell); a stale caller is <b>not</b> refused, because refusing would break a working
+    /// script to fix a preference. Resolved synchronously, before the creation is posted.</para>
     /// </summary>
     string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false);
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
+        string? caller = null);
 
     /// <summary>Clone a session (same cwd + shell profile); returns the new session id. (agterm #234)</summary>
     string DuplicateSession(string? target);
@@ -114,8 +140,20 @@ public interface ISessionHost
     /// <summary>Clear a session's unseen-notification badge without visiting it (headless "seen").</summary>
     bool SessionSeen(string? target);
 
-    /// <summary>Sidebar state read-back: "visible tree" | "hidden flagged" | ….</summary>
+    /// <summary>Sidebar state read-back: <c>"&lt;visible|hidden&gt; &lt;tree|flagged&gt; &lt;width&gt;"</c>,
+    /// e.g. "visible tree 220" — visibility, mode and width in one call. The width is the one in
+    /// effect when shown (see <see cref="SidebarWidth"/>); "hidden" beside it says it is not on screen.</summary>
     string SidebarState();
+
+    /// <summary>sidebar.width: read (<paramref name="set"/> null) or set the sidebar width in DIP and
+    /// report the width actually in effect afterwards. The server has already refused anything outside
+    /// <see cref="SidebarWidths.Min"/>..<see cref="SidebarWidths.Max"/>, so the host stores and applies
+    /// without clamping — a clamp here could only hide a bug. A set while the sidebar is hidden is
+    /// remembered (it is what the next show uses, and it is persisted) but the divider does not move;
+    /// the snapshot's <see cref="SidebarWidthSnapshot.Visible"/> false is how the server knows to say so.
+    /// A set while visible goes through the same re-layout the toggle does: the content origin, the
+    /// grid, hit-testing and the column count all derive from the width.</summary>
+    SidebarWidthSnapshot SidebarWidth(int? set);
 
     /// <summary>Broadcast-input toggle for the frontmost window: op = on|off|toggle|state. Returns "on"/"off".</summary>
     string BroadcastOp(string op);
@@ -145,7 +183,10 @@ public interface ISessionHost
     bool ThemeSet(string name);
     string KeymapReload();
     string RestoreClear();
-    /// <summary>Sidebar: op = show|hide|toggle|expand|collapse.</summary>
+    /// <summary>Sidebar: op = show|hide|toggle|expand|collapse|mode:tree|mode:flagged|mode:toggle. The
+    /// server refuses anything else before calling (and folds on/off into show/hide), so an op that
+    /// reaches here is one the host handles — before P2 an unknown op fell through the host's switch
+    /// and the verb still answered ok:true.</summary>
     void SidebarOp(string op);
 
     /// <summary>Set a config key (persists to agwinterm.conf + applies live). Returns an ack.</summary>
@@ -183,11 +224,17 @@ public interface ISessionHost
     void Quick(string op);
 
     /// <summary>
-    /// Overlay control. action = open|close|result. For open: run <paramref name="command"/> in an
-    /// ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
+    /// Overlay control. action = open|close|resize|result. For open: run <paramref name="command"/> in
+    /// an ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
     /// floating panel; wait = keep it after the program exits (press a key to close); block = wait for
-    /// the program to exit and return its status. Returns the session id (open), "exit N" (block/result),
-    /// "closed", or "no overlay".
+    /// the program to exit and return its status. Returns the session id (open), "exit N"
+    /// (block/result), "closed", "resized N%", or "no overlay" (deliberately ok, two states: close on
+    /// a session that resolves and has no overlay, and an untargeted close that resolves no session).
+    /// A FAILURE is signalled by prefixing <see cref="RefusePrefix"/>, which the server turns into
+    /// ok:false: open with no command; open or resize whenever NO session resolves (a named target
+    /// that matches nothing, or no target and no active session); close only when a non-empty,
+    /// non-"active" target resolves to nothing; resize with no overlay open. A second host that
+    /// returns those as plain strings reproduces the ok:true-on-failure P2 removed.
     /// </summary>
     string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block);
 
@@ -203,8 +250,12 @@ public interface ISessionHost
     /// agent resumes its own session. <paramref name="agent"/> = "" or "none" clears the binding.
     /// Returns false if the target pane isn't found.</summary>
     bool SessionBind(string? target, string agent);
-    /// <summary>Pin (or clear with ""/"none") a restore command on a pane; re-run every restart. (agterm #271)</summary>
-    bool SessionRestore(string? target, string command);
+    /// <summary>Pin a restore command on a pane, re-run every restart (agterm #271); <paramref name="command"/>
+    /// null clears. The server has already refused an empty / "active" target and folded ""/"none" into
+    /// null. Resolves <paramref name="target"/> the way every other content verb does (exact pane, exact
+    /// session, pane prefix, session prefix/name) and returns the pane it landed on; null = nothing matched,
+    /// and nothing was pinned.</summary>
+    RestorePinTarget? SessionRestore(string target, string? command);
     /// <summary>Poll the event log for events after <paramref name="since"/> (0 = all buffered), up to
     /// <paramref name="limit"/> (0 = no cap). Returns JSON {cursor, events:[{seq,type,session?,info?}]}. (agterm #273)</summary>
     string Events(long since, int limit);
@@ -271,7 +322,8 @@ public sealed class SingleSessionHost : ISessionHost
                                         StatusChangedAt: _session.StatusChangedAt) }) };
     public WindowStateSnapshot WindowState() => new(true, false, false, false, "ws", "single");
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
-        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false) => "single";
+        string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
+        string? caller = null) => "single";
     public string DuplicateSession(string? target) => "";
     public string ProfilesList() => "Windows PowerShell";
     public string ProfilesReload() => "0 profiles loaded";
@@ -287,7 +339,8 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionToWorkspace(string? target, string workspace) => false;
     public bool SessionRename(string? target, string name) => false;
     public bool SessionSeen(string? target) => false;
-    public string SidebarState() => "visible tree";
+    public string SidebarState() => $"visible tree {SidebarWidths.Default}";
+    public SidebarWidthSnapshot SidebarWidth(int? set) => new(SidebarWidths.Default, true);
     public string BroadcastOp(string op) => "off";
     public string ReadOnlyOp(string? target, string op) => "off";
     public string SessionOutput(string? target) => "";
@@ -321,7 +374,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool Notify(string? target, string? title, string body) => false;
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;
-    public bool SessionRestore(string? target, string command) => false;
+    public RestorePinTarget? SessionRestore(string target, string? command) => null;
     public string Events(long since, int limit) => "{\"cursor\":0,\"events\":[]}";
     public string AdoptClaude() => "unsupported";
     public string RestartClaudeYolo(string? target) => "unsupported";

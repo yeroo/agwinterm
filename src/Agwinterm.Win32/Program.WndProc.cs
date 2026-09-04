@@ -593,6 +593,7 @@ internal partial class Program
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
 
             case WM_DESTROY:
+                _uiGone.Cancel();                 // release any pipe thread waiting in InvokeOnUiQueued
                 RemoveTrayIcon();                 // drop the shell tray balloon icon
                 SaveState(captureCommands: true); // persist this window's tree before tearing down its sessions
                 // App-quit (last window, or an update-quit closing all of them) DETACHES panes —

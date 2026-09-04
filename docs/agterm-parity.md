@@ -6,7 +6,7 @@ not, and what we have closed.
 - Compared against **agterm v0.26.0** (2026-09-02), releases 0.22.0 → 0.26.0.
 - **The running order lives in [plans/2026-09-03-parity-batches.md](plans/2026-09-03-parity-batches.md)** —
   this file is what is missing, that file is which batch builds it and when.
-- Ours: agwinterm **0.17.7** released (main is ahead), agliteterm **0.17.13** released.
+- Ours: agwinterm **0.17.10** released (main is ahead), agliteterm **0.17.13** released.
 - Update this file in the PR that closes an item. A line that says "missing" long after it shipped
   is worse than no tracker.
 - **This supersedes the earlier gap docs in this directory** (`agterm-gap-analysis*.md`,
@@ -32,13 +32,21 @@ named as such rather than left to look like a backlog nobody is working on.
 | `surface.cursor` — the caret column | 0.24.0 | agwinterm #221 *(P1)*, lite: P8 |
 | `statusChangedAt` on the tree's session node | 0.25.0 | agwinterm #221 *(P1)*, lite: P8 |
 | `agwintermctl version` | 0.25.0 | agwinterm #221 *(P1)*, lite: P8 |
+| `--stdin` on `session type` / `session write`, rejecting invalid UTF-8 | 0.26.0 | agwinterm #226 *(P2)*, lite: P2-lite |
+| `session.overlay.open` / `resize` validate `--size-percent` as 1–100 | 0.26.0 | agwinterm #226 *(P2)*, lite: P2-lite |
+| `session.restore` reports which pane received the content (+ `restoreCommands` in `tree`) | 0.26.0 | agwinterm #226 *(P2)* |
+| `sidebar.width` — the width in effect, out of range refused; unknown `sidebar` ops refused | 0.26.0 | agwinterm #226 *(P2)* |
+| `session.new` refuses an unknown workspace; a bare `session new` lands in the caller's workspace | — | agwinterm #226 *(P2)*, lite: P2-lite *(caller half)* |
 
 The overlay entry is the *honesty* half only: a pane id is now refused rather than silently widened.
 Pane-scoped overlays themselves are still open, below.
 
-The last three were items **1, 2 and 8** of the open list before P1 closed them; the list below is
-renumbered, so read that plan's "closes items 1, 2 and 8" against this note rather than against the
-current numbering. Their agliteterm mirrors are batch **P8**, tracked in
+The P1 rows were items **1, 2 and 8** of the open list before P1 closed them, and the P2 rows were
+item **6**, the `sidebar.width` half of item **5** and two sub-items of item **11**; the list below
+is renumbered after each, so read those plans' "closes items ..." against this note rather than
+against the current numbering. `--stdin` is `session type` / `session write` here — `quick type` has
+no separate verb because the quick terminal is a pane with an id that `session type --target`
+reaches. The agliteterm mirrors are the per-batch `P<n>-lite` plans, tracked in
 [lite-parity.md](lite-parity.md) — agwinterm-first, so the contract is fixed before it is copied.
 
 ---
@@ -79,42 +87,38 @@ is convenience here rather than a blocker.
   handle on a hidden split shell. agwinterm should do the same — a small, real gap *within* our own
   family.
 
-### 5. `sidebar.width`, `restore.capture`
-**agterm 0.26.0.** Set/report the sidebar divider (distinguishing a clamped request from an honoured
-one); fill captured-command slots on demand rather than only at exit. Both small.
-
-### 6. `--stdin` on `session type` / `quick type`, rejecting invalid UTF-8
-**agterm 0.26.0.** We have no `--stdin` at all, so text with quotes or newlines has to survive a
-command line. Worth pairing with the control-byte refusal already shipped.
+### 5. `restore.capture`
+**agterm 0.26.0.** Fill captured-command slots on demand rather than only at exit. Small; batch
+**P3**, beside `session.context`. (`sidebar.width`, the other half of this item, closed in P2.)
 
 ---
 
 ## Open — UI
 
-### 7. `control.pick` — the native picker, driven over the API
+### 6. `control.pick` — the native picker, driven over the API
 **agterm 2026-07-28.** Half the agterm cookbook is built on it: project launcher, workspace picker,
 conversation picker, backlog picker, SQLite browser. Nothing here can do that without shipping a
 picker binary of its own.
 **The biggest single capability gap.** Size: large.
 
-### 8. `session.hud` and `--position`
+### 7. `session.hud` and `--position`
 **agterm 0.22.0 / 0.24.0.** A transient overlay for status an agent wants seen without printing into
 the terminal, anchored to one of nine positions. Size: medium.
 
-### 9. Quick terminal: screen percentage, and a global hotkey
+### 8. Quick terminal: screen percentage, and a global hotkey
 **agterm 0.24.0 / 0.25.0.** Sizes as 40–90% of the screen, and a system-wide hotkey summons it over
 any app. Ours is a fixed size with no global hotkey. Size: medium (the hotkey is a `RegisterHotKey`
 and a policy decision about stealing a chord system-wide).
 
-### 10. Workspace navigation and keymap alternatives
+### 9. Workspace navigation and keymap alternatives
 **agterm 0.23.0 / 0.24.0.** `workspace.go next|prev`, `toggle_workspace_collapse`, and keymap entries
 that accept several chords for one action separated by `|` (a native chord *and* a tmux-style
 leader). We have `session go`; workspaces are keyboard-unreachable without a chord. Size: small.
 
-### 11. Smaller things from 0.26
+### 10. Smaller things from 0.26
 Cursor shape and blink settings; sidebar tooltips revealing truncated names; the tree naming the
-shell holding each pane's foreground process; `session.restore` reporting which pane received the
-content; `session.overlay.open` validating `--size-percent` as 1–100 (we clamp silently instead).
+shell holding each pane's foreground process. (The other two that were here — `session.restore`
+reporting the pane, and `--size-percent` validated rather than clamped — closed in P2.)
 
 ---
 

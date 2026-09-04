@@ -319,6 +319,85 @@ try {
         }
 
         Invoke-Ctl @('quick', 'off') | Out-Null
+        Start-Sleep -Milliseconds 500
+
+        # --stdin two-sources guard, every spelling revmux found (P2 r1: a boolean flag swallowing the
+        # positional; r2: any other flag, a misspelt flag, a bare "true"). The CLI must exit 2 and send
+        # NOTHING — the pane's text is the oracle, not the exit code alone.
+        $stdinBefore = (Invoke-Ctl @('session', 'text', '--target', $survivorId)).result
+        foreach ($shape in @(
+                @('--stdin', '--allow-control', 'from argv'),
+                @('--stdin', '--wait', 'from argv'),
+                @('--stdin', '--allow-controll', 'from argv'),
+                @('--stdin', 'true'))) {
+            $out = 'from pipe' | & $ctl session type @shape --target $survivorId --pipe $pipe 2>&1
+            $code = $LASTEXITCODE
+            Check "session type --stdin refuses a swallowed positional ($($shape -join ' '))" ($code -eq 2 -and ("$out" -match 'one source')) "exit $code, output: $out"
+        }
+        Start-Sleep -Milliseconds 300
+        $stdinAfter = (Invoke-Ctl @('session', 'text', '--target', $survivorId)).result
+        Check 'and typed nothing for any of them' ($stdinAfter -eq $stdinBefore) "text changed"
+        # The positive control (r3): the pipe selector under its OTHER name takes a value and must not
+        # trip the shape guard. --socket is --pipe; a refusal here names things the caller did not do.
+        $sockMarker = 'stdin-socket-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $out = "Write-Output '$sockMarker'`r" | & $ctl session type --stdin --socket $pipe --target $survivorId 2>&1
+        Check 'session type --stdin --socket <pipe> is accepted (the valued global option under its alias)' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE, output: $out"
+        Start-Sleep -Seconds 2
+        $sockText = (Invoke-Ctl @('session', 'text', '--target', $survivorId)).result
+        Check 'and the piped text reached the pane' (([string]$sockText).Contains($sockMarker))
+
+        # session.overlay on a target that matches NOTHING is a refusal for close and resize alike
+        # (r2: `close --target buidl` answered ok "no overlay" while the overlay on `build` was up),
+        # and the positive control: an untargeted close with nothing open stays ok. Asserted against
+        # the app, not the fake — the unit test drives FakeSessionHost's copy of the rule.
+        $ghostClose = Invoke-Ctl @('session', 'overlay', 'close', '--target', 'no-such-session-zz')
+        Check 'overlay close on a target that matches no session is refused' `
+            ((-not $ghostClose.ok) -and ("$($ghostClose.error)" -match 'no session')) "$($ghostClose | ConvertTo-Json -Compress)"
+        $ghostResize = Invoke-Ctl @('session', 'overlay', 'resize', '--size-percent', '50', '--target', 'no-such-session-zz')
+        Check 'overlay resize on a target that matches no session is refused, not told to open one' `
+            ((-not $ghostResize.ok) -and ("$($ghostResize.error)" -match 'no session') -and ("$($ghostResize.error)" -notmatch 'open one first')) "$($ghostResize | ConvertTo-Json -Compress)"
+        $bareClose = Invoke-Ctl @('session', 'overlay', 'close')
+        Check 'an untargeted overlay close with nothing open stays ok' ($bareClose.ok -and $bareClose.result -eq 'no overlay') "$($bareClose | ConvertTo-Json -Compress)"
+
+        # sidebar.width must move the divider, not just a number. The unit tests see the fake host
+        # only; here the proof is live geometry: the active session's measured width (session.metrics,
+        # columns x cell width) shrinks when the sidebar widens, because the grid derives from the
+        # divider. Then the persisted half: the width lands in this instance's state file, which is
+        # what a restart reads. Then the refusal: out of range answers ok:false and the width stays.
+        Invoke-Ctl @('sidebar', 'show') | Out-Null
+        Start-Sleep -Milliseconds 400
+        $widthBefore = Invoke-Ctl @('sidebar', 'width')
+        $metricsBefore = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+        $widthSet = Invoke-Ctl @('sidebar', 'width', '320')
+        Start-Sleep -Milliseconds 500
+        $metricsAfter = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+        $stateAfter = Invoke-Ctl @('sidebar', 'state')
+        Check 'sidebar.width reads the default before any set' `
+            ($widthBefore.ok -and $widthBefore.result.width -eq 220 -and $widthBefore.result.visible) `
+            "result=$($widthBefore | ConvertTo-Json -Compress)"
+        Check 'sidebar.width replies with the width in effect and that it was applied' `
+            ($widthSet.ok -and $widthSet.result.width -eq 320 -and $widthSet.result.visible -and $widthSet.result.applied) `
+            "result=$($widthSet | ConvertTo-Json -Compress)"
+        Check 'sidebar.width moved the divider (the active pane got narrower)' `
+            ($metricsBefore.ok -and $metricsAfter.ok -and $metricsAfter.result.widthPx -lt $metricsBefore.result.widthPx) `
+            "widthPx before=$($metricsBefore.result.widthPx) after=$($metricsAfter.result.widthPx)"
+        Check 'sidebar state carries the width' ($stateAfter.ok -and [string]$stateAfter.result -eq 'visible tree 320') `
+            "state=$($stateAfter.result)"
+        $stateFile = Get-ChildItem -LiteralPath (Join-Path $testAppDir 'windows') -Filter '*.json' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $persisted = $stateFile -and ((Get-Content -LiteralPath $stateFile.FullName -Raw) -match '"SidebarWidth":\s*320')
+        Check 'sidebar.width is persisted to the state file (what a restart reads)' $persisted `
+            "file=$($stateFile.FullName)"
+        $widthRefused = Invoke-Ctl @('sidebar', 'width', '5')
+        $widthAfterRefusal = Invoke-Ctl @('sidebar', 'width')
+        Check 'sidebar.width refuses out of range and the divider stays where it was' `
+            ((-not $widthRefused.ok) -and ([string]$widthRefused.error).Contains('120..600') -and $widthAfterRefusal.result.width -eq 320) `
+            "error=$($widthRefused.error) width=$($widthAfterRefusal.result.width)"
+        $badOp = Invoke-Ctl @('sidebar', 'sideways')
+        Check 'a sidebar op the app cannot do is refused, not acknowledged' `
+            ((-not $badOp.ok) -and ([string]$badOp.error).Contains('sideways')) "reply=$($badOp | ConvertTo-Json -Compress)"
+        Invoke-Ctl @('sidebar', 'width', '220') | Out-Null
+
         Invoke-Ctl @('sidebar', 'hide') | Out-Null
         Start-Sleep -Milliseconds 500
 

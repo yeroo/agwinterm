@@ -1541,7 +1541,17 @@ internal partial class Program
 
     private void ToggleSidebar()
     {
-        _sidebarW = _sidebarW > 0 ? 0 : SidebarWFull;
+        _sidebarW = _sidebarW > 0 ? 0 : _sidebarWShown;
+        SidebarWidthChanged();
+    }
+
+    /// <summary>The one re-layout after <c>_sidebarW</c> moves, shared by <see cref="ToggleSidebar"/>
+    /// and the <c>sidebar width</c> verb: everything to the right of the divider — ContentX, the
+    /// active session's grid and column count, the cover, hit-testing — derives from <c>_sidebarW</c>
+    /// at its next layout, so a regrid + repaint is what turns the number into a moved divider. A
+    /// width verb that skipped this would change the number and nothing on screen.</summary>
+    private void SidebarWidthChanged()
+    {
         if (_active is not null) RegridSession(_active);
         if (_cover is not null) RegridCover();
         RequestRedraw();

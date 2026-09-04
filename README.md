@@ -214,10 +214,17 @@ agwinterm is scriptable through a local named pipe speaking newline-delimited JS
 ```powershell
 agwintermctl tree --json                     # workspace/session tree (+ splits, badges, overlays)
 agwintermctl window state                    # sidebar/fullscreen/active read-back
+agwintermctl sidebar width 300               # move the divider; the reply is the width in effect
 agwintermctl session status blocked --sound  # report agent status (a dot + bell in the UI)
+agwintermctl session new --name build        # from a pane: lands in THAT pane's workspace, not the last-clicked one
 agwintermctl session new --name build --workspace-name CI --create-workspace
+agwintermctl session new --workspace no-such   # refused, no session: an unknown workspace is never swapped for the active one
 agwintermctl session type "npm test`n"       # type into the active session
+@"
+say "hi"
+"@ | agwintermctl session type --stdin   # text with quotes/newlines: stdin as bytes (see below)
 agwintermctl session overlay open "git diff" --size-percent 60
+agwintermctl session restore "npm run dev" --target <pane>   # re-run on every restart; reply names the pane
 agwintermctl dashboard build test deploy     # grid overview of chosen sessions
 agwintermctl theme set "Tokyo Night"         # retint the whole window
 agwintermctl window new --name scratchpad    # open a second window
@@ -225,7 +232,7 @@ agwintermctl surface cursor --target <pane>  # the caret column of a pane, as a 
 agwintermctl version                         # which CLI ran, and which app answered the pipe
 ```
 
-Three of those answer a question a script would otherwise have to guess at:
+Eight of those answer a question a script would otherwise have to guess at:
 
 - `surface cursor` returns the caret **column** and nothing else, so "is that agent's composer empty
   before I type into it" is a comparison, not a hunt for its placeholder text. A different column is
@@ -244,6 +251,42 @@ Three of those answer a question a script would otherwise have to guess at:
   `agwintermctl.exe` can coexist off `PATH`) and the `app` that answered (version and pipe). It exits 0
   and still prints the `cli` line when nothing is listening, which is the case it exists for. `--json`
   gives the machine-readable form.
+- `session type --stdin` takes the text from standard input as bytes, so quotes, newlines, runs of
+  spaces and a leading `--` arrive intact: the argv form re-joins positionals with one space and the
+  option parser eats a leading `--`, both silently. Exactly one trailing newline is dropped (the one
+  the shell adds), so end with two to press Enter. Invalid UTF-8 is refused with its byte offset and
+  nothing is sent; `--stdin` beside positional text or `--select` is refused as ambiguous. There is no
+  `quick type` verb here: the quick terminal is a pane whose id starts with `quick:`, so it is
+  `session type --stdin --target quick:`.
+- `session overlay open --size-percent N` and `overlay resize --size-percent N` take 1..100 and
+  **refuse** anything else, naming the value and the range. `0`, `150` and `sixty` used to open a
+  full-screen overlay and report success; now nothing opens and `ok` is false. Omit the flag for the
+  full content region. `resized N%` is always the N that was asked for. The verb's other failures
+  are refusals too: `open` with no command; `open` and `resize` whenever no session resolves (a
+  `--target` that matches nothing, or no target and no active session); a `close` whose `--target`
+  names nothing; and `resize` with no overlay open. `close` stays `ok` when the session resolves and
+  has no overlay, or when no target was given — there is nothing to close, and nothing is what you
+  asked for.
+- `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
+  the target resolved to (a session name lands on its focused pane, a session id on its first pane,
+  exactly as `session type` does), and `action` is `pinned` or `cleared` (`none` clears). The target
+  is mandatory, because a pin outlives whatever pane is active now. `tree --json` reads the pins back
+  as `restoreCommands`, an object keyed by pane id that lists only pinned panes.
+- `sidebar width [N]` reads or sets the sidebar width in device-independent pixels and replies
+  `{width, visible, applied}` with the width **actually in effect**, so a script compares what it
+  asked for with what it got. Outside 120..600 is refused with the range named and nothing moves
+  (`sidebar hide` is how to ask for none). A set while the sidebar is hidden is remembered and
+  persisted but reported `applied:false` rather than as a width nobody can see. `sidebar state` now
+  reads `visible tree 220`: visibility, mode and width. And a `sidebar` op the app cannot do is
+  refused instead of acknowledged (`on`/`off` are real aliases of `show`/`hide`).
+
+- `session new` with no `--workspace` creates the session **in the caller's own workspace**: the CLI
+  sends the pane it runs in (its `AGWINTERM_SESSION_ID`), and the session goes next to it. Before,
+  it went to the *active* workspace, a global the UI moves on every click, so an agent creating
+  several sessions scattered them wherever the user had last clicked. An agent gets sessions beside
+  itself unless it says otherwise, and `--workspace` / `--workspace-name` are how it says otherwise.
+  Only a CLI with no pane identity, or one whose pane has since been closed, still lands in the
+  active workspace; a stale caller is not refused, because that would break a working script.
 
 Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
 Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.

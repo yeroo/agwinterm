@@ -7,17 +7,28 @@ using System.Text.Json;
 //   agwintermctl ping
 //   agwintermctl version [--json]                  (the CLI that ran + the app serving the pipe)
 //   agwintermctl tree [--json]
-//   agwintermctl session new [--cwd DIR] [--name NAME] [--no-select]
+//   agwintermctl session new [--cwd DIR] [--name NAME] [--workspace ID|--workspace-name NAME [--create-workspace]] [--no-select]
+//       (no workspace given = the workspace of the pane running this CLI; the active one only when there is none)
+//                                                  (an unknown workspace is refused, never swapped for the active one)
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]
 //   agwintermctl session seen [--target ID]        (clear the unseen-notification badge)
-//   agwintermctl sidebar state                      (read-back: "visible tree" | "hidden flagged" | ...)
+//   agwintermctl sidebar state                      (read-back: "visible tree 220" = visibility, mode, width)
+//   agwintermctl sidebar width [N]                  (read, or set, the sidebar width in DIP; replies {width,visible[,applied]}
+//       with the width actually in effect; outside 120..600 is refused, not clamped; set while hidden = remembered)
+//   agwintermctl sidebar show|hide|toggle|expand|collapse|mode <tree|flagged|toggle>   (on/off = show/hide; anything
+//       else is refused rather than acknowledged)
 //   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
 //   agwintermctl session metrics [<pane-id>] [--json] (live cell + pane pixel metrics)
 //   agwintermctl session text [--lines N] [--target ID]   (N reaches into scrollback; default = screen)
 //   agwintermctl session type <text...> [--allow-control] [--target ID]   (control bytes refused unless allowed)
-//   agwintermctl session write <text...> [--target ID]
+//   agwintermctl session type --stdin [--allow-control] [--target ID]     (text = stdin, as bytes: how quotes,
+//       newlines, a leading -- or runs of spaces are sent; invalid UTF-8 is refused, nothing sent; one
+//       trailing newline is dropped. "quick type" is `session type --target quick:` — the quick pane's id)
+//   agwintermctl session write <text...> [--target ID]                    (also takes --stdin)
+//   agwintermctl session restore <command...>|none --target PANE          (pin a command re-run on every restart;
+//       target mandatory; replies {action,pane,session}; read back in `tree --json` as restoreCommands)
 //   agwintermctl session copy [--target ID]           (returns the selection text)
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
 //   agwintermctl selection all|copy|clear|finalize [--target ID]
@@ -41,6 +52,10 @@ if (args.Length == 0)
 // Split into positionals and --options.
 var positionals = new List<string>();
 var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+// Which options CONSUMED the token after them. The splitter cannot tell a flag from a valued option,
+// so `--wait "text"` gives --wait the text; verbs that must know whether a bare word was swallowed
+// (session type --stdin) ask this set rather than guessing from the value ("true" is also a word).
+var valued = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 bool jsonOut = false;
 for (int i = 0; i < args.Length; i++)
 {
@@ -49,8 +64,10 @@ for (int i = 0; i < args.Length; i++)
     else if (a.StartsWith("--"))
     {
         string key = a[2..];
-        string val = (i + 1 < args.Length && !args[i + 1].StartsWith("--")) ? args[++i] : "true";
+        bool takes = i + 1 < args.Length && !args[i + 1].StartsWith("--");
+        string val = takes ? args[++i] : "true";
         options[key] = val;
+        if (takes) valued.Add(key);
     }
     else positionals.Add(a);
 }
@@ -134,6 +151,12 @@ switch (area)
                 if (Opt("profile") is { } prof) cargs["profile"] = prof;
                 if (options.ContainsKey("no-select")) cargs["no-select"] = true;   // create in background, keep focus
                 if (options.ContainsKey("wait")) cargs["wait"] = true;             // hold on "press any key" after --command exits
+                // Who is asking: the pane this CLI runs in, the same AGWINTERM_SESSION_ID every other
+                // verb defaults its target to. With no --workspace the session lands in THAT pane's
+                // workspace, not in whatever the user last clicked. Sent as `caller`, not as the
+                // target: session.new is targetless on the server, and a target would make an
+                // unknown value "session not found" instead of the active-workspace fallback.
+                if (Environment.GetEnvironmentVariable("AGWINTERM_SESSION_ID") is { Length: > 0 } callerPane) cargs["caller"] = callerPane;
                 target = null; // new isn't targeted
                 break;
             case "select":
@@ -164,6 +187,28 @@ switch (area)
                 if (options.ContainsKey("allow-control")) cargs["allow-control"] = true;
                 goto case "write";
             case "write":
+                // --stdin: the text is standard input, as bytes. Positionals are joined with one
+                // space and the splitter eats a leading "--", so quotes, newlines, runs of spaces and
+                // a "--flag" as text only survive this way. Two sources for one field is an
+                // ambiguity we refuse rather than resolve: --stdin with positional text or --select
+                // is an error. Invalid UTF-8 exits non-zero and sends NOTHING — the server's own
+                // reader would have replaced the bad bytes with U+FFFD and answered ok.
+                if (options.ContainsKey("stdin"))
+                {
+                    // The splitter hands ANY option the next bare word as its value, so positional
+                    // text can hide behind `--stdin "text"`, `--allow-control "text"`, `--wait
+                    // "text"`, a misspelt flag, or even `--stdin true`. Detect the SHAPE — an option
+                    // that swallowed a word and is not one that takes a value on this verb — rather
+                    // than the value or a flag name (revmux r1 and r2 of P2 each found a spelling
+                    // the previous check missed).
+                    bool swallowed = valued.Any(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
+                    if (rest.Count > 0 || swallowed || Opt("select") is not null)
+                    { Console.Error.WriteLine($"session {sub}: --stdin cannot be combined with positional text or --select (one source for the text, not two)"); return 2; }
+                    var stdinText = Agwinterm.Pty.StdinText.Read(Console.OpenStandardInput());
+                    if (!stdinText.Ok) { Console.Error.WriteLine($"session {sub} --stdin: {stdinText.Error}; nothing was sent"); return 2; }
+                    cargs["text"] = stdinText.Text;
+                    break;
+                }
                 // --select <text> (agterm parity): text may come via --select instead of positionals.
                 cargs["text"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("select") ?? "");
                 break;
@@ -197,7 +242,18 @@ switch (area)
                 cargs["action"] = rest.Count > 0 ? rest[0] : "open";
                 if (rest.Count > 1) cargs["command"] = string.Join(' ', rest.Skip(1));
                 else if (Opt("command") is { } ovcmd) cargs["command"] = ovcmd;
-                if (int.TryParse(Opt("size-percent"), out var sp)) cargs["size-percent"] = sp;
+                // An unparseable --size-percent is refused, not dropped: `--size-percent sixty` used to
+                // open a FULL-SCREEN overlay and report success. The range (1..100) is the server's
+                // call, so its refusal names the value and the way to ask for the full region.
+                if (Opt("size-percent") is { } spText)
+                {
+                    if (!int.TryParse(spText, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out var sp))
+                    {
+                        Console.Error.WriteLine($"--size-percent needs a whole number in 1..100, not '{spText}'; omit it for the full content region");
+                        return 2;
+                    }
+                    cargs["size-percent"] = sp;
+                }
                 if (options.ContainsKey("wait")) cargs["wait"] = true;
                 if (options.ContainsKey("block")) cargs["block"] = true;
                 break;
@@ -285,10 +341,29 @@ switch (area)
         break;
     case "sidebar":
         cmd = "sidebar";
-        // `sidebar mode tree|flagged|toggle` switches the view mode; otherwise show|hide|toggle|expand|collapse.
-        cargs["op"] = sub == "mode"
-            ? "mode:" + (rest.Count > 0 ? rest[0] : "toggle")
-            : (sub.Length > 0 ? sub : "toggle");
+        // `sidebar width [N]` reads (no N) or sets the width; `sidebar mode tree|flagged|toggle`
+        // switches the view mode; otherwise show|hide|toggle|expand|collapse (on/off = show/hide).
+        if (sub == "width")
+        {
+            cargs["op"] = "width";
+            if (rest.Count > 0)
+            {
+                // An unparseable width is refused here, not dropped into a read: `sidebar width wide`
+                // answering with the current width would look like a successful set. The range is the
+                // server's call (one refusal text, shared with the fake host's tests), so only the
+                // "not a number at all" case is caught before the request is built.
+                if (!int.TryParse(rest[0], System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out var sw))
+                {
+                    Console.Error.WriteLine(Agwinterm.Pty.SidebarWidths.Refusal($"'{rest[0]}'"));
+                    return 2;
+                }
+                cargs["width"] = sw;
+            }
+        }
+        else
+            cargs["op"] = sub == "mode"
+                ? "mode:" + (rest.Count > 0 ? rest[0] : "toggle")
+                : (sub.Length > 0 ? sub : "toggle");
         break;
     case "quick":
         cmd = "quick";

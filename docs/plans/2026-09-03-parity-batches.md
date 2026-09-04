@@ -37,7 +37,7 @@ Three contract questions gate their batches. They are cheap to answer and expens
 
 | # | Question | Gates |
 | --- | --- | --- |
-| 1 | `session.new` with an unknown workspace: **refuse** (lite does) or **fall back to active** (agwinterm does)? Falling back silently is how a caller believes it placed a session somewhere it did not. | P2 |
+| 1 | ~~`session.new` with an unknown workspace: **refuse** (lite does) or **fall back to active** (agwinterm does)?~~ **Answered: refuse** (2026-09-04, in P2 #226). lite already refused, every other workspace-taking verb here already refused, and the contract file states the principle in prose for `workspace.select`. A bare `session new` with *no* workspace named now lands in the **caller's** workspace, not the active one (P2 task 5a, from a live agliteterm report). | P2 |
 | 2 | On the alt screen, do splits scroll into main-screen history (lite) or pin to row 0 (agwinterm)? Both are self-consistent; they cannot both stay. | P6, P7 |
 | 3 | Is `control.pick` (P16) worth its size, or does the picker stay out of scope? It is the biggest single capability gap and also the biggest plan. | P16 |
 
@@ -64,6 +64,11 @@ alongside `status`; `version` names the serving app **and the resolved path of t
 validates `--size-percent` as 1–100 instead of clamping silently · `session.restore` reports which
 pane received the content · `sidebar.width` distinguishing a clamped request from an honoured one ·
 `session.new` refuses an unknown workspace *(decision 1)*
+
+**Shipped:** #226 — plan at [2026-09-04-p2-honesty.md](2026-09-04-p2-honesty.md) (moves to
+`completed/` with the merge); contract step and release to follow, as #223 / #224 followed P1.
+Grew one item on the way: a bare `session new` lands in the **caller's** workspace (task 5a).
+Mirror: agliteterm P2-lite.
 
 Every item is the same defect class as the control-byte refusal already shipped in #213: a call that
 appears to succeed while doing something other than what was asked. Same test shape throughout.
@@ -114,8 +119,9 @@ Same model as P6, different surface — split because it is UI work with a diffe
 
 ### P8 · lite · mirror Wave 1 — dissolved into per-batch mirrors
 `surface.cursor` · `statusChangedAt` · `version` → **P1-lite** (agliteterm
-`docs/plans/2026-09-03-p1-lite-mirror.md`, 2026-09-03) · `--stdin` · size-percent validation →
-P2-lite · `session.context` → P3-lite. Each runs right after its agwinterm batch merges.
+`docs/plans/2026-09-03-p1-lite-mirror.md`, 2026-09-03) · `--stdin` · size-percent validation ·
+the caller-workspace default for a bare `session new` → P2-lite · `session.context` → P3-lite. Each
+runs right after its agwinterm batch merges.
 
 ### P9 · lite · driving a pane
 `session.readonly` **first** — it is how you stop stray keys reaching a running agent — then

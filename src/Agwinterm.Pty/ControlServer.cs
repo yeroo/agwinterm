@@ -201,8 +201,28 @@ public sealed class ControlServer : IDisposable
                 case "tree": return HandleTree(host);
                 case "window.state": return HandleWindowState(host);
                 case "session.new":
-                    return Ok(host.NewSession(GetString(args, "name"), GetString(args, "cwd"), GetString(args, "workspace"),
-                    GetString(args, "command"), GetString(args, "workspace-name"), GetBool(args, "create-workspace"), GetString(args, "profile"), GetBool(args, "no-select"), GetBool(args, "wait")));
+                {
+                    // An unknown workspace is REFUSED, not swapped for the active one (P2, decision 1;
+                    // SessionNewWorkspaces has the why). The host resolves the workspace before it
+                    // mints an id, so a refusal leaves no session behind it; the pair of flags is
+                    // refused here, before the host is asked, because the host cannot see both were
+                    // given once one has won.
+                    // `caller` is the pane that ran the command (the CLI sends its AGWINTERM_SESSION_ID);
+                    // with no workspace named, the session lands in THAT pane's workspace, and only a
+                    // missing or stale caller falls back to the active one (P2, task 5a). It is a
+                    // separate arg and not the target on purpose: session.new is dispatched here, in
+                    // the targetless block, and a target would move it into the resolved-session block
+                    // below, where an unknown value is "session not found" rather than a fallback.
+                    string? workspace = GetString(args, "workspace"), workspaceName = GetString(args, "workspace-name");
+                    if (!string.IsNullOrEmpty(workspace) && !string.IsNullOrEmpty(workspaceName))
+                        return Err(SessionNewWorkspaces.TwoSources(workspace, workspaceName));
+                    string created = host.NewSession(GetString(args, "name"), GetString(args, "cwd"), workspace,
+                        GetString(args, "command"), workspaceName, GetBool(args, "create-workspace"), GetString(args, "profile"), GetBool(args, "no-select"), GetBool(args, "wait"),
+                        caller: GetString(args, "caller"));
+                    return created.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+                        ? Err(created[ISessionHost.RefusePrefix.Length..])
+                        : Ok(created);
+                }
                 case "session.duplicate": return Ok(host.DuplicateSession(target));
                 case "profiles.list": return Ok(host.ProfilesList());
                 case "profiles.reload": return Ok(host.ProfilesReload());
@@ -251,6 +271,14 @@ public sealed class ControlServer : IDisposable
                     {
                         string op = GetString(args, "op") ?? "toggle";
                         if (op is "state" or "get") return Ok(host.SidebarState());   // read-back, no mutation
+                        if (op == "width") return HandleSidebarWidth(host, args);
+                        // on/off are the conformance file's spelling (control-api.json's `sidebar on`
+                        // step). Before P2 they "passed" only because the verb answered ok:true for ANY
+                        // op, including ones the host's switch fell straight through; now they are real
+                        // aliases, and an op the host cannot do is refused instead of acknowledged.
+                        op = op switch { "on" => "show", "off" => "hide", _ => op };
+                        if (Array.IndexOf(SidebarOps, op) < 0)
+                            return Err($"sidebar: unknown op '{op}'. One of: show|hide|toggle|expand|collapse|state|width|mode tree|mode flagged|mode toggle (on/off = show/hide). Nothing changed.");
                         host.SidebarOp(op); return Ok("sidebar");
                     }
                 case "session.copy": return Ok(host.SessionCopy(target)); // selection text (host-side), "" if none
@@ -267,8 +295,12 @@ public sealed class ControlServer : IDisposable
                     // A refusal has to answer ok:false, or a caller that checks `ok` reads "I would
                     // not do that" as "done" — the exact dishonesty the refusal exists to end. The
                     // host marks one by prefixing REFUSE_PREFIX; everything else is a result string.
+                    // size-percent is validated, not clamped. Before P2, `0`, `-5`, `150` and the
+                    // string "sixty" (0 from GetInt) all opened a full-screen overlay and answered
+                    // ok:true — three silent coercions between the shell and the panel.
+                    if (!TryOverlaySize(args, out int sizePercent, out string? sizeErr)) return Err(sizeErr!);
                     string ovl = host.SessionOverlay(target, GetString(args, "action") ?? "open",
-                        GetString(args, "command"), GetInt(args, "size-percent", 0),
+                        GetString(args, "command"), sizePercent,
                         GetBool(args, "wait"), GetBool(args, "block"));
                     return ovl.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
                         ? Err(ovl[ISessionHost.RefusePrefix.Length..])
@@ -281,8 +313,7 @@ public sealed class ControlServer : IDisposable
                     return host.SessionFlag(target, GetString(args, "op") ?? "toggle") ? Ok("flag") : Err("session not found");
                 case "session.bind":
                     return host.SessionBind(target, GetString(args, "agent") ?? "claude") ? Ok("bound") : Err("session not found");
-                case "session.restore":
-                    return host.SessionRestore(target, GetString(args, "command") ?? "") ? Ok("pinned") : Err("session not found");
+                case "session.restore": return HandleSessionRestore(host, target, args);
                 // OkRaw, not Ok: Events() already returns JSON. Ok() would serialize it AGAIN, so
                 // .result arrived as a STRING of JSON and a caller had to parse it a second time —
                 // while tree and window.list, built the same way, return objects. The conformance
@@ -391,6 +422,7 @@ public sealed class ControlServer : IDisposable
                 if (n.Notifications > 0) sb.Append(",\"notifications\":").Append(n.Notifications);
                 if (n.StatusBlink) sb.Append(",\"statusBlink\":true");
                 if (n.OverlaySize > 0) sb.Append(",\"overlaySize\":").Append(n.OverlaySize);
+                AppendRestoreCommands(sb, n);
                 if (n.PaneCount > 1)
                 {
                     sb.Append(",\"paneCount\":").Append(n.PaneCount).Append(",\"focusedPane\":").Append(n.FocusedPane);
@@ -414,6 +446,57 @@ public sealed class ControlServer : IDisposable
             sb.Append("]}");
         }
         sb.Append("]}");
+        return OkRaw(sb.ToString());
+    }
+
+    /// <summary>
+    /// <c>restoreCommands</c>: the read-back for session.restore, an object keyed by PANE id (the id
+    /// the verb's reply names) listing only the panes that carry a pin. Omitted when no pane does, and
+    /// a pane with no pin is simply absent — the same spelling the flags above use for "no". The
+    /// snapshot carries one entry per pane ("" = none), parallel to PaneIds. AgentSkill promised this
+    /// field long before it was on the wire, so a caller reconnecting to a running app had no way to
+    /// ask which pane held what; the answer was only ever visible in the instant of the call.
+    /// </summary>
+    private static void AppendRestoreCommands(StringBuilder sb, SessionSnapshot n)
+    {
+        if (n.RestoreCommands is not { Count: > 0 } cmds || n.PaneIds is not { Count: > 0 } ids) return;
+        bool any = false;
+        for (int r = 0; r < cmds.Count && r < ids.Count; r++)
+        {
+            if (string.IsNullOrEmpty(cmds[r])) continue;
+            sb.Append(any ? "," : ",\"restoreCommands\":{")
+              .Append(JsonSerializer.Serialize(ids[r])).Append(':').Append(JsonSerializer.Serialize(cmds[r]));
+            any = true;
+        }
+        if (any) sb.Append('}');
+    }
+
+    /// <summary>
+    /// session.restore: pin (or clear) a per-pane restart command, and SAY WHERE IT LANDED. Before P2
+    /// the reply was the constant "pinned", the host resolved the target through a path no other verb
+    /// used, and the tree never emitted the field the skill file promised — so which pane took the pin
+    /// was unknowable from the caller's side. Now the reply is
+    /// <c>{action:"pinned"|"cleared", pane, session[, command]}</c>: <c>pane</c> is the pane the target
+    /// resolved to (a session NAME lands on that session's focused pane, a session ID on its first pane,
+    /// exactly as session.type does), <c>session</c> its owner. ""/"none" clear, and are reported as a
+    /// clear rather than a pin of nothing. The target is mandatory: a pin outlives whatever pane
+    /// happens to be active now, so "active" is not a sensible default and is refused rather than
+    /// guessed. Every refusal pins nothing.
+    /// </summary>
+    private static string HandleSessionRestore(ISessionHost host, string? target, JsonElement args)
+    {
+        if (string.IsNullOrEmpty(target) || target == "active")
+            return Err("session.restore needs a pane: pass --target <pane-id>. A pin outlives the pane that is active now, so there is no active-pane default (inside a session, AGWINTERM_SESSION_ID is that pane's id). Nothing pinned.");
+        string raw = GetString(args, "command") ?? "";
+        string? command = string.IsNullOrWhiteSpace(raw) || raw.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : raw;
+        var hit = host.SessionRestore(target, command);
+        if (hit is null) return Err($"no pane or session matches '{target}'. Nothing pinned.");
+        if (hit.Refusal is not null) return Err(hit.Refusal);
+        var sb = new StringBuilder("{\"action\":").Append(command is null ? "\"cleared\"" : "\"pinned\"")
+            .Append(",\"pane\":").Append(JsonSerializer.Serialize(hit.PaneId))
+            .Append(",\"session\":").Append(JsonSerializer.Serialize(hit.SessionId));
+        if (command is not null) sb.Append(",\"command\":").Append(JsonSerializer.Serialize(command));
+        sb.Append('}');
         return OkRaw(sb.ToString());
     }
 
@@ -975,6 +1058,77 @@ public sealed class ControlServer : IDisposable
         value = n;
         return true;
     }
+
+    /// <summary>
+    /// The strict reader for session.overlay's <c>size-percent</c>. Three cases, none folded into
+    /// another: <b>absent</b> keeps today's meaning (0 = the full content region); <b>present and
+    /// 1..100</b> is the centered panel size; <b>present and anything else</b> — 0, negative, above
+    /// 100, a float, a string — is refused with the value and the range named. A caller who wrote
+    /// <c>--size-percent 0</c> meaning "full" is told that omitting the flag is how to ask for that,
+    /// because the refusal is the only place they will read it.
+    /// </summary>
+    internal static bool TryOverlaySize(JsonElement args, out int sizePercent, out string? error)
+    {
+        sizePercent = 0; error = null;
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty(OverlaySizeKey, out var v)) return true;
+        if (v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out long n) && n >= 1 && n <= 100)
+        { sizePercent = (int)n; return true; }
+        error = $"{OverlaySizeKey} {v.GetRawText()} is not a whole number in 1..100; " +
+                $"omit --{OverlaySizeKey} to use the full content region";
+        return false;
+    }
+    internal const string OverlaySizeKey = "size-percent";
+
+    /// <summary>Every op the hosts' SidebarOp switch handles (on/off are folded into show/hide before
+    /// this is consulted). Anything else is refused; before P2 it was acknowledged and ignored.</summary>
+    private static readonly string[] SidebarOps =
+        { "show", "hide", "toggle", "expand", "collapse", "mode:tree", "mode:flagged", "mode:toggle" };
+
+    /// <summary>
+    /// sidebar.width: read the sidebar width, or set it and report the width ACTUALLY IN EFFECT
+    /// afterwards. The reply is an object, not the word "sidebar":
+    /// <c>{width, visible[, applied[, note]]}</c>. <c>width</c> is the sidebar's width in DIP — on
+    /// screen when <c>visible</c>, otherwise the width the next show will use. On a set,
+    /// <c>applied</c> says whether the divider moved now; a set while the sidebar is hidden is
+    /// remembered (and persisted) but not applied, and <c>note</c> says so rather than reporting a
+    /// width the user cannot see. A caller compares what it asked for with <c>width</c>: a
+    /// legitimate difference (a host with a minimum of its own) is visible without pretending the
+    /// number was honoured. Out of range is <b>refused</b> with the range named, the same rule
+    /// --size-percent has, so the API has one answer to "out of range" rather than two; a refusal
+    /// changes nothing.
+    /// </summary>
+    private static string HandleSidebarWidth(ISessionHost host, JsonElement args)
+    {
+        if (!TrySidebarWidth(args, out int? set, out string? err)) return Err(err!);
+        var snap = host.SidebarWidth(set);
+        var sb = new StringBuilder("{\"width\":").Append(snap.Width)
+            .Append(",\"visible\":").Append(snap.Visible ? "true" : "false");
+        if (set is not null)
+        {
+            sb.Append(",\"applied\":").Append(snap.Visible ? "true" : "false");
+            if (!snap.Visible)
+                sb.Append(",\"note\":\"sidebar is hidden: width remembered, not applied; it takes effect on the next `sidebar show`\"");
+        }
+        return OkRaw(sb.Append('}').ToString());
+    }
+
+    /// <summary>
+    /// The strict reader for sidebar.width's <c>width</c>. Three cases, none folded into another:
+    /// <b>absent</b> is a read; <b>present and <see cref="SidebarWidths.Min"/>..<see cref="SidebarWidths.Max"/></b>
+    /// is a set; <b>present and anything else</b> — 0, negative, too wide, a float, a string — is
+    /// refused with the value and the range named (<see cref="SidebarWidths.Refusal"/>). Same shape
+    /// as <see cref="TryOverlaySize"/>: a non-number must not become 0 on the way in.
+    /// </summary>
+    internal static bool TrySidebarWidth(JsonElement args, out int? width, out string? error)
+    {
+        width = null; error = null;
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty(SidebarWidthKey, out var v)) return true;
+        if (v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out long n) && SidebarWidths.InRange(n))
+        { width = (int)n; return true; }
+        error = SidebarWidths.Refusal(v.GetRawText());
+        return false;
+    }
+    internal const string SidebarWidthKey = "width";
 
     /// <summary>32-bit <see cref="TryNum(JsonElement, string, long, out long, ref string?)"/>.</summary>
     private static bool TryNum(JsonElement el, string key, int def, out int value, ref string? error)

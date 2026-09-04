@@ -67,10 +67,26 @@ public static class AgentSkill
         - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"] [--profile NAME] [--no-select] [--wait]`
           `--no-select` creates the session in the background without stealing focus or changing the current selection.
           `--wait` (with `--command`) holds the session on "press any key" after the command exits, so its final output stays readable.
-        - `agwintermctl session duplicate [ID]` — clone a session (same cwd + shell profile) as a new session (default: active).
-        - `agwintermctl session restore "<command>" [--target PANE]` — pin a command to re-run on every restart for that pane (`none` clears). Surfaced per-pane in `tree --json` as `restoreCommands`.
           — create a session (prints its id). `--command` runs that program as the session process (argv-style, no shell) instead of the shell.
           `--profile NAME` picks a shell profile (default = Windows PowerShell).
+          `--workspace` is a workspace id (or unique id prefix; `tree --json` lists them), `--workspace-name` its sidebar label
+          (case-insensitive). **An unknown workspace is refused** (`ok:false`, no session created) — it is never swapped for the
+          active workspace: an unknown id, or an unknown name without `--create-workspace`, is an error that names the value.
+          `--workspace-name NAME --create-workspace` creates the workspace when it does not exist and reuses it when it does.
+          `--workspace` and `--workspace-name` together are refused; pass one. **Omit both and the session lands in YOUR
+          workspace** — the workspace of the pane you run in (the CLI sends its `AGWINTERM_SESSION_ID` as the caller), however
+          the user has clicked around meanwhile. Sessions go next to you unless you say otherwise, and `--workspace` is how you
+          say otherwise. Only a CLI whose pane the answering window cannot see falls back to the active workspace — the one
+          the user last clicked, which moves under you: a script from an unrelated shell, a pane that has since been closed,
+          or a pane in ANOTHER WINDOW (with no `--window`, the frontmost window answers, and its host knows only its own
+          panes — pass `--window` to reach yours, see "Windows").
+        - `agwintermctl session duplicate [ID]` — clone a session (same cwd + shell profile) as a new session (default: active).
+        - `agwintermctl session restore "<command>" --target PANE` — pin a command to re-run on every restart for that pane; `none` clears.
+          The target is mandatory (no active-pane default: a pin outlives whatever is active now; inside a session `AGWINTERM_SESSION_ID`
+          is the pane). Replies `{action:"pinned"|"cleared", pane, session[, command]}` naming the pane it landed on — a session
+          NAME lands on its focused pane, a session ID on its first pane, exactly as `session type` does. Read it back in
+          `tree --json` as `restoreCommands`: an object keyed by pane id listing only pinned panes (absent when none).
+          An unknown target, or a scratch/overlay/quick pane (never restored), is refused and nothing is pinned.
         - `agwintermctl profiles list` — shell profiles (cmd, Windows PowerShell, PowerShell 7, Git Bash, WSL:*, custom); `* ` marks the default.
           Profiles live in `%LOCALAPPDATA%\agwinterm\profiles.json` (auto-seeded from detected shells; edit to add your own — name/command/args/cwd/icon/env); `agwintermctl profiles reload` re-reads it.
         - `agwintermctl session select <id>` / `session close <id>`
@@ -78,7 +94,13 @@ public static class AgentSkill
         - `agwintermctl session seen [--target ID]` — clear a session's unseen-notification badge headlessly
         - `agwintermctl session output [--target ID]` — the LAST COMPLETED command's output (FTCS marks;
           pwsh sessions emit them automatically) — cleaner than parsing `session text` yourself
-        - `agwintermctl sidebar state` — read-back: `visible tree` | `hidden flagged` | … (`ping` reports the app version)
+        - `agwintermctl sidebar state` — read-back `<visible|hidden> <tree|flagged> <width>`, e.g. `visible tree 220`:
+          visibility, view mode and width (DIP) in one call (`ping` reports the app version)
+        - `agwintermctl sidebar width [N]` — read (no N) or set the sidebar width in device-independent pixels. Replies
+          `{width, visible[, applied[, note]]}` with the width ACTUALLY in effect, so compare `width` with what you asked
+          for. N outside 120..600 is REFUSED with the range named (nothing moves), never clamped — `sidebar hide` is how
+          you ask for no sidebar. A set while the sidebar is hidden is remembered and persisted but not applied
+          (`applied:false` + a note); it takes effect on the next `sidebar show`. Persists across restarts.
         - `agwintermctl version [--json]` — which CLI binary you just ran (version + its resolved path) and which app
           answered (version + pipe), on two greppable lines, `cli` and `app`. Several agwintermctl.exe can coexist and
           none need be on PATH; this says which one this was. It exits 0 and still prints the `cli` half when no app
@@ -121,6 +143,14 @@ public static class AgentSkill
           REFUSED, not stripped: a NUL would truncate your command while its Return still fired. Add `--allow-control`
           when you really mean one (an escape sequence for a TUI, a lone ^C). `session write` is NOT the way — it
           injects into the display and never reaches the shell
+        - `agwintermctl session type --stdin --target <id>`      — the text is STDIN, as bytes. This is how text with
+          quotes, newlines, runs of spaces or a leading `--` is sent: positionals are re-joined with one space and
+          the option parser eats a leading `--`, both silently. Pipe a here-string (`@"..."@ | agwintermctl session
+          type --stdin --target <id>`) or redirect a file. Exactly one trailing newline is dropped (the one the
+          shell adds), so end the text with TWO newlines to press Enter. Invalid UTF-8 is refused with the byte
+          offset and NOTHING is sent (exit 2). `--stdin` with positional text or `--select` is refused as ambiguous.
+          `--allow-control` still applies. There is no `quick type` verb: the quick terminal is a pane whose id starts
+          with `quick:`, so `session type --stdin --target quick:` types into it (once `quick on` has created it)
 
         ## Scratch & quick terminals
         - `agwintermctl session scratch on|off|toggle [--target <id>]` — a per-session extra shell drawn over that session's content (opens in the session's cwd; stays alive when hidden; not restored)
@@ -130,10 +160,20 @@ public static class AgentSkill
         - `agwintermctl session overlay open "<command>" [--size-percent N] [--wait] [--block] [--target <id>]`
           — run `<command>` in a throwaway terminal over the session; it vanishes when the program exits, leaving the session untouched. Returns the overlay id.
           `--size-percent N` (1..100) makes it a centered floating panel over a dimmed session (default = full content region). The session gets a `* (overlay)` tag in `tree`.
+          The range is VALIDATED, not clamped: `0`, `-5`, `150`, `sixty` and a quoted `"60"` are each refused (`ok:false`,
+          the value and the range named) and NO overlay opens — read `tree` to confirm. To ask for the full region, omit
+          the flag; there is no number that means it. The same rule applies to `overlay resize --size-percent N`, whose
+          reply `resized N%` is always the N you asked for.
         - `--wait` keeps the panel after the program exits (shows "press any key to close") instead of auto-dismissing.
         - `--block` waits for the program to exit and returns `exit N` (its exit code). Good for `lazygit`, `htop`, an editor, or any pick-a-thing helper you want to run and read the result of.
         - `agwintermctl session overlay close [--target <id>]`   — dismiss the overlay now.
         - `agwintermctl session overlay result`                 — the last overlay's `exit N` (or `no overlay`).
+        - What is REFUSED (`ok:false`, nothing happened): `open` with no command; `open` and `resize` whenever no
+          session resolves (a `--target` that matches nothing, or no target while no session is active); a `close`
+          whose `--target` names something that does not exist; and `resize` on a session with no overlay open.
+          `close` answers `ok` ("no overlay") in two cases — the session resolves and has no overlay, or no target
+          was given and nothing is active — because closing nothing leaves "no overlay open" true. These used to
+          answer `ok:true` with the failure as the result text; branch on `ok`.
 
         ## Notify the user (desktop notification)
         - `agwintermctl notify "build finished" [--title "npm"] [--target <id>]`
@@ -187,7 +227,9 @@ public static class AgentSkill
         - `agwintermctl session split on|off|toggle` · `session focus left|right|other` · `session resize --split-ratio 0.7` (or `--grow-left/--grow-right N`)
         - `agwintermctl font inc|dec|reset [--target <id>]`      — font zoom; target a session (active pane) or a specific split/scratch/quick pane by its id (see `tree` paneIds)
         - `agwintermctl dashboard [<id> ...] [--close] [--font-size N]` — grid overlay of live sessions (no ids = most-recent; `--close` dismisses; Ctrl+Shift+D toggles it in the UI)
-        - `agwintermctl sidebar show|hide|toggle|expand|collapse`
+        - `agwintermctl sidebar show|hide|toggle|expand|collapse` (`on`/`off` are aliases of show/hide). An op the sidebar
+          cannot do is REFUSED (`ok:false`, nothing changed) — it used to answer `ok` and do nothing. `sidebar width [N]`
+          reads/sets the width (see "Manage sessions & workspaces").
         - `agwintermctl session background set <image> [--opacity 0..100] [--mode fit|fill|center|tile]` — a faint per-session
           watermark drawn behind the terminal (the image is copied into app data); `session background clear` removes it.
           Per-session (honors `--target`/`--window`); persists; `tree` reports `"background":true`.

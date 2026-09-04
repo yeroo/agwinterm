@@ -1341,7 +1341,7 @@ internal partial class Program
             var st = new AppState
             {
                 ActiveId = activeId,
-                SidebarWidth = _sidebarW > 0 ? _sidebarW : SidebarWFull,
+                SidebarWidth = _sidebarWShown,   // the shown width even while hidden: a `sidebar width` set while hidden survives a restart
                 SidebarVisible = _sidebarW > 0,
                 SidebarMode = _sidebarMode == SidebarMode.Flagged ? "flagged" : "tree",
                 FocusedWorkspaceId = _focusedWorkspaceId,
@@ -1489,7 +1489,10 @@ internal partial class Program
         _restoring = true;
         try
         {
-            _sidebarW = st.SidebarVisible ? (st.SidebarWidth > 0 ? st.SidebarWidth : SidebarWFull) : 0;
+            // A hand-edited or pre-P2 file may carry a width the chrome cannot draw (0 was what a
+            // hidden sidebar used to save); that falls back to the default rather than to a 3-DIP tree.
+            _sidebarWShown = Agwinterm.Pty.SidebarWidths.InRange((long)st.SidebarWidth) ? st.SidebarWidth : SidebarWFull;
+            _sidebarW = st.SidebarVisible ? _sidebarWShown : 0;
             foreach (var w in st.Workspaces)
             {
                 // Recreate every saved workspace, including empty ones (agterm keeps empty workspaces).
