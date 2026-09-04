@@ -141,6 +141,28 @@ public class SessionRestoreTests
 
     // ---- refusals: the reply, and then that nothing was pinned ----
 
+    /// <summary>A scratch / overlay / quick cover pane is a valid TARGET (every content verb reaches
+    /// it) but never in the saved tree, so a pin on it would answer ok and vanish at the next restart
+    /// — the one refusal in this batch that revmux r1 found asserted nowhere. Pinned nothing, and the
+    /// error names the pane.</summary>
+    [Fact]
+    public void CoverPane_IsRefused_NamesThePane_AndPinsNothing()
+    {
+        var (server, host) = New();
+        var sess = host.Workspaces[0].Sessions[0];
+        string cover = sess.AddCoverPane();
+        var r = Restore(server, cover);
+        Assert.False(Ok(r));
+        Assert.Contains(cover, Error(r));
+        Assert.Contains("never restored", Error(r));
+        Assert.Contains("Nothing pinned", Error(r));
+        Assert.Equal(0, AllPins(host));
+        Assert.Null(TreePins(server));
+        // and the session itself is still pinnable: the refusal was about the pane, not the session
+        Assert.True(Ok(Restore(server, sess.Id)));
+        Assert.Equal(1, AllPins(host));
+    }
+
     [Fact]
     public void UnknownTarget_IsRefused_AndPinsNothing()
     {

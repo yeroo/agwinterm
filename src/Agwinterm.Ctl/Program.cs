@@ -191,7 +191,11 @@ switch (area)
                 {
                     // The splitter hands "--stdin" the next bare word as its value, so a positional
                     // after it shows up as Opt("stdin") != "true" rather than in `rest`.
-                    if (rest.Count > 0 || Opt("stdin") != "true" || Opt("select") is not null)
+                    // ...and a valueless flag sitting between --stdin and the positional gives THAT
+                    // flag the text instead: `--stdin --allow-control "from argv"` leaves rest empty,
+                    // Opt("stdin") == "true", and Opt("allow-control") == "from argv". Same refusal.
+                    if (rest.Count > 0 || Opt("stdin") != "true" || Opt("select") is not null
+                        || (options.ContainsKey("allow-control") && Opt("allow-control") != "true"))
                     { Console.Error.WriteLine($"session {sub}: --stdin cannot be combined with positional text or --select (one source for the text, not two)"); return 2; }
                     var stdinText = Agwinterm.Pty.StdinText.Read(Console.OpenStandardInput());
                     if (!stdinText.Ok) { Console.Error.WriteLine($"session {sub} --stdin: {stdinText.Error}; nothing was sent"); return 2; }

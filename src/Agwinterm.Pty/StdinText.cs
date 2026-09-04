@@ -54,8 +54,15 @@ public static class StdinText
     /// </summary>
     public static Outcome Decode(ReadOnlySpan<byte> bytes)
     {
+        // The BOM is dropped from the text, not from the caller's numbering: the offset in a refusal
+        // indexes the bytes the caller piped, so a Notepad / PowerShell 5 file with a bad byte is
+        // told where it is in THAT file, not in the file minus three.
+        int bomSkew = 0;
         if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+        {
             bytes = bytes[3..];
+            bomSkew = 3;
+        }
 
         string text;
         try { text = new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes); }
@@ -63,7 +70,7 @@ public static class StdinText
         {
             int offset = FirstInvalidOffset(bytes);
             return new Outcome(null,
-                $"invalid UTF-8 at byte offset {offset} (0x{bytes[offset]:X2}); stdin must be UTF-8 text");
+                $"invalid UTF-8 at byte offset {offset + bomSkew} (0x{bytes[offset]:X2}); stdin must be UTF-8 text");
         }
 
         if (text.EndsWith("\r\n", StringComparison.Ordinal)) text = text[..^2];

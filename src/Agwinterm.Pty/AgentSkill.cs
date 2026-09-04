@@ -76,8 +76,10 @@ public static class AgentSkill
           `--workspace` and `--workspace-name` together are refused; pass one. **Omit both and the session lands in YOUR
           workspace** — the workspace of the pane you run in (the CLI sends its `AGWINTERM_SESSION_ID` as the caller), however
           the user has clicked around meanwhile. Sessions go next to you unless you say otherwise, and `--workspace` is how you
-          say otherwise. Only a CLI with no pane identity (a script from an unrelated shell, or a pane that has since been closed)
-          falls back to the active workspace — the one the user last clicked, which moves under you.
+          say otherwise. Only a CLI whose pane the answering window cannot see falls back to the active workspace — the one
+          the user last clicked, which moves under you: a script from an unrelated shell, a pane that has since been closed,
+          or a pane in ANOTHER WINDOW (with no `--window`, the frontmost window answers, and its host knows only its own
+          panes — pass `--window` to reach yours, see "Windows").
         - `agwintermctl session duplicate [ID]` — clone a session (same cwd + shell profile) as a new session (default: active).
         - `agwintermctl session restore "<command>" --target PANE` — pin a command to re-run on every restart for that pane; `none` clears.
           The target is mandatory (no active-pane default: a pin outlives whatever is active now; inside a session `AGWINTERM_SESSION_ID`
@@ -221,7 +223,7 @@ public static class AgentSkill
         - `agwintermctl dashboard [<id> ...] [--close] [--font-size N]` — grid overlay of live sessions (no ids = most-recent; `--close` dismisses; Ctrl+Shift+D toggles it in the UI)
         - `agwintermctl sidebar show|hide|toggle|expand|collapse` (`on`/`off` are aliases of show/hide). An op the sidebar
           cannot do is REFUSED (`ok:false`, nothing changed) — it used to answer `ok` and do nothing. `sidebar width [N]`
-          reads/sets the width (see "Read the state").
+          reads/sets the width (see "Manage sessions & workspaces").
         - `agwintermctl session background set <image> [--opacity 0..100] [--mode fit|fill|center|tile]` — a faint per-session
           watermark drawn behind the terminal (the image is copied into app data); `session background clear` removes it.
           Per-session (honors `--target`/`--window`); persists; `tree` reports `"background":true`.

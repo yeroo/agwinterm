@@ -85,6 +85,20 @@ public class StdinTextTests
         Assert.Equal("echo héllo € 日本", r.Text);
     }
 
+    /// <summary>A BOM is dropped from the TEXT, not from the caller's byte numbering: the offset in a
+    /// refusal must index the bytes that were piped (revmux r1 of P2: EF BB BF 68 69 80 was reported
+    /// at offset 2, the bad byte is at 5).</summary>
+    [Fact]
+    public void Bom_ThenInvalidByte_ReportsTheOffsetInTheCallersBytes()
+    {
+        var r = StdinText.Decode(new byte[] { 0xEF, 0xBB, 0xBF, 0x68, 0x69, 0x80 });
+        Assert.False(r.Ok);
+        Assert.Contains("byte offset 5", r.Error);
+        Assert.Contains("0x80", r.Error);
+        var r2 = StdinText.Decode(new byte[] { 0xEF, 0xBB, 0xBF, 0x61, 0x80 });
+        Assert.Contains("byte offset 4", r2.Error);
+    }
+
     [Fact]
     public void LeadingBom_IsStripped_NotTyped()
     {

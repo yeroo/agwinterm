@@ -310,7 +310,20 @@ internal partial class Program
             bool gone;
             lock (_workspaces) gone = ws is not null && !_workspaces.Contains(ws);
             if (gone) ws = ActiveWorkspace();
-            Workspace target = ws ?? CreateWorkspace(Guid.NewGuid().ToString(), newWorkspaceName);
+            Workspace target;
+            if (ws is not null) target = ws;
+            else
+            {
+                // The name lookup ran on the pipe thread and MISSED; the create happens here. Two
+                // `--workspace-name build --create-workspace` calls dispatched while the UI thread
+                // was busy (a modal menu, a drag, a heavy repaint) both missed up there, and before
+                // P2 hoisted the lookup they could not both create, because the whole resolve-or-
+                // create ran in this lambda and lambdas are serial on the UI thread. So look the
+                // name up AGAIN here, where every create happens and nothing can interleave: the
+                // second lambda finds the first one's workspace and reuses it. (revmux r1 Major.)
+                lock (_workspaces) target = _workspaces.FirstOrDefault(w => string.Equals(w.Name, newWorkspaceName, StringComparison.OrdinalIgnoreCase))!;
+                target ??= CreateWorkspace(Guid.NewGuid().ToString(), newWorkspaceName!);
+            }
             // --no-select creates the session in the background, leaving the current focus/selection (agterm #250).
             CreateSession(id, name, cwd, target, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
         });
@@ -661,6 +674,11 @@ internal partial class Program
                 return _lastOverlayExit;
             case "close":
                 {
+                    // Idempotent, and deliberately NOT a refusal: a caller closing an overlay wants
+                    // "no overlay open" to be true afterwards, and it is. The conformance contract
+                    // runs `session overlay close` with nothing open and expects ok (control-api.json,
+                    // the session.overlay step), so this one stays a plain string. Resize and open
+                    // below are different: nothing the caller asked for happened.
                     var ses = FindSesForTarget(target);
                     if (ses?.Overlay is null) return "no overlay";
                     Post(() => CloseOverlayOf(ses));
@@ -669,7 +687,9 @@ internal partial class Program
             case "resize":
                 {
                     var ses = FindSesForTarget(target);
-                    if (ses?.Overlay is null) return "no overlay";
+                    // A refusal, not a string: before P2's review this came back as ok:true "no
+                    // overlay", and a script branching on ok proceeded as if the resize had happened.
+                    if (ses?.Overlay is null) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
                     // No clamp: ControlServer.TryOverlaySize refused anything outside 0..100 before
                     // this ran, so the N reported is always the N the caller asked for. A clamp here
                     // could only hide a bug upstream now. 0 = full content region; 1..100 = centered panel.
@@ -679,15 +699,18 @@ internal partial class Program
                 }
             default: // "open"
                 {
-                    if (string.IsNullOrWhiteSpace(command)) return "no command";
+                    // Both refusals (same reason as resize above): nothing was opened.
+                    if (string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened";
+                    const string noSession = ISessionHost.RefusePrefix + "no session matches that target; nothing opened";
                     if (block)
                     {
                         // Open on the UI thread, then wait (on this pipe thread) for the program to exit.
-                        InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? "no session" : OverlayOpen(s, command!, sizePercent, false); });
+                        string opened = InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? noSession : OverlayOpen(s, command!, sizePercent, false); });
+                        if (opened.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) return opened;
                         _overlayDone.Wait();
                         return _lastOverlayExit;   // "exit N"
                     }
-                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? "no session" : OverlayOpen(s, command!, sizePercent, wait); });
+                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? noSession : OverlayOpen(s, command!, sizePercent, wait); });
                 }
         }
     }
@@ -724,26 +747,45 @@ internal partial class Program
     // Pin (or clear, command = null) a restore command on a specific pane (agterm #271). Persisted so
     // restart always re-runs it. Resolves through FindControlPane, the path every other content verb
     // uses (exact pane, exact session, pane prefix, session prefix/name) rather than the FindPaneById
-    // it used before P2. For every target the old resolver accepted — an exact pane id or a pane-id
-    // prefix — the two agree: pane 0 shares its session's id, so the exact-session step can only ever
-    // repeat the exact-pane hit, and the prefix step is the same predicate in the same order. The one
-    // thing that changed is that a session NAME now reaches that session's focused pane instead of
-    // being refused. The empty / "active" refusal and the ""/"none" folding live in ControlServer,
-    // where the fake host can exercise them. Returns the pane the pin landed on, so the reply can
-    // name it; null = nothing matched, and nothing was pinned.
+    // it used before P2. While pane 0 still exists the two agree for every target the old resolver
+    // accepted: pane 0 shares its session's id, so the exact-session step only repeats the exact-
+    // pane hit, and the prefix step is the same predicate in the same order. Two things changed. A
+    // session NAME now reaches that session's focused pane instead of being refused. And once pane 0
+    // has been CLOSED in a split (split panes get fresh ids, and closing the focused pane can remove
+    // index 0), a session id or id-prefix that the old resolver either refused or steered onto a
+    // scratch/overlay cover pane ("<id>:scratch:…" matched the prefix step) now resolves to the
+    // session's active pane — the better answer in both cases. The empty / "active" refusal and the
+    // ""/"none" folding live in ControlServer, where the fake host can exercise them.
+    //
+    // Resolve, validate, write and save happen in ONE UI-thread hop: resolved on the pipe thread
+    // and written in a later Post, the pane could exit or be closed by another client in between,
+    // the removal would run first, the write would land on a detached pane, SaveState would
+    // serialise no pin — and the caller would already hold a structured "pinned" naming that pane.
+    // Returns the pane the pin landed on, so the reply can name it; null = nothing matched, and
+    // nothing was pinned.
     public RestorePinTarget? SessionRestore(string target, string? command)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return null;
-        var hit = FindControlPane(target);
-        if (hit is null) return null;
-        // A scratch / overlay / quick cover is not in the saved tree, so a pin on one would answer
-        // ok and then vanish at the next restart — the exact "succeeded, did nothing" this batch
-        // exists to end. Refuse it with the pane named, and pin nothing.
-        if (hit.Value.cover)
-            return new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses?.Id ?? hit.Value.pane.Id,
-                Refusal: $"'{hit.Value.pane.Id}' is a scratch/overlay/quick pane, which is never restored; a pin there would be lost at the next restart. Nothing pinned.");
-        Post(() => { hit.Value.pane.RestoreCommand = command; SaveState(); });
-        return new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses!.Id);
+        RestorePinTarget? result = null;
+        InvokeOnUi(() =>
+        {
+            var hit = FindControlPane(target);
+            if (hit is null) return "";
+            // A scratch / overlay / quick cover is not in the saved tree, so a pin on one would answer
+            // ok and then vanish at the next restart — the exact "succeeded, did nothing" this batch
+            // exists to end. Refuse it with the pane named, and pin nothing.
+            if (hit.Value.cover)
+            {
+                result = new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses?.Id ?? hit.Value.pane.Id,
+                    Refusal: $"'{hit.Value.pane.Id}' is a scratch/overlay/quick pane, which is never restored; a pin there would be lost at the next restart. Nothing pinned.");
+                return "";
+            }
+            hit.Value.pane.RestoreCommand = command;
+            SaveState();
+            result = new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses!.Id);
+            return "";
+        });
+        return result;
     }
 
     // ---- Control-API event bus (agterm #273): a bounded, cursor-polled log of status / notification /

@@ -148,15 +148,38 @@ public class OverlaySizeTests
         Assert.Null(TreeOverlaySize(server));   // 0 = full region is spelled by ABSENCE, on the way in and on the way out
     }
 
-    /// <summary>A resize with no overlay open still says "no overlay" — the size question is only
-    /// asked of a valid size, and a valid or absent size on a session with nothing to resize must
-    /// not turn into a complaint about the size.</summary>
+    /// <summary>A resize with no overlay open is REFUSED and says "no overlay" — the size question is
+    /// only asked of a valid size, and a valid or absent size on a session with nothing to resize must
+    /// not turn into a complaint about the size. It was ok:true "no overlay" until revmux r1 of P2
+    /// pointed out that a script branching on ok then proceeds as if the resize had happened.</summary>
     [Fact]
-    public void Resize_WithNoOverlay_StillSaysNoOverlay()
+    public void Resize_WithNoOverlay_IsRefused_AndSaysNoOverlay()
     {
         var (server, _) = New();
-        Assert.Equal("no overlay", Result(Resize(server, "50")));
-        Assert.Equal("no overlay", Result(Overlay(server, "{\"action\":\"resize\"}")));
+        foreach (var r in new[] { Resize(server, "50"), Overlay(server, "{\"action\":\"resize\"}") })
+        {
+            Assert.False(r.GetProperty("ok").GetBoolean());
+            Assert.Contains("no overlay", r.GetProperty("error").GetString());
+        }
+    }
+
+    /// <summary>The other two overlay failures are refusals too: open with no command, open on a
+    /// target that does not resolve. Neither opened anything, and the reply must not say otherwise.
+    /// Close with nothing open stays ok — closing nothing leaves "no overlay open" true, and the
+    /// conformance contract closes with nothing open and expects ok.</summary>
+    [Fact]
+    public void Open_WithNoCommandOrNoSession_IsRefused_CloseWithNothingOpen_IsNot()
+    {
+        var (server, _) = New();
+        var noCommand = Overlay(server, "{\"action\":\"open\"}");
+        Assert.False(noCommand.GetProperty("ok").GetBoolean());
+        Assert.Contains("command", noCommand.GetProperty("error").GetString());
+        var noSession = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.overlay\",\"target\":\"no-such-session\",\"args\":{\"action\":\"open\",\"command\":\"git diff\"}}")).RootElement;
+        Assert.False(noSession.GetProperty("ok").GetBoolean());
+        Assert.Contains("no session", noSession.GetProperty("error").GetString());
+        var close = Overlay(server, "{\"action\":\"close\"}");
+        Assert.True(close.GetProperty("ok").GetBoolean());
+        Assert.Equal("no overlay", close.GetProperty("result").GetString());
     }
 
     /// <summary>The strict reader itself, at the unit: the three cases the verb distinguishes.</summary>

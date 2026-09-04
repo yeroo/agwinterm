@@ -34,6 +34,18 @@ internal sealed class FakeSessionHost : ISessionHost
         /// The tree's <c>restoreCommands</c> is built from here, so a test reads a pin back the way a
         /// caller does, and a refused call is asserted to have left this empty.</summary>
         public readonly Dictionary<string, string> RestorePins = new();
+        /// <summary>Pane ids that are scratch / overlay / quick COVERS (the app's FindControlPane
+        /// reports them with cover = true): reachable as targets, never in the saved tree, so
+        /// session.restore refuses them. Added with <see cref="AddCoverPane"/>.</summary>
+        public readonly HashSet<string> CoverPaneIds = new();
+        /// <summary>A scratch cover over this session, id "&lt;session id&gt;:scratch:&lt;n&gt;" as the app
+        /// spells it (Program.Sessions.cs). Returns the pane id.</summary>
+        public string AddCoverPane()
+        {
+            string id = Id + ":scratch:" + Guid.NewGuid().ToString("N")[..6];
+            Panes.Add(new TerminalSession(80, 24)); PaneIds.Add(id); PaneCount = Panes.Count; CoverPaneIds.Add(id);
+            return id;
+        }
         /// <summary>Split this session: adds a pane and returns it, for the multi-pane status cases.</summary>
         public ISession AddPane()
         {
@@ -125,7 +137,7 @@ internal sealed class FakeSessionHost : ISessionHost
             return new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, ActiveSess), status,
                 s.Overlay, s.Notifications, s.Flagged, false, s.FocusedPane, s.PaneCount, false, s.OverlaySize, s.Ratios,
                 PaneIds: s.PaneIds,
-                RestoreCommands: s.PaneIds.Select(id => s.RestorePins.TryGetValue(id, out var pin) ? pin : "").ToList(),   // "" = none, as the app's snapshot spells it
+                RestoreCommands: s.PaneIds.Where(id => !s.CoverPaneIds.Contains(id)).Select(id => s.RestorePins.TryGetValue(id, out var pin) ? pin : "").ToList(),   // "" = none, as the app's snapshot spells it; covers are not in the tree
                 StatusChangedAt: statusChangedAt);
         }).ToList())).ToList();
 
@@ -197,6 +209,10 @@ internal sealed class FakeSessionHost : ISessionHost
         if (string.IsNullOrEmpty(target) || target == "active") return null;
         if (FindPane(target) is not { } hit) return null;
         string paneId = hit.s.PaneIds[hit.pane];
+        // The app's cover refusal, word for word: a pin on a scratch/overlay/quick pane is lost at restart.
+        if (hit.s.CoverPaneIds.Contains(paneId))
+            return new RestorePinTarget(paneId, hit.s.Id,
+                Refusal: $"'{paneId}' is a scratch/overlay/quick pane, which is never restored; a pin there would be lost at the next restart. Nothing pinned.");
         if (command is null) hit.s.RestorePins.Remove(paneId); else hit.s.RestorePins[paneId] = command;
         return new RestorePinTarget(paneId, hit.s.Id);
     }
@@ -281,13 +297,16 @@ internal sealed class FakeSessionHost : ISessionHost
     // directly with a bad size must see a refusal, not a silently-coerced panel.
     public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
     {
-        var s = Find(target); if (s is null) return "no session";
+        var s = Find(target);
+        // As the app: close is idempotent (nothing open = nothing to do = ok, and the conformance
+        // contract closes with nothing open); resize and open REFUSE when nothing they asked for happened.
+        if (s is null) return action == "close" ? "no overlay" : ISessionHost.RefusePrefix + "no session matches that target; nothing opened";
         if (sizePercent is < 0 or > 100) return ISessionHost.RefusePrefix + $"size-percent {sizePercent} is outside 0..100";
         switch (action)
         {
-            case "close": s.Overlay = false; s.OverlaySize = 0; return "closed";
-            case "resize": if (!s.Overlay) return "no overlay"; s.OverlaySize = sizePercent; return $"resized {s.OverlaySize}%";
-            default: if (string.IsNullOrWhiteSpace(command)) return "no command"; s.Overlay = true; s.OverlaySize = sizePercent; return s.Id;
+            case "close": if (!s.Overlay) return "no overlay"; s.Overlay = false; s.OverlaySize = 0; return "closed";
+            case "resize": if (!s.Overlay) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first"; s.OverlaySize = sizePercent; return $"resized {s.OverlaySize}%";
+            default: if (string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened"; s.Overlay = true; s.OverlaySize = sizePercent; return s.Id;
         }
     }
     public bool Notify(string? target, string? title, string body) { var s = Find(target); if (s is null) return false; s.Notifications++; return true; }

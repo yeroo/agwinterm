@@ -251,10 +251,14 @@ public class ControlApiTests
     }
 
     [Fact]
-    public void Overlay_Resize_WithNoOverlay_ReturnsNoOverlay()
+    public void Overlay_Resize_WithNoOverlay_IsRefused()
     {
+        // ok:false since P2 r1 - it answered ok:true "no overlay", and a script branching on ok
+        // carried on as if the resize had happened. OverlaySizeTests pins the wording.
         var (server, _) = New();
-        Assert.Equal("no overlay", Result(Dispatch(server, "session.overlay", Overlay("resize", 50))));
+        var r = Dispatch(server, "session.overlay", Overlay("resize", 50));
+        Assert.False(Ok(r));
+        Assert.Contains("no overlay", r.GetProperty("error").GetString());
     }
 
     // ---- toggles ----
