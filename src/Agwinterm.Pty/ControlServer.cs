@@ -250,7 +250,7 @@ public sealed class ControlServer : IDisposable
                 case "workspace.move": return host.WorkspaceReorder(target, GetString(args, "dir") ?? "down") ? Ok("moved") : Err("workspace not found");
                 case "workspace.collapse": return host.WorkspaceCollapse(target, expand: false) ? Ok("collapsed") : Err("workspace not found");
                 case "workspace.expand": return host.WorkspaceCollapse(target, expand: true) ? Ok("expanded") : Err("workspace not found");
-                case "session.split": host.Split(GetString(args, "op") ?? "toggle"); return Ok("split");
+                case "session.split": return host.Split(target, GetString(args, "op") ?? "toggle") ? Ok("split") : Err("session not found");
                 case "session.focus": host.FocusPaneDir(GetString(args, "dir") ?? "right"); return Ok("focus");
                 case "session.resize":
                     {

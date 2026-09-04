@@ -280,7 +280,17 @@ internal sealed class FakeSessionHost : ISessionHost
     public bool WorkspaceDelete(string? target) { var w = FindWs(target); if (w is null || Workspaces.Count <= 1) return false; Workspaces.Remove(w); if (ReferenceEquals(ActiveWs, w)) { ActiveWs = Workspaces[0]; ActiveSess = ActiveWs.Sessions.FirstOrDefault(); } return true; }
     public bool WorkspaceSelect(string? target) { var w = FindWs(target); if (w is null) return false; ActiveWs = w; ActiveSess = w.Sessions.FirstOrDefault(); return true; }
     public bool WorkspaceReorder(string? target, string dir) => FindWs(target) is not null;
-    public void Split(string op) { if (ActiveSess is null) return; ActiveSess.PaneCount = op == "off" ? 1 : 2; ActiveSess.Ratios = op == "off" ? new() { 1.0 } : new() { 0.5, 0.5 }; }
+    public bool Split(string? target, string op)
+    {
+        // Mirrors the app: the target resolves like every other session verb (null/"active",
+        // a session or pane id, or a prefix), and the split lands on THAT session - not on
+        // whichever one is active. Toggle is modelled too, since the app's default op is toggle.
+        var s = Find(target);
+        if (s is null) return false;
+        s.PaneCount = op switch { "on" => 2, "off" => 1, _ => s.PaneCount > 1 ? 1 : 2 };
+        s.Ratios = s.PaneCount == 1 ? new() { 1.0 } : new() { 0.5, 0.5 };
+        return true;
+    }
     public void FocusPaneDir(string dir) { if (ActiveSess is { PaneCount: > 1 }) ActiveSess.FocusedPane ^= 1; }
     public void ResizeSplit(double? ratio, int growLeft, int growRight) { if (ActiveSess is { PaneCount: > 1 } && ratio is { } r) ActiveSess.Ratios = new() { r, 1 - r }; }
     public IReadOnlyList<string> ThemeList() => new[] { "dark", "light" };

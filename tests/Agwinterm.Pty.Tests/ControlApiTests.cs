@@ -58,7 +58,7 @@ public class ControlApiTests
     public void Tree_ExposesSplitReadBack_AfterSplit()
     {
         var (server, host) = New();
-        host.Split("on");   // 2 panes, 0.5/0.5
+        host.Split(null, "on");   // 2 panes, 0.5/0.5
         host.FocusPaneDir("right");
         var s = Sessions0(server);
         Assert.Equal(2, s.GetProperty("paneCount").GetInt32());
@@ -309,5 +309,46 @@ public class ControlApiTests
     {
         var (server, _) = New();
         Assert.False(Ok(Dispatch(server, "session.close", target: "nope-does-not-exist")));
+    }
+    // session.split used to ignore its target and always split the ACTIVE session. An agent
+    // running in one pane that asked for a split while the user was looking at another session
+    // split the user's session instead - and its "undo" then collapsed a pane of that session
+    // (2026-09-03, a Claude session against a finished ralphex session). These pin the target.
+
+    [Fact]
+    public void SessionSplit_HonoursTarget_NotTheActiveSession()
+    {
+        var (server, host) = New();
+        var original = host.ActiveSess!;
+        string other = Dispatch(server, "session.new", new { name = "other" }).GetProperty("result").GetString()!;
+        Assert.Equal("other", host.ActiveSess!.Name);      // session.new made the new one active
+
+        var r = Dispatch(server, "session.split", new { op = "on" }, target: original.Id);
+        Assert.True(Ok(r));
+        Assert.Equal(2, original.PaneCount);                // the targeted session split
+        Assert.Equal(1, host.ActiveSess!.PaneCount);        // the active one was left alone
+        Assert.Equal("other", host.ActiveSess!.Name);       // and focus did not move
+    }
+
+    [Fact]
+    public void SessionSplit_WithoutTarget_SplitsTheActiveSession()
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "session.split", new { op = "on" });
+        Assert.True(Ok(r));
+        Assert.Equal(2, host.ActiveSess!.PaneCount);
+        r = Dispatch(server, "session.split", new { op = "off" });
+        Assert.True(Ok(r));
+        Assert.Equal(1, host.ActiveSess!.PaneCount);
+    }
+
+    [Fact]
+    public void SessionSplit_UnknownTarget_IsRefused()
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "session.split", new { op = "on" }, target: "no-such-session");
+        Assert.False(Ok(r));
+        Assert.Contains("session not found", r.GetProperty("error").GetString());
+        Assert.Equal(1, host.ActiveSess!.PaneCount);        // and nothing was split as a fallback
     }
 }

@@ -460,7 +460,16 @@ internal partial class Program
         return true;
     }
 
-    public void Split(string op) => Post(() => SplitOp(op));
+    public bool Split(string? target, string op)
+    {
+        // Resolved here, on the caller's thread, so a bad target answers false instead of being
+        // dropped on the UI queue. Same order as SessionScratch: null/"active" is the active
+        // session; otherwise a session id, a pane id, or a prefix of either.
+        var ses = FindSesForTarget(target);
+        if (ses is null) return false;
+        Post(() => SplitOp(op, ses));
+        return true;
+    }
 
     public void FocusPaneDir(string dir)
     {
