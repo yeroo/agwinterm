@@ -94,7 +94,8 @@ agliteterm's `check-contract` is red by design; that is the gate, not a bug. `st
 nested tree field the shape runner cannot express, so each product pins it in its own tests.
 
 ### Being mirrored next: what P2 (agwinterm #226) owes lite
-Batch **P2-lite** owes three things, none of them a new verb:
+Batch **P2-lite** (agliteterm `docs/plans/2026-09-04-p2-lite-mirror.md`) owes four things, one of
+them a new verb:
 
 - **`--stdin` on `session type` / `session write`**, refusing invalid UTF-8 client-side with the
   byte offset named, sending nothing, stripping exactly one trailing newline, and refusing `--stdin`
@@ -109,11 +110,17 @@ Batch **P2-lite** owes three things, none of them a new verb:
   `caller` argument to the dispatcher (the CLI already sends `AGWINTERM_SESSION_ID`) and resolves
   that pane's workspace before creating, with *active* as the last fallback rather than the first.
 
+- **`sidebar width`** — the new verb, and the one the contract now pins: lite has a real `g_sidebarW`
+  and a `sidebar` verb that today **toggles on any op it does not know** (`sidebar width` flips the
+  sidebar and answers ok), so the mirror is cheap and the honesty fix is overdue. Lite's own range
+  (90..900, what its splitter and registry already allow) replaces agwinterm's 120..600; the contract
+  pins the reply shape and the refusal, not the numbers.
+
 `session.new`'s **refusal** of an unknown workspace needs no mirror — lite had it first, which is why
-decision 1 went that way. `session.restore`'s pane reply and `sidebar.width` are agwinterm-only until
-P9 / P10 bring those verbs to lite at all. The conformance steps for `session new --workspace
-no-such-workspace`, `--size-percent` and `sidebar width` land in a small sibling contract PR after
-#226 merges, so `check-contract` is red by design for the gap between that merge and P2-lite.
+decision 1 went that way. `session.restore`'s pane reply stays agwinterm-only until P9 brings the
+verb to lite at all. The conformance steps for `session new --workspace no-such-workspace`,
+`--size-percent`, `sidebar width` and the two sidebar refusals landed in the sibling contract PR
+right after #226, so `check-contract` is red by design for the gap between that merge and P2-lite.
 
 ---
 
