@@ -144,15 +144,21 @@ public class SessionRestoreTests
     // ---- refusals: the reply, and then that nothing was pinned ----
 
     /// <summary>A scratch / overlay / quick cover pane is a valid TARGET (every content verb reaches
-    /// it) but never in the saved tree, so a pin on it would answer ok and vanish at the next restart
-    /// — the one refusal in this batch that revmux r1 found asserted nowhere. Pinned nothing, and the
-    /// error names the pane.</summary>
+    /// it — pinned below with session.text, so the fake cannot quietly stop modelling that) but never
+    /// in the saved tree, so a pin on it would answer ok and vanish at the next restart — the one
+    /// refusal in this batch that revmux r1 found asserted nowhere. Pinned nothing, and the error
+    /// names the pane.</summary>
     [Fact]
     public void CoverPane_IsRefused_NamesThePane_AndPinsNothing()
     {
         var (server, host) = New();
         var sess = host.Workspaces[0].Sessions[0];
         string cover = sess.AddCoverPane();
+        // the cover IS reachable by a content verb (the app's FindPaneBy order) — only restore refuses it.
+        // session.text rather than session.type: the fake's panes are unstarted TerminalSessions, which
+        // read fine and refuse a write, and the point here is the RESOLUTION, not the write.
+        var read = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.text\",\"target\":" + JsonSerializer.Serialize(cover) + "}")).RootElement;
+        Assert.True(read.GetProperty("ok").GetBoolean(), read.ToString());
         var r = Restore(server, cover);
         Assert.False(Ok(r));
         Assert.Contains(cover, Error(r));

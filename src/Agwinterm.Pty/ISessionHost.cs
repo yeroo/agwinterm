@@ -228,11 +228,13 @@ public interface ISessionHost
     /// an ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
     /// floating panel; wait = keep it after the program exits (press a key to close); block = wait for
     /// the program to exit and return its status. Returns the session id (open), "exit N"
-    /// (block/result), "closed", "resized N%", or "no overlay" (close on a session that exists and has
-    /// no overlay — idempotent, deliberately ok). A FAILURE is signalled by prefixing
-    /// <see cref="RefusePrefix"/>, which the server turns into ok:false: open with no command; a
-    /// non-empty target that matches no session (open, resize, close); resize with no overlay open.
-    /// A second host that returns those as plain strings reproduces the ok:true-on-failure P2 removed.
+    /// (block/result), "closed", "resized N%", or "no overlay" (deliberately ok, two states: close on
+    /// a session that resolves and has no overlay, and an untargeted close that resolves no session).
+    /// A FAILURE is signalled by prefixing <see cref="RefusePrefix"/>, which the server turns into
+    /// ok:false: open with no command; open or resize whenever NO session resolves (a named target
+    /// that matches nothing, or no target and no active session); close only when a non-empty,
+    /// non-"active" target resolves to nothing; resize with no overlay open. A second host that
+    /// returns those as plain strings reproduces the ok:true-on-failure P2 removed.
     /// </summary>
     string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block);
 

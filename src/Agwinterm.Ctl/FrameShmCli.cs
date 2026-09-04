@@ -25,10 +25,16 @@ public static class FrameShmCli
         "row", "col", "cols", "rows", "sx", "sy", "sw", "sh",
     ];
 
+    /// <summary>The global options every verb accepts WITH a value: the target selectors and the
+    /// pipe name under both its spellings. One list, so a verb that must know whether an option
+    /// legitimately consumed the next word (session type --stdin) and this allow-list cannot drift
+    /// apart — the next alias on the pipe selector goes here and nowhere else.</summary>
+    public static readonly string[] GlobalValuedOptions = { "target", "window", "pipe", "socket" };
+
     private static readonly HashSet<string> AllowedOptions =
-        new(NumericFields, StringComparer.OrdinalIgnoreCase)
+        new(NumericFields.Concat(GlobalValuedOptions), StringComparer.OrdinalIgnoreCase)
         {
-            "images", "target", "window", "pipe", "socket",
+            "images",
         };
 
     /// <summary>

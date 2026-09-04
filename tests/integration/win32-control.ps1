@@ -337,6 +337,27 @@ try {
         Start-Sleep -Milliseconds 300
         $stdinAfter = (Invoke-Ctl @('session', 'text', '--target', $survivorId)).result
         Check 'and typed nothing for any of them' ($stdinAfter -eq $stdinBefore) "text changed"
+        # The positive control (r3): the pipe selector under its OTHER name takes a value and must not
+        # trip the shape guard. --socket is --pipe; a refusal here names things the caller did not do.
+        $sockMarker = 'stdin-socket-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $out = "Write-Output '$sockMarker'`r" | & $ctl session type --stdin --socket $pipe --target $survivorId 2>&1
+        Check 'session type --stdin --socket <pipe> is accepted (the valued global option under its alias)' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE, output: $out"
+        Start-Sleep -Seconds 2
+        $sockText = (Invoke-Ctl @('session', 'text', '--target', $survivorId)).result
+        Check 'and the piped text reached the pane' (([string]$sockText).Contains($sockMarker))
+
+        # session.overlay on a target that matches NOTHING is a refusal for close and resize alike
+        # (r2: `close --target buidl` answered ok "no overlay" while the overlay on `build` was up),
+        # and the positive control: an untargeted close with nothing open stays ok. Asserted against
+        # the app, not the fake — the unit test drives FakeSessionHost's copy of the rule.
+        $ghostClose = Invoke-Ctl @('session', 'overlay', 'close', '--target', 'no-such-session-zz')
+        Check 'overlay close on a target that matches no session is refused' `
+            ((-not $ghostClose.ok) -and ("$($ghostClose.error)" -match 'no session')) "$($ghostClose | ConvertTo-Json -Compress)"
+        $ghostResize = Invoke-Ctl @('session', 'overlay', 'resize', '--size-percent', '50', '--target', 'no-such-session-zz')
+        Check 'overlay resize on a target that matches no session is refused, not told to open one' `
+            ((-not $ghostResize.ok) -and ("$($ghostResize.error)" -match 'no session') -and ("$($ghostResize.error)" -notmatch 'open one first')) "$($ghostResize | ConvertTo-Json -Compress)"
+        $bareClose = Invoke-Ctl @('session', 'overlay', 'close')
+        Check 'an untargeted overlay close with nothing open stays ok' ($bareClose.ok -and $bareClose.result -eq 'no overlay') "$($bareClose | ConvertTo-Json -Compress)"
 
         # sidebar.width must move the divider, not just a number. The unit tests see the fake host
         # only; here the proof is live geometry: the active session's measured width (session.metrics,

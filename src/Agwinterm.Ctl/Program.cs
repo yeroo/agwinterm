@@ -201,8 +201,7 @@ switch (area)
                     // that swallowed a word and is not one that takes a value on this verb — rather
                     // than the value or a flag name (revmux r1 and r2 of P2 each found a spelling
                     // the previous check missed).
-                    string[] takesValue = { "target", "window", "pipe" };
-                    bool swallowed = valued.Any(k => !takesValue.Contains(k, StringComparer.OrdinalIgnoreCase));
+                    bool swallowed = valued.Any(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
                     if (rest.Count > 0 || swallowed || Opt("select") is not null)
                     { Console.Error.WriteLine($"session {sub}: --stdin cannot be combined with positional text or --select (one source for the text, not two)"); return 2; }
                     var stdinText = Agwinterm.Pty.StdinText.Read(Console.OpenStandardInput());

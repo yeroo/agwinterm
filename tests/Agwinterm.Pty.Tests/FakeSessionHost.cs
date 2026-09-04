@@ -36,17 +36,19 @@ internal sealed class FakeSessionHost : ISessionHost
         public readonly Dictionary<string, string> RestorePins = new();
         /// <summary>Scratch / overlay / quick COVERS over this session, kept the way the app keeps them:
         /// NOT in <see cref="Panes"/> / <see cref="PaneIds"/> / PaneCount / the tree (the app holds
-        /// them in Ses.Scratch / Ses.Overlay / _quick, and Tree() walks s.Panes only), reachable as a
-        /// target through the resolvers (the app's FindPaneBy reaches them after walking s.Panes), and
-        /// refused by session.restore. Added with <see cref="AddCoverPane"/>. Putting a cover into the
-        /// pane lists desynchronised the index-paired PaneIds / RestoreCommands (revmux r2 of P2).</summary>
-        public readonly List<string> CoverPaneIds = new();
+        /// them in Ses.Scratch / Ses.Overlay / _quick, and Tree() walks s.Panes only), but reachable
+        /// as a target by EVERY verb — Resolve and Find fall through to them after the real panes and
+        /// the name arm, as the app's FindPaneBy does — and refused by session.restore. Added with
+        /// <see cref="AddCoverPane"/>. Putting a cover into the pane lists desynchronised the
+        /// index-paired PaneIds / RestoreCommands (revmux r2 of P2); keeping it out of the resolvers
+        /// made session.type on a cover fail here while the app types (r3).</summary>
+        public readonly List<(string Id, ISession Pane)> CoverPanes = new();
         /// <summary>A scratch cover over this session, id "&lt;session id&gt;:scratch:&lt;n&gt;" as the app
         /// spells it (Program.Sessions.cs). Returns the pane id.</summary>
         public string AddCoverPane()
         {
             string id = Id + ":scratch:" + Guid.NewGuid().ToString("N")[..6];
-            CoverPaneIds.Add(id);
+            CoverPanes.Add((id, new TerminalSession(80, 24)));
             return id;
         }
         /// <summary>Split this session: adds a pane and returns it, for the multi-pane status cases.</summary>
@@ -82,7 +84,8 @@ internal sealed class FakeSessionHost : ISessionHost
     private Sess? Find(string? t) =>
         t is null or "active" ? ActiveSess
         : Workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s =>
-            s.Id == t || s.Id.StartsWith(t) || s.PaneIds.Any(p => p == t || p.StartsWith(t)));
+            s.Id == t || s.Id.StartsWith(t) || s.PaneIds.Any(p => p == t || p.StartsWith(t)))
+          ?? FindCover(t)?.s;   // a cover id addresses the session it covers, as in the app
     // The app's FindWs: null/""/"active" = the active workspace, else an id or an id PREFIX — and
     // never a name. The fake used to match names here too, so a test that placed a session by
     // `--workspace <name>` passed against the fake while the app refused it: the same double-drift
@@ -99,7 +102,8 @@ internal sealed class FakeSessionHost : ISessionHost
     public ISession? Resolve(string? target)
     {
         if (target is null or "active") return Focused(ActiveSess);
-        return FindPane(target) is { } hit ? hit.s.Panes[hit.pane] : null;
+        if (FindPane(target) is { } hit) return hit.s.Panes[hit.pane];
+        return FindCover(target)?.pane;   // after the real panes and the name arm: the app's FindPaneBy order
     }
 
     /// <summary>The one resolver behind <see cref="Resolve"/> and <see cref="SessionRestore"/>, as
@@ -114,12 +118,13 @@ internal sealed class FakeSessionHost : ISessionHost
     }
 
     /// <summary>A cover pane by exact id or id prefix — the tail of the app's FindPaneBy, after the
-    /// real panes. Only session.restore asks (to refuse it); the tree never lists it.</summary>
-    private (Sess s, string id)? FindCover(string target)
+    /// real panes. Resolve and Find reach it (every content verb, as in the app); session.restore
+    /// reaches it to refuse; the tree never lists it.</summary>
+    private (Sess s, string id, ISession pane)? FindCover(string target)
     {
         foreach (var s in Workspaces.SelectMany(w => w.Sessions))
-            foreach (var id in s.CoverPaneIds)
-                if (id == target || id.StartsWith(target, StringComparison.Ordinal)) return (s, id);
+            foreach (var (id, pane) in s.CoverPanes)
+                if (id == target || id.StartsWith(target, StringComparison.Ordinal)) return (s, id, pane);
         return null;
     }
 

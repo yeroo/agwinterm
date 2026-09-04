@@ -262,9 +262,11 @@ Eight of those answer a question a script would otherwise have to guess at:
   **refuse** anything else, naming the value and the range. `0`, `150` and `sixty` used to open a
   full-screen overlay and report success; now nothing opens and `ok` is false. Omit the flag for the
   full content region. `resized N%` is always the N that was asked for. The verb's other failures
-  are refusals too: `open` with no command, a `--target` that matches no session (open, resize, or
-  a targeted close), and `resize` with no overlay open. `close` on a session that has no overlay
-  stays `ok` — there is nothing to close, and nothing is what you asked for.
+  are refusals too: `open` with no command; `open` and `resize` whenever no session resolves (a
+  `--target` that matches nothing, or no target and no active session); a `close` whose `--target`
+  names nothing; and `resize` with no overlay open. `close` stays `ok` when the session resolves and
+  has no overlay, or when no target was given — there is nothing to close, and nothing is what you
+  asked for.
 - `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
   the target resolved to (a session name lands on its focused pane, a session id on its first pane,
   exactly as `session type` does), and `action` is `pinned` or `cleared` (`none` clears). The target

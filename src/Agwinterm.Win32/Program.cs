@@ -129,6 +129,9 @@ internal partial class Program : ISessionHost, IWindowHost
     private int _divLeft;                             // left-pane index of the divider being dragged
     // Actions queued from the pipe (background) thread to run on the UI thread.
     private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
+    /// <summary>Cancelled in WM_DESTROY: every pipe thread parked in InvokeOnUiQueued wakes and
+    /// answers "window closed" instead of waiting for a message loop that will never run its action.</summary>
+    private readonly CancellationTokenSource _uiGone = new();
 
     // Chrome geometry (custom title bar + status bar, drawn in Direct2D).
     // Compact toolbar (agterm) shrinks the custom title bar; read live so a config toggle reflows everything.
