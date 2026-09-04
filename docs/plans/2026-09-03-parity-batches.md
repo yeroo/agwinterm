@@ -122,7 +122,7 @@ Same model as P6, different surface — split because it is UI work with a diffe
 `surface.cursor` · `statusChangedAt` · `version` → **P1-lite — shipped** (agliteterm #20,
 2026-09-04, six revmux rounds; plan `docs/plans/completed/2026-09-03-p1-lite-mirror.md` there) ·
 `--stdin` · size-percent validation · `sidebar width` · the caller-workspace default for a bare
-`session new` → P2-lite · `session.context` → P3-lite. Each runs right after its agwinterm batch
+`session new` → **P2-lite — shipped** (agliteterm #26, 2026-09-04) · `session.context` → P3-lite. Each runs right after its agwinterm batch
 merges.
 
 ### P9 · lite · driving a pane
