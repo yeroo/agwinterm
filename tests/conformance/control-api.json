@@ -258,6 +258,19 @@
       "args": [
         "session",
         "overlay",
+        "open",
+        "cmd /c exit 0",
+        "--size-percent",
+        "40"
+      ],
+      "result": "string",
+      "note": "P2: --size-percent is VALIDATED (1..100), not clamped. 40 is honoured; 0, 150 and a non-number are refusals (see errors). What the string is differs by product (the full app returns the overlay id, lite a status word) - only its kind is the contract. The program exits at once, so the close that follows may find nothing open, and that is ok too: close on a session with no overlay stays ok."
+    },
+    {
+      "verb": "session.overlay",
+      "args": [
+        "session",
+        "overlay",
         "close"
       ],
       "result": "string"
@@ -355,6 +368,33 @@
         "on"
       ],
       "result": "string"
+    },
+    {
+      "verb": "sidebar.width",
+      "args": [
+        "sidebar",
+        "width"
+      ],
+      "result": "object",
+      "fields": [
+        "width",
+        "visible"
+      ],
+      "note": "P2: the width in effect (device-independent pixels) and whether the sidebar is visible. Extra fields are allowed (the full app adds `applied` on a set)."
+    },
+    {
+      "verb": "sidebar.width",
+      "args": [
+        "sidebar",
+        "width",
+        "260"
+      ],
+      "result": "object",
+      "fields": [
+        "width",
+        "visible"
+      ],
+      "note": "P2: a set replies with the width IN EFFECT, which is how a caller tells an honoured request from anything else; out of range is a refusal (see errors), never a clamp. The number here is inside every product's range."
     },
     {
       "verb": "window.list",
@@ -513,6 +553,41 @@
         "select",
         "--target",
         "no-such-workspace"
+      ]
+    },
+    {
+      "note": "P2: session.new with an unknown workspace is a REFUSAL, not a session in the active workspace. Silently falling back is how a caller believes it placed a session somewhere it did not. No session may exist behind this reply.",
+      "args": [
+        "session",
+        "new",
+        "--workspace",
+        "no-such-workspace"
+      ]
+    },
+    {
+      "note": "P2: --size-percent outside 1..100 is refused, naming the value and the range, and NO overlay opens. It used to clamp (or, in lite, be ignored) and answer ok.",
+      "args": [
+        "session",
+        "overlay",
+        "open",
+        "cmd /c exit 0",
+        "--size-percent",
+        "150"
+      ]
+    },
+    {
+      "note": "P2: a sidebar op the product cannot do is refused and changes nothing. It used to answer ok and do nothing (the full app) or toggle the sidebar (lite).",
+      "args": [
+        "sidebar",
+        "sideways"
+      ]
+    },
+    {
+      "note": "P2: sidebar width outside the product's range is refused with the range named, and the divider stays where it was.",
+      "args": [
+        "sidebar",
+        "width",
+        "5"
       ]
     }
   ],

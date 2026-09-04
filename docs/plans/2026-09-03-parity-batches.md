@@ -65,10 +65,11 @@ validates `--size-percent` as 1–100 instead of clamping silently · `session.r
 pane received the content · `sidebar.width` distinguishing a clamped request from an honoured one ·
 `session.new` refuses an unknown workspace *(decision 1)*
 
-**Shipped:** #226 — plan at [2026-09-04-p2-honesty.md](2026-09-04-p2-honesty.md) (moves to
-`completed/` with the merge); contract step and release to follow, as #223 / #224 followed P1.
-Grew one item on the way: a bare `session new` lands in the **caller's** workspace (task 5a).
-Mirror: agliteterm P2-lite.
+**Shipped:** #226 (2026-09-04, four revmux rounds) — plan at
+[completed/2026-09-04-p2-honesty.md](completed/2026-09-04-p2-honesty.md); contract steps in this
+PR; release to follow, as #224 followed P1. Grew one item on the way: a bare `session new` lands in
+the **caller's** workspace (task 5a). Round-4 leftovers: #228. Mirror: agliteterm P2-lite (plan
+`docs/plans/2026-09-04-p2-lite-mirror.md` there, with lite #23 and #24 riding along).
 
 Every item is the same defect class as the control-byte refusal already shipped in #213: a call that
 appears to succeed while doing something other than what was asked. Same test shape throughout.
@@ -118,10 +119,11 @@ the posted `WM_MOUSEWHEEL` that never reaches lite's handler (harness finding, 0
 Same model as P6, different surface — split because it is UI work with a different test shape.
 
 ### P8 · lite · mirror Wave 1 — dissolved into per-batch mirrors
-`surface.cursor` · `statusChangedAt` · `version` → **P1-lite** (agliteterm
-`docs/plans/2026-09-03-p1-lite-mirror.md`, 2026-09-03) · `--stdin` · size-percent validation ·
-the caller-workspace default for a bare `session new` → P2-lite · `session.context` → P3-lite. Each
-runs right after its agwinterm batch merges.
+`surface.cursor` · `statusChangedAt` · `version` → **P1-lite — shipped** (agliteterm #20,
+2026-09-04, six revmux rounds; plan `docs/plans/completed/2026-09-03-p1-lite-mirror.md` there) ·
+`--stdin` · size-percent validation · `sidebar width` · the caller-workspace default for a bare
+`session new` → P2-lite · `session.context` → P3-lite. Each runs right after its agwinterm batch
+merges.
 
 ### P9 · lite · driving a pane
 `session.readonly` **first** — it is how you stop stray keys reaching a running agent — then
