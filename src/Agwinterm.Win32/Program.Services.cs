@@ -1134,40 +1134,9 @@ internal partial class Program
 
     // ---- Persistence: workspace/session tree + selection + sidebar state ----
 
-    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public string? RestoreCommand { get; set; } public List<string>? Buffer { get; set; } public string? BufferBlob { get; set; } }
-    // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
-    private sealed class SessionState
-    {
-        public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; }
-        public string? Profile { get; set; }
-        public int Active { get; set; }
-        public bool Flagged { get; set; }
-        public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
-        // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
-        public string? BgFile { get; set; }
-        public int BgOpacity { get; set; } = 15; public string BgMode { get; set; } = "fit";
-    }
-    private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
-    private sealed class AppState
-    {
-        public List<WorkspaceState> Workspaces { get; set; } = new();
-        public string? ActiveId { get; set; }
-        public float SidebarWidth { get; set; } = SidebarWFull;
-        public bool SidebarVisible { get; set; } = true;
-        // Window geometry (restore rect; 0 width = unset). WindowMaximized reopens maximized.
-        public int WindowX { get; set; }
-        public int WindowY { get; set; }
-        public int WindowWidth { get; set; }
-        public int WindowHeight { get; set; }
-        public bool WindowMaximized { get; set; }
-        // Wave D1: sidebar view mode ("tree"|"flagged") + focused workspace id (null = show all).
-        public string SidebarMode { get; set; } = "tree";
-        public string? FocusedWorkspaceId { get; set; }
-        // Ctrl+Tab MRU session order (most recent first); restored on relaunch.
-        public List<string> Mru { get; set; } = new();
-    }
-
-    private static readonly JsonSerializerOptions _stateJson = new() { WriteIndented = true };
+    // The POCOs (AppState / WorkspaceState / SessionState / PaneState) and the serializer live in
+    // Agwinterm.Pty.RestoreState so the format has a round-trip test beside it (P3); the format rule
+    // (additive keys, no version, unknown keys ignored, older builds drop them on write-back) is there.
 
     // Data root: %LOCALAPPDATA%\<instance-id> — "agwinterm" for the release, "agwinterm-dev" for dev builds,
     // so the two keep separate config, sessions, themes, keymap, and window library. See Program._appId.
@@ -1207,7 +1176,7 @@ internal partial class Program
                 {
                     if (File.Exists(LegacyStatePath))
                     {
-                        var st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(LegacyStatePath));
+                        RestoreState.TryDeserialize(File.ReadAllText(LegacyStatePath), out var st);
                         if (st is not null)
                         {
                             m.X = st.WindowX; m.Y = st.WindowY; m.W = st.WindowWidth; m.H = st.WindowHeight; m.Max = st.WindowMaximized;
@@ -1237,7 +1206,7 @@ internal partial class Program
             var idx = new WindowsIndexFile { Version = 1, Frontmost = _frontmostId, Windows = copy };
             Directory.CreateDirectory(AppDir);
             string tmp = WindowsIndexPath + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(idx, _stateJson));
+            File.WriteAllText(tmp, JsonSerializer.Serialize(idx, RestoreState.Json));
             File.Move(tmp, WindowsIndexPath, overwrite: true);
         }
         catch { }
@@ -1382,6 +1351,7 @@ internal partial class Program
                         Id = s.Id,
                         Name = s.Name,
                         CustomName = s.CustomName,
+                        Context = s.Context,   // P3: null = no key written (RestoreState explains why)
                         Profile = s.ProfileName,
                         Active = s.Active,
                         Flagged = s.Flagged,
@@ -1421,7 +1391,7 @@ internal partial class Program
             string path = StatePath;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             string tmp = path + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(st, _stateJson));
+            File.WriteAllText(tmp, RestoreState.Serialize(st));
             File.Move(tmp, path, overwrite: true); // atomic replace so a crash never leaves a truncated file
 
             // Mirror name + geometry into the window-library entry so windows.json can position the
@@ -1501,7 +1471,7 @@ internal partial class Program
         {
             string path = StatePath;
             if (!File.Exists(path)) return false;
-            st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(path));
+            if (!RestoreState.TryDeserialize(File.ReadAllText(path), out st)) throw new FormatException();
         }
         catch
         {
@@ -1578,6 +1548,7 @@ internal partial class Program
                             }
                     ses.Flagged = s.Flagged;
                     ses.CustomName = string.IsNullOrWhiteSpace(s.CustomName) ? null : s.CustomName;
+                    ses.Context = RestoreState.LoadContext(s.Context); // validated, not trusted: an out-of-rules value is dropped, not shown
                     if (!string.IsNullOrEmpty(s.BgFile)) // restore the watermark if its copied file still exists
                     {
                         string bg = Path.Combine(BackgroundsDir, s.BgFile!);

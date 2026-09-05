@@ -267,21 +267,39 @@ Server and tests:
     counts stay untrimmed and the suffix never hard-clips mid-glyph against the dot.
 
 ### Task 3: the restore format — `Context` persists, and the format gets a test
-- [ ] move `AppState`, `WorkspaceState`, `SessionState`, `PaneState` and the serializer options out of
+- [x] move `AppState`, `WorkspaceState`, `SessionState`, `PaneState` and the serializer options out of
       `Program.Services.cs:1113-1146` into `src/Agwinterm.Pty/RestoreState.cs` (public POCOs +
       `RestoreState.Serialize` / `TryDeserialize` wrapping today's `_stateJson`), **byte-for-byte the
       same output** for an unchanged tree — verify by saving a state before and after the move and
       diffing the files
-- [ ] `SessionState.Context` (`string?`); saved from `Ses.Context` at `:1352-1366`; loaded in
+  - ➕ verified 2026-09-05 against files the PREVIOUS builds wrote rather than a fresh save (a fresh
+    save's guids and cwds differ run to run, so two saves never diff cleanly): every restore file under
+    the release and dev app dirs (37 files, 0.17.x builds up to today's 12:55 save) was read with
+    `RestoreState.TryDeserialize` and written back with `RestoreState.Serialize` — 37 same, 0 different
+    (`.ralphex/progress/p3-task3-state-diff.txt`, gitignored; the throwaway test that produced it is
+    not committed). The index (`windows.json`) shares `RestoreState.Json` so its output is unchanged too.
+- [x] `SessionState.Context` (`string?`); saved from `Ses.Context` at `:1352-1366`; loaded in
       `TryRestoreState` **through `SessionContexts.Validate`** — a value that fails the rules is
       dropped, not shown (the `SidebarWidth` precedent at `:1492-1494`)
-- [ ] the format comment on `RestoreState` states the rule from the top of this plan: additive keys,
+  - the load goes through `RestoreState.LoadContext` (control check on the raw value, `Normalize`,
+    `Validate` — `SessionContexts.TryNormalize`, the verb's own path) so the format test can reach it;
+    `TryRestoreState` is not testable from `tests/`
+  - `Context` carries `[JsonIgnore(WhenWritingNull)]`: a session without one writes NO key, so a tree
+    without contexts still saves the exact bytes 0.17.11 saves (the 37-file check above ran with the
+    key already added) and the write-back comparison below is an equality, not a "differs only by"
+- [x] the format comment on `RestoreState` states the rule from the top of this plan: additive keys,
       no version, unknown keys ignored, older builds drop unknown keys on write-back
-- [ ] `tests/Agwinterm.Pty.Tests/RestoreStateTests.cs`: round-trip preserves `Context`; a file
+- [x] `tests/Agwinterm.Pty.Tests/RestoreStateTests.cs`: round-trip preserves `Context`; a file
       written without the key deserializes with `Context == null` and every other field intact; a
       file with an unknown key deserializes; a serialized state with `Context = null` is what a
       pre-P3 build would write for that field (the write-back comparison, stated as such)
-- [ ] run the .NET suite — must pass before task 4
+  - 13 tests: the pre-P3 fixture round-trips byte-for-byte and the in-memory tree serializes to it;
+    unknown keys at every level are read and (visibly) dropped on write-back; missing keys take their
+    defaults; only broken JSON is a bad file; `LoadContext` drops what the verb refuses (newline, tab,
+    ESC, NEL, blank, over the ceiling) and normalises what it accepts; a file with a newline in
+    `Context` parses, carries the raw value, and loads as none
+- [x] run the .NET suite — must pass before task 4
+  - Pty 519/519 (incl. the 13 new), Core 246/246; Win32 host full rebuild (`--no-incremental`) 0 warnings
 
 ### Task 4: `restore.capture` — a durable slot, one capture path, a verb that reports
 - [ ] `Pane.CapturedCommand` (`string?`, `Program.cs:288-317`, beside `RestoreCommand`). `SaveState`

@@ -1476,7 +1476,7 @@ internal partial class Program
         {
             string p = Path.Combine(AppDir, "windows", windowId + ".json");
             if (!File.Exists(p)) return;
-            var st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(p));
+            RestoreState.TryDeserialize(File.ReadAllText(p), out var st);
             if (st is null) return;
             foreach (var ws in st.Workspaces)
                 foreach (var s in ws.Sessions)
