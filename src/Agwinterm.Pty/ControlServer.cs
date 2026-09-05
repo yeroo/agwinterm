@@ -257,6 +257,17 @@ public sealed class ControlServer : IDisposable
                 // host's, from SplitCloseReply's wordings, and each closes nothing. No arg to read:
                 // the verb takes only a target (null/"active" = the active session's focused pane).
                 case "session.split.close": return HostReply(host.SplitClose(target));
+                // session.swap (P4): exchange the two panes — order reversed, focus follows, axis and
+                // ratio sequence kept, every id kept. The reply is the session's split block AFTER the
+                // swap, as an object (SwapReply.Build, OkRaw — the read-back is the tree's paneIds /
+                // focusedPane / axis). Every refusal is the host's, from SwapReply's wordings, and each
+                // moves nothing. No arg to read: the verb takes only a target (null/"active" = the
+                // active session).
+                case "session.swap":
+                    {
+                        var swapped = host.Swap(target);
+                        return swapped.Refusal is not null ? Err(swapped.Refusal) : OkRaw(SwapReply.Build(swapped));
+                    }
                 // The default direction is `other` — the one word that names a pane on either axis
                 // (P4: `right` would be refused on a horizontal split).
                 case "session.focus": return HostReply(host.FocusPaneDir(GetString(args, "dir") ?? "other"));

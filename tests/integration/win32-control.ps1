@@ -279,6 +279,66 @@ try {
         }
         Check 'session split on --axis vertical restores the side-by-side grid exactly' `
             ($backReply.ok -and $restored -and (Get-SessionSnapshot $sessionId).axis -eq 'vertical')
+
+        # P4: `session swap` exchanges the two panes. The proof is per-pane geometry: with the divider at
+        # 30/70 each pane's box is distinct, and after the swap each pane's metrics are the OTHER pane's
+        # old metrics — the boxes stayed where they were, the shells changed places, and every id still
+        # names the shell it named (the session id's pane is slot 1 now, so the tree lists it second).
+        # The ratio sequence is what keeps the boxes: reversing the panes alone would have jumped the
+        # divider to 70/30. Swapped back, then the divider returned to 50/50, so the checks below — written
+        # against pane 0 = the session id — see the fixture exactly as they did.
+        $swapResize = Invoke-Ctl @('session', 'resize', '--split-ratio', '0.3')
+        $narrow = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.cols -lt [int]$vertPrimary.result.cols) { $narrow = $candidate; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $wide = Invoke-Ctl @('session', 'metrics', '--target', $survivorId)
+        Check 'a 30/70 divider gives the two panes distinct boxes (the swap fixture)' `
+            ($swapResize.ok -and $null -ne $narrow -and $wide.ok -and [int]$narrow.result.cols -lt [int]$wide.result.cols) `
+            "primary=$($narrow.result.cols)x$($narrow.result.rows) split=$($wide.result.cols)x$($wide.result.rows)"
+        $swapNode0 = Get-SessionSnapshot $sessionId
+        $swapReply = Invoke-Ctl @('session', 'swap')
+        $swappedPrimary = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.cols -eq [int]$wide.result.cols) { $swappedPrimary = $candidate; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $swappedSplit = Invoke-Ctl @('session', 'metrics', '--target', $survivorId)
+        $swapNode = Get-SessionSnapshot $sessionId
+        Check 'session swap replies with the split block after the swap: the same session, the pane ids reversed, the axis kept' `
+            ($swapReply.ok -and $swapReply.result.session -eq $sessionId -and
+             (@($swapReply.result.paneIds) -join ',') -eq "$survivorId,$sessionId" -and $swapReply.result.axis -eq 'vertical' -and
+             $swapNode -and (@($swapNode.paneIds) -join ',') -eq "$survivorId,$sessionId" -and $swapNode.axis -eq 'vertical') `
+            "reply=$($swapReply | ConvertTo-Json -Compress) node=$($swapNode | ConvertTo-Json -Compress)"
+        Check 'after the swap each pane measures the other pane''s old box (the boxes stayed, the shells moved, the ids did not)' `
+            ($null -ne $swappedPrimary -and $swappedSplit.ok -and
+             [int]$swappedPrimary.result.cols -eq [int]$wide.result.cols -and [int]$swappedPrimary.result.rows -eq [int]$wide.result.rows -and
+             [int]$swappedSplit.result.cols -eq [int]$narrow.result.cols -and [int]$swappedSplit.result.rows -eq [int]$narrow.result.rows) `
+            "session-id pane=$($swappedPrimary.result.cols)x$($swappedPrimary.result.rows) (was $($narrow.result.cols)x$($narrow.result.rows)) split pane=$($swappedSplit.result.cols)x$($swappedSplit.result.rows) (was $($wide.result.cols)x$($wide.result.rows))"
+        Check 'the ratio sequence is kept and the focus followed the pane' `
+            ($swapNode -and ((@($swapNode.splitRatios) -join ',') -eq (@($swapNode0.splitRatios) -join ',')) -and
+             [int]$swapNode.focusedPane -eq (1 - [int]$swapNode0.focusedPane)) `
+            "ratios before=$(@($swapNode0.splitRatios) -join ',') after=$(@($swapNode.splitRatios) -join ',') focus before=$($swapNode0.focusedPane) after=$($swapNode.focusedPane)"
+        $swapBack = Invoke-Ctl @('session', 'swap')
+        $identity = $false
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.cols -eq [int]$narrow.result.cols) { $identity = $true; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $swapNode2 = Get-SessionSnapshot $sessionId
+        Check 'swap twice is the identity: the ids, the order, the ratios and the focus are back' `
+            ($swapBack.ok -and $identity -and $swapNode2 -and ($swapNode2 | ConvertTo-Json -Compress) -eq ($swapNode0 | ConvertTo-Json -Compress)) `
+            "before=$($swapNode0 | ConvertTo-Json -Compress) after=$($swapNode2 | ConvertTo-Json -Compress)"
+        Invoke-Ctl @('session', 'resize', '--split-ratio', '0.5') | Out-Null
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.cols -eq [int]$vertPrimary.result.cols) { break }
+            Start-Sleep -Milliseconds 200
+        }
     }
 
     # P4: `session split close` closes EITHER side and answers the survivor's id. Pane 0 carries the

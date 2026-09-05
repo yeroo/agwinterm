@@ -33,6 +33,16 @@ namespace Agwinterm.Pty.Tests;
 /// resolvable; a session NAME or no target means the focused pane; the session id means the pane that
 /// carries it (the resolver's exact-pane-first order); a one-pane session is refused naming
 /// <c>session close</c>; a cover is refused; every refusal closes nothing.
+///
+/// Section 4. <c>session swap</c> exchanges the two panes: order reversed, focus follows the pane, axis
+/// kept, ratio SEQUENCE kept (the left/top box keeps its size; the contents change places), and EVERY
+/// ID kept — a swap moves panes, never ids, so the session id keeps naming the shell it named, now on
+/// the other side (agterm moves the session's identity instead, because its panes are addressed by
+/// role; ours are addressed by id, and a handle must not lie). Everything else — context, flag,
+/// overlay, notifications, the status aggregate and its age — stays where it was; per-pane state (a
+/// restore pin, a captured slot) travels with its pane. The reply is the tree's split block after the
+/// swap, as an object. A one-pane session, a cover and an unknown target are refused with nothing
+/// moved. A swapped session's save/load keeps its ids in their new order with no duplicates.
 /// </summary>
 public class SessionSplitTests
 {
@@ -680,5 +690,281 @@ public class SessionSplitTests
             Assert.Contains("vertical", refusal);
             Assert.Contains("horizontal", refusal);
         }
+    }
+
+    // ---- section 4: session swap ----
+
+    private static JsonElement Swap(ControlServer server, string? target)
+        => JsonDocument.Parse(server.Dispatch(target is null
+            ? "{\"cmd\":\"session.swap\"}"
+            : "{\"cmd\":\"session.swap\",\"target\":" + JsonSerializer.Serialize(target) + "}")).RootElement;
+
+    /// <summary>The reply, asserted to be the OBJECT the sibling contract PR will pin — the four keys
+    /// <c>session</c>, <c>paneIds</c>, <c>focusedPane</c>, <c>axis</c>, in that order and nothing else —
+    /// then returned.</summary>
+    private static JsonElement Swapped(JsonElement r)
+    {
+        Assert.True(Ok(r), r.ToString());
+        var res = r.GetProperty("result");
+        Assert.Equal(JsonValueKind.Object, res.ValueKind);
+        Assert.Equal(new[] { "session", "paneIds", "focusedPane", "axis" }, res.EnumerateObject().Select(p => p.Name).ToArray());
+        return res;
+    }
+
+    private static string[] Strings(JsonElement array) => array.EnumerateArray().Select(e => e.GetString()!).ToArray();
+
+    private static double[] Ratios(ControlServer server, int index = 0)
+        => TreeSession(server, index).GetProperty("splitRatios").EnumerateArray().Select(e => e.GetDouble()).ToArray();
+
+    [Fact]
+    public void Swap_ReversesTheOrder_KeepsTheRatioSequence_AndRepliesWithTheTreeAfter()
+    {
+        var (server, host) = New();
+        string splitId = Id(Op(server, "on", axis: SplitAxes.Horizontal));
+        var sess = host.ActiveSess!;
+        var primary = sess.Panes[0]; var split = sess.Panes[1];
+        Assert.True(Ok(Resize(server, "{\"ratio\":0.7}")));
+        Assert.Equal(new[] { 0.7, 0.3 }, Ratios(server));      // 70/30: the top box is the big one
+        Assert.Equal(1, sess.FocusedPane);
+
+        var reply = Swapped(Swap(server, null));
+
+        Assert.Equal("s1", reply.GetProperty("session").GetString());
+        Assert.Equal(new[] { splitId, "s1" }, Strings(reply.GetProperty("paneIds")));
+        Assert.Equal(0, reply.GetProperty("focusedPane").GetInt32());   // the focused shell (the split one) is slot 0 now
+        Assert.Equal(SplitAxes.Horizontal, reply.GetProperty("axis").GetString());
+        // The reply IS the tree's split block after the swap.
+        Assert.Equal(new[] { splitId, "s1" }, PaneIds(server));
+        Assert.Equal(0, TreeSession(server).GetProperty("focusedPane").GetInt32());
+        Assert.Equal(SplitAxes.Horizontal, TreeAxis(server));
+        Assert.Equal(new[] { 0.7, 0.3 }, Ratios(server));      // the SEQUENCE is kept: the top box is still the big one
+        Assert.Same(split, sess.Panes[0]); Assert.Same(primary, sess.Panes[1]);   // the shells moved; nothing was re-minted
+        Assert.Equal(2, PaneCount(server));
+    }
+
+    [Fact]
+    public void Swap_KeepsEveryId_AndEachStillReachesTheSameShell()
+    {
+        var (server, host) = New();
+        string splitId = Id(Op(server, "on"));
+        var sess = host.ActiveSess!;
+        var bySessionId = host.Resolve("s1"); var bySplitId = host.Resolve(splitId);
+        Assert.Same(sess.Panes[0], bySessionId); Assert.Same(sess.Panes[1], bySplitId);
+
+        Swapped(Swap(server, null));
+
+        Assert.Same(bySessionId, host.Resolve("s1"));          // the session id names the shell it always named — now in slot 1
+        Assert.Same(sess.Panes[1], host.Resolve("s1"));
+        Assert.Same(bySplitId, host.Resolve(splitId));
+        Assert.Same(sess.Panes[0], host.Resolve(splitId));
+        Assert.True(Resolves(server, "s1")); Assert.True(Resolves(server, splitId));
+        Assert.Equal(new[] { splitId, "s1" }, sess.PaneIds);
+        Assert.Equal("s1", TreeSession(server).GetProperty("id").GetString());   // the session's own id never moved
+    }
+
+    [Fact]
+    public void Swap_FocusFollowsThePane()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on"));
+        Assert.True(Ok(Focus(server, "primary")));             // focus pane 0, the session-id shell
+        var focused = host.Resolve("active");
+        Assert.Equal(0, host.ActiveSess!.FocusedPane);
+
+        var reply = Swapped(Swap(server, null));
+
+        Assert.Equal(1, reply.GetProperty("focusedPane").GetInt32());
+        Assert.Same(focused, host.Resolve("active"));          // the same shell has the focus, on the other side
+        Assert.Equal(1, TreeSession(server).GetProperty("focusedPane").GetInt32());
+    }
+
+    [Fact]
+    public void Swap_LeavesEverythingElseWhereItWas_AndPerPaneStateTravelsWithItsPane()
+    {
+        var (server, host) = New();
+        string splitId = Id(Op(server, "on"));
+        var sess = host.ActiveSess!;
+        // Session-wide state, set the way a caller sets it or the way the app keeps it.
+        Assert.True(Ok(JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.context\",\"target\":\"s1\",\"args\":{\"context\":\"P4 swap fixture\"}}")).RootElement));
+        sess.Flagged = true; sess.Overlay = true; sess.OverlaySize = 40; sess.Notifications = 3;
+        sess.Panes[1].SetStatus(Agwinterm.Core.AgentStatus.Blocked);   // the split pane wins the aggregate
+        // Per-pane state on the split pane: a pin and a captured slot, keyed by its id.
+        Assert.True(Ok(JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.restore\",\"target\":" + JsonSerializer.Serialize(splitId) + ",\"args\":{\"command\":\"cargo watch\"}}")).RootElement));
+        sess.Captured[splitId] = "ping -n 300 127.0.0.1";
+        var before = TreeSession(server);
+        Assert.Equal("blocked", before.GetProperty("status").GetString());
+        long changedAt = before.GetProperty("statusChangedAt").GetInt64();
+        Assert.NotEqual(0, changedAt);
+
+        Swapped(Swap(server, null));
+
+        var after = TreeSession(server);
+        foreach (var key in new[] { "id", "name", "active", "status", "statusChangedAt", "overlay", "flagged", "notifications", "overlaySize", "context", "axis", "splitRatios", "paneCount" })
+            Assert.Equal(before.GetProperty(key).GetRawText(), after.GetProperty(key).GetRawText());
+        Assert.Equal(changedAt, after.GetProperty("statusChangedAt").GetInt64());
+        Assert.Equal(new[] { splitId, "s1" }, Strings(after.GetProperty("paneIds")));
+        // The pin and the slot are still on the split pane, read back under ITS id whichever slot it is in.
+        Assert.Equal("cargo watch", after.GetProperty("restoreCommands").GetProperty(splitId).GetString());
+        Assert.Equal("ping -n 300 127.0.0.1", after.GetProperty("capturedCommands").GetProperty(splitId).GetString());
+        Assert.False(after.GetProperty("restoreCommands").TryGetProperty("s1", out _));
+        Assert.Equal("P4 swap fixture", sess.Context);
+        Assert.Empty(sess.CoverPanes);                          // no cover was made or moved
+    }
+
+    [Fact]
+    public void Swap_Twice_IsTheIdentity()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on"));
+        Assert.True(Ok(Resize(server, "{\"ratio\":0.65}")));
+        var sess = host.ActiveSess!;
+        var panes = sess.Panes.ToArray();
+        var before = TreeSession(server).GetRawText();
+
+        Swapped(Swap(server, null));
+        Assert.NotEqual(before, TreeSession(server).GetRawText());
+        Swapped(Swap(server, null));
+
+        Assert.Equal(before, TreeSession(server).GetRawText());   // ids, order, ratios, focus: all as they were
+        Assert.Equal(panes, sess.Panes);
+    }
+
+    [Fact]
+    public void Swap_ThenSplitOff_KeepsSlotZero_TheFormerSplitShell_AndNamesItInTheReply()
+    {
+        // Correct per the rules, and worth pinning: after a swap the session-id shell is pane 1, and
+        // `off` keeps pane 0 — so the survivor is the former split shell, the session id's pane is
+        // destroyed, the session id then resolves to the survivor (the exact-session arm).
+        var (server, host) = New();
+        string splitId = Id(Op(server, "on"));
+        var sess = host.ActiveSess!;
+        var split = sess.Panes[1];
+        Swapped(Swap(server, null));
+
+        Assert.Equal(splitId, Id(Op(server, "off")));
+
+        Assert.Equal(new[] { splitId }, sess.PaneIds);
+        Assert.Same(split, sess.Panes[0]);
+        Assert.Equal(1, PaneCount(server));
+        Assert.Same(split, host.Resolve("s1"));
+        Assert.Equal("s1", TreeSession(server).GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public void Swap_OnASinglePane_IsRefused_AndNothingChanges()
+    {
+        var (server, host) = New();
+        var before = TreeSession(server).GetRawText();
+        foreach (var target in new string?[] { null, "active", "s1", "session 1" })
+        {
+            var r = Swap(server, target);
+            Assert.False(Ok(r), target ?? "<null>");
+            Assert.Contains("'s1'", Error(r));
+            Assert.Contains("session split on", Error(r));
+            Assert.Contains("Nothing moved", Error(r));
+        }
+        Assert.Equal(before, TreeSession(server).GetRawText());
+        Assert.Equal(new[] { "s1" }, host.ActiveSess!.PaneIds);
+    }
+
+    [Fact]
+    public void Swap_ACover_IsRefused_AndTheSplitStands()
+    {
+        var (server, host) = New();
+        string splitId = Id(Op(server, "on"));
+        string coverId = host.ActiveSess!.AddCoverPane();
+        var before = TreeSession(server).GetRawText();
+
+        var r = Swap(server, coverId);
+
+        Assert.False(Ok(r));
+        Assert.Contains("'" + coverId + "'", Error(r));
+        Assert.Contains("scratch/overlay/quick", Error(r));
+        Assert.Equal(before, TreeSession(server).GetRawText());
+        Assert.Equal(new[] { "s1", splitId }, host.ActiveSess!.PaneIds);
+    }
+
+    [Fact]
+    public void Swap_UnknownTarget_IsRefused_AndNothingMoves()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on"));
+        var before = TreeSession(server).GetRawText();
+        var r = Swap(server, "ghost");
+        Assert.False(Ok(r));
+        Assert.Contains("'ghost'", Error(r));
+        Assert.Equal(before, TreeSession(server).GetRawText());
+    }
+
+    [Fact]
+    public void Swap_HonoursTarget_ByEitherPaneOrTheSessionId_OnANonActiveSession()
+    {
+        var (server, host) = New();
+        string other = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.new\",\"args\":{\"name\":\"other\"}}"))
+            .RootElement.GetProperty("result").GetString()!;
+        string otherSplit = Id(Op(server, "on", target: other));
+        server.Dispatch("{\"cmd\":\"session.select\",\"target\":\"s1\"}");
+        string activeSplit = Id(Op(server, "on"));
+        Assert.Equal("s1", host.ActiveSess!.Id);
+        var activeBefore = TreeSession(server, 0).GetRawText();
+
+        var bySplit = Swapped(Swap(server, otherSplit));       // the OTHER session's pane 1 id names that session
+        Assert.Equal(other, bySplit.GetProperty("session").GetString());
+        Assert.Equal(new[] { otherSplit, other }, Strings(bySplit.GetProperty("paneIds")));
+        var bySession = Swapped(Swap(server, other));          // its session id — now carried by its pane 1 — names it too
+        Assert.Equal(new[] { other, otherSplit }, Strings(bySession.GetProperty("paneIds")));
+        var byName = Swapped(Swap(server, "other"));           // and its name
+        Assert.Equal(new[] { otherSplit, other }, Strings(byName.GetProperty("paneIds")));
+
+        Assert.Equal("s1", host.ActiveSess!.Id);               // focus did not move
+        Assert.Equal(activeBefore, TreeSession(server, 0).GetRawText());   // the active session was not touched
+        Assert.Equal(new[] { "s1", activeSplit }, PaneIds(server, 0));
+    }
+
+    [Fact]
+    public void Swap_ThenSaveAndLoad_KeepsTheIdsInTheirNewOrder_WithNoDuplicate()
+    {
+        // The app's restore path is Win32 (restore-roundtrip.ps1's swap-killed cell pins it); this pins
+        // the fake and the FORMAT: a session whose pane 0 does not carry the session id serializes and
+        // deserializes with both ids verbatim, and the session id sits on exactly one pane.
+        var (server, host) = New();
+        string splitId = Id(Op(server, "on", axis: SplitAxes.Horizontal));
+        Assert.True(Ok(Resize(server, "{\"ratio\":0.7}")));
+        var sess = host.ActiveSess!;
+        Swapped(Swap(server, null));
+
+        var st = new AppState
+        {
+            Workspaces = { new WorkspaceState { Id = "w1", Name = "workspace 1", Sessions = { new SessionState
+            {
+                Id = sess.Id, Name = sess.Name, Active = sess.FocusedPane,
+                Panes = sess.PaneIds.Select((id, i) => new PaneState { Id = id, Ratio = (float)sess.Ratios[i] }).ToList(),
+                Axis = RestoreState.StoreAxis(sess.PaneCount, sess.Axis),
+            } } } },
+        };
+        string json = RestoreState.Serialize(st);
+        Assert.True(RestoreState.TryDeserialize(json, out var loaded));
+        var s = loaded!.Workspaces[0].Sessions[0];
+        Assert.Equal("s1", s.Id);
+        Assert.Equal(new[] { splitId, "s1" }, s.Panes.Select(p => p.Id));   // the saved order, the saved ids
+        Assert.Distinct(s.Panes.Select(p => p.Id));
+        Assert.Single(s.Panes, p => p.Id == s.Id);                            // exactly one pane carries the session id — slot 1
+        Assert.Equal(new[] { 0.7f, 0.3f }, s.Panes.Select(p => p.Ratio));
+        Assert.Equal(0, s.Active);
+        Assert.Equal(SplitAxes.Horizontal, RestoreState.LoadAxis(s.Axis));
+        Assert.Equal(json, RestoreState.Serialize(loaded));
+    }
+
+    [Fact]
+    public void SwapReply_Build_SpellsTheFourKeys()
+    {
+        string raw = SwapReply.Build("s1", new[] { "p2", "s1" }, 1, SplitAxes.Vertical);
+        var o = JsonDocument.Parse(raw).RootElement;
+        Assert.Equal(new[] { "session", "paneIds", "focusedPane", "axis" }, o.EnumerateObject().Select(p => p.Name).ToArray());
+        Assert.Equal("s1", o.GetProperty("session").GetString());
+        Assert.Equal(new[] { "p2", "s1" }, Strings(o.GetProperty("paneIds")));
+        Assert.Equal(1, o.GetProperty("focusedPane").GetInt32());
+        Assert.Equal("vertical", o.GetProperty("axis").GetString());
+        Assert.Equal(raw, SwapReply.Build(new SwapResult("s1", new[] { "p2", "s1" }, 1, SplitAxes.Vertical)));
     }
 }

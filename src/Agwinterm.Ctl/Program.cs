@@ -21,6 +21,11 @@ using System.Text.Json;
 //   agwintermctl session split close [--target ID]   (close ONE pane, EITHER side: a pane id = that pane; a session
 //       name or no target = the session's focused pane, what Ctrl+Shift+W closes; from a pane's own CLI, that pane.
 //       Replies with the SURVIVOR's id. A one-pane session is refused — `session close` closes a session)
+//   agwintermctl session swap [--target ID]           (exchange the two panes: order reversed, focus follows the pane,
+//       axis and ratio sequence kept — the left/top box keeps its size, the contents change places — and EVERY ID
+//       kept: a swap moves panes, never ids, so the session id keeps naming the shell it named, now on the other
+//       side. Target = a session, either of its panes, or nothing for the active session. Replies
+//       {session,paneIds,focusedPane,axis} — the tree's split block after the swap. A one-pane session is refused)
 //   agwintermctl session focus [primary|split|left|right|top|bottom|other]   (default other; left/right exist on a
 //       vertical split only, top/bottom on a horizontal one — the wrong pair is refused naming the axis)
 //   agwintermctl session resize [--split-ratio R] [--grow-left N|--grow-right N|--grow-top N|--grow-bottom N]
@@ -295,6 +300,9 @@ switch (area)
                 // by a verb that never reads it.
                 if ((string)cargs["op"]! == "close") { cmd = "session.split.close"; cargs.Remove("op"); cargs.Remove("axis"); }
                 break;
+            // session swap [--target ID] (P4): no args of its own — the target is a session, either of its
+            // panes, or nothing for the active session; the reply is an object, printed raw by --json and plain.
+            case "swap": break;
             case "readonly": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|state; block input to the pane
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
             case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay resize --size-percent N | overlay result

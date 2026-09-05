@@ -1577,13 +1577,19 @@ internal partial class Program
                         pl = pl.Take(2).ToList();
                     }
                     var first = pl[0];
+                    // Durable ids (P4): pane 0 is created under its SAVED id, not the session id. After a
+                    // `session swap` the pane carrying the session id sits in slot 1, and re-minting pane 0 as
+                    // the session id would duplicate it and rename the other shell; StablePaneId folds only
+                    // an empty id, the file's session id (which follows StableSessionId) and a live duplicate.
+                    string sid = StableSessionId(s.Id);
                     var ses = CreateSession(
-                        StableSessionId(s.Id),
+                        sid,
                         string.IsNullOrWhiteSpace(s.Name) ? null : s.Name,
                         string.IsNullOrWhiteSpace(first.Cwd) ? null : first.Cwd,
                         ws, makeActive: s.Id == st.ActiveId,
                         fontSize: first.FontSize > 0 ? first.FontSize : (float?)null,
-                        profileName: string.IsNullOrWhiteSpace(s.Profile) ? null : s.Profile);
+                        profileName: string.IsNullOrWhiteSpace(s.Profile) ? null : s.Profile,
+                        paneId: StablePaneId(first.Id, s.Id, sid, first: true));
                     // The axis BEFORE the second pane exists (P4). Every pty is spawned at the full content
                     // grid (CreatePane → GridSizeFor) and then RegridSession below sizes each one from
                     // PaneLayout, which reads ses.Axis: a horizontal session must get its rows halved, not
@@ -1595,7 +1601,7 @@ internal partial class Program
                     if (pl.Count > 1) ses.Axis = RestoreState.LoadAxis(s.Axis);
                     for (int i = 1; i < pl.Count; i++)
                         AppendPane(ses,
-                            string.IsNullOrEmpty(pl[i].Id) ? Guid.NewGuid().ToString() : pl[i].Id,
+                            StablePaneId(pl[i].Id, s.Id, sid, first: false),   // verbatim: after a swap this is the pane that carries the session id
                             string.IsNullOrWhiteSpace(pl[i].Cwd) ? null : pl[i].Cwd,
                             pl[i].FontSize > 0 ? pl[i].FontSize : (float)_config.FontSize);
                     lock (_workspaces)

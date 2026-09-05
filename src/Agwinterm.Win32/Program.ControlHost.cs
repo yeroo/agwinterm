@@ -560,6 +560,51 @@ internal partial class Program
         return (hit.Value.pane, hit.Value.ses);
     }
 
+    // session.swap (P4): exchange the two panes of the targeted session and answer its split block after
+    // the swap. The Split / SplitClose two-step: resolve on the caller's thread so an unknown target, a
+    // cover or a one-pane session answers a refusal with nothing queued (#230), then ONE FIFO queued hop
+    // that re-resolves (a session collapsed or closed by another client in between is refused, not
+    // swapped from a stale view), swaps through SwapPanes and reads the order, focus and axis back off
+    // the session. Resolution: null/"active" is the active session; else FindControlPane's order — a
+    // session id, either pane's id, a prefix, or a name — and the session the hit belongs to is the one
+    // swapped (a pane id names its session here; the verb acts on the pair, never on one side). A hop
+    // that cannot be queued or run throws, which Dispatch turns into ok:false (#234 wording).
+    public SwapResult Swap(string? target)
+    {
+        if (ResolveSwap(target, out var early) is null) return SwapResult.Refuse(early!);
+        return InvokeOnUiQueued(() =>
+        {
+            var ses = ResolveSwap(target, out var refusal);
+            if (ses is null) return SwapResult.Refuse(refusal!);
+            SwapPanes(ses);
+            List<string> ids;
+            lock (_workspaces) ids = ses.Panes.Select(p => p.Id).ToList();
+            return new SwapResult(ses.Id, ids, ses.Active, ses.Axis);
+        });
+    }
+
+    /// <summary>The session <c>session swap</c> would act on, or null with the refusal (SwapReply's wording)
+    /// — nothing is touched here, so it is safe to run on the pipe thread first and again inside the hop.</summary>
+    private Ses? ResolveSwap(string? target, out string? refusal)
+    {
+        refusal = null;
+        Ses? ses;
+        if (string.IsNullOrEmpty(target) || target == "active")
+        {
+            ses = _active;
+            if (ses is null) { refusal = SwapReply.NoActiveSession; return null; }
+        }
+        else
+        {
+            var hit = FindControlPane(target);   // the content verbs' resolver: exact pane, exact session, pane prefix, session prefix / name
+            if (hit is null) { refusal = SwapReply.UnknownTarget(target); return null; }
+            if (hit.Value.cover || hit.Value.ses is null) { refusal = SwapReply.CoverPane(hit.Value.pane.Id); return null; }
+            ses = hit.Value.ses;
+        }
+        if (ses.Panes.Count <= 1) { refusal = SwapReply.SinglePane(ses.Id); return null; }
+        return ses;
+    }
+
     // Both answer with state (a refusal must mean nothing moved), so they run in the FIFO UI hop and
     // read the active session INSIDE it — the axis a direction is judged against is the one the
     // session has when the move happens, not the one the pipe thread saw a moment earlier (P4).

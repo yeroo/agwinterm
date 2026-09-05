@@ -30,11 +30,12 @@ internal sealed class FakeSessionHost : ISessionHost
         /// <summary>The session's panes, so the tree can aggregate status + its age the way the app
         /// does. One pane unless a test splits it via <see cref="AddPane"/>.</summary>
         public readonly List<ISession> Panes = new() { new TerminalSession(80, 24) };
-        /// <summary>Pane ids, parallel to <see cref="Panes"/>. The first pane SHARES the session id,
-        /// exactly as the app does it (Program.Sessions.cs: "first pane shares the session id
-        /// (control-API back-compat)"); a split pane gets its own. That sharing is why an id target
-        /// reaches pane 0 whatever <see cref="FocusedPane"/> says, and only a NAME reaches the
-        /// focused pane — the asymmetry qa/control-read.md pins.</summary>
+        /// <summary>Pane ids, parallel to <see cref="Panes"/>. EXACTLY ONE pane carries the session id,
+        /// as the app does it (Program.Sessions.cs, CreateSession: a fresh session's pane 0 IS the
+        /// session id; a split pane gets its own) — and since P4's <c>session swap</c> that pane may sit
+        /// on either side, because a swap moves panes, never ids. That is why an id target reaches THAT
+        /// pane whatever <see cref="FocusedPane"/> says (the resolver's exact-pane-first order), and only
+        /// a NAME reaches the focused pane — the asymmetry qa/control-read.md pins.</summary>
         public readonly List<string> PaneIds = new();
         /// <summary>session.restore pins, keyed by pane id — what the app keeps in Pane.RestoreCommand.
         /// The tree's <c>restoreCommands</c> is built from here, so a test reads a pin back the way a
@@ -448,6 +449,30 @@ internal sealed class FakeSessionHost : ISessionHost
         if (s.PaneCount <= 1) return ISessionHost.RefusePrefix + SplitCloseReply.SinglePane(s.Id);
         s.RemovePane(idx);
         return s.PaneIds[0];
+    }
+    // session.swap (P4), the app's SwapPanes: the target resolves as split close's does (null/""/"active"
+    // = the active session; else FindPane's order — a session id, either pane's id, a prefix, or a name
+    // — and the SESSION the hit belongs to is what is swapped; a cover and an unknown target are
+    // refused; a one-pane session is refused). Then the pane order is reversed and focus follows the
+    // pane; the RATIO SEQUENCE is kept — the fake's Ratios is a per-SLOT list, so keeping it untouched is
+    // the same rule the app applies by exchanging the two panes' own shares; the axis is kept; every id
+    // is kept, and the per-pane dictionaries (pins, slots, foregrounds) are keyed by pane id, so they
+    // travel with their pane as the app's Pane fields do. The reply is read back off the session.
+    public SwapResult Swap(string? target)
+    {
+        Sess? s;
+        if (string.IsNullOrEmpty(target) || target == "active")
+        {
+            s = ActiveSess;
+            if (s is null) return SwapResult.Refuse(SwapReply.NoActiveSession);
+        }
+        else if (FindPane(target) is { } hit) s = hit.s;
+        else if (FindCover(target) is { } cover) return SwapResult.Refuse(SwapReply.CoverPane(cover.id));
+        else return SwapResult.Refuse(SwapReply.UnknownTarget(target));
+        if (s.PaneCount <= 1) return SwapResult.Refuse(SwapReply.SinglePane(s.Id));
+        s.Panes.Reverse(); s.PaneIds.Reverse();
+        s.FocusedPane = s.Panes.Count - 1 - Math.Clamp(s.FocusedPane, 0, s.Panes.Count - 1);
+        return new SwapResult(s.Id, s.PaneIds.ToList(), s.FocusedPane, s.Axis);
     }
     // The same rules as the app's host: the words and their axis are SplitAxes' (a direction that
     // does not exist on the session's axis is refused with focus unmoved), one pane is refused.

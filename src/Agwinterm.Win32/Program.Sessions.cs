@@ -391,9 +391,15 @@ internal partial class Program
         catch (Exception ex) { ShowToast("elevated launch failed: " + ex.Message); }
     }
 
+    /// <summary>Create a session with its first pane. <paramref name="paneId"/> is pane 0's id; null = the
+    /// session id, which is what every caller but restore passes (a <c>session new</c> mints pane 0 =
+    /// session id). Restore passes the SAVED pane-0 id, because after a <c>session swap</c> the pane that
+    /// carries the session id sits in slot 1 and pane 0 has its own id — re-minting pane 0 as the session
+    /// id would duplicate that id and rename the other shell (P4: ids are durable, never reassigned by a
+    /// split, a close, a swap or a restore).</summary>
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
-        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false)
+        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false, string? paneId = null)
     {
         // Elevated profile from a non-elevated app: hand off to a separate elevated window (UAC).
         if (profileName is not null && !IsElevated()
@@ -418,7 +424,10 @@ internal partial class Program
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         if (name is null && handoff is { Title.Length: > 0 } ht) name = ht.Title;   // label handoff sessions with the app's title
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName, Elevated = IsElevated() && !deElevate };
-        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff, wait: wait));   // first pane shares the session id (control-API back-compat)
+        // Exactly one pane carries the session id (control-API back-compat: a fresh session's pane 0 IS
+        // the session id, so a session id addresses a pane). A swap may put that pane on either side,
+        // and a restore hands the saved pane-0 id in — see the summary.
+        ses.Panes.Add(CreatePane(paneId ?? id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff, wait: wait));
         ses.Active = 0;
         DetectSessionElevation(ses);   // refine ⚡ from the shell's real integrity once it's running
 
@@ -1160,7 +1169,10 @@ internal partial class Program
     /// <summary>
     /// Resolve a pane-capable control target without letting a derived cover id shadow its owning
     /// session id. The ordering is part of the control contract: exact pane, exact session, pane
-    /// prefix, then session prefix/name.
+    /// prefix, then session prefix/name. EXACT PANE FIRST is also what keeps the session id naming the
+    /// pane that carries it after a <c>session swap</c> moved that pane to slot 1 (P4): a swap moves
+    /// panes, never ids, so the session id keeps reaching the same shell wherever it sits, and the
+    /// exact-session arm (→ the focused pane) is reached only once that pane is gone (<c>split close</c>).
     /// </summary>
     private (Pane pane, Ses? ses, bool cover)? FindControlPane(string target)
     {
@@ -1366,6 +1378,23 @@ internal partial class Program
         => !string.IsNullOrEmpty(preferred) && !WorkspaceIdInUse(preferred!) ? preferred! : Guid.NewGuid().ToString();
     private string StableSessionId(string? preferred)
         => !string.IsNullOrEmpty(preferred) && !SessionIdInUse(preferred!) ? preferred! : Guid.NewGuid().ToString();
+    /// <summary>True if any live pane (in any session) currently uses this id.</summary>
+    private bool PaneIdInUse(string id) { lock (_workspaces) return _workspaces.Any(w => w.Sessions.Any(s => s.Panes.Any(p => p.Id == id))); }
+    /// <summary>The id a restored pane keeps (P4: ids are durable — a restore uses the saved ids verbatim,
+    /// so a swapped-then-saved session comes back with the session id on the pane that carried it, which
+    /// may be slot 1). Three folds only: an EMPTY saved id mints one (pane 0: the session id, what a
+    /// pre-splits file meant; a later pane: fresh); a saved id equal to the file's session id follows
+    /// the session id wherever <see cref="StableSessionId"/> put it (a duplicate session id in the file
+    /// is folded to a fresh one, and the pane that carried it must carry the new one, or no pane would);
+    /// a saved id already used by a live pane (a duplicated session block in a hand-edited file) mints
+    /// a fresh one rather than making two shells answer to one handle.</summary>
+    private string StablePaneId(string? saved, string fileSessionId, string sessionId, bool first)
+    {
+        string id = string.IsNullOrEmpty(saved) ? (first ? sessionId : Guid.NewGuid().ToString())
+                  : saved == fileSessionId ? sessionId
+                  : saved;
+        return PaneIdInUse(id) ? Guid.NewGuid().ToString() : id;
+    }
 
     /// <summary>Reopen the most recently closed item — a session or a whole workspace, whichever was closed last.</summary>
     private void ReopenMostRecent()
@@ -1613,6 +1642,45 @@ internal partial class Program
     private void CollapseToSinglePane(Ses ses)
     {
         while (ses.Panes.Count > 1) ClosePane(ses, ses.Panes[^1]);
+    }
+
+    /// <summary>Exchange the two panes of <paramref name="ses"/> (<c>session swap</c>, P4): the order is
+    /// reversed, the focus follows the pane, the axis is kept, the ratio SEQUENCE is kept, and every id
+    /// is kept — a swap moves panes, never ids (<see cref="SwapReply"/> has the why).
+    /// <para>The ratio: <see cref="Pane.Ratio"/> is each pane's OWN share, so reversing the list alone
+    /// would turn a 70/30 into a 30/70 and the divider would jump. agterm says "axis and divider ratio
+    /// remain fixed"; in our representation that is the two panes exchanging their values — the
+    /// left/top box keeps its size and the contents change places. Both panes are regridded (their boxes
+    /// changed), a divider drag in progress ends (the pane under the pointer is no longer the one the
+    /// drag began on; ending it is what a release would do, and nothing tears), <c>_divLeft</c> is reset
+    /// to the one boundary a two-pane session has, the window's focused surface is repointed only when
+    /// <paramref name="ses"/> IS the active session (#230: swapping a background session must not steal
+    /// focus), then redraw, save, and a tree event (paneIds and focusedPane changed).</para>
+    /// <para>Nothing else moves. Checked, and found per-session or order-independent: overlay, scratch
+    /// and the quick cover (<see cref="Ses.Overlay"/> / <see cref="Ses.Scratch"/> / <c>_cover</c> —
+    /// session-wide until P5, which inherits the obligation to move a pane-scoped overlay with its pane);
+    /// the status aggregate (<see cref="StatusAggregate"/> is a max over the panes); context, flag, name,
+    /// profile, elevation, background (all on <see cref="Ses"/>); MRU and the multi-selection (session
+    /// ids); broadcast (per window); the UIA tree (one node per window, no per-pane node); the sidebar
+    /// row (per session). Per-PANE state — scroll offset, selection, read-only, unread, font size, the
+    /// restore pin and the captured slot, the agent binding — lives on <see cref="Pane"/> and travels
+    /// with it, which is the point. Events carry pane ids, which did not change.</para></summary>
+    private void SwapPanes(Ses ses)
+    {
+        if (ses.Panes.Count < 2) return;
+        lock (_workspaces)   // exclude the control-pipe reader mid-enumeration (issue #85)
+        {
+            var first = ses.Panes[0]; var last = ses.Panes[^1];
+            (first.Ratio, last.Ratio) = (last.Ratio, first.Ratio);   // the sequence of shares stays; the panes under it change
+            ses.Panes.Reverse();
+            ses.Active = ses.Panes.Count - 1 - ses.Active;            // focus follows the pane
+        }
+        if (ReferenceEquals(ses, _active) && _divDragging) { _divDragging = false; ReleaseCapture(); }
+        _divLeft = 0;
+        RegridSession(ses);
+        if (ReferenceEquals(ses, _active)) { _session = ses.S; RequestRedraw(); }
+        SaveState();
+        EmitEvent("tree");   // control-API event log (#273): paneIds and focusedPane changed
     }
 
     /// <summary>Set the split boundary next to the active pane: an absolute ratio for the first

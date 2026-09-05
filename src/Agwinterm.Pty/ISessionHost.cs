@@ -257,6 +257,28 @@ public interface ISessionHost
     /// between is refused rather than double-closed; a hop that cannot be queued or run is a refusal.</para>
     /// </summary>
     string SplitClose(string? target);
+    /// <summary>
+    /// <c>session.swap</c> (P4): exchange the two panes of a split session and reply with the session's
+    /// split block after the swap — <see cref="SwapResult"/>, which <see cref="SwapReply.Build"/> spells
+    /// as <c>{"session","paneIds","focusedPane","axis"}</c> (an object, the one <c>session split</c>
+    /// family reply that is not a bare string). The pane ORDER is reversed, the FOCUS follows the pane,
+    /// the axis is kept, the ratio SEQUENCE is kept (the left/top box stays the size it was; the two
+    /// panes exchange their shares), and EVERY ID IS KEPT — a swap moves panes, never ids, so an agent
+    /// holding a pane id keeps reaching the same shell. That relaxes one invariant: "the first pane
+    /// shares the session id" becomes "exactly one pane carries the session id, and a swap may put it
+    /// on either side"; the resolver's exact-pane-first order is what keeps the session id naming that
+    /// pane wherever it sits, and restore keeps the saved ids verbatim rather than re-minting pane 0.
+    /// <see cref="SwapReply"/> has what else was checked and found session-wide or order-independent.
+    /// <para><b>Target</b>: null / "" / "active" = the active session; else the content verbs' resolver
+    /// (a session id, either pane's id, a prefix, or a session name) — the session either pane belongs
+    /// to. Refusals, each with nothing moved (<see cref="SwapReply"/>'s wording): an unknown target; a
+    /// scratch / overlay / quick cover; a ONE-PANE session (nothing to exchange).</para>
+    /// <para><b>Invariants (#230)</b>: resolved on the caller's thread so a bad target answers a refusal
+    /// with nothing queued; the swap lands on THAT session, not on whichever is active, and swapping a
+    /// non-active session does not move focus to it; the panes are exchanged and the reply read back
+    /// INSIDE the same FIFO UI hop, re-resolving there; a hop that cannot be queued or run is a refusal.</para>
+    /// </summary>
+    SwapResult Swap(string? target);
     /// <summary><c>session.focus</c>: move pane focus in the active session. dir is one of agterm's
     /// words — <c>primary|split|left|right|top|bottom|other</c> — judged against the session's axis by
     /// <see cref="SplitAxes.TryFocusIndex"/> (<c>top</c> on a vertical split is refused naming the
@@ -474,6 +496,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool WorkspaceReorder(string? target, string dir) => false;
     public string Split(string? target, string op, string? axis) => ISessionHost.RefusePrefix + "session not found";
     public string SplitClose(string? target) => ISessionHost.RefusePrefix + SplitCloseReply.SinglePane(target ?? "active");
+    public SwapResult Swap(string? target) => SwapResult.Refuse(SwapReply.SinglePane(target ?? "active"));
     public string FocusPaneDir(string dir) => ISessionHost.RefusePrefix + SplitAxes.NotSplit;
     public string ResizeSplit(double? ratio, int growLeft, int growRight, int growTop, int growBottom) => ISessionHost.RefusePrefix + SplitAxes.NoDivider;
     public IReadOnlyList<string> ThemeList() => Array.Empty<string>();

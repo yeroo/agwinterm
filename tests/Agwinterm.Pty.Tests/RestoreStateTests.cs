@@ -312,6 +312,33 @@ public class RestoreStateTests
     }
 
     [Fact]
+    public void SwappedSession_RoundTripsWithItsIdsInTheirNewOrder_AndNoDuplicate()
+    {
+        // P4's `session swap` puts the pane that carries the session id in slot 1 and leaves pane 0 with
+        // its own id. The FORMAT has no opinion on which slot carries the session id — the ids are
+        // written and read verbatim — and this pins that: the saved order comes back, both ids come
+        // back, and the session id is on exactly one pane. (The app's loader then creates pane 0 under
+        // its SAVED id rather than the session id — restore-roundtrip.ps1's swap-killed cell pins that.)
+        var st = SplitTree(SplitAxes.Horizontal);
+        var s0 = st.Workspaces[0].Sessions[0];
+        s0.Panes.Reverse();                                     // what a swap leaves: [pane-2, ses-1]
+        s0.Panes[0].Ratio = 0.7f; s0.Panes[1].Ratio = 0.3f;     // the sequence a swap keeps
+        s0.Active = 0;
+        string json = RestoreState.Serialize(st);
+
+        var s = Load(json).Workspaces[0].Sessions[0];
+
+        Assert.Equal("ses-1", s.Id);
+        Assert.Equal(new[] { "pane-2", "ses-1" }, s.Panes.Select(p => p.Id));
+        Assert.Distinct(s.Panes.Select(p => p.Id));
+        Assert.Single(s.Panes, p => p.Id == s.Id);
+        Assert.Equal(new[] { 0.7f, 0.3f }, s.Panes.Select(p => p.Ratio));
+        Assert.Equal(0, s.Active);
+        Assert.Equal(SplitAxes.Horizontal, RestoreState.LoadAxis(s.Axis));
+        Assert.Equal(json, RestoreState.Serialize(Load(json)));
+    }
+
+    [Fact]
     public void Axis_IsTheLastKeyOfTheSession()
     {
         // Property order is the file's key order (RestoreState's header): a NEW key goes at the end of
