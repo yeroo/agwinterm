@@ -94,6 +94,52 @@
       "result": "string"
     },
     {
+      "verb": "session.context",
+      "args": [
+        "session",
+        "context",
+        "conf context: the build session",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "object",
+      "fields": [
+        "session",
+        "context"
+      ],
+      "note": "P3: one line of free text per session, shown beside the name and read back from `tree` as `context`. The reply carries the value IN EFFECT (read off the session after the write), so a caller tells an honoured request from a refused one by the reply alone. Control characters, blank and over-length are refusals (see errors), never a silent truncation."
+    },
+    {
+      "verb": "session.context",
+      "args": [
+        "session",
+        "context",
+        "--clear",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "object",
+      "fields": [
+        "session",
+        "context"
+      ],
+      "note": "P3: `--clear` is the only way to remove a context — an empty string is a refusal, not a clear. The reply still carries the key, with `null`, so a script reads one shape for set and clear."
+    },
+    {
+      "verb": "restore.capture",
+      "args": [
+        "restore",
+        "capture"
+      ],
+      "result": "object",
+      "fields": [
+        "captured",
+        "replayOnRestore",
+        "panes"
+      ],
+      "note": "P3: capture every real pane's foreground command into its restore slot NOW, not only at quit — the checkpoint a crash or a kill would otherwise never get. `panes` lists every pane reached with `captured` a string or null (nothing non-denylisted running); `captured` counts the non-null ones; `replayOnRestore` says whether the product will type the slots back on the next start. A process query that did not run is a refusal, never null written into every slot. Can take seconds: one process snapshot for all panes."
+    },
+    {
       "verb": "session.select",
       "args": [
         "session",
@@ -588,6 +634,25 @@
         "sidebar",
         "width",
         "5"
+      ]
+    },
+    {
+      "note": "P3: a context holding a control character (here a TAB) is refused naming the offset, and the session's context is unchanged. A context is one line of printable text; what is set is what is shown.",
+      "args": [
+        "session",
+        "context",
+        "bad\tcontext",
+        "--target",
+        "{alpha}"
+      ]
+    },
+    {
+      "note": "P3: restore.capture with an unknown target is refused in the verb's own words, and captures nothing for ANY pane — a narrowing that failed must not widen to everything.",
+      "args": [
+        "restore",
+        "capture",
+        "--target",
+        "no-such-pane-zz"
       ]
     }
   ],
