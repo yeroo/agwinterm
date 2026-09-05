@@ -240,6 +240,7 @@ public sealed class ControlServer : IDisposable
                         : host.SessionReorder(target, GetString(args, "dir") ?? "down"))
                         ? Ok("moved") : Err("not found");
                 case "session.rename": return host.SessionRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("session not found / blank name");
+                case "session.context": return HandleSessionContext(host, target, args);
                 case "session.seen": return host.SessionSeen(target) ? Ok("seen") : Err("session not found");
                 case "broadcast": return Ok(host.BroadcastOp(GetString(args, "op") ?? "toggle"));
                 case "session.readonly": return Ok(host.ReadOnlyOp(target, GetString(args, "op") ?? "toggle"));
@@ -422,6 +423,9 @@ public sealed class ControlServer : IDisposable
                 if (n.Notifications > 0) sb.Append(",\"notifications\":").Append(n.Notifications);
                 if (n.StatusBlink) sb.Append(",\"statusBlink\":true");
                 if (n.OverlaySize > 0) sb.Append(",\"overlaySize\":").Append(n.OverlaySize);
+                // context: the session.context read-back, emitted only when one is set — absent is
+                // "none", the same spelling the flags above use for "no" (P3).
+                if (n.Context is not null) sb.Append(",\"").Append(SessionContexts.Key).Append("\":").Append(JsonSerializer.Serialize(n.Context));
                 AppendRestoreCommands(sb, n);
                 if (n.PaneCount > 1)
                 {
@@ -469,6 +473,32 @@ public sealed class ControlServer : IDisposable
             any = true;
         }
         if (any) sb.Append('}');
+    }
+
+    /// <summary>
+    /// session.context: set or clear a session's one-line context and reply with the value IN EFFECT,
+    /// as an object (<c>{session, context}</c>, OkRaw) — the read-back is <c>tree</c>'s <c>context</c>.
+    /// Every refusal happens HERE, before the host is reached, through <see cref="SessionContexts"/>
+    /// (the one wording the fake and the app share): text beside <c>clear</c> is two sources for one
+    /// field; blank, a control character (named with its offset) and over-length are what the
+    /// surfaces cannot draw. A refusal leaves the old context in place — the host is never called.
+    /// The host's own refusal is "no session", the same condition rename refuses.
+    /// </summary>
+    private static string HandleSessionContext(ISessionHost host, string? target, JsonElement args)
+    {
+        string? raw = GetString(args, SessionContexts.Key);
+        bool clear = GetBool(args, "clear");
+        if (clear && raw is not null) return Err(SessionContexts.TextAndClear);
+        string? context = null;
+        if (!clear)
+        {
+            if (!SessionContexts.TryNormalize(raw, out string text, out string? refusal)) return Err(refusal!);
+            context = text;
+        }
+        string reply = host.SessionContext(target, context);
+        return reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+            ? Err(reply[ISessionHost.RefusePrefix.Length..])
+            : OkRaw(reply);
     }
 
     /// <summary>

@@ -6,12 +6,15 @@ namespace Agwinterm.Pty;
 /// <see cref="SplitRatios"/> describe its split layout; <see cref="StatusBlink"/> is the attention pulse;
 /// <see cref="OverlaySize"/> is an open overlay's size-percent (0 = none/full);
 /// <see cref="StatusChangedAt"/> is epoch seconds of the last status write on the pane whose status
-/// won the aggregate — the age of the status actually shown.</summary>
+/// won the aggregate — the age of the status actually shown; <see cref="Context"/> is the session's
+/// <c>session context</c> text (null = none; the tree omits the key). New optional fields go at the
+/// END: both hosts and <see cref="SingleSessionHost"/> construct this positionally.</summary>
 public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
     bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
     int FocusedPane = 0, int PaneCount = 1, bool StatusBlink = false, int OverlaySize = 0,
     IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null,
-    IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0);
+    IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0,
+    string? Context = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -134,8 +137,39 @@ public interface ISessionHost
     /// <summary>Relocate a session to another workspace (by id/prefix/active), appending.</summary>
     bool SessionToWorkspace(string? target, string workspace);
 
-    /// <summary>Rename a session: sets its custom name (shown in the sidebar and title bar).</summary>
+    /// <summary>Rename a session: sets its custom name (shown in the sidebar and title bar). Resolves
+    /// the target the way every content verb does (exact pane, exact session, pane prefix, session
+    /// prefix / name — a scratch or overlay cover id lands on the session it covers). False when no
+    /// session resolves, the name is blank, or the window is closing and the rename could not be
+    /// queued (#228 item 5: the post's result is the reply, not a constant true).</summary>
     bool SessionRename(string? target, string name);
+
+    /// <summary>
+    /// <c>session.context</c>: set (or, with <paramref name="context"/> null, clear) a session's
+    /// context — the one-line "what is this pane for" shown dimmed beside the name in the title bar
+    /// and the sidebar row, carried in <c>tree</c> as <c>context</c>, and persisted so it survives a
+    /// restart (P3). The server has already normalized and validated the text through
+    /// <see cref="SessionContexts"/> (control characters, blank, over-length and text-beside-clear are
+    /// refused before this is reached), so the host stores what it is given.
+    /// <para><b>Resolution</b> is <see cref="SessionRename"/>'s: null / "" / "active" is the active
+    /// session, else exact pane, exact session, pane prefix, session prefix / unique name; a scratch
+    /// or overlay cover id resolves to the session it covers, because a CLI launched inside a cover
+    /// inherits the cover's id and "this session" is the one under it. The window-level quick
+    /// terminal covers no session and is refused.</para>
+    /// <para><b>Returns</b> the JSON reply <see cref="SessionContexts.Reply"/> builds —
+    /// <c>{"session":id,"context":text|null}</c> — naming the session the value landed on and the
+    /// value IN EFFECT after the write, read back off the session rather than echoed from the
+    /// request; the server emits it raw. A target that resolves to no session returns
+    /// <see cref="ISessionHost.RefusePrefix"/> + <see cref="SessionContexts.NoSession"/> and changes
+    /// nothing.</para>
+    /// <para><b>Threading</b>: the write is applied on the UI thread through the FIFO queued hop (the
+    /// same queue every posted action travels), and the calling pipe thread waits for it, so the
+    /// reply describes a state that exists. A hop that cannot be queued or run (the window is
+    /// closing, or a message loop that never pumps within the bound) throws, which the server turns
+    /// into ok:false — never ok:true for a write that did not land. The session is resolved INSIDE
+    /// the hop so a session closed between the request and the write is refused, not written to.</para>
+    /// </summary>
+    string SessionContext(string? target, string? context);
 
     /// <summary>Clear a session's unseen-notification badge without visiting it (headless "seen").</summary>
     bool SessionSeen(string? target);
@@ -340,6 +374,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionReorder(string? target, string dir) => false;
     public bool SessionToWorkspace(string? target, string workspace) => false;
     public bool SessionRename(string? target, string name) => false;
+    public string SessionContext(string? target, string? context) => ISessionHost.RefusePrefix + SessionContexts.NoSession;
     public bool SessionSeen(string? target) => false;
     public string SidebarState() => $"visible tree {SidebarWidths.Default}";
     public SidebarWidthSnapshot SidebarWidth(int? set) => new(SidebarWidths.Default, true);

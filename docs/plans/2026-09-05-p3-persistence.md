@@ -190,41 +190,48 @@ Server and tests:
 ## Implementation Steps
 
 ### Task 1: `session.context` — rules, verb, host, fake, CLI
-- [ ] add `src/Agwinterm.Pty/SessionContexts.cs` modelled on `SidebarWidths.cs`: `MaxLength` (200),
+- [x] add `src/Agwinterm.Pty/SessionContexts.cs` modelled on `SidebarWidths.cs`: `MaxLength` (200),
       `Validate(string?)` returning the refusal text or null — refuses any character below U+0020
       or U+007F..U+009F (naming the offset, as `StdinText` does), refuses blank, refuses over-length
       naming the ceiling; `Normalize` trims leading/trailing whitespace. One class, one wording, used
       by the server before the host is reached **and** by `TryRestoreState` on load
-- [ ] `ISessionHost.SessionContext(string target, string? context)` returning `string` — `null`
+- [x] `ISessionHost.SessionContext(string target, string? context)` returning `string` — `null`
       clears; `RefusePrefix` for "no session" (the same wording `session.rename` uses); on success
       the JSON the server emits raw: `{"session":"<id>","context":"<text>"|null}`
-- [ ] server: `session.context` in the **host-verb block beside `session.rename`**
+- [x] server: `session.context` in the **host-verb block beside `session.rename`**
       (`ControlServer.cs:242`); `clear:true` in args clears; text and `clear` together are refused
       (two sources for one field — P2's `--stdin` rule); validation before the host call
-- [ ] host (`Program.ControlHost.cs`, beside `SessionRename`): resolve with the same session
+- [x] host (`Program.ControlHost.cs`, beside `SessionRename`): resolve with the same session
       resolver rename uses, apply through **`InvokeOnUiQueued`** so the reply carries the value
       after it was applied and a failed post is a refusal, then `RequestRedraw(); SaveState();`.
       **In the same commit make `SessionRename` return `Post(...)`** (#228 item 5, for that verb)
-- [ ] `SessionSnapshot` gains `string? Context = null` (last position); `Tree()` in both hosts fills
+- [x] `SessionSnapshot` gains `string? Context = null` (last position); `Tree()` in both hosts fills
       it; `HandleTree` emits `"context"` **only when set**
-- [ ] fake: `Sess.Context`, a real `SessionContext`, surfaced in `Tree()`; **split the fake's
+- [x] fake: `Sess.Context`, a real `SessionContext`, surfaced in `Tree()`; **split the fake's
       resolvers as #228 item 3 says** (cover fall-through on `Resolve` and a cover-aware session
       helper; `Find` session-only like the app's `Program.Sessions.cs:1658-1668`), rewording the
       field comment — the new verb must resolve identically against fake and app
-- [ ] CLI (`Ctl/Program.cs`): `session context <text> [--target ID]`, `session context --clear
+- [x] CLI (`Ctl/Program.cs`): `session context <text> [--target ID]`, `session context --clear
       [--target ID]`, `session context --stdin` through `StdinText` (one trailing newline stripped;
       an embedded newline is then refused by the rules above, deliberately — the context is one
       line); text with `--stdin` or with `--clear` refused client-side, sending nothing
-- [ ] tests `tests/Agwinterm.Pty.Tests/SessionContextTests.cs`: set → reply names session and text →
+- [x] tests `tests/Agwinterm.Pty.Tests/SessionContextTests.cs`: set → reply names session and text →
       tree carries it; clear → reply `context:null` → tree omits it; unknown target refused and no
       session changed; blank refused and the old value stands; a control character refused with its
       offset and the old value stands; over-length refused naming the ceiling; text+clear refused;
       whitespace normalised; **a cover pane id is refused by `session.context` exactly as by
       `session.rename`** (the #228-3 test)
-- [ ] run the .NET suite — must pass before task 2
+  - ⚠️ discovery correction: the app's `session.rename` does NOT refuse a scratch/overlay cover id —
+    `FindSesForTarget` → `FindControlPane` → `FindPaneBy`'s cover tail lands it on the session it
+    covers (a CLI inside a scratch pane inherits the cover's id, and "this session" is the one under
+    it). `session.context` resolves identically (asserted for both verbs in one test), and the
+    session-only `Find` behind `session.close` / `select` refuses the same id — that is the #228-3 split
+    the fake now mirrors. Only the window-level quick terminal (no session) is refused, in the app;
+    the fake does not model it.
+- [x] run the .NET suite — must pass before task 2
 
 ### Task 2: the context on every surface
-- [ ] `Ses.Context` (`Program.cs:320-346`), beside `CustomName`
+- [x] `Ses.Context` (`Program.cs:320-346`), beside `CustomName` (added in Task 1 — the host needs the field)
 - [ ] title bar: a dimmed run in `_uiSmall` / `ChromeDim` after the title, **before** the pill strip
       (`Program.Services.cs:306-317`), ellipsized within the same `titleAvail` budget so the bell and
       the right button group never move; drawn only when set. Say in a comment why it is a suffix

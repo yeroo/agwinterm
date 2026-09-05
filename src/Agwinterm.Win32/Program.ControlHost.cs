@@ -182,7 +182,8 @@ internal partial class Program
                         SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
                         PaneIds: s.Panes.Select(p => p.Id).ToList(),
                         RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList(),
-                        StatusChangedAt: statusChangedAt);
+                        StatusChangedAt: statusChangedAt,
+                        Context: s.Context);
                 }).ToList()
             )).ToList();
     }
@@ -407,8 +408,30 @@ internal partial class Program
     {
         var ses = FindSesForTarget(target);
         if (ses is null || string.IsNullOrWhiteSpace(name)) return false;
-        Post(() => { ses.Name = name; ses.CustomName = name; RequestRedraw(); SaveState(); }); // CustomName drives the title bar
-        return true;
+        // The post's result IS the reply (#228 item 5): a rename racing the window's WM_DESTROY used
+        // to answer ok with the action stranded in the queue. The rename does not touch Context —
+        // the name and the context are two fields, and rename edits one of them.
+        return Post(() => { ses.Name = name; ses.CustomName = name; RequestRedraw(); SaveState(); }); // CustomName drives the title bar
+    }
+
+    // session.context (P3). Resolution is rename's (FindSesForTarget: exact pane, exact session, pane
+    // prefix, session prefix / name; a scratch or overlay cover id lands on the session it covers, the
+    // quick terminal on nothing). The write goes through the FIFO queued hop rather than Post(...);
+    // return true, because the reply carries the value IN EFFECT, read back off the session after the
+    // write — P2's session.restore round found that Post-and-return reports the value REQUESTED. A
+    // hop that cannot be queued or run throws, which Dispatch turns into ok:false; nothing was applied.
+    // The target is resolved INSIDE the hop, so a session closed between the request and the write is
+    // refused rather than written to. The server has already normalized and validated the text.
+    public string SessionContext(string? target, string? context)
+    {
+        return InvokeOnUiQueued(() =>
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
+            ses.Context = context;
+            RequestRedraw(); SaveState();
+            return SessionContexts.Reply(ses.Id, ses.Context);
+        });
     }
 
     public bool WorkspaceRename(string? target, string name)

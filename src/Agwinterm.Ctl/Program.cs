@@ -13,6 +13,12 @@ using System.Text.Json;
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]
+//   agwintermctl session context <text...> [--target ID]   (one line of "what is this pane for", shown dimmed
+//       beside the name and read back in `tree --json` as context; survives a restart. Blank, a control
+//       character or more than 200 characters is refused; replies {session,context})
+//   agwintermctl session context --clear [--target ID]      (remove it; text beside --clear is refused)
+//   agwintermctl session context --stdin [--target ID]      (text = stdin, one trailing newline dropped; an
+//       embedded newline is then refused — the context is one line)
 //   agwintermctl session seen [--target ID]        (clear the unseen-notification badge)
 //   agwintermctl sidebar state                      (read-back: "visible tree 220" = visibility, mode, width)
 //   agwintermctl sidebar width [N]                  (read, or set, the sidebar width in DIP; replies {width,visible[,applied]}
@@ -168,6 +174,33 @@ switch (area)
                 if (rest.Count == 0 && Opt("name") is null) { Console.Error.WriteLine("session rename needs a name"); return 2; }
                 cargs["name"] = rest.Count > 0 ? string.Join(' ', rest) : Opt("name")!;
                 break;
+            case "context": // session context <text...> | --clear | --stdin  [--target ID]
+            {
+                // One source for the value, refused client-side otherwise (nothing is sent): text
+                // beside --clear, text beside --stdin, --stdin beside --clear. The rules themselves
+                // (blank, control characters, the ceiling) are the server's — SessionContexts — so the
+                // CLI does not pre-judge them; --stdin strips exactly one trailing newline (StdinText)
+                // and an embedded newline is then refused by the server, deliberately: a context is one
+                // line, and a here-string with two lines is not one.
+                bool clearFlag = options.ContainsKey("clear"), stdinFlag = options.ContainsKey("stdin");
+                // The splitter hands ANY flag the next bare word, so text can hide behind `--clear "text"`
+                // or `--stdin "text"`; detect the shape the way session type --stdin does.
+                bool swallowedWord = valued.Any(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
+                if (clearFlag && stdinFlag) { Console.Error.WriteLine("session context: --clear and --stdin cannot be combined (one says there is no context, the other supplies one); nothing was sent"); return 2; }
+                if ((clearFlag || stdinFlag) && (rest.Count > 0 || swallowedWord))
+                { Console.Error.WriteLine($"session context: --{(clearFlag ? "clear" : "stdin")} cannot be combined with positional text (one source for the context, not two); nothing was sent"); return 2; }
+                if (clearFlag) { cargs["clear"] = true; break; }
+                if (stdinFlag)
+                {
+                    var ctxStdin = Agwinterm.Pty.StdinText.Read(Console.OpenStandardInput());
+                    if (!ctxStdin.Ok) { Console.Error.WriteLine($"session context --stdin: {ctxStdin.Error}; nothing was sent"); return 2; }
+                    cargs[Agwinterm.Pty.SessionContexts.Key] = ctxStdin.Text;
+                    break;
+                }
+                if (rest.Count == 0) { Console.Error.WriteLine("session context needs text, --clear or --stdin"); return 2; }
+                cargs[Agwinterm.Pty.SessionContexts.Key] = string.Join(' ', rest);
+                break;
+            }
             // session metrics [<pane-id>] — cell size + pixel box of a pane, for sizing an
             // image.frameshm buffer. No args of its own; --json is the useful form.
             case "metrics":

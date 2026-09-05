@@ -19,6 +19,9 @@ internal sealed class FakeSessionHost : ISessionHost
         public AgentStatus Status => StatusAndChangedAt.Status;
         public bool Flagged, Overlay, ReadOnly;
         public string? AgentResume;
+        /// <summary>session.context — what the app keeps in Ses.Context. Read back through the tree,
+        /// so a test asserts a set the way a caller does and a refusal the way it must: unchanged.</summary>
+        public string? Context;
         public int Notifications, PaneCount = 1, FocusedPane, OverlaySize;
         public List<double> Ratios = new() { 1.0 };
         /// <summary>The session's panes, so the tree can aggregate status + its age the way the app
@@ -34,14 +37,22 @@ internal sealed class FakeSessionHost : ISessionHost
         /// The tree's <c>restoreCommands</c> is built from here, so a test reads a pin back the way a
         /// caller does, and a refused call is asserted to have left this empty.</summary>
         public readonly Dictionary<string, string> RestorePins = new();
-        /// <summary>Scratch / overlay / quick COVERS over this session, kept the way the app keeps them:
-        /// NOT in <see cref="Panes"/> / <see cref="PaneIds"/> / PaneCount / the tree (the app holds
-        /// them in Ses.Scratch / Ses.Overlay / _quick, and Tree() walks s.Panes only), but reachable
-        /// as a target by EVERY verb — Resolve and Find fall through to them after the real panes and
-        /// the name arm, as the app's FindPaneBy does — and refused by session.restore. Added with
-        /// <see cref="AddCoverPane"/>. Putting a cover into the pane lists desynchronised the
-        /// index-paired PaneIds / RestoreCommands (revmux r2 of P2); keeping it out of the resolvers
-        /// made session.type on a cover fail here while the app types (r3).</summary>
+        /// <summary>Scratch / overlay COVERS over this session, kept the way the app keeps them: NOT
+        /// in <see cref="Panes"/> / <see cref="PaneIds"/> / PaneCount / the tree (the app holds them in
+        /// Ses.Scratch / Ses.Overlay, and Tree() walks s.Panes only), and reachable as a target by
+        /// exactly the resolvers that reach them in the app (#228 item 3): <see cref="Resolve"/> (every
+        /// content verb — the app's FindControlPane walks FindPaneBy's cover tail) and
+        /// <see cref="FindSes"/> (the app's FindSesForTarget family — rename, context, notify, flag,
+        /// overlay, seen, scratch, split, background — where a cover id lands on the session it
+        /// covers), both after the real panes and the name arm; session.restore reaches them to
+        /// refuse. NOT <see cref="Find"/>, the app's session-only resolver behind select / close /
+        /// reorder / move, which never reaches a pane or a cover. Added with <see cref="AddCoverPane"/>.
+        /// Putting a cover into the pane lists desynchronised the index-paired PaneIds /
+        /// RestoreCommands (revmux r2 of P2); keeping it out of the resolvers made session.type on a
+        /// cover fail here while the app types (r3); letting Find reach it let session.close on a
+        /// cover id close the covering session here while the app refuses (#228 item 3). The app's
+        /// window-level quick terminal covers NO session and is not modelled: <see cref="AddCoverPane"/>
+        /// mints only <c>:scratch:</c> ids.</summary>
         public readonly List<(string Id, ISession Pane)> CoverPanes = new();
         /// <summary>A scratch cover over this session, id "&lt;session id&gt;:scratch:&lt;n&gt;" as the app
         /// spells it (Program.Sessions.cs). Returns the pane id.</summary>
@@ -81,11 +92,33 @@ internal sealed class FakeSessionHost : ISessionHost
         ActiveWs = w; ActiveSess = s;
     }
 
-    private Sess? Find(string? t) =>
-        t is null or "active" ? ActiveSess
-        : Workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s =>
-            s.Id == t || s.Id.StartsWith(t) || s.PaneIds.Any(p => p == t || p.StartsWith(t)))
-          ?? FindCover(t)?.s;   // a cover id addresses the session it covers, as in the app
+    // The app's session-only Find (Program.Sessions.cs, "Resolve a session-only control target"):
+    // null/""/"active" = the active session, else an exact session id, an id PREFIX, then a UNIQUE
+    // name — never a split pane's own id, never a cover. Behind SelectSession, CloseSession,
+    // SessionReorder and SessionToWorkspace, as in the app. Before #228 item 3 the fake's one Find
+    // also matched pane ids and fell through to covers, so `session.close <cover id>` removed the
+    // covering session here while the app answered "session not found".
+    private Sess? Find(string? t)
+    {
+        if (string.IsNullOrEmpty(t) || t == "active") return ActiveSess;
+        var all = Workspaces.SelectMany(w => w.Sessions).ToList();
+        if (all.FirstOrDefault(s => s.Id == t) is { } exact) return exact;
+        if (all.FirstOrDefault(s => s.Id.StartsWith(t, StringComparison.Ordinal)) is { } byPrefix) return byPrefix;
+        var named = all.Where(s => string.Equals(s.Name, t, StringComparison.OrdinalIgnoreCase)).ToList();
+        return named.Count == 1 ? named[0] : null;   // an ambiguous name resolves to nothing, as in the app
+    }
+
+    // The app's FindSesForTarget: the SESSION a pane-capable target lands on — FindControlPane's
+    // order (exact pane, exact session, pane prefix, session prefix / name) and then its cover tail,
+    // so a scratch / overlay cover id resolves to the session it covers. This is the resolver behind
+    // rename, context, duplicate, split, seen, scratch, overlay, notify, flag and background in the
+    // app, and it is why `session context` typed from a CLI inside a scratch pane (whose
+    // AGWINTERM_SESSION_ID is the cover's id) lands on the session under it rather than being refused.
+    private Sess? FindSes(string? t)
+    {
+        if (string.IsNullOrEmpty(t) || t == "active") return ActiveSess;
+        return FindPane(t)?.s ?? FindCover(t)?.s;
+    }
     // The app's FindWs: null/""/"active" = the active workspace, else an id or an id PREFIX — and
     // never a name. The fake used to match names here too, so a test that placed a session by
     // `--workspace <name>` passed against the fake while the app refused it: the same double-drift
@@ -118,8 +151,8 @@ internal sealed class FakeSessionHost : ISessionHost
     }
 
     /// <summary>A cover pane by exact id or id prefix — the tail of the app's FindPaneBy, after the
-    /// real panes. Resolve and Find reach it (every content verb, as in the app); session.restore
-    /// reaches it to refuse; the tree never lists it.</summary>
+    /// real panes. Resolve and FindSes reach it (every content verb and the FindSesForTarget family,
+    /// as in the app); session.restore reaches it to refuse; Find and the tree never see it.</summary>
     private (Sess s, string id, ISession pane)? FindCover(string target)
     {
         foreach (var s in Workspaces.SelectMany(w => w.Sessions))
@@ -156,7 +189,8 @@ internal sealed class FakeSessionHost : ISessionHost
                 s.Overlay, s.Notifications, s.Flagged, false, s.FocusedPane, s.PaneCount, false, s.OverlaySize, s.Ratios,
                 PaneIds: s.PaneIds,
                 RestoreCommands: s.PaneIds.Select(id => s.RestorePins.TryGetValue(id, out var pin) ? pin : "").ToList(),   // "" = none, as the app's snapshot spells it; parallel to PaneIds, covers in neither
-                StatusChangedAt: statusChangedAt);
+                StatusChangedAt: statusChangedAt,
+                Context: s.Context);
         }).ToList())).ToList();
 
     public WindowStateSnapshot WindowState() =>
@@ -169,7 +203,7 @@ internal sealed class FakeSessionHost : ISessionHost
     internal readonly Dictionary<string, PaneMetricsSnapshot> MetricsBySession = new();
     public PaneMetricsSnapshot? PaneMetrics(string? target)
     {
-        var session = Find(target);
+        var session = FindSes(target);   // the app measures through FindControlPane: pane-capable, cover-aware
         if (!Measurable || session is null) return null;
         return MetricsBySession.TryGetValue(session.Id, out var metrics)
             ? metrics
@@ -213,7 +247,7 @@ internal sealed class FakeSessionHost : ISessionHost
 
     public string DuplicateSession(string? target)
     {
-        var src = Find(target) ?? ActiveSess;
+        var src = FindSes(target) ?? ActiveSess;
         var w = src is null ? ActiveWs : Workspaces.First(x => x.Sessions.Contains(src));
         var s = new Sess { Id = "s" + (++_idSeq + 100), Name = $"session {w.Sessions.Count + 1}" }.Seed();
         w.Sessions.Add(s); ActiveSess = s; ActiveWs = w;
@@ -252,14 +286,25 @@ internal sealed class FakeSessionHost : ISessionHost
     public string NewWorkspace(string? name) { var w = new Ws { Id = "w" + (++_idSeq + 100), Name = string.IsNullOrEmpty(name) ? $"workspace {Workspaces.Count + 1}" : name }; Workspaces.Add(w); return w.Id; }
     public string ProfilesList() => "default";
     public string ProfilesReload() => "1 profile loaded";
-    public bool SetFontSize(string? target, string op) => Find(target) is not null;
+    public bool SetFontSize(string? target, string op) => FindSes(target) is not null;   // the app: Find, then FindControlPane — pane-capable overall
     public bool Dashboard(bool close, string? ids, int fontSize) => true;
 
     public void SessionGo(string dir) { }
     public bool SessionReorder(string? target, string dir) => Find(target) is not null;
     public bool SessionToWorkspace(string? target, string workspace) { var s = Find(target); var w = FindWs(workspace); if (s is null || w is null) return false; Workspaces.First(x => x.Sessions.Contains(s)).Sessions.Remove(s); w.Sessions.Add(s); return true; }
-    public bool SessionRename(string? target, string name) { var s = Find(target); if (s is null || string.IsNullOrWhiteSpace(name)) return false; s.Name = name; return true; }
-    public bool SessionSeen(string? target) { var s = Find(target); if (s is null) return false; s.Notifications = 0; return true; }
+    public bool SessionRename(string? target, string name) { var s = FindSes(target); if (s is null || string.IsNullOrWhiteSpace(name)) return false; s.Name = name; return true; }
+    // Real, not a stub: resolves as rename does (FindSes, so a cover id lands on its session and an
+    // unknown target is the app's "session not found"), stores what the server already validated,
+    // and replies with the value read back off the session — the app's InvokeOnUiQueued reply.
+    public string SessionContext(string? target, string? context)
+    {
+        var s = FindSes(target);
+        if (s is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
+        if (context is not null && SessionContexts.Validate(context) is { } bad) throw new ArgumentException("the server should have refused this: " + bad, nameof(context));   // the fake's tripwire, as SidebarWidth's
+        s.Context = context;
+        return SessionContexts.Reply(s.Id, s.Context);
+    }
+    public bool SessionSeen(string? target) { var s = FindSes(target); if (s is null) return false; s.Notifications = 0; return true; }
     public string SidebarState() => $"{(SidebarVisible ? "visible" : "hidden")} tree {SidebarW}";
     // Mirrors the app: no clamp, because ControlServer.TrySidebarWidth refuses out-of-range before the
     // host is reached. The range check is the fake's own tripwire — a test that drives the host
@@ -274,7 +319,7 @@ internal sealed class FakeSessionHost : ISessionHost
         return new SidebarWidthSnapshot(SidebarW, SidebarVisible);
     }
     public string BroadcastOp(string op) { Broadcast = op switch { "on" => true, "off" => false, "toggle" => !Broadcast, _ => Broadcast }; return Broadcast ? "on" : "off"; }
-    public string ReadOnlyOp(string? target, string op) { var s = Find(target); if (s is null) return "off"; s.ReadOnly = op switch { "on" => true, "off" => false, "toggle" => !s.ReadOnly, _ => s.ReadOnly }; return s.ReadOnly ? "on" : "off"; }
+    public string ReadOnlyOp(string? target, string op) { var s = FindSes(target); if (s is null) return "off"; s.ReadOnly = op switch { "on" => true, "off" => false, "toggle" => !s.ReadOnly, _ => s.ReadOnly }; return s.ReadOnly ? "on" : "off"; }
     public string SessionOutput(string? target) => "";
     public bool WorkspaceRename(string? target, string name) { var w = FindWs(target); if (w is null || string.IsNullOrWhiteSpace(name)) return false; w.Name = name; return true; }
     public bool WorkspaceDelete(string? target) { var w = FindWs(target); if (w is null || Workspaces.Count <= 1) return false; Workspaces.Remove(w); if (ReferenceEquals(ActiveWs, w)) { ActiveWs = Workspaces[0]; ActiveSess = ActiveWs.Sessions.FirstOrDefault(); } return true; }
@@ -285,7 +330,7 @@ internal sealed class FakeSessionHost : ISessionHost
         // Mirrors the app: the target resolves like every other session verb (null/"active",
         // a session or pane id, or a prefix), and the split lands on THAT session - not on
         // whichever one is active. Toggle is modelled too, since the app's default op is toggle.
-        var s = Find(target);
+        var s = FindSes(target);
         if (s is null) return false;
         s.PaneCount = op switch { "on" => 2, "off" => 1, _ => s.PaneCount > 1 ? 1 : 2 };
         s.Ratios = s.PaneCount == 1 ? new() { 1.0 } : new() { 0.5, 0.5 };
@@ -317,13 +362,13 @@ internal sealed class FakeSessionHost : ISessionHost
     public string ConfigList() => string.Join("\n", Config.Select(kv => $"{kv.Key} = {kv.Value}"));
     public string SettingsOpen() => "opened";
     public string SessionCopy(string? target) => "";
-    public string SelectionAll(string? target) => Find(target) is not null ? "selected" : "no session";
+    public string SelectionAll(string? target) => FindSes(target) is not null ? "selected" : "no session";
     public string SelectionCopy(string? target) => "";
     public string SelectionClear(string? target) => "cleared";
     public string SelectionFinalize(string? target) => "";
-    public string SessionPaste(string? target, string? text) => Find(target) is not null ? "pasted" : "no session";
+    public string SessionPaste(string? target, string? text) => FindSes(target) is not null ? "pasted" : "no session";
     public string SessionSearch(string? target, string? query, string? action) => "no matches";
-    public bool SessionScratch(string? target, string op) => Find(target) is not null;
+    public bool SessionScratch(string? target, string op) => FindSes(target) is not null;
     public void Quick(string op) { QuickVisible = op switch { "on" => true, "off" => false, "toggle" => !QuickVisible, _ => QuickVisible }; }
     // Mirrors the app: no clamp, because ControlServer.TryOverlaySize refuses out-of-range before the
     // host is reached. The range check here is the fake's own tripwire — a test that drives the host
@@ -336,7 +381,7 @@ internal sealed class FakeSessionHost : ISessionHost
         // and has no overlay is idempotent ok ("no overlay" — the conformance contract closes with
         // nothing open); resize with no overlay open is a refusal.
         const string noSession = ISessionHost.RefusePrefix + "no session matches that target; nothing opened, resized or closed";
-        var s = Find(target);
+        var s = FindSes(target);
         bool named = !string.IsNullOrEmpty(target) && target != "active";
         if (sizePercent is < 0 or > 100) return ISessionHost.RefusePrefix + $"size-percent {sizePercent} is outside 0..100";
         switch (action)
@@ -355,15 +400,15 @@ internal sealed class FakeSessionHost : ISessionHost
                 s.Overlay = true; s.OverlaySize = sizePercent; return s.Id;
         }
     }
-    public bool Notify(string? target, string? title, string body) { var s = Find(target); if (s is null) return false; s.Notifications++; return true; }
-    public bool SessionFlag(string? target, string op) { if (op == "clear") { foreach (var s in Workspaces.SelectMany(w => w.Sessions)) s.Flagged = false; return true; } var x = Find(target); if (x is null) return false; x.Flagged = op switch { "on" => true, "off" => false, "toggle" => !x.Flagged, _ => x.Flagged }; return true; }
-    public bool SessionBind(string? target, string agent) { var s = Find(target); if (s is null) return false; s.AgentResume = string.IsNullOrWhiteSpace(agent) || agent == "none" ? null : agent; return true; }
+    public bool Notify(string? target, string? title, string body) { var s = FindSes(target); if (s is null) return false; s.Notifications++; return true; }
+    public bool SessionFlag(string? target, string op) { if (op == "clear") { foreach (var s in Workspaces.SelectMany(w => w.Sessions)) s.Flagged = false; return true; } var x = FindSes(target); if (x is null) return false; x.Flagged = op switch { "on" => true, "off" => false, "toggle" => !x.Flagged, _ => x.Flagged }; return true; }
+    public bool SessionBind(string? target, string agent) { var s = FindSes(target); /* the app: FindPaneById, a pane, so pane-capable */ if (s is null) return false; s.AgentResume = string.IsNullOrWhiteSpace(agent) || agent == "none" ? null : agent; return true; }
     public string AdoptClaude() { int n = 0; foreach (var s in Workspaces.SelectMany(w => w.Sessions)) { s.AgentResume = "claude --resume x"; n++; } return $"adopted {n}"; }
-    public string RestartClaudeYolo(string? target) { var s = Find(target); if (s is null) return "no pane"; s.AgentResume = "claude --resume x --dangerously-skip-permissions"; return "restarting Claude in YOLO mode (resumed)"; }
+    public string RestartClaudeYolo(string? target) { var s = FindSes(target); if (s is null) return "no pane"; s.AgentResume = "claude --resume x --dangerously-skip-permissions"; return "restarting Claude in YOLO mode (resumed)"; }
     public string UpdateClaude() => "updating Claude Code…";
     public string UpdateApp() => "updating agwinterm…";
     public void WorkspaceFocus(string op) { }
-    public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => Find(target) is not null ? "ok" : "no session";
+    public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => FindSes(target) is not null ? "ok" : "no session";
     public string SessionSwitch(string op) => ActiveSess?.Name ?? "";
     public string CommandRun(string nameOrCommand, string? mode) => $"{mode ?? "new"}: {nameOrCommand}";
     public string CommandList() => "";

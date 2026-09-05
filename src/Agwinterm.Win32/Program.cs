@@ -327,6 +327,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public bool Flagged;       // durable working-set flag (survives moves; persisted; drives flagged sidebar mode)
         public bool Elevated;      // shell runs at High integrity (admin) — shown with a ⚡; false for de-elevated sessions
         public string? CustomName; // user-renamed title (null = show the cwd/OSC title in the title bar, agterm-style)
+        public string? Context;    // session.context: one line of "what is this pane for", set over the API (P3); drawn dimmed beside the name; persisted; null = none. Per session, not per pane — SessionContexts holds the rules.
         public string? ProfileName; // shell profile this session launched with (null = default; persisted)
         public Pane? Scratch;      // per-session scratch terminal (lazy; kept alive when hidden; not restored)
         public Pane? Overlay;      // ephemeral overlay terminal running a program over this session (Wave B3)
