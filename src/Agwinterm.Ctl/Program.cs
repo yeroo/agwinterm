@@ -293,28 +293,54 @@ switch (area)
                 else if (rest.Count > 0) cargs["query"] = string.Join(' ', rest);
                 break;
             case "split":
-                cargs["op"] = rest.Count > 0 ? rest[0] : "toggle";
+            {
+                // Every split op is destructive or structural, and every one defaults its TARGET to the
+                // caller's own pane — so anything that looks like a failed attempt to name a target is
+                // refused before a request is built, rather than acted on against the caller's shell
+                // with exit 0 (revmux r1 and r2 of P4, the `restore capture` lesson before them):
+                //   - a second positional (`session split off <pane-id>` — `session close <id>` and
+                //     `session metrics <id>` take one, so the shape is a natural mistake);
+                //   - an option outside this verb's set (`--targt X` — the splitter hands any flag the
+                //     next word, so the misspelt target vanishes and the caller's pane is used);
+                //   - an explicitly empty `--target ""` (the request builder drops an empty target,
+                //     which the server reads as the active pane).
+                // The op is lowercased like `area` and `sub`, and an op that is not one of the four is
+                // refused here: the host treats an unknown op as toggle, so `Close` or `clos` would
+                // collapse the split — pane 1's shell gone — with a success reply.
+                string op = rest.Count > 0 ? rest[0].ToLowerInvariant() : "toggle";
+                if (op is not ("on" or "off" or "toggle" or "close"))
+                { Console.Error.WriteLine($"session split: unknown op '{rest[0]}' — on, off, toggle or close (an unknown op is not a toggle: the wrong pane would be closed with exit 0). Nothing sent."); return 2; }
+                if (rest.Count > 1)
+                { Console.Error.WriteLine($"session split {op}: unexpected argument '{rest[1]}' — the pane or session is `--target <id>`; with no --target this acts on the caller's own pane, so a stray word is refused rather than ignored. Nothing sent."); return 2; }
+                var splitAllowed = new HashSet<string>(Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions, StringComparer.OrdinalIgnoreCase) { "axis" };
+                var badSplitOpt = options.Keys.FirstOrDefault(k => !splitAllowed.Contains(k));
+                if (badSplitOpt is not null)
+                { Console.Error.WriteLine($"session split {op}: unknown option --{badSplitOpt} (it takes --axis and --target). Nothing sent."); return 2; }
+                if (options.TryGetValue("target", out var splitTarget) && (splitTarget.Length == 0 || !valued.Contains("target")))
+                { Console.Error.WriteLine("session split: --target is empty — omit it to act on the caller's own pane, or name a pane or session. Nothing sent."); return 2; }
+                cargs["op"] = op;
                 if (Opt("axis") is { } axisWord) cargs["axis"] = axisWord;   // passed through as typed; the server refuses anything but the two words
                 // `close` is a sub-op with its own verb (P4): `session split close [--target ID]` closes the
                 // targeted pane — either side — and replies with the survivor's id. It takes no op and no
                 // axis, so neither travels: an `--axis` beside `close` is dropped here rather than refused
                 // by a verb that never reads it.
-                if ((string)cargs["op"]! == "close")
-                {
-                    // A positional after `close` is a pane id someone meant as the TARGET (`session close <id>`
-                    // and `session metrics <id>` take one), and dropping it would close the CALLER's own pane
-                    // and answer ok — the wrong shell destroyed, exit 0 (revmux r1). Refused, naming --target.
-                    if (rest.Count > 1) { Console.Error.WriteLine($"session split close: unexpected argument '{rest[1]}' — the pane to close is `--target <pane id>`; with no --target this closes the caller's own pane, so a stray word is refused rather than ignored. Nothing sent."); return 2; }
-                    cmd = "session.split.close"; cargs.Remove("op"); cargs.Remove("axis");
-                }
+                if (op == "close") { cmd = "session.split.close"; cargs.Remove("op"); cargs.Remove("axis"); }
                 break;
+            }
             // session swap [--target ID] (P4): no args of its own — the target is a session, either of its
             // panes, or nothing: from a pane's own CLI that pane's session, otherwise the active one; the
-            // reply is an object, printed raw by --json and plain. A positional is refused for the reason
-            // `split close` refuses one: it would swap the caller's own session and answer ok.
+            // reply is an object, printed raw by --json and plain. A positional, an unknown option or an
+            // empty --target is refused for the reason `split` refuses them: each would swap the caller's
+            // own session and answer ok.
             case "swap":
+            {
                 if (rest.Count > 0) { Console.Error.WriteLine($"session swap: unexpected argument '{rest[0]}' — the session (or either of its panes) is `--target <id>`; with no --target this swaps the caller's own session, so a stray word is refused rather than ignored. Nothing sent."); return 2; }
+                var badSwapOpt = options.Keys.FirstOrDefault(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
+                if (badSwapOpt is not null) { Console.Error.WriteLine($"session swap: unknown option --{badSwapOpt} (it takes only --target). Nothing sent."); return 2; }
+                if (options.TryGetValue("target", out var swapTarget) && (swapTarget.Length == 0 || !valued.Contains("target")))
+                { Console.Error.WriteLine("session swap: --target is empty — omit it to swap the caller's own session, or name a session or pane. Nothing sent."); return 2; }
                 break;
+            }
             case "readonly": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|state; block input to the pane
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
             case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay resize --size-percent N | overlay result

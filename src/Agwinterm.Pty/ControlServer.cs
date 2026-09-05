@@ -379,10 +379,12 @@ public sealed class ControlServer : IDisposable
                 // asks). Targeting follows Resolve, exactly as session.text/session.type do, so the
                 // pane you CHECK is the pane you then type into: a pane id reports that pane, and a
                 // session NAME reports its focused pane — a cursor is a per-pane thing, and focus is
-                // the only non-arbitrary answer for a session-wide target. Note that exactly ONE
-                // pane carries the session's id — pane 0 until a session.swap moves it (P4) — so an
-                // id target reports that pane wherever it sits, regardless of focus (Resolve's
-                // exact-pane-first order, verified in qa/control-read.md).
+                // the only non-arbitrary answer for a session-wide target. Note the two-state rule
+                // for a session-id target (P4): while a pane carries the session's id — pane 0 until
+                // a session.swap moves it — the id reports THAT pane wherever it sits, regardless of
+                // focus (Resolve's exact-pane-first order); once session.split.close has removed that
+                // pane no pane carries it, and the id falls through to the exact-session arm and
+                // reports the FOCUSED pane, like a name (verified in qa/control-read.md).
                 "surface.cursor" => OkRaw(s.SnapshotCursor().Col.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 "image.show" => HandleImageShow(s, args),
                 "image.sixel" => HandleImageSixel(s, args),
@@ -578,9 +580,10 @@ public sealed class ControlServer : IDisposable
     /// used, and the tree never emitted the field the skill file promised — so which pane took the pin
     /// was unknowable from the caller's side. Now the reply is
     /// <c>{action:"pinned"|"cleared", pane, session[, command]}</c>: <c>pane</c> is the pane the target
-    /// resolved to (a session NAME lands on that session's focused pane, a session ID on the one pane
-    /// that carries that id — pane 0 until a session.swap moves it — exactly as session.type does),
-    /// <c>session</c> its owner. ""/"none" clear, and are reported as a
+    /// resolved to (a session NAME lands on that session's focused pane, a session ID on the pane that
+    /// carries that id while one does — pane 0 until a session.swap moves it — and on the focused pane
+    /// once session.split.close has removed that pane; exactly as session.type does), <c>session</c>
+    /// its owner. ""/"none" clear, and are reported as a
     /// clear rather than a pin of nothing. The target is mandatory: a pin outlives whatever pane
     /// happens to be active now, so "active" is not a sensible default and is refused rather than
     /// guessed. Every refusal pins nothing.

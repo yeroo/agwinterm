@@ -276,9 +276,10 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   has no overlay, or when no target was given — there is nothing to close, and nothing is what you
   asked for.
 - `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
-  the target resolved to (a session name lands on its focused pane, a session id on the one pane that
-  carries that id — pane 0 until a `session swap` moves it — exactly as `session type` does), and
-  `action` is `pinned` or `cleared` (`none` clears). The target
+  the target resolved to (a session name lands on its focused pane, a session id on the pane that
+  carries that id while one does — pane 0 until a `session swap` moves it — and on the focused pane
+  once `session split close` has removed that pane; exactly as `session type` does), and `action` is
+  `pinned` or `cleared` (`none` clears). The target
   is mandatory, because a pin outlives whatever pane is active now. `tree --json` reads the pins back
   as `restoreCommands`, an object keyed by pane id that lists only pinned panes.
 - `restore capture [--target ID]` fills the captured-command slot of every real pane (or of one) **now**

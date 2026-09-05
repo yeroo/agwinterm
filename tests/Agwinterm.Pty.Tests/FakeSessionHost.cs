@@ -160,10 +160,12 @@ internal sealed class FakeSessionHost : ISessionHost
         : Workspaces.FirstOrDefault(w => w.Id == t) ?? Workspaces.FirstOrDefault(w => w.Id.StartsWith(t, StringComparison.Ordinal));
 
     // A pane, not a session, and in the app's order: active surface, then ANY pane by id or id
-    // prefix, then a session by name -> its FOCUSED pane. Because pane 0 shares the session id, an
-    // id target lands on pane 0 and never on the focused pane; that is deliberate, and it is the
-    // guarantee session.text / session.type already rely on (the pane you CHECK is the pane you
-    // then type into). Per-session panes are what let the tree's statusChangedAt aggregate for real.
+    // prefix, then a session by name -> its FOCUSED pane. While a pane carries the session id (pane
+    // 0 until a swap moves it), an id target lands on THAT pane and never on the focused pane; that
+    // is deliberate, and it is the guarantee session.text / session.type rely on (the pane you CHECK
+    // is the pane you then type into). Once split close has removed that pane, no pane carries the
+    // id and it resolves like a name, to the focused pane (P4, the two-state rule). Per-session panes
+    // are what let the tree's statusChangedAt aggregate for real.
     public ISession? Resolve(string? target)
     {
         if (target is null or "active") return Focused(ActiveSess);
@@ -429,8 +431,9 @@ internal sealed class FakeSessionHost : ISessionHost
     }
     // session.split.close (P4), the app's rules: null/""/"active" = the active session's focused pane
     // (Ctrl+Shift+W's target); else FindPane's order (exact pane, exact session → focused, pane prefix,
-    // session prefix / name → focused) — and because exactly one pane carries the session id, the
-    // session id names THAT pane, not the focused one. A cover is refused (not a side of a split), an
+    // session prefix / name → focused) — and while a pane carries the session id, the session id
+    // names THAT pane, not the focused one (after this verb removes it, the focused one). A cover
+    // is refused (not a side of a split), an
     // unknown target is refused, a one-pane session is refused naming `session close`; each leaves
     // everything as it was. The reply is the survivor's id, read back off slot 0 after the removal, as
     // the app reads ses.Panes[0].

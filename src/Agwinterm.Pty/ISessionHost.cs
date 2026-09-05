@@ -244,9 +244,11 @@ public interface ISessionHost
     /// one that can close pane 0 of two, which before P4 only Ctrl+Shift+W on a focused pane 0 could.
     /// <para><b>Target</b>: null / "" / "active" = the active session's focused pane (what Ctrl+Shift+W
     /// closes); else the content verbs' resolver (exact pane, exact session → its focused pane, pane
-    /// prefix, session prefix / name → its focused pane). Exactly one pane carries the session id, so
-    /// the session id names THAT pane through the exact-pane arm; a session NAME names the focused
-    /// pane. <see cref="SplitCloseReply"/> has the wording of every refusal, each with nothing closed:
+    /// prefix, session prefix / name → its focused pane). While a pane carries the session id it
+    /// names THAT pane through the exact-pane arm; closing that pane (this verb can) leaves none, and
+    /// from then on the session id falls through to the exact-session arm and names the FOCUSED pane,
+    /// like a name does. <see cref="SplitCloseReply"/> has the wording of every refusal, each with
+    /// nothing closed:
     /// an unknown target; a scratch / overlay / quick cover (not a side of a split); a ONE-PANE session
     /// (<c>session close</c> is the verb for that — a <c>split close</c> that closed the session would
     /// be the silent-success class one verb over).</para>
@@ -265,9 +267,10 @@ public interface ISessionHost
     /// the axis is kept, the ratio SEQUENCE is kept (the left/top box stays the size it was; the two
     /// panes exchange their shares), and EVERY ID IS KEPT — a swap moves panes, never ids, so an agent
     /// holding a pane id keeps reaching the same shell. That relaxes one invariant: "the first pane
-    /// shares the session id" becomes "exactly one pane carries the session id, and a swap may put it
-    /// on either side"; the resolver's exact-pane-first order is what keeps the session id naming that
-    /// pane wherever it sits, and restore keeps the saved ids verbatim rather than re-minting pane 0.
+    /// shares the session id" becomes "at most one pane carries the session id: a swap may put it on
+    /// either side, and a split close may remove it"; the resolver's exact-pane-first order is what
+    /// keeps the session id naming that pane wherever it sits (and the focused pane once no pane
+    /// carries it), and restore keeps the saved ids verbatim rather than re-minting pane 0.
     /// <see cref="SwapReply"/> has what else was checked and found session-wide or order-independent.
     /// <para><b>Target</b>: null / "" / "active" = the active session; else the content verbs' resolver
     /// (a session id, either pane's id, a prefix, or a session name) — the session either pane belongs
