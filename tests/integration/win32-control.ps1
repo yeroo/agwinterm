@@ -384,6 +384,42 @@ try {
     Check 'the survivor keeps its id and its shell: session text by the old pane 1 id, and by the session id, still shows what was typed there' `
         ($scTyped -and $scText.ok -and ([string]$scText.result).Contains($scMarker) -and $scViaSession.ok -and ([string]$scViaSession.result).Contains($scMarker)) `
         "typed=$scTyped byPane=$($scText.ok) bySession=$($scViaSession.ok)"
+    # The CLI-side refusals of the split family (revmux r1-r3 of P4), each proved twice: exit 2 with the
+    # message, and the ORACLE — the split-close fixture still has two panes. Every one of these acted on
+    # the caller's own pane with exit 0 before it was refused. Run BEFORE the close below, on the split.
+    $scGuardMade = Invoke-Ctl @('session', 'new', '--name', 'p4-split-guards', '--no-select')
+    $scGuardId = [string]$scGuardMade.result
+    for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $scGuardId); $i++) { Start-Sleep -Milliseconds 200 }
+    $scGuardSplit = Invoke-Ctl @('session', 'split', 'on', '--target', $scGuardId)
+    $scGuardPane1 = [string]$scGuardSplit.result
+    for ($i = 0; $i -lt 30; $i++) { $n = Get-SessionSnapshot $scGuardId; if ($n -and @($n.paneIds).Count -eq 2) { break }; Start-Sleep -Milliseconds 200 }
+    foreach ($shape in @(
+            @(@('session', 'split', 'off', $scGuardPane1), 'unexpected argument'),
+            @(@('session', 'split', 'close', $scGuardPane1), 'unexpected argument'),
+            @(@('session', 'split', 'clos', '--target', $scGuardId), 'unknown op'),
+            @(@('session', 'split', 'close', '--targt', $scGuardId), 'unknown option'),
+            @(@('session', 'split', 'off', '--target', ''), 'is empty'),
+            @(@('session', 'swap', $scGuardId), 'unexpected argument'),
+            @(@('session', 'swap', '--targt', $scGuardId), 'unknown option'),
+            @(@('session', 'swap', '--target', ''), 'is empty'))) {
+        $argv = $shape[0]; $want = $shape[1]
+        $out = & $ctl @argv --pipe $pipe 2>&1
+        $code = $LASTEXITCODE
+        Check "the CLI refuses '$($argv -join ' ')' before sending anything ($want)" ($code -eq 2 -and ("$out" -match $want) -and ("$out" -match 'Nothing sent')) "exit $code, output: $out"
+    }
+    $scGuardStill = Get-SessionSnapshot $scGuardId
+    Check 'and none of the refused shapes touched the fixture: still two panes, the same two' `
+        ($scGuardStill -and @($scGuardStill.paneIds).Count -eq 2 -and @($scGuardStill.paneIds)[1] -eq $scGuardPane1) "node=$($scGuardStill | ConvertTo-Json -Compress)"
+    # And the case fix: `Close` is `close` (it used to fall through to toggle and collapse the split —
+    # pane 1 gone, ok:true). Closing pane 1 by its id leaves pane 0 (the session id) as the survivor.
+    $scCase = Invoke-Ctl @('session', 'split', 'Close', '--target', $scGuardPane1)
+    Start-Sleep -Milliseconds 400
+    $scGuardAfter = Get-SessionSnapshot $scGuardId
+    Check 'session split Close (capitalised) closes the NAMED pane and answers the survivor, rather than toggling' `
+        ($scCase.ok -and ([string]$scCase.result -eq $scGuardId) -and $scGuardAfter -and -not $scGuardAfter.PSObject.Properties['paneCount']) `
+        "reply=$($scCase | ConvertTo-Json -Compress) node=$($scGuardAfter | ConvertTo-Json -Compress)"
+    Invoke-Ctl @('session', 'close', $scGuardId) | Out-Null
+
     $scRefused = Invoke-Ctl @('session', 'split', 'close', '--target', $scId)
     $scStill = Get-SessionSnapshot $scId
     Check 'session split close on a single-pane session is refused naming session close, and the session stands' `

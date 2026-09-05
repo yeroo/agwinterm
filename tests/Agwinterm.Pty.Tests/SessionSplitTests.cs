@@ -97,6 +97,34 @@ public class SessionSplitTests
     // ---- section 1: the reply is the pane id ----
 
     [Fact]
+    public void UnknownOp_IsRefusedOnTheWire_AndNothingIsSplitOrCollapsed()
+    {
+        // The host treats an unknown op as toggle, so a raw client sending "Close" or "clos" against
+        // a split session would collapse it — pane 1's shell gone — with ok:true (revmux r2/r3 of P4).
+        // The CLI lowercases and validates; the SERVER must too, because the CLI is not the only client.
+        var (server, host) = New();
+        var single = Op(server, "Close");
+        Assert.False(Ok(single));
+        Assert.Contains("unknown op", Error(single));
+        Assert.Contains("Nothing was split or closed", Error(single));
+        Assert.Equal(1, PaneCount(server));                                   // a single pane stayed single
+
+        string split = Id(Op(server, "on"));
+        foreach (var bad in new[] { "Close", "clos", "close", "ON", "" })
+        {
+            var r = Op(server, bad);
+            Assert.False(Ok(r), bad);
+            Assert.Contains("unknown op", Error(r));
+            Assert.Equal(2, PaneCount(server));                               // the split stood
+            Assert.Equal(split, PaneIds(server)[1]);                          // with the same pane
+        }
+        var nonString = Split(server, null, "{\"op\":1}");
+        Assert.False(Ok(nonString));
+        Assert.Contains("unknown op", Error(nonString));
+        Assert.Equal(2, PaneCount(server));
+    }
+
+    [Fact]
     public void SplitOn_RepliesWithTheSplitPaneId_WhichTheTreeLists()
     {
         var (server, host) = New();

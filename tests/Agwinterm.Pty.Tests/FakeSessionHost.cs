@@ -30,12 +30,14 @@ internal sealed class FakeSessionHost : ISessionHost
         /// <summary>The session's panes, so the tree can aggregate status + its age the way the app
         /// does. One pane unless a test splits it via <see cref="AddPane"/>.</summary>
         public readonly List<ISession> Panes = new() { new TerminalSession(80, 24) };
-        /// <summary>Pane ids, parallel to <see cref="Panes"/>. EXACTLY ONE pane carries the session id,
+        /// <summary>Pane ids, parallel to <see cref="Panes"/>. AT MOST ONE pane carries the session id,
         /// as the app does it (Program.Sessions.cs, CreateSession: a fresh session's pane 0 IS the
-        /// session id; a split pane gets its own) — and since P4's <c>session swap</c> that pane may sit
-        /// on either side, because a swap moves panes, never ids. That is why an id target reaches THAT
-        /// pane whatever <see cref="FocusedPane"/> says (the resolver's exact-pane-first order), and only
-        /// a NAME reaches the focused pane — the asymmetry qa/control-read.md pins.</summary>
+        /// session id; a split pane gets its own): since P4's <c>session swap</c> that pane may sit on
+        /// either side (a swap moves panes, never ids), and since <c>session split close</c> it may be
+        /// gone (closing the carrier — by any path — leaves none; a later split mints a fresh id). That
+        /// is why an id target reaches THAT pane whatever <see cref="FocusedPane"/> says while one
+        /// carries it (the resolver's exact-pane-first order), and the FOCUSED pane while none does —
+        /// the rule by condition that qa/control-read.md pins.</summary>
         public readonly List<string> PaneIds = new();
         /// <summary>session.restore pins, keyed by pane id — what the app keeps in Pane.RestoreCommand.
         /// The tree's <c>restoreCommands</c> is built from here, so a test reads a pin back the way a
@@ -163,9 +165,9 @@ internal sealed class FakeSessionHost : ISessionHost
     // prefix, then a session by name -> its FOCUSED pane. While a pane carries the session id (pane
     // 0 until a swap moves it), an id target lands on THAT pane and never on the focused pane; that
     // is deliberate, and it is the guarantee session.text / session.type rely on (the pane you CHECK
-    // is the pane you then type into). Once split close has removed that pane, no pane carries the
-    // id and it resolves like a name, to the focused pane (P4, the two-state rule). Per-session panes
-    // are what let the tree's statusChangedAt aggregate for real.
+    // is the pane you then type into). While no pane carries the id — the carrier was closed, by any
+    // path — it resolves like a name, to the focused pane (P4, the session-id rule by condition).
+    // Per-session panes are what let the tree's statusChangedAt aggregate for real.
     public ISession? Resolve(string? target)
     {
         if (target is null or "active") return Focused(ActiveSess);
@@ -432,8 +434,8 @@ internal sealed class FakeSessionHost : ISessionHost
     // session.split.close (P4), the app's rules: null/""/"active" = the active session's focused pane
     // (Ctrl+Shift+W's target); else FindPane's order (exact pane, exact session → focused, pane prefix,
     // session prefix / name → focused) — and while a pane carries the session id, the session id
-    // names THAT pane, not the focused one (after this verb removes it, the focused one). A cover
-    // is refused (not a side of a split), an
+    // names THAT pane, not the focused one (while none does, the focused one — this verb is one of
+    // the paths that removes the carrier). A cover is refused (not a side of a split), an
     // unknown target is refused, a one-pane session is refused naming `session close`; each leaves
     // everything as it was. The reply is the survivor's id, read back off slot 0 after the removal, as
     // the app reads ses.Panes[0].

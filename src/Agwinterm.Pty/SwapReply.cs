@@ -31,7 +31,8 @@ public sealed record SwapResult(string SessionId, IReadOnlyList<string> PaneIds,
 /// id, and an agent holding a pane id must keep reaching the same shell after a swap. So the session
 /// id keeps naming the pane it always named, which now sits on the other side — "the first pane shares
 /// the session id" becomes "at most one pane carries the session id: a swap may put it on either
-/// side, and a split close may remove it". Nothing else moves: overlays and scratch are session-wide
+/// side, and closing that pane — by any path — leaves none" (the rule in full is on
+/// <see cref="ISessionHost.SplitClose"/>). Nothing else moves: overlays and scratch are session-wide
 /// (until P5), the status aggregate
 /// is order-independent, context, flag, MRU and broadcast are session-keyed, events carry pane ids.
 ///

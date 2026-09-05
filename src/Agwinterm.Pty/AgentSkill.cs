@@ -84,9 +84,8 @@ public static class AgentSkill
         - `agwintermctl session restore "<command>" --target PANE` — pin a command to re-run on every restart for that pane; `none` clears.
           The target is mandatory (no active-pane default: a pin outlives whatever is active now; inside a session `AGWINTERM_SESSION_ID`
           is the pane). Replies `{action:"pinned"|"cleared", pane, session[, command]}` naming the pane it landed on — a session
-          NAME lands on its focused pane, a session ID on the pane that carries that id while one does (pane 0 until a
-          `session swap` moves it) and on the FOCUSED pane once `session split close` has removed that pane — exactly as
-          `session type` does. Read it back in
+          NAME lands on its focused pane, a session ID on the pane that carries that id while one does, and on the FOCUSED
+          pane while none does (see the splits section for when that is) — exactly as `session type` does. Read it back in
           `tree --json` as `restoreCommands`: an object keyed by pane id listing only pinned panes (absent when none).
           An unknown target, or a scratch/overlay/quick pane (never restored), is refused and nothing is pinned.
         - `agwintermctl profiles list` — shell profiles (cmd, Windows PowerShell, PowerShell 7, Git Bash, WSL:*, custom); `* ` marks the default.
@@ -137,9 +136,9 @@ public static class AgentSkill
           (the wrap is deferred), so do not use it as an index into a `session text` row without clamping.
           A pane id
           reports that pane; a session NAME reports its focused pane. (A session id targets the pane that carries it
-          while one does — pane 0 until a `session swap` moves it — same as `session text`/`session type`, so the pane you
-          check is the pane you type into. After `session split close` has removed that pane the id behaves like a NAME
-          and reaches the FOCUSED pane, which can change under you: use pane ids from `tree --json` from then on.)
+          while one does, same as `session text`/`session type`, so the pane you check is the pane you type into. While
+          NO pane carries it — the carrier was closed, however it was closed — the id behaves like a NAME and reaches the
+          FOCUSED pane, which can change under you: in a split session, address panes by the ids `tree --json` lists.)
           Reading rendered text and guessing at placeholder strings is what this replaces
         - `agwintermctl session search "<term>"`                 — open the find bar over the active session; returns "N of M" (or "no matches")
         - `agwintermctl session search --next|--prev|--close`    — step matches / close the find bar
@@ -238,9 +237,13 @@ public static class AgentSkill
           then the follow-up key. Drive/observe it with `agwintermctl command leader state|begin|cancel|key:<chord>`.
 
         ## Splits, font, sidebar, theme
-        A session has at most TWO panes. Each pane has its own id (`tree --json` lists them as `paneIds`; at most one of them
-        IS the session id — pane 0 until a `swap` moves it, and NONE once `split close` has removed that pane, after which
-        a session-id target reaches the focused pane like a name does). The split verbs take `--target <id>` as a
+        A session has at most TWO panes. Each pane has its own id (`tree --json` lists them as `paneIds`). THE SESSION-ID
+        RULE, by condition and not by verb: a session id names the pane that carries it while one does — pane 0 of a fresh or
+        reopened session; after a `swap`, either side — and names the session's FOCUSED pane while none does. None does once
+        the carrier was closed, however it was closed: `split close` on it, Ctrl+Shift+W on it, `split off` after a `swap`
+        (that collapses onto the other pane), or its shell exiting. A later `split` mints a fresh id, so the state persists
+        until the session is closed and reopened (a reopened session's pane 0 carries the id again). In a split session,
+        address panes by their own ids. The split verbs take `--target <id>` as a
         session or either of its panes and act on THAT session, not the active one; `focus` and `resize` act on the active session.
         - `agwintermctl session split [on|off|toggle] [--axis vertical|horizontal] [--target <id>]` — REPLIES WITH A PANE ID, a bare
           string: `on` = the split pane's id — ALSO when the session was already split (nothing changes; a caller that does not
@@ -255,8 +258,8 @@ public static class AgentSkill
           closes that pane; a session name or no target closes the session's focused pane (what Ctrl+Shift+W does); from your
           own pane, your pane. Replies with the SURVIVOR's id, which becomes pane 0 with the whole area and the focus. A one-pane
           session is REFUSED — `session close` is the verb that closes a session. Closing the pane that carries the session
-          id leaves the session with NO pane of that id: from then on a session-id target reaches the focused pane (a later
-          split mints a fresh id), so keep addressing panes by the ids `tree --json` lists.
+          id is one of the ways the session-id rule above flips to "the focused pane": keep addressing panes by the ids
+          `tree --json` lists.
         - `agwintermctl session swap [--target <id>]` — exchange the two panes. What moves: the pane order (left↔right or
           top↔bottom), the focus (it follows its pane) and the two shells' contents. What does not: the axis, the divider (the
           left/top box keeps its size — the contents change places), overlays / scratch / quick, the status, the context, the

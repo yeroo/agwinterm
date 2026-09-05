@@ -17,6 +17,14 @@ namespace Agwinterm.Pty;
 /// </summary>
 public static class SplitAxes
 {
+    /// <summary>The ops <c>session.split</c> accepts on the wire (<c>close</c> is its own verb,
+    /// <c>session.split.close</c>). Exact, lowercase: the CLI lowercases what it was typed, a raw
+    /// client sends what it means. Anything else is refused rather than treated as toggle.</summary>
+    public static bool IsOp(string op) => op is "on" or "off" or "toggle";
+
+    public static string OpRefusal(string raw) =>
+        $"session split: unknown op {raw} — on, off or toggle (close is `session split close`); an unknown op is not a toggle, because a toggle on a split session closes a pane. Nothing was split or closed.";
+
     /// <summary>Left/right panes. The default.</summary>
     public const string Vertical = "vertical";
     /// <summary>Top/bottom panes.</summary>

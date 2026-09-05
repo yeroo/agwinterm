@@ -452,8 +452,9 @@ switch (area)
     case "settings": cmd = "settings.open"; break;
     case "surface":
         // agwintermctl surface cursor [--target ID] — the caret column of a pane, as a bare integer.
-        // A pane id selects that pane — and the session id IS pane 0's id, so it selects pane 0
-        // regardless of focus; only a unique session NAME resolves to the focused pane.
+        // A pane id selects that pane; a session id selects the pane that carries it while one does
+        // (regardless of focus) and the focused pane while none does — the session-id rule by
+        // condition (P4); a unique session NAME always resolves to the focused pane.
         if (sub != "cursor")
         { Console.Error.WriteLine("usage: agwintermctl surface cursor [--target ID]"); return 2; }
         cmd = "surface.cursor";

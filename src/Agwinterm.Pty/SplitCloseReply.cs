@@ -15,9 +15,12 @@ namespace Agwinterm.Pty;
 ///
 /// Resolution is the content verbs' (<c>FindControlPane</c>: exact pane, exact session → its focused
 /// pane, pane prefix, session prefix / name → its focused pane); no target or <c>active</c> is the
-/// active session's focused pane, what Ctrl+Shift+W closes. Because exactly one pane carries the
-/// session id, a target of the session id lands on THAT pane through the exact-pane arm (the order
-/// <c>win32-control.ps1</c> pins), so "a session id → its focused pane" is reached only by a NAME.
+/// active session's focused pane, what Ctrl+Shift+W closes. A target of the session id lands on the
+/// pane that carries it while one does (the exact-pane arm, the order <c>win32-control.ps1</c> pins)
+/// — and this verb is one of the ways that pane goes away, after which the session id names the
+/// FOCUSED pane like a name does (<c>win32-control.ps1</c> pins that too: after closing the carrier,
+/// <c>session text</c> by the session id reaches the survivor). The rule in full is on
+/// <see cref="ISessionHost.SplitClose"/>.
 /// </summary>
 public static class SplitCloseReply
 {

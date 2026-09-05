@@ -59,8 +59,11 @@ discovered:
   order, keeps the axis and the ratio sequence (the left/top box keeps its size; the contents change
   places), moves the focus with its pane and leaves every id where it was — the session id keeps naming
   the pane it always named, now on the other side. The invariant "the first pane carries the session
-  id" is therefore "exactly one pane carries the session id", and the resolver's exact-pane-first order
-  is what keeps the session id naming that pane. What that costs on the way **down** (checked once,
+  id" is therefore "at most one pane carries the session id" — a swap may put it on either side, and
+  closing that pane by any path (`split close`, Ctrl+Shift+W, `split off` after a swap, a shell
+  exiting) leaves none, after which a session-id target resolves to the focused pane like a name; the
+  resolver's exact-pane-first order is what keeps the session id naming the carrier while one exists.
+  What that costs on the way **down** (checked once,
   #238's final task): the released 0.17.12 restores pane 0 under the session id, so a file saved
   with a *swapped* session loads there with **both panes carrying the session id** and the split
   shell's id gone — no `.bad`, no crash, two panes side by side; an unswapped file loses only the

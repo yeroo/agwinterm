@@ -379,12 +379,13 @@ public sealed class ControlServer : IDisposable
                 // asks). Targeting follows Resolve, exactly as session.text/session.type do, so the
                 // pane you CHECK is the pane you then type into: a pane id reports that pane, and a
                 // session NAME reports its focused pane — a cursor is a per-pane thing, and focus is
-                // the only non-arbitrary answer for a session-wide target. Note the two-state rule
-                // for a session-id target (P4): while a pane carries the session's id — pane 0 until
-                // a session.swap moves it — the id reports THAT pane wherever it sits, regardless of
-                // focus (Resolve's exact-pane-first order); once session.split.close has removed that
-                // pane no pane carries it, and the id falls through to the exact-session arm and
-                // reports the FOCUSED pane, like a name (verified in qa/control-read.md).
+                // the only non-arbitrary answer for a session-wide target. The session-id rule, by
+                // condition (P4): while a pane carries the session's id — pane 0 of a fresh session,
+                // either side after a session.swap — the id reports THAT pane wherever it sits,
+                // regardless of focus (Resolve's exact-pane-first order); while none does — the
+                // carrier was closed, by split.close, Ctrl+Shift+W, split off after a swap, or its
+                // shell exiting — the id falls through to the exact-session arm and reports the
+                // FOCUSED pane, like a name (verified in qa/control-read.md).
                 "surface.cursor" => OkRaw(s.SnapshotCursor().Col.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 "image.show" => HandleImageShow(s, args),
                 "image.sixel" => HandleImageSixel(s, args),
@@ -538,6 +539,14 @@ public sealed class ControlServer : IDisposable
             if (av.ValueKind != JsonValueKind.String) return Err(SplitAxes.Refusal(av.GetRawText()));
             if (!SplitAxes.TryParse(av.GetString(), out axis, out string? axisRefusal)) return Err(axisRefusal!);
         }
+        // The op is validated HERE too, not only in the CLI: the host treats an unknown op as toggle,
+        // so a raw client sending op "Close" or "clos" would collapse a split — pane 1's shell gone —
+        // with ok:true (revmux r2/r3 of P4). Absent = toggle; anything else must be one of the three.
+        if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("op", out var ov))
+        {
+            if (ov.ValueKind != JsonValueKind.String) return Err(SplitAxes.OpRefusal(ov.GetRawText()));
+            if (!SplitAxes.IsOp(ov.GetString()!)) return Err(SplitAxes.OpRefusal(ov.GetString()!));
+        }
         return HostReply(host.Split(target, GetString(args, "op") ?? "toggle", axis));
     }
 
@@ -581,9 +590,9 @@ public sealed class ControlServer : IDisposable
     /// was unknowable from the caller's side. Now the reply is
     /// <c>{action:"pinned"|"cleared", pane, session[, command]}</c>: <c>pane</c> is the pane the target
     /// resolved to (a session NAME lands on that session's focused pane, a session ID on the pane that
-    /// carries that id while one does — pane 0 until a session.swap moves it — and on the focused pane
-    /// once session.split.close has removed that pane; exactly as session.type does), <c>session</c>
-    /// its owner. ""/"none" clear, and are reported as a
+    /// carries that id while one does, and on the focused pane while none does — the session-id rule
+    /// by condition, see <see cref="ISessionHost.SplitClose"/>; exactly as session.type does),
+    /// <c>session</c> its owner. ""/"none" clear, and are reported as a
     /// clear rather than a pin of nothing. The target is mandatory: a pin outlives whatever pane
     /// happens to be active now, so "active" is not a sensible default and is refused rather than
     /// guessed. Every refusal pins nothing.

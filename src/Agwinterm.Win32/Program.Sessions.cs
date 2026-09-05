@@ -424,9 +424,11 @@ internal partial class Program
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         if (name is null && handoff is { Title.Length: > 0 } ht) name = ht.Title;   // label handoff sessions with the app's title
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName, Elevated = IsElevated() && !deElevate };
-        // Exactly one pane carries the session id (control-API back-compat: a fresh session's pane 0 IS
+        // At most one pane carries the session id (control-API back-compat: a fresh session's pane 0 IS
         // the session id, so a session id addresses a pane). A swap may put that pane on either side,
-        // and a restore hands the saved pane-0 id in — see the summary.
+        // closing it by any path leaves none (the id then resolves to the focused pane, like a name —
+        // the rule by condition is on ISessionHost.SplitClose), and a restore hands the saved pane-0
+        // id in — see the summary.
         ses.Panes.Add(CreatePane(paneId ?? id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff, wait: wait));
         ses.Active = 0;
         DetectSessionElevation(ses);   // refine ⚡ from the shell's real integrity once it's running
