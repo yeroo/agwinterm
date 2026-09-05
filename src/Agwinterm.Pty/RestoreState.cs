@@ -19,7 +19,16 @@ namespace Agwinterm.Pty;
 //     already has. A parse FAILURE (a truncated or hand-broken file) is the only "bad file" path:
 //     the host renames it .bad and starts a default tree; an unknown key never reaches it.
 //   * EVERY LOADED VALUE IS VALIDATED, NOT TRUSTED. SidebarWidth out of range → the default;
-//     a Context that fails SessionContexts' rules → dropped (LoadContext), not displayed.
+//     a Context that fails SessionContexts' rules → dropped (LoadContext), not displayed; an Axis that
+//     is not one of SplitAxes' two words → vertical (LoadAxis).
+//   * (P4) THE SPLIT AXIS: SessionState.Axis, the LAST key of a session, one of SplitAxes' words —
+//     "horizontal" = top/bottom panes. WRITTEN ONLY WHEN THE SESSION IS SPLIT AND HORIZONTAL (StoreAxis):
+//     a vertical or single-pane session writes NO key, so every file this build saves for a tree
+//     without a horizontal split is byte-identical to what 0.17.12 saved. Absent, or any spelling but
+//     the two wire words (case-sensitive), reads as vertical — what every file written before the key
+//     meant. TWO PANES PER SESSION: the model is primary + split and the axis is per session; a file
+//     with more panes restores the first two and the host logs the rest as dropped (the restore loop
+//     being written for N was an accident, never a feature).
 //   * THE FORMAT HAS A TEST THAT CAN SEE IT (tests/Agwinterm.Pty.Tests/RestoreStateTests.cs) — that is
 //     why the POCOs live here rather than in the Win32 assembly: every format change is verified by a
 //     round-trip beside it, the way BufferPersist has one, rather than by grepping a JSON file from
@@ -54,6 +63,17 @@ public sealed class SessionState
     // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
     public string? BgFile { get; set; }
     public int BgOpacity { get; set; } = 15; public string BgMode { get; set; } = "fit";
+    /// <summary>
+    /// P4: the split's orientation — <see cref="SplitAxes.Horizontal"/> for top/bottom panes; null for
+    /// left/right (the default) and for a single pane. Written only when the session is split AND
+    /// horizontal (<c>WhenWritingNull</c>; <see cref="RestoreState.StoreAxis"/> is the one rule), so a
+    /// vertical or single-pane session writes NO key and saves exactly the bytes a pre-P4 build saves —
+    /// <c>PreP3File_RoundTripsByteForByte</c> stays green untouched. At the END of the class: property
+    /// order is the file's key order. Read back through <see cref="RestoreState.LoadAxis"/>, never
+    /// straight into the session: an unknown spelling is the default, not a layout.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Axis { get; set; }
 }
 public sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
 public sealed class AppState
@@ -107,4 +127,27 @@ public static class RestoreState
     /// </summary>
     public static string? LoadContext(string? stored) =>
         stored is not null && SessionContexts.TryNormalize(stored, out var text, out _) ? text : null;
+
+    /// <summary>
+    /// The axis to put on a restored SPLIT session for a stored <see cref="SessionState.Axis"/>: the word
+    /// itself when it is exactly one of <see cref="SplitAxes"/>' two (the wire spelling, case-sensitive —
+    /// what <see cref="SplitAxes.TryParse"/> accepts from the verb), else <see cref="SplitAxes.Vertical"/>.
+    /// Absent (a pre-P4 file, or a vertical split, which writes no key) is vertical: that is what every
+    /// file written before the key meant. A hand-edited <c>"Horizontal"</c>, <c>"h"</c>, <c>""</c> or
+    /// <c>"diagonal"</c> is DROPPED to the default the way an out-of-rules Context is — the file cannot
+    /// lay out what the verb would have refused.
+    /// </summary>
+    public static string LoadAxis(string? stored) =>
+        SplitAxes.TryParse(stored, out var axis, out _) && axis is not null ? axis : SplitAxes.Vertical;
+
+    /// <summary>
+    /// What a save puts in <see cref="SessionState.Axis"/> for a session with <paramref name="paneCount"/>
+    /// panes laid out along <paramref name="axis"/>: <see cref="SplitAxes.Horizontal"/> only when the
+    /// session is split AND horizontal, else null — no key. A single-pane session keeps its axis in
+    /// memory for its next <c>split on</c> without <c>--axis</c>, but the FILE does not carry it: the
+    /// key means "these two panes are stacked", and writing it for one pane would make every file with
+    /// a once-horizontal session differ from what a pre-P4 build writes for the same tree.
+    /// </summary>
+    public static string? StoreAxis(int paneCount, string axis) =>
+        paneCount > 1 && axis == SplitAxes.Horizontal ? SplitAxes.Horizontal : null;
 }

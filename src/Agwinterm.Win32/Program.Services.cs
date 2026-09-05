@@ -1450,6 +1450,9 @@ internal partial class Program
                             catch { }
                         ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, RestoreCommand = p.RestoreCommand, Buffer = buf, BufferBlob = blob });
                     }
+                    // P4: the axis, written only for a split horizontal session (StoreAxis) — a vertical or
+                    // single-pane session writes no key, so its bytes are what 0.17.12 wrote.
+                    ss.Axis = RestoreState.StoreAxis(panes.Count, s.Axis);
                     wss.Sessions.Add(ss);
                 }
                 st.Workspaces.Add(wss);
@@ -1565,6 +1568,14 @@ internal partial class Program
                     var pl = (s.Panes is { Count: > 0 })
                         ? s.Panes
                         : new List<PaneState> { new() { Id = s.Id, Cwd = s.Cwd, FontSize = s.FontSize, Ratio = 1f } };
+                    // Two panes per session (P4): the model is primary + split and the axis is per session.
+                    // A hand-edited or foreign file with more restores the first two; the rest are dropped
+                    // and said so — the loop below being written for N was never a feature.
+                    if (pl.Count > 2)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"restore: session {s.Id} lists {pl.Count} panes; the first two were restored and {pl.Count - 2} dropped (two panes per session)");
+                        pl = pl.Take(2).ToList();
+                    }
                     var first = pl[0];
                     var ses = CreateSession(
                         StableSessionId(s.Id),
@@ -1573,6 +1584,15 @@ internal partial class Program
                         ws, makeActive: s.Id == st.ActiveId,
                         fontSize: first.FontSize > 0 ? first.FontSize : (float?)null,
                         profileName: string.IsNullOrWhiteSpace(s.Profile) ? null : s.Profile);
+                    // The axis BEFORE the second pane exists (P4). Every pty is spawned at the full content
+                    // grid (CreatePane → GridSizeFor) and then RegridSession below sizes each one from
+                    // PaneLayout, which reads ses.Axis: a horizontal session must get its rows halved, not
+                    // its columns, the first time its grids are set — the grid a restored pane is given is
+                    // the axis's grid (#209's surface: an ADOPTED split pane's box always differs from the
+                    // full grid on either axis, so its Resize is sent as before; a single pane is unchanged).
+                    // Only a split session carries an axis: a single-pane file's key is ignored and, since
+                    // StoreAxis writes none for one pane, never written back.
+                    if (pl.Count > 1) ses.Axis = RestoreState.LoadAxis(s.Axis);
                     for (int i = 1; i < pl.Count; i++)
                         AppendPane(ses,
                             string.IsNullOrEmpty(pl[i].Id) ? Guid.NewGuid().ToString() : pl[i].Id,
