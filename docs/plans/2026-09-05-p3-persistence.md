@@ -427,19 +427,38 @@ Server and tests:
     `p3-task5-qa-persistence.txt`. No sandbox process or dir left behind afterwards
 
 ### Task 6: docs
-- [ ] `AgentSkill.cs`: `session context` after the `session rename` line (`:93`), saying it is one
+- [x] `AgentSkill.cs`: `session context` after the `session rename` line (`:93`), saying it is one
       line, what is refused, that it survives restart and is readable in `tree --json` as `context`;
       `restore capture` beside `restore clear`, saying it can take seconds (CIM), what `null` means,
       and that `replayOnRestore` tells the caller whether the slot will be typed back
-- [ ] `README.md`: both verbs in the example block (`:213-234`) and a paragraph each in the prose
+  - `AgentSkillTests.PersistenceVerbsAreAdvertisedWithTheirRules` pins both entries, their
+    neighbours' order, and the three claims (one line / refusals, SECONDS, `replayOnRestore`)
+- [x] `README.md`: both verbs in the example block (`:213-234`) and a paragraph each in the prose
       list (`:245-283`) — `session rename` is in neither today, so add its one line beside `context`
       rather than leaving the new verb without its neighbour
-- [ ] CLI usage header (`Ctl/Program.cs:10-35`); `ISessionHost` comments for both methods, in the
+  - example block: `restore capture`, `session rename`, `session context`; prose: "Eight" → "Ten",
+    a `restore capture` paragraph after `session restore`'s and a `session context` paragraph with
+    rename's line inside it (rename leaves the context alone — `Program.ControlHost.cs:414` and the
+    win32-control check both say so)
+- [x] CLI usage header (`Ctl/Program.cs:10-35`); `ISessionHost` comments for both methods, in the
       `SessionRestore` style (states, refusals, threading)
-- [ ] `docs/agterm-parity.md`: tick item 1 and the `restore.capture` half of item 5, moving what is
+  - already done by Tasks 1 and 4 (`Program.cs:16-21`, `:38-41`; `ISessionHost.cs:150-174`,
+    `:298-325` — resolution, returns / null, the toggle, threading, each in its own `<para>`);
+    verified rather than re-written
+- [x] `docs/agterm-parity.md`: tick item 1 and the `restore.capture` half of item 5, moving what is
       closed into the **Closed** table with the PR number once it exists
-- [ ] `docs/lite-parity.md`: record that P3-lite owes `session.context` (a `C` line type after the `S`
+  - two **Closed** rows as `agwinterm *(P3, PR pending)*, lite: P3-lite` — ⚠️ the PR does not exist
+    yet; Task 7 (or the PR itself) swaps the placeholder for the number. Items 1 and 5 removed from
+    the open list (5 had only the `restore.capture` half left), the list renumbered 1–8, the
+    "renumbered after each" note extended with the P3 rows and the format rule, and the released
+    version corrected to 0.17.11
+- [x] `docs/lite-parity.md`: record that P3-lite owes `session.context` (a `C` line type after the `S`
       lines, same `SessionContexts` rules) and `restore.capture`
+  - an "Owed: what P3 adds — P3-lite" section after the P2-lite one: the `C` line type positional
+    like `P` and refused on a count mismatch, the shared rules, the reply shapes, null semantics,
+    `replayOnRestore`, and that lite's `session.restore` (P9) comes after its capture slot
+- validation: Pty tests 538/538 (1 new), Core tests pass, `tests/conformance/control-api.json`
+  unchanged (`git diff` empty)
 
 ### Task 7: [Final] Verify acceptance criteria
 - [ ] verify every item in Overview is implemented, and that the format rule at the top of this plan

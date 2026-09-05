@@ -91,6 +91,16 @@ public static class AgentSkill
           Profiles live in `%LOCALAPPDATA%\agwinterm\profiles.json` (auto-seeded from detected shells; edit to add your own — name/command/args/cwd/icon/env); `agwintermctl profiles reload` re-reads it.
         - `agwintermctl session select <id>` / `session close <id>`
         - `agwintermctl session rename <new-name> [--target ID]` — set a session's custom name (sidebar + title bar)
+        - `agwintermctl session context <text> [--target ID]` — ONE LINE of "what is this pane for", shown dimmed after the
+          name in the title bar and the sidebar row and on the palette's second line, where the name has to stay short.
+          It survives a restart (and `session reopen`), and `tree --json` reads it back as `context` on the session node
+          (absent when none) — so set it when you start a task and any agent can see what each pane is doing. The value
+          is one line: a newline, tab or other control character is REFUSED (a control byte in the title bar is a
+          rendering accident, not a context), blank is refused, and more than 200 characters is refused — the ceiling is
+          the display budget of the row, not a storage limit. `--clear` removes it (text beside `--clear` is refused);
+          `--stdin` takes the text from stdin the way `session type --stdin` does (one trailing newline dropped, an
+          embedded one then refused). Replies `{session, context}` with the value IN EFFECT after the write, read off the
+          session; the target resolves as `session rename` does (a scratch/overlay cover id lands on the session under it).
         - `agwintermctl session seen [--target ID]` — clear a session's unseen-notification badge headlessly
         - `agwintermctl session output [--target ID]` — the LAST COMPLETED command's output (FTCS marks;
           pwsh sessions emit them automatically) — cleaner than parsing `session text` yourself
@@ -249,6 +259,19 @@ public static class AgentSkill
         ## Config / restore
         - `agwintermctl keymap reload`                           — re-parse keymap.conf (reports diagnostics)
         - `agwintermctl restore clear`                           — clear the saved session-tree state
+        - `agwintermctl restore capture [--target ID]`            — capture the foreground command of EVERY real pane (or of the one
+          pane/session named) into its restore slot NOW and save, so a crash, a `Stop-Process`, a power loss or a missed
+          update-quit still finds it there; without this the capture happened only on a clean quit. Call it before a long
+          run, or from a hook. It can take SECONDS (one CIM process query for all panes, up to 15 s) — do not put it on a
+          hot path. Replies `{captured, replayOnRestore, panes:[{pane, session, captured}]}`: `captured` per pane is the
+          command line the shell is running, or `null` = that shell had no non-denylisted child (the honest answer, and
+          it is written into the slot — a fresh capture overwrites an older checkpoint, including to empty; `powershell`,
+          `cmd` and the other shells on `restore-denylist.conf` never count as a command). `replayOnRestore` is the
+          `restore-commands` toggle: the capture ALWAYS happens, but the slot is typed back at restart only when this is
+          true — check it, or `config set restore-commands true`, or the checkpoint is kept and never replayed. Read the
+          slots back in `tree --json` as `capturedCommands`, keyed by pane id like `restoreCommands`. An unknown target,
+          or a scratch/overlay/quick pane (never restored, so no slot), is refused and nothing is captured or saved; a
+          process query that fails or times out is a refusal too, never an empty answer for every pane.
         - `agwintermctl install hooks|skill|shell`               — install agent-status hooks / this skill / shell-integration (live cwd)
         - `agwintermctl install cli [--remove]`                  — add (or remove) agwintermctl on the user PATH
         - `agwintermctl omp list` / `omp set <name> [--persist]` — list / apply oh-my-posh themes (live; --persist keeps it for new sessions)
