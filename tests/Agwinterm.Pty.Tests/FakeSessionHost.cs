@@ -24,6 +24,9 @@ internal sealed class FakeSessionHost : ISessionHost
         public string? Context;
         public int Notifications, PaneCount = 1, FocusedPane, OverlaySize;
         public List<double> Ratios = new() { 1.0 };
+        /// <summary>The split's orientation — what the app keeps in Ses.Axis: one of <see cref="SplitAxes"/>'
+        /// words, vertical until a split says otherwise, kept across <c>off</c> (P4).</summary>
+        public string Axis = SplitAxes.Vertical;
         /// <summary>The session's panes, so the tree can aggregate status + its age the way the app
         /// does. One pane unless a test splits it via <see cref="AddPane"/>.</summary>
         public readonly List<ISession> Panes = new() { new TerminalSession(80, 24) };
@@ -206,7 +209,8 @@ internal sealed class FakeSessionHost : ISessionHost
                 RestoreCommands: s.PaneIds.Select(id => s.RestorePins.TryGetValue(id, out var pin) ? pin : "").ToList(),   // "" = none, as the app's snapshot spells it; parallel to PaneIds, covers in neither
                 StatusChangedAt: statusChangedAt,
                 Context: s.Context,
-                CapturedCommands: s.PaneIds.Select(id => s.Captured.TryGetValue(id, out var c) ? c : "").ToList());   // the slot, "" = none, parallel to PaneIds
+                CapturedCommands: s.PaneIds.Select(id => s.Captured.TryGetValue(id, out var c) ? c : "").ToList(),   // the slot, "" = none, parallel to PaneIds
+                Axis: s.Axis);
         }).ToList())).ToList();
 
     public WindowStateSnapshot WindowState() =>
@@ -381,12 +385,14 @@ internal sealed class FakeSessionHost : ISessionHost
         // The split pane is MINTED (AddPane), never counted — the reply is its id, read back off the
         // pane list after the op exactly as the app reads ses.Panes, so a test can check that the id
         // it got is the id the tree lists. `on` when on and `off` when off change nothing and answer
-        // the pane in slot 1 / slot 0. The axis word is the server's to validate; the fake has no
-        // layout for it to shape (P4's axis task gives Sess an Axis).
+        // the pane in slot 1 / slot 0. The axis word is the server's to validate; here it is applied
+        // as the app's SplitOp applies it: set on `on` / a splitting toggle (also a live
+        // re-orientation when already split), ignored by `off`, kept across a collapse.
         var s = FindSes(target);
         if (s is null) return ISessionHost.RefusePrefix + "session not found";
         bool split = s.PaneCount > 1;
         bool want = op switch { "on" => true, "off" => false, _ => !split };
+        if (want && axis is not null) s.Axis = axis;
         if (want && !split) { s.AddPane(); s.Ratios = new() { 0.5, 0.5 }; s.FocusedPane = 1; }   // the app focuses the new pane
         else if (!want && split)
         {
@@ -397,13 +403,26 @@ internal sealed class FakeSessionHost : ISessionHost
         }
         return s.PaneIds[s.PaneCount > 1 ? 1 : 0];
     }
-    // left = pane 0, right = pane 1, other = the one not focused — the app's FocusPane(dir) walk.
-    public void FocusPaneDir(string dir)
+    // The same rules as the app's host: the words and their axis are SplitAxes' (a direction that
+    // does not exist on the session's axis is refused with focus unmoved), one pane is refused.
+    public string FocusPaneDir(string dir)
     {
-        if (ActiveSess is not { PaneCount: > 1 } a) return;
-        a.FocusedPane = dir switch { "left" => 0, "right" => 1, _ => a.FocusedPane == 0 ? 1 : 0 };
+        if (ActiveSess is not { PaneCount: > 1 } a) return ISessionHost.RefusePrefix + SplitAxes.NotSplit;
+        if (!SplitAxes.TryFocusIndex(dir, a.Axis, a.FocusedPane, out int index, out string? refusal)) return ISessionHost.RefusePrefix + refusal;
+        a.FocusedPane = index;
+        return "focus";
     }
-    public void ResizeSplit(double? ratio, int growLeft, int growRight) { if (ActiveSess is { PaneCount: > 1 } && ratio is { } r) ActiveSess.Ratios = new() { r, 1 - r }; }
+    /// <summary>The fake has no cells: a grow step moves the ratio by 0.02 per cell, clamped to the app's
+    /// 0.05..0.95, which is enough for a test to see that a refused request moved nothing and an
+    /// accepted one moved the divider the way it asked.</summary>
+    public string ResizeSplit(double? ratio, int growLeft, int growRight, int growTop, int growBottom)
+    {
+        if (ActiveSess is not { PaneCount: > 1 } a) return ISessionHost.RefusePrefix + SplitAxes.NoDivider;
+        if (!SplitAxes.TryGrow(a.Axis, growLeft, growRight, growTop, growBottom, out int shift, out string? refusal)) return ISessionHost.RefusePrefix + refusal;
+        double first = ratio ?? Math.Clamp(a.Ratios[0] + shift * 0.02, 0.05, 0.95);
+        a.Ratios = new() { first, 1 - first };
+        return "resized";
+    }
     public IReadOnlyList<string> ThemeList() => new[] { "dark", "light" };
     public bool ThemeSet(string name) => name is "dark" or "light";
     public string KeymapReload() => "reloaded";

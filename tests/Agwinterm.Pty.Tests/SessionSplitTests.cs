@@ -16,6 +16,15 @@ namespace Agwinterm.Pty.Tests;
 /// lite's rule, so "make sure this session is split" gets something addressable either way),
 /// <c>off</c>/<c>toggle</c>-off name the survivor. Every reply is a bare string, because the shipped
 /// conformance step on <c>split off</c> is a string type check. Every refusal splits nothing.
+///
+/// Section 2. The axis, in agterm's words: <c>vertical</c> = left/right panes (the default of a session
+/// never split), <c>horizontal</c> = top/bottom. Per session, set by <c>on</c> / a splitting toggle,
+/// re-oriented LIVE by <c>on --axis</c> on an already-split session (the reply stays the existing
+/// split pane's id), ignored by <c>off</c> and kept across it. The tree carries <c>axis</c> inside the
+/// split block — always while split, never for one pane. Every other spelling is refused with the
+/// pane count unchanged. <c>session focus</c> takes agterm's seven words and refuses a direction
+/// that does not exist on the session's axis; <c>session resize</c> refuses the other axis's grow
+/// flags with the divider unmoved.
 /// </summary>
 public class SessionSplitTests
 {
@@ -244,6 +253,247 @@ public class SessionSplitTests
         var (server, _) = New();
         string id = Id(Op(server, "on", axis: SplitAxes.Vertical));
         Assert.Equal(PaneIds(server)[1], id);
+    }
+
+    // ---- section 2: the axis ----
+
+    private static string? TreeAxis(ControlServer server, int index = 0)
+        => TreeSession(server, index).TryGetProperty("axis", out var a) ? a.GetString() : null;
+
+    private static JsonElement Focus(ControlServer server, string dir)
+        => JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.focus\",\"args\":{\"dir\":" + JsonSerializer.Serialize(dir) + "}}")).RootElement;
+
+    private static JsonElement Resize(ControlServer server, string argsJson)
+        => JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.resize\",\"args\":" + argsJson + "}")).RootElement;
+
+    [Theory]
+    [InlineData("vertical")]
+    [InlineData("horizontal")]
+    public void Axis_EitherWord_Splits_AndTheTreeReportsIt(string axis)
+    {
+        var (server, host) = New();
+        string id = Id(Op(server, "on", axis: axis));
+        Assert.Equal(2, PaneCount(server));
+        Assert.Equal(PaneIds(server)[1], id);
+        Assert.Equal(axis, TreeAxis(server));
+        Assert.Equal(axis, host.ActiveSess!.Axis);
+    }
+
+    [Theory]
+    [InlineData("h")]
+    [InlineData("V")]
+    [InlineData("diagonal")]
+    [InlineData("")]
+    public void Axis_OtherSpellings_AreRefused_Reported_AndNothingSplit(string axis)
+    {
+        var (server, host) = New();
+        var r = Op(server, "on", axis: axis);
+        Assert.False(Ok(r));
+        Assert.Contains("'" + axis + "'", Error(r));
+        Assert.Contains("vertical", Error(r));
+        Assert.Contains("horizontal", Error(r));
+        Assert.Equal(1, PaneCount(server));                       // paneCount unchanged
+        Assert.Single(host.ActiveSess!.PaneIds);
+        Assert.Equal(SplitAxes.Vertical, host.ActiveSess!.Axis);  // and the orientation untouched
+        Assert.Null(TreeAxis(server));
+    }
+
+    [Fact]
+    public void Axis_OnAnAlreadySplitSession_ReorientsLive_AndStillAnswersTheSplitPaneId()
+    {
+        var (server, host) = New();
+        string id = Id(Op(server, "on"));                          // vertical, the default
+        Assert.Equal(SplitAxes.Vertical, TreeAxis(server));
+        var ratios = TreeSession(server).GetProperty("splitRatios").GetRawText();
+
+        string again = Id(Op(server, "on", axis: SplitAxes.Horizontal));
+
+        Assert.Equal(id, again);                                  // the existing split pane, not a new one
+        Assert.Equal(2, PaneCount(server));
+        Assert.Equal(SplitAxes.Horizontal, TreeAxis(server));      // re-oriented
+        Assert.Equal(ratios, TreeSession(server).GetProperty("splitRatios").GetRawText());   // the ratio sequence kept
+        Assert.Equal(2, host.ActiveSess!.PaneIds.Count);
+
+        Assert.Equal(id, Id(Op(server, "on", axis: SplitAxes.Vertical)));   // and back
+        Assert.Equal(SplitAxes.Vertical, TreeAxis(server));
+    }
+
+    [Fact]
+    public void Axis_IsInTheTree_OnlyWhileSplit()
+    {
+        var (server, _) = New();
+        Assert.Null(TreeAxis(server));                            // one pane: no axis key
+        Id(Op(server, "on", axis: SplitAxes.Horizontal));
+        Assert.Equal(SplitAxes.Horizontal, TreeAxis(server));      // split: always present
+        Id(Op(server, "off"));
+        Assert.Null(TreeAxis(server));                            // back to one pane: gone again
+    }
+
+    [Fact]
+    public void Axis_SurvivesOff_SoTheNextOnWithoutOneKeepsIt()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on", axis: SplitAxes.Horizontal));
+        Id(Op(server, "off"));                                     // off ignores and keeps the axis
+        Assert.Equal(SplitAxes.Horizontal, host.ActiveSess!.Axis);
+        Id(Op(server, "toggle"));                                  // toggle without an axis keeps the session's
+        Assert.Equal(SplitAxes.Horizontal, TreeAxis(server));
+    }
+
+    [Fact]
+    public void Axis_OffWithAnAxis_IgnoresIt()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on"));
+        string survivor = Id(Op(server, "off", axis: SplitAxes.Horizontal));
+        Assert.Equal(host.ActiveSess!.Id, survivor);
+        Assert.Equal(1, PaneCount(server));
+        Assert.Equal(SplitAxes.Vertical, host.ActiveSess!.Axis);   // off did not set it
+    }
+
+    // ---- section 2: session focus against the axis ----
+
+    [Fact]
+    public void Focus_TopOnAVerticalSplit_IsRefused_NamingTheAxis_AndFocusUnmoved()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on"));                                      // vertical; the new pane (1) is focused
+        var r = Focus(server, "top");
+        Assert.False(Ok(r));
+        Assert.Contains("vertical", Error(r));
+        Assert.Contains("'top'", Error(r));
+        Assert.Equal(1, host.ActiveSess!.FocusedPane);
+
+        var r2 = Focus(server, "bottom");
+        Assert.False(Ok(r2));
+        Assert.Equal(1, host.ActiveSess!.FocusedPane);
+    }
+
+    [Fact]
+    public void Focus_LeftOnAHorizontalSplit_IsRefused_NamingTheAxis()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on", axis: SplitAxes.Horizontal));
+        var r = Focus(server, "left");
+        Assert.False(Ok(r));
+        Assert.Contains("horizontal", Error(r));
+        Assert.Contains("'left'", Error(r));
+        Assert.Equal(1, host.ActiveSess!.FocusedPane);
+        Assert.True(Ok(Focus(server, "top")));                     // the words of this axis work
+        Assert.Equal(0, host.ActiveSess!.FocusedPane);
+        Assert.True(Ok(Focus(server, "bottom")));
+        Assert.Equal(1, host.ActiveSess!.FocusedPane);
+    }
+
+    [Fact]
+    public void Focus_PrimarySplitOther_WorkOnEitherAxis()
+    {
+        foreach (var axis in new[] { SplitAxes.Vertical, SplitAxes.Horizontal })
+        {
+            var (server, host) = New();
+            Id(Op(server, "on", axis: axis));
+            Assert.True(Ok(Focus(server, "primary"))); Assert.Equal(0, host.ActiveSess!.FocusedPane);
+            Assert.True(Ok(Focus(server, "split")));   Assert.Equal(1, host.ActiveSess!.FocusedPane);
+            Assert.True(Ok(Focus(server, "other")));   Assert.Equal(0, host.ActiveSess!.FocusedPane);
+            Assert.True(Ok(Focus(server, "other")));   Assert.Equal(1, host.ActiveSess!.FocusedPane);
+        }
+    }
+
+    [Fact]
+    public void Focus_LeftRight_WorkOnAVerticalSplit_AndAnUnknownWordIsRefused()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on"));
+        Assert.True(Ok(Focus(server, "left")));  Assert.Equal(0, host.ActiveSess!.FocusedPane);
+        Assert.True(Ok(Focus(server, "right"))); Assert.Equal(1, host.ActiveSess!.FocusedPane);
+        var r = Focus(server, "sideways");
+        Assert.False(Ok(r));
+        Assert.Contains("'sideways'", Error(r));
+        Assert.Equal(1, host.ActiveSess!.FocusedPane);
+    }
+
+    [Fact]
+    public void Focus_OnASinglePane_IsRefused()
+    {
+        var (server, host) = New();
+        var r = Focus(server, "other");
+        Assert.False(Ok(r));
+        Assert.Contains("not split", Error(r));
+        Assert.Equal(0, host.ActiveSess!.FocusedPane);
+    }
+
+    [Fact]
+    public void Focus_DefaultDirection_IsOther_WhichWorksOnEitherAxis()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on", axis: SplitAxes.Horizontal));
+        var r = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.focus\",\"args\":{}}")).RootElement;
+        Assert.True(Ok(r), r.ToString());
+        Assert.Equal(0, host.ActiveSess!.FocusedPane);
+    }
+
+    // ---- section 2: session resize against the axis ----
+
+    [Fact]
+    public void Resize_GrowLeftOnAHorizontalSplit_IsRefused_AndTheDividerDoesNotMove()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on", axis: SplitAxes.Horizontal));
+        var before = host.ActiveSess!.Ratios.ToList();
+
+        var r = Resize(server, "{\"grow-left\":3}");
+        Assert.False(Ok(r));
+        Assert.Contains("horizontal", Error(r));
+        Assert.Contains("grow-top", Error(r));
+        Assert.Equal(before, host.ActiveSess!.Ratios);
+
+        Assert.False(Ok(Resize(server, "{\"grow-right\":3}")));
+        Assert.Equal(before, host.ActiveSess!.Ratios);
+
+        Assert.True(Ok(Resize(server, "{\"grow-bottom\":3}")));   // this axis's flag moves it
+        Assert.True(host.ActiveSess!.Ratios[0] > before[0]);
+    }
+
+    [Fact]
+    public void Resize_GrowTopOnAVerticalSplit_IsRefused_AndGrowLeftWorks()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on"));
+        var before = host.ActiveSess!.Ratios.ToList();
+
+        var r = Resize(server, "{\"grow-top\":2}");
+        Assert.False(Ok(r));
+        Assert.Contains("vertical", Error(r));
+        Assert.Contains("grow-left", Error(r));
+        Assert.Equal(before, host.ActiveSess!.Ratios);
+
+        Assert.True(Ok(Resize(server, "{\"grow-left\":2}")));
+        Assert.True(host.ActiveSess!.Ratios[0] < before[0]);      // the divider moved left: the first pane shrank
+    }
+
+    [Fact]
+    public void Resize_OnASinglePane_IsRefused()
+    {
+        var (server, _) = New();
+        var r = Resize(server, "{\"ratio\":0.3}");
+        Assert.False(Ok(r));
+        Assert.Contains("not split", Error(r));
+    }
+
+    [Fact]
+    public void SplitAxes_TryFocusIndex_And_TryGrow_FollowTheAxis()
+    {
+        Assert.True(SplitAxes.TryFocusIndex("left", SplitAxes.Vertical, 1, out int i, out _)); Assert.Equal(0, i);
+        Assert.True(SplitAxes.TryFocusIndex("bottom", SplitAxes.Horizontal, 0, out i, out _)); Assert.Equal(1, i);
+        Assert.True(SplitAxes.TryFocusIndex("other", SplitAxes.Vertical, 1, out i, out _)); Assert.Equal(0, i);
+        Assert.False(SplitAxes.TryFocusIndex("top", SplitAxes.Vertical, 0, out _, out var r1)); Assert.Contains("vertical", r1);
+        Assert.False(SplitAxes.TryFocusIndex("right", SplitAxes.Horizontal, 0, out _, out var r2)); Assert.Contains("horizontal", r2);
+        Assert.False(SplitAxes.TryFocusIndex(null, SplitAxes.Vertical, 0, out _, out var r3)); Assert.NotNull(r3);
+
+        Assert.True(SplitAxes.TryGrow(SplitAxes.Vertical, 2, 5, 0, 0, out int s, out _)); Assert.Equal(3, s);
+        Assert.True(SplitAxes.TryGrow(SplitAxes.Horizontal, 0, 0, 4, 1, out s, out _)); Assert.Equal(-3, s);
+        Assert.False(SplitAxes.TryGrow(SplitAxes.Horizontal, 1, 0, 0, 0, out _, out var g1)); Assert.Contains("horizontal", g1);
+        Assert.False(SplitAxes.TryGrow(SplitAxes.Vertical, 0, 0, 0, 1, out _, out var g2)); Assert.Contains("vertical", g2);
     }
 
     [Fact]

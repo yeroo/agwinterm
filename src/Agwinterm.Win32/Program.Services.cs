@@ -372,12 +372,12 @@ internal partial class Program
             var c = ChromeBtnBg(rt, brush, scratchX, 0, bw, TitleBarH, "scratch", _titleButtons, scratchOn ? ChromeAccent : ChromeDim);
             DrawScratchGlyph(rt, brush, scratchX + bw / 2f, TitleBarH / 2f, c, scratchOn);
         }
-        // split (two panes, reflects split state)
+        // split (two panes, reflects split state and, while split, the session's axis)
         bool splitOn = _active is not null && _active.Panes.Count > 1;
         if (_config.ShowSplitButton)
         {
             var c = ChromeBtnBg(rt, brush, splitX, 0, bw, TitleBarH, "split", _titleButtons, splitOn ? ChromeAccent : ChromeDim);
-            DrawSplitGlyph(rt, brush, splitX + bw / 2f, TitleBarH / 2f, c, splitOn);
+            DrawSplitGlyph(rt, brush, splitX + bw / 2f, TitleBarH / 2f, c, splitOn, splitOn && _active!.Axis == SplitAxes.Horizontal);
         }
         // hairline divider between per-session toggles and the window-level dashboard/quick group
         if (anyPerSession && (_config.ShowDashboardButton || _config.ShowQuickButton))
@@ -477,13 +477,23 @@ internal partial class Program
         rt.DrawLine(new System.Numerics.Vector2(cx, cy), new System.Numerics.Vector2(cx + 2.8f, cy + 1.4f), brush, 1.3f); // minute hand
     }
 
-    /// <summary>Split glyph: two side-by-side panes (right pane filled when split is active).</summary>
-    private void DrawSplitGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool active)
+    /// <summary>Split glyph: two side-by-side panes when the session is vertical or unsplit (the split
+    /// pane — right — filled when split is active); two stacked panes, the bottom one filled, when
+    /// <paramref name="horizontal"/>. The icon shows the session's axis, not a generic split (P4).</summary>
+    private void DrawSplitGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool active, bool horizontal)
     {
         brush.Color = color;
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx - 7f, cy - 5.5f, 14f, 11f), RadiusX = 2.5f, RadiusY = 2.5f }, brush, 1.4f);
-        rt.DrawLine(new System.Numerics.Vector2(cx, cy - 5.5f), new System.Numerics.Vector2(cx, cy + 5.5f), brush, 1.2f);
-        if (active) rt.FillRectangle(new Rect(cx + 1f, cy - 4f, 5f, 8f), brush);
+        if (horizontal)
+        {
+            rt.DrawLine(new System.Numerics.Vector2(cx - 7f, cy), new System.Numerics.Vector2(cx + 7f, cy), brush, 1.2f);
+            if (active) rt.FillRectangle(new Rect(cx - 5.5f, cy + 1f, 11f, 3f), brush);
+        }
+        else
+        {
+            rt.DrawLine(new System.Numerics.Vector2(cx, cy - 5.5f), new System.Numerics.Vector2(cx, cy + 5.5f), brush, 1.2f);
+            if (active) rt.FillRectangle(new Rect(cx + 1f, cy - 4f, 5f, 8f), brush);
+        }
     }
 
     /// <summary>New-workspace glyph: a card with a plus.</summary>

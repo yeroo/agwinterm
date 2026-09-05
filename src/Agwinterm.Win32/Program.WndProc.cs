@@ -287,6 +287,22 @@ internal partial class Program
             case WM_SETCURSOR:
                 if (_linkUrl is not null && LoWord(lParam) == HTCLIENT)
                 { SetCursor(LoadCursorW(IntPtr.Zero, IDC_HAND)); return (IntPtr)1; }   // hand over a hovered link
+                // A resize cursor over (or while dragging) the split divider, shaped by the axis:
+                // ⇔ on a vertical split's column gap, ⇕ on a horizontal split's row gap (P4).
+                if (LoWord(lParam) == HTCLIENT && _cover is null && _active is { } sc && sc.Panes.Count > 1)
+                {
+                    bool overDivider = _divDragging;
+                    if (!overDivider)
+                    {
+                        GetCursorPos(out POINT cp); ScreenToClient(hwnd, ref cp);
+                        overDivider = DividerAt(ToDip(cp.x), ToDip(cp.y)) >= 0;
+                    }
+                    if (overDivider)
+                    {
+                        SetCursor(LoadCursorW(IntPtr.Zero, sc.Axis == SplitAxes.Horizontal ? IDC_SIZENS : IDC_SIZEWE));
+                        return (IntPtr)1;
+                    }
+                }
                 break;
 
             case WM_CHAR:
@@ -376,9 +392,9 @@ internal partial class Program
                         }
                         return IntPtr.Zero;
                     }
-                    int di = _cover is null ? DividerAtX(mx, my) : -1;
+                    int di = _cover is null ? DividerAt(mx, my) : -1;
                     if (di >= 0) { _divDragging = true; _divLeft = di; SetCapture(hwnd); return IntPtr.Zero; }
-                    if (_cover is null) FocusPaneAtX(mx); // covers capture the whole content region
+                    if (_cover is null) FocusPaneAt(mx, my); // covers capture the whole content region
                     // Ctrl+click on a hovered link opens it (never starts a selection or reaches the app).
                     if (KeyDown(VK_CONTROL) && _linkUrl is { } lurl) { OpenLink(lurl); return IntPtr.Zero; }
                     bool shiftDn = KeyDown(VK_SHIFT);
@@ -487,7 +503,7 @@ internal partial class Program
                         if (KeyDown(VK_CONTROL)) UpdateLinkHover(DipX(lParam), DipY(lParam));   // Ctrl+hover: link detection
                         else ClearLinkHover();
                     }
-                    if (_divDragging && ((long)wParam & MK_LBUTTON) != 0) { DragDivider(DipX(lParam)); return IntPtr.Zero; }
+                    if (_divDragging && ((long)wParam & MK_LBUTTON) != 0) { DragDivider(DipX(lParam), DipY(lParam)); return IntPtr.Zero; }
                     if (_sbPress && ((long)wParam & MK_LBUTTON) != 0)
                     {
                         int mx = DipX(lParam), my = DipY(lParam);   // device px -> DIP layout
@@ -552,19 +568,18 @@ internal partial class Program
                         if (no != _cover.ScrollOffset) { _cover.ScrollOffset = no; RequestRedraw(); }
                         return IntPtr.Zero;
                     }
-                    if (_active is not null && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
-                        foreach (var (p, x, _, w, _) in PaneLayout(_active))
-                            if (pt.x >= x && pt.x < x + w)
-                            {
-                                // The alt screen shows no history: an offset accumulated here would
-                                // never be rendered, and silently move where clicks land.
-                                if (p.S.Emulator.IsAltScreen) break;
-                                int histN = p.S.Emulator.HistoryCount;
-                                int dir = HiWord(wParam) > 0 ? 1 : -1; // wheel up scrolls back into history
-                                int no = Math.Clamp(p.ScrollOffset + dir * Math.Clamp(_config.ScrollSpeed, 1, 10), 0, histN);
-                                if (no != p.ScrollOffset) { p.ScrollOffset = no; RequestRedraw(); }
-                                break;
-                            }
+                    if (_active is not null && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH &&
+                        PaneAlongAxisAt(_active, pt.x, pt.y) is { } under)   // the pane under the wheel, on either axis
+                    {
+                        var p = under.pane;
+                        // The alt screen shows no history: an offset accumulated here would
+                        // never be rendered, and silently move where clicks land.
+                        if (p.S.Emulator.IsAltScreen) return IntPtr.Zero;
+                        int histN = p.S.Emulator.HistoryCount;
+                        int dir = HiWord(wParam) > 0 ? 1 : -1; // wheel up scrolls back into history
+                        int no = Math.Clamp(p.ScrollOffset + dir * Math.Clamp(_config.ScrollSpeed, 1, 10), 0, histN);
+                        if (no != p.ScrollOffset) { p.ScrollOffset = no; RequestRedraw(); }
+                    }
                     return IntPtr.Zero;
                 }
 

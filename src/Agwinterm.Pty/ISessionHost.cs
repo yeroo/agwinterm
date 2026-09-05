@@ -9,14 +9,17 @@ namespace Agwinterm.Pty;
 /// won the aggregate — the age of the status actually shown; <see cref="Context"/> is the session's
 /// <c>session context</c> text (null = none; the tree omits the key); <see cref="CapturedCommands"/>
 /// is each pane's captured restore slot ("" = none), parallel to <see cref="PaneIds"/> like
-/// <see cref="RestoreCommands"/> — the <c>restore.capture</c> read-back (P3). New optional fields go
+/// <see cref="RestoreCommands"/> — the <c>restore.capture</c> read-back (P3); <see cref="Axis"/> is
+/// the session's split orientation, one of <see cref="SplitAxes"/>' words (null = vertical), emitted
+/// by the tree only while the session is split (P4). New optional fields go
 /// at the END: both hosts and <see cref="SingleSessionHost"/> construct this positionally.</summary>
 public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
     bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
     int FocusedPane = 0, int PaneCount = 1, bool StatusBlink = false, int OverlaySize = 0,
     IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null,
     IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0,
-    string? Context = null, IReadOnlyList<string>? CapturedCommands = null);
+    string? Context = null, IReadOnlyList<string>? CapturedCommands = null,
+    string? Axis = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -213,7 +216,10 @@ public interface ISessionHost
     /// op = on|off|toggle. <paramref name="axis"/> is <see cref="SplitAxes.Vertical"/> (left/right
     /// panes — the default of a session never split) or <see cref="SplitAxes.Horizontal"/> (top/bottom
     /// panes), already parsed by the server through <see cref="SplitAxes.TryParse"/>; null keeps the
-    /// session's current orientation.
+    /// session's current orientation. The axis is PER SESSION and survives <c>off</c> (agterm:
+    /// omitting the flag preserves the orientation, so a later <c>on</c> without one splits the way
+    /// the session was last split); <c>on</c> WITH an axis on an already-split session re-orients it
+    /// live and still answers the existing split pane's id; <c>off</c> ignores the axis.
     /// <para><b>Returns a pane id</b> — a bare string, so the caller can address the shell it just
     /// asked for (P4; before, the constant "split" from a Post-and-return-true, so the id was only
     /// knowable by diffing the tree). Per op: <c>on</c> → the split pane's id, ALSO when the session
@@ -229,10 +235,20 @@ public interface ISessionHost
     /// names a pane that exists; a hop that cannot be queued or run is a refusal.</para>
     /// </summary>
     string Split(string? target, string op, string? axis);
-    /// <summary>Move pane focus in the active session: dir = left|right|other.</summary>
-    void FocusPaneDir(string dir);
-    /// <summary>Set the active session's split: an absolute left ratio (0..1) or grow left/right by N columns.</summary>
-    void ResizeSplit(double? ratio, int growLeft, int growRight);
+    /// <summary><c>session.focus</c>: move pane focus in the active session. dir is one of agterm's
+    /// words — <c>primary|split|left|right|top|bottom|other</c> — judged against the session's axis by
+    /// <see cref="SplitAxes.TryFocusIndex"/> (<c>top</c> on a vertical split is refused naming the
+    /// axis). Returns <c>"focus"</c>, or <see cref="RefusePrefix"/> + a refusal with focus unmoved:
+    /// the axis refusal, an unknown word, or <see cref="SplitAxes.NotSplit"/> for a one-pane session
+    /// (P4; before, every case answered ok having possibly done nothing).</summary>
+    string FocusPaneDir(string dir);
+    /// <summary><c>session.resize</c>: set the active session's split — an absolute ratio (0..1) for
+    /// the first (left/top) pane, or move the divider by N cells: <c>growLeft</c>/<c>growRight</c>
+    /// in columns on a vertical split, <c>growTop</c>/<c>growBottom</c> in rows on a horizontal one
+    /// (<see cref="SplitAxes.TryGrow"/>; flags from the other axis are refused naming the axis, and
+    /// the divider does not move). Returns <c>"resized"</c>, or <see cref="RefusePrefix"/> + the
+    /// refusal — also <see cref="SplitAxes.NoDivider"/> for a one-pane session.</summary>
+    string ResizeSplit(double? ratio, int growLeft, int growRight, int growTop, int growBottom);
 
     IReadOnlyList<string> ThemeList();
     bool ThemeSet(string name);
@@ -435,8 +451,8 @@ public sealed class SingleSessionHost : ISessionHost
     public bool WorkspaceSelect(string? target) => false;
     public bool WorkspaceReorder(string? target, string dir) => false;
     public string Split(string? target, string op, string? axis) => ISessionHost.RefusePrefix + "session not found";
-    public void FocusPaneDir(string dir) { }
-    public void ResizeSplit(double? ratio, int growLeft, int growRight) { }
+    public string FocusPaneDir(string dir) => ISessionHost.RefusePrefix + SplitAxes.NotSplit;
+    public string ResizeSplit(double? ratio, int growLeft, int growRight, int growTop, int growBottom) => ISessionHost.RefusePrefix + SplitAxes.NoDivider;
     public IReadOnlyList<string> ThemeList() => Array.Empty<string>();
     public bool ThemeSet(string name) => false;
     public string KeymapReload() => "";

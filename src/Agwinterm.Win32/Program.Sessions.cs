@@ -450,23 +450,47 @@ internal partial class Program
         return (x0, y0, w, h);
     }
 
-    /// <summary>Lay out a session's panes as columns (px) by ratio, with a divider gutter between.</summary>
+    /// <summary>Lay out a session's panes (DIP) by ratio along its axis, with a divider gutter between:
+    /// columns left→right when <see cref="Ses.Axis"/> is vertical, rows top→bottom when horizontal.
+    /// The ONE source of layout truth — the same (x, y, w, h) tuples either way, so the callers
+    /// (renderer, hit-tests, metrics, regrid) never branch on the axis themselves.</summary>
     private List<(Pane pane, float x, float y, float w, float h)> PaneLayout(Ses ses)
     {
         var (x0, y0, totalW, totalH) = ContentArea();
         int n = ses.Panes.Count;
-        float avail = MathF.Max(n, totalW - (n - 1) * DividerW);
+        bool horizontal = ses.Axis == SplitAxes.Horizontal;
+        float extent = horizontal ? totalH : totalW;          // the span the ratios divide
+        float avail = MathF.Max(n, extent - (n - 1) * DividerW);
         float sum = ses.Panes.Sum(p => p.Ratio);
         if (sum <= 0) { foreach (var p in ses.Panes) p.Ratio = 1f / n; sum = 1f; }
         var list = new List<(Pane, float, float, float, float)>(n);
-        float x = x0;
+        float pos = horizontal ? y0 : x0;
         for (int i = 0; i < n; i++)
         {
-            float w = avail * (ses.Panes[i].Ratio / sum);
-            list.Add((ses.Panes[i], x, y0, w, totalH));
-            x += w + DividerW;
+            float share = avail * (ses.Panes[i].Ratio / sum);
+            list.Add(horizontal
+                ? (ses.Panes[i], x0, pos, totalW, share)
+                : (ses.Panes[i], pos, y0, share, totalH));
+            pos += share + DividerW;
         }
         return list;
+    }
+
+    /// <summary>The laid-out pane of <paramref name="ses"/> whose extent ALONG THE AXIS contains the
+    /// point — the gutter after it included, so a press in the gutter belongs to the pane before it
+    /// (what the x-only tests did before P4). Null when the point is past every pane. The one
+    /// point-to-pane test; the axis is read off the layout tuples, never re-derived by a caller.</summary>
+    private (Pane pane, float x, float y, float w, float h)? PaneAlongAxisAt(Ses ses, int px, int py)
+    {
+        bool horizontal = ses.Axis == SplitAxes.Horizontal;
+        foreach (var box in PaneLayout(ses))
+        {
+            bool hit = horizontal
+                ? py >= box.y && py < box.y + box.h + DividerW
+                : px >= box.x && px < box.x + box.w + DividerW;
+            if (hit) return box;
+        }
+        return null;
     }
 
     /// <summary>Regrid EVERY session (not just the active one) to the current window/sidebar size, so an
@@ -1240,7 +1264,7 @@ internal partial class Program
         try { cur.S.Dispose(); } catch { }
         lock (_workspaces) ses.Panes.RemoveAt(idx);   // exclude the control-pipe reader mid-enumeration (issue #85)
         float freed = cur.Ratio / ses.Panes.Count;
-        foreach (var p in ses.Panes) p.Ratio += freed;   // redistribute the freed width
+        foreach (var p in ses.Panes) p.Ratio += freed;   // redistribute the freed share of the axis (width or height)
         ses.Active = Math.Clamp(idx, 0, ses.Panes.Count - 1);
         _session = ses.S;
         RegridSession(ses);
@@ -1260,7 +1284,7 @@ internal partial class Program
             int idx = ses.Panes.IndexOf(p);
             ses.Panes.RemoveAt(idx);
             float freed = p.Ratio / ses.Panes.Count;
-            foreach (var q in ses.Panes) q.Ratio += freed;     // survivor grows to fill the freed width
+            foreach (var q in ses.Panes) q.Ratio += freed;     // survivor grows to fill the freed share (the full width or height)
             ses.Active = Math.Clamp(idx, 0, ses.Panes.Count - 1);
         }
         try { p.S.Dispose(); } catch { }
@@ -1535,25 +1559,43 @@ internal partial class Program
     /// an agent's pane used to split whatever the user happened to be looking at. `on` when already
     /// split and `off` when already single change nothing — the reply (the host reads it off
     /// <c>ses.Panes</c> afterwards) is what makes those honest. <paramref name="axis"/> is one of
-    /// <see cref="SplitAxes"/>' words or null (keep the session's orientation); the host refuses
-    /// horizontal until the layout learns the axis (P4's axis task).</summary>
+    /// <see cref="SplitAxes"/>' words or null (keep the session's orientation): <c>on</c> and a
+    /// splitting <c>toggle</c> set it before laying out; <c>on</c> with an axis on an ALREADY-split
+    /// session re-orients it live (regrid, redraw, save — agterm: omitting the flag preserves the
+    /// orientation, so passing it sets it); <c>off</c> ignores it.</summary>
     private void SplitOp(string op, Ses? ses, string? axis)
     {
         if (ses is null) return;
         int panes = ses.Panes.Count;
         switch (op)
         {
-            case "on": if (panes <= 1) SplitPane(ses); break;
+            case "on":
+                if (panes <= 1) { if (axis is not null) ses.Axis = axis; SplitPane(ses); }
+                else if (axis is not null) SetAxis(ses, axis);
+                break;
             case "off": if (panes > 1) CollapseToSinglePane(ses); break;
-            default: if (panes > 1) CollapseToSinglePane(ses); else SplitPane(ses); break; // toggle
+            default: // toggle
+                if (panes > 1) CollapseToSinglePane(ses);
+                else { if (axis is not null) ses.Axis = axis; SplitPane(ses); }
+                break;
         }
     }
 
-    /// <summary>Collapse the active session to just its focused pane (dispose the rest).</summary>
+    /// <summary>Re-orient a split session live. The ratio SEQUENCE is kept (pane 0's share of the
+    /// width becomes its share of the height), so a 70/30 stays a 70/30 across the turn.</summary>
+    private void SetAxis(Ses ses, string axis)
+    {
+        if (ses.Axis == axis) return;
+        ses.Axis = axis;
+        RegridSession(ses); RequestRedraw(); SaveState();
+    }
+
+    /// <summary>Collapse <paramref name="ses"/> to its primary pane (dispose the rest). The axis is
+    /// kept for the next split.</summary>
     private void CollapseToSinglePane(Ses ses)
     {
         if (ses.Panes.Count <= 1) return;
-        var keep = ses.Panes[0];   // agterm: collapsing the split keeps the primary (left) pane, not whichever is focused
+        var keep = ses.Panes[0];   // agterm: collapsing the split keeps the primary (left / top) pane, not whichever is focused
         foreach (var p in ses.Panes) if (!ReferenceEquals(p, keep)) { try { p.S.Dispose(); } catch { } }
         // Clear+Add as one atomic step so the control-pipe reader never sees an empty pane list (issue #85).
         lock (_workspaces) { ses.Panes.Clear(); ses.Panes.Add(keep); }
@@ -1562,11 +1604,16 @@ internal partial class Program
         RegridSession(ses); RequestRedraw(); SaveState();
     }
 
-    /// <summary>Set the split boundary next to the active pane: an absolute left ratio, or grow by columns.</summary>
-    private void ResizeActiveSplitInternal(double? ratio, int growLeft, int growRight)
+    /// <summary>Set the split boundary next to the active pane: an absolute ratio for the first
+    /// (left / top) pane, or move the divider by N cells along the axis — columns of the pane's cell
+    /// width against the content WIDTH on a vertical split, rows of its cell height against the
+    /// content HEIGHT on a horizontal one. Grow flags from the other axis are refused by
+    /// <see cref="SplitAxes.TryGrow"/> before anything moves. Returns null, or the refusal.</summary>
+    private string? ResizeActiveSplitInternal(double? ratio, int growLeft, int growRight, int growTop, int growBottom)
     {
         var ses = _active;
-        if (ses is null || ses.Panes.Count < 2) return;
+        if (ses is null || ses.Panes.Count < 2) return SplitAxes.NoDivider;
+        if (!SplitAxes.TryGrow(ses.Axis, growLeft, growRight, growTop, growBottom, out int cells, out string? refusal)) return refusal;
         int i = Math.Min(ses.Active, ses.Panes.Count - 2); // boundary between pane i and i+1
         var a = ses.Panes[i]; var b = ses.Panes[i + 1];
         float total = a.Ratio + b.Ratio;
@@ -1577,13 +1624,16 @@ internal partial class Program
         }
         else
         {
-            var (_, _, totalW, _) = ContentArea();
-            var (_, cw, _) = Metrics(a.FontSize);
-            float shift = ((growRight - growLeft) * cw / MathF.Max(1f, totalW)) * total;
+            var (_, _, totalW, totalH) = ContentArea();
+            var (_, cw, ch) = Metrics(a.FontSize);
+            bool horizontal = ses.Axis == SplitAxes.Horizontal;
+            float cell = horizontal ? ch : cw, extent = horizontal ? totalH : totalW;
+            float shift = (cells * cell / MathF.Max(1f, extent)) * total;
             float ra = Math.Clamp(a.Ratio + shift, 0.05f * total, 0.95f * total);
             a.Ratio = ra; b.Ratio = total - ra;
         }
         RegridSession(ses); RequestRedraw(); SaveState();
+        return null;
     }
 
     private void SidebarOpInternal(string op)

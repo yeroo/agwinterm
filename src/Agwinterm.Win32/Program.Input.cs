@@ -132,8 +132,11 @@ internal partial class Program
             case "split_pane": SplitOp("toggle"); break;   // toggle 1<->2 panes (agterm-style), not add
             case "toggle_scratch": if (_active is not null) ScratchOp(_active, "toggle"); break;
             case "quick_terminal": QuickOp("toggle"); break;
-            case "focus_left_pane": FocusPane(-1); break;
-            case "focus_right_pane": FocusPane(1); break;
+            // The four direction actions are two walks: -1 / +1 along the session's axis. left/top
+            // and right/bottom are aliases of the same walk, so a chord bound to focus_left_pane
+            // still crosses a horizontal split (P4).
+            case "focus_left_pane": case "focus_top_pane": FocusPane(-1); break;
+            case "focus_right_pane": case "focus_bottom_pane": FocusPane(1); break;
             case "next_session": CycleSession(1); break;
             case "previous_session": CycleSession(-1); break;
             case "toggle_sidebar": ToggleSidebar(); break;
@@ -413,42 +416,53 @@ internal partial class Program
         return (ContentX, ContentY, c2, h2);
     }
 
-    /// <summary>Focus the pane of the active session under client-x (no-op if single pane / no session).</summary>
-    private void FocusPaneAtX(int px)
+    /// <summary>Focus the pane of the active session under a client point (no-op if single pane / no session).</summary>
+    private void FocusPaneAt(int px, int py)
     {
         if (_active is null || _active.Panes.Count < 2) return;
-        foreach (var (pane, x, _, w, _) in PaneLayout(_active))
-            if (px >= x && px < x + w + DividerW) { _active.Active = _active.Panes.IndexOf(pane); _session = _active.S; RequestRedraw(); return; }
+        if (PaneAlongAxisAt(_active, px, py) is { } hit)
+        { _active.Active = _active.Panes.IndexOf(hit.pane); _session = _active.S; RequestRedraw(); return; }
     }
 
-    /// <summary>Left-pane index of the divider gutter under client-(x,y), or -1.</summary>
-    private int DividerAtX(int px, int py)
+    /// <summary>Index of the pane BEFORE the divider gutter under a client point (the left pane on a
+    /// vertical split, the top pane on a horizontal one), or -1. The gutter runs along the axis, read
+    /// off the layout tuples: between x+w and the next x when vertical, between y+h and the next y
+    /// when horizontal, with a 2 DIP grab margin either side.</summary>
+    private int DividerAt(int px, int py)
     {
         if (_active is null || _active.Panes.Count < 2) return -1;
         var lay = PaneLayout(_active);
-        if (py < (int)lay[0].y || py > (int)(lay[0].y + lay[0].h)) return -1;
+        bool horizontal = _active.Axis == SplitAxes.Horizontal;
+        // Across the axis the gutter spans the panes' full extent.
+        if (horizontal ? (px < (int)lay[0].x || px > (int)(lay[0].x + lay[0].w))
+                       : (py < (int)lay[0].y || py > (int)(lay[0].y + lay[0].h))) return -1;
         for (int i = 0; i < lay.Count - 1; i++)
         {
-            float gx = lay[i].x + lay[i].w;
-            if (px >= gx - 2 && px <= gx + DividerW + 2) return i;
+            float gutterStart = horizontal ? lay[i].y + lay[i].h : lay[i].x + lay[i].w;
+            int along = horizontal ? py : px;
+            if (along >= gutterStart - 2 && along <= gutterStart + DividerW + 2) return i;
         }
         return -1;
     }
 
-    /// <summary>Drag a divider: shift width between the two adjacent panes (clamped).</summary>
-    private void DragDivider(int px)
+    /// <summary>Drag a divider: shift extent along the axis between the two adjacent panes (clamped
+    /// so neither drops under 24 DIP). The pointer's coordinate along the axis is the only one used.</summary>
+    private void DragDivider(int px, int py)
     {
         if (_active is null || _divLeft < 0 || _divLeft + 1 >= _active.Panes.Count) return;
-        var (x0, _, totalW, _) = ContentArea();
-        float avail = MathF.Max(_active.Panes.Count, totalW - (_active.Panes.Count - 1) * DividerW);
+        var (_, _, totalW, totalH) = ContentArea();
+        bool horizontal = _active.Axis == SplitAxes.Horizontal;
+        float extent = horizontal ? totalH : totalW;
+        float avail = MathF.Max(_active.Panes.Count, extent - (_active.Panes.Count - 1) * DividerW);
         float sum = _active.Panes.Sum(p => p.Ratio);
         var lay = PaneLayout(_active);
-        float leftStart = lay[_divLeft].x;
+        float firstStart = horizontal ? lay[_divLeft].y : lay[_divLeft].x;
+        int along = horizontal ? py : px;
         float pairRatio = _active.Panes[_divLeft].Ratio + _active.Panes[_divLeft + 1].Ratio;
-        float newLeftW = Math.Clamp(px - leftStart, 24f, (pairRatio / sum) * avail - 24f);
-        float newLeftRatio = (newLeftW / avail) * sum;
-        _active.Panes[_divLeft + 1].Ratio = pairRatio - newLeftRatio;
-        _active.Panes[_divLeft].Ratio = newLeftRatio;
+        float newFirst = Math.Clamp(along - firstStart, 24f, (pairRatio / sum) * avail - 24f);
+        float newFirstRatio = (newFirst / avail) * sum;
+        _active.Panes[_divLeft + 1].Ratio = pairRatio - newFirstRatio;
+        _active.Panes[_divLeft].Ratio = newFirstRatio;
         RegridSession(_active);
         RequestRedraw();
     }
@@ -549,12 +563,11 @@ internal partial class Program
         if (px < (int)_sidebarW || py < (int)TitleBarH || py >= ClientH() - (int)FooterH) return null;
         if (_cover is not null) { var (cx, cy, _, _) = CoverRect(); var (_, ccw, cch) = Metrics(_cover.FontSize); return (_cover, cx, cy, ccw, cch); }
         if (_active is null) return null;
-        foreach (var (pane, x, y, w, _) in PaneLayout(_active))
-            if (px >= x && px < x + w + DividerW)
-            {
-                var (_, cw, ch) = Metrics(pane.FontSize);
-                return (pane, x, y, cw, ch);
-            }
+        if (PaneAlongAxisAt(_active, px, py) is { } hit)
+        {
+            var (_, cw, ch) = Metrics(hit.pane.FontSize);
+            return (hit.pane, hit.x, hit.y, cw, ch);
+        }
         return null;
     }
 

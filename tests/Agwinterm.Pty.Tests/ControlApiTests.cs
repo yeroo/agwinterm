@@ -75,6 +75,7 @@ public class ControlApiTests
         var s = Sessions0(server);
         Assert.False(s.TryGetProperty("paneCount", out _));   // single-pane sessions stay lean
         Assert.False(s.TryGetProperty("splitRatios", out _));
+        Assert.False(s.TryGetProperty("axis", out _));        // P4: the axis is a fact about a split, not about a session
     }
 
     [Fact]

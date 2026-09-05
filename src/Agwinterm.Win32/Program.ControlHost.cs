@@ -184,7 +184,8 @@ internal partial class Program
                         RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList(),
                         StatusChangedAt: statusChangedAt,
                         Context: s.Context,
-                        CapturedCommands: s.Panes.Select(p => p.CapturedCommand ?? "").ToList());
+                        CapturedCommands: s.Panes.Select(p => p.CapturedCommand ?? "").ToList(),
+                        Axis: s.Axis);
                 }).ToList()
             )).ToList();
     }
@@ -502,9 +503,8 @@ internal partial class Program
     public string Split(string? target, string op, string? axis)
     {
         if (FindSesForTarget(target) is null) return SplitNotFound;
-        // The axis is parsed by the server; the layout learns the word in the next step of P4 (the
-        // axis task). Until then a horizontal request is refused, never laid out vertical with ok:true.
-        if (axis == SplitAxes.Horizontal) return ISessionHost.RefusePrefix + "axis horizontal is not laid out by this build; only vertical (left/right panes); nothing was split";
+        // The axis word is the server's to validate (SplitAxes.TryParse); SplitOp applies it — a set
+        // on `on`/a splitting toggle, a live re-orientation of an already-split session, ignored by off.
         return InvokeOnUiQueued(() =>
         {
             var ses = FindSesForTarget(target);
@@ -518,19 +518,25 @@ internal partial class Program
         });
     }
 
-    public void FocusPaneDir(string dir)
-    {
-        int delta = dir switch
+    // Both answer with state (a refusal must mean nothing moved), so they run in the FIFO UI hop and
+    // read the active session INSIDE it — the axis a direction is judged against is the one the
+    // session has when the move happens, not the one the pipe thread saw a moment earlier (P4).
+    public string FocusPaneDir(string dir)
+        => InvokeOnUiQueued(() =>
         {
-            "left" => -1,
-            "right" => 1,
-            _ => (_active is not null && _active.Active == 0) ? 1 : -1, // "other"
-        };
-        Post(() => FocusPane(delta));
-    }
+            var ses = _active;
+            if (ses is null || ses.Panes.Count < 2) return ISessionHost.RefusePrefix + SplitAxes.NotSplit;
+            if (!SplitAxes.TryFocusIndex(dir, ses.Axis, ses.Active, out int index, out string? refusal)) return ISessionHost.RefusePrefix + refusal;
+            ses.Active = Math.Clamp(index, 0, ses.Panes.Count - 1);
+            _session = ses.S;
+            RequestRedraw();
+            return "focus";
+        });
 
-    public void ResizeSplit(double? ratio, int growLeft, int growRight)
-        => Post(() => ResizeActiveSplitInternal(ratio, growLeft, growRight));
+    public string ResizeSplit(double? ratio, int growLeft, int growRight, int growTop, int growBottom)
+        => InvokeOnUiQueued(() => ResizeActiveSplitInternal(ratio, growLeft, growRight, growTop, growBottom) is { } refusal
+            ? ISessionHost.RefusePrefix + refusal
+            : "resized");
 
     public IReadOnlyList<string> ThemeList() => _allThemes.Select(t => t.Name).ToList();
 

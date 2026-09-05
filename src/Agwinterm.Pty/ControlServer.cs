@@ -252,13 +252,15 @@ public sealed class ControlServer : IDisposable
                 case "workspace.collapse": return host.WorkspaceCollapse(target, expand: false) ? Ok("collapsed") : Err("workspace not found");
                 case "workspace.expand": return host.WorkspaceCollapse(target, expand: true) ? Ok("expanded") : Err("workspace not found");
                 case "session.split": return HandleSessionSplit(host, target, args);
-                case "session.focus": host.FocusPaneDir(GetString(args, "dir") ?? "right"); return Ok("focus");
+                // The default direction is `other` — the one word that names a pane on either axis
+                // (P4: `right` would be refused on a horizontal split).
+                case "session.focus": return HostReply(host.FocusPaneDir(GetString(args, "dir") ?? "other"));
                 case "session.resize":
                     {
                         double? ratio = null;
                         if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("ratio", out var rv) && rv.TryGetDouble(out var rd)) ratio = rd;
-                        host.ResizeSplit(ratio, GetInt(args, "grow-left", 0), GetInt(args, "grow-right", 0));
-                        return Ok("resized");
+                        return HostReply(host.ResizeSplit(ratio, GetInt(args, "grow-left", 0), GetInt(args, "grow-right", 0),
+                            GetInt(args, "grow-top", 0), GetInt(args, "grow-bottom", 0)));
                     }
                 case "theme.list": return Ok(string.Join("\n", host.ThemeList()));
                 case "theme.set": return host.ThemeSet(GetString(args, "name") ?? "") ? Ok("theme set") : Err("theme not found");
@@ -448,6 +450,10 @@ public sealed class ControlServer : IDisposable
                         { if (r > 0) sb.Append(','); sb.Append(JsonSerializer.Serialize(n.PaneIds[r])); }
                         sb.Append(']');
                     }
+                    // axis: ALWAYS while split, like focusedPane — absence would mean "this build has
+                    // no axis", which tells a caller nothing (P4). Never for a single pane: the
+                    // orientation of a split that does not exist is not a fact about the session.
+                    sb.Append(",\"").Append(SplitAxes.Key).Append("\":").Append(JsonSerializer.Serialize(n.Axis ?? SplitAxes.Vertical));
                 }
                 sb.Append('}');
             }
@@ -522,11 +528,15 @@ public sealed class ControlServer : IDisposable
             if (av.ValueKind != JsonValueKind.String) return Err(SplitAxes.Refusal(av.GetRawText()));
             if (!SplitAxes.TryParse(av.GetString(), out axis, out string? axisRefusal)) return Err(axisRefusal!);
         }
-        string reply = host.Split(target, GetString(args, "op") ?? "toggle", axis);
-        return reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+        return HostReply(host.Split(target, GetString(args, "op") ?? "toggle", axis));
+    }
+
+    /// <summary>A host reply that is either a result string or <see cref="ISessionHost.RefusePrefix"/>
+    /// + a refusal, turned into the wire's ok:true / ok:false.</summary>
+    private static string HostReply(string reply)
+        => reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
             ? Err(reply[ISessionHost.RefusePrefix.Length..])
             : Ok(reply);
-    }
 
     private static string HandleSessionContext(ISessionHost host, string? target, JsonElement args)
     {

@@ -13,8 +13,16 @@ using System.Text.Json;
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]
-//   agwintermctl session split [on|off|toggle] [--target ID]   (replies with a PANE ID: on/toggle-on = the split
-//       pane's, also when the session was already split; off/toggle-off = the survivor's. Default op = toggle)
+//   agwintermctl session split [on|off|toggle] [--axis vertical|horizontal] [--target ID]
+//       (replies with a PANE ID: on/toggle-on = the split pane's, also when the session was already split;
+//       off/toggle-off = the survivor's. Default op = toggle. The axis names the ARRANGEMENT, agterm's words:
+//       vertical = left/right panes (the default of a session never split), horizontal = top/bottom panes.
+//       Omitted = keep the session's orientation; given on an already-split session = re-orient it live)
+//   agwintermctl session focus [primary|split|left|right|top|bottom|other]   (default other; left/right exist on a
+//       vertical split only, top/bottom on a horizontal one — the wrong pair is refused naming the axis)
+//   agwintermctl session resize [--split-ratio R] [--grow-left N|--grow-right N|--grow-top N|--grow-bottom N]
+//       (left/right move a vertical split's divider by N columns, top/bottom a horizontal one's by N rows;
+//       the other axis's flags are refused, and the divider does not move)
 //   agwintermctl session context <text...> [--target ID]   (one line of "what is this pane for", shown dimmed
 //       beside the name and read back in `tree --json` as context; survives a restart. Blank, a control
 //       character or more than 200 characters is refused; replies {session,context})
@@ -275,7 +283,10 @@ switch (area)
                 else if (Opt("prev") is not null) cargs["action"] = "prev";
                 else if (rest.Count > 0) cargs["query"] = string.Join(' ', rest);
                 break;
-            case "split": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break;
+            case "split":
+                cargs["op"] = rest.Count > 0 ? rest[0] : "toggle";
+                if (Opt("axis") is { } axisWord) cargs["axis"] = axisWord;   // passed through as typed; the server refuses anything but the two words
+                break;
             case "readonly": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|state; block input to the pane
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
             case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay resize --size-percent N | overlay result
@@ -297,7 +308,7 @@ switch (area)
                 if (options.ContainsKey("wait")) cargs["wait"] = true;
                 if (options.ContainsKey("block")) cargs["block"] = true;
                 break;
-            case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
+            case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "other"; break; // primary|split|left|right|top|bottom|other — `other` is the one word valid on either axis
             case "flag": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|clear
             case "bind": cargs["agent"] = rest.Count > 0 ? rest[0] : "claude"; break; // bind a resumable agent (claude) | none to clear
             case "restore": cargs["command"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("command") ?? ""); break; // pin a per-pane restore command | none to clear
@@ -313,6 +324,8 @@ switch (area)
                 if (double.TryParse(Opt("split-ratio"), System.Globalization.CultureInfo.InvariantCulture, out var sr)) cargs["ratio"] = sr;
                 if (int.TryParse(Opt("grow-left"), out var gl)) cargs["grow-left"] = gl;
                 if (int.TryParse(Opt("grow-right"), out var gr)) cargs["grow-right"] = gr;
+                if (int.TryParse(Opt("grow-top"), out var gt)) cargs["grow-top"] = gt;         // a horizontal split's divider, in rows (P4)
+                if (int.TryParse(Opt("grow-bottom"), out var gb)) cargs["grow-bottom"] = gb;
                 break;
             default:
                 Console.Error.WriteLine($"unknown session command '{sub}'"); return 2;

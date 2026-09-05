@@ -232,6 +232,54 @@ try {
         ($splitAgain.ok -and ([string]$splitAgain.result -eq $survivorId) -and $paneCountAgain -eq 2) `
         "reply=$($splitAgain.result) panes=$paneCountAgain"
 
+    # P4: the axis. `--axis horizontal` on the already-split session re-orients it live and still
+    # answers the existing split pane's id. The proof is the GRID, read through each pane's metrics:
+    # stacked panes have their rows roughly halved and their columns back at the full width — the
+    # axis is provable from cols x rows without a pixel. The tree carries it as `axis`.
+    if ($survivorId) {
+        $vertPrimary = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+        $horizReply = Invoke-Ctl @('session', 'split', 'on', '--axis', 'horizontal')
+        $horizPrimary = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.rows -lt [int]$vertPrimary.result.rows) { $horizPrimary = $candidate; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $horizSplit = Invoke-Ctl @('session', 'metrics', '--target', $survivorId)
+        $axisNode = Get-SessionSnapshot $sessionId
+        Check 'session split on --axis horizontal re-orients the live split and answers the same pane id' `
+            ($horizReply.ok -and ([string]$horizReply.result -eq $survivorId) -and
+             $axisNode.axis -eq 'horizontal' -and @($axisNode.paneIds).Count -eq 2) `
+            "reply=$($horizReply.result) axis=$($axisNode.axis)"
+        Check 'a horizontal split stacks the panes: rows halved and columns the full width, on both panes' `
+            ($vertPrimary.ok -and $null -ne $horizPrimary -and $horizSplit.ok -and
+             [int]$horizPrimary.result.rows -lt [int]$vertPrimary.result.rows -and
+             [int]$horizPrimary.result.cols -gt [int]$vertPrimary.result.cols -and
+             [int]$horizSplit.result.cols -eq [int]$horizPrimary.result.cols -and
+             [int]$horizSplit.result.rows -lt [int]$vertPrimary.result.rows) `
+            "vertical primary=$($vertPrimary.result.cols)x$($vertPrimary.result.rows) horizontal primary=$($horizPrimary.result.cols)x$($horizPrimary.result.rows) split=$($horizSplit.result.cols)x$($horizSplit.result.rows)"
+        # The words of the other axis are refused naming this one; this axis's words work.
+        $focusLeft = Invoke-Ctl @('session', 'focus', 'left')
+        $focusBottom = Invoke-Ctl @('session', 'focus', 'bottom')
+        Check 'session focus left is refused on a horizontal split (naming the axis) and bottom is accepted' `
+            ((-not $focusLeft.ok) -and ([string]$focusLeft.error).Contains('horizontal') -and $focusBottom.ok) `
+            "left=$($focusLeft.error) bottom=$($focusBottom.result)"
+        $growLeft = Invoke-Ctl @('session', 'resize', '--grow-left', '3')
+        Check 'session resize --grow-left is refused on a horizontal split and points at --grow-top' `
+            ((-not $growLeft.ok) -and ([string]$growLeft.error).Contains('grow-top')) "reply=$($growLeft.error)"
+        # Back to vertical for the rest of the script, which was written against columns.
+        $backReply = Invoke-Ctl @('session', 'split', 'on', '--axis', 'vertical')
+        $restored = $false
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.rows -eq [int]$vertPrimary.result.rows -and
+                [int]$candidate.result.cols -eq [int]$vertPrimary.result.cols) { $restored = $true; break }
+            Start-Sleep -Milliseconds 200
+        }
+        Check 'session split on --axis vertical restores the side-by-side grid exactly' `
+            ($backReply.ok -and $restored -and (Get-SessionSnapshot $sessionId).axis -eq 'vertical')
+    }
+
     if ($survivorId) {
         # While both meanings exist, an exact pane id has priority over the same exact session id.
         # The newly split pane is active, so resolving as a session here would modify the wrong side.
