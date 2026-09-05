@@ -1,8 +1,8 @@
 # P3 — persistence: `session.context` and `restore.capture`
 
 Batch **P3** of the parity programme in
-[2026-09-03-parity-batches.md](2026-09-03-parity-batches.md). Closes items 1 and 5 (the
-`restore.capture` half) of [agterm-parity.md](../agterm-parity.md).
+[2026-09-03-parity-batches.md](../2026-09-03-parity-batches.md). Closes items 1 and 5 (the
+`restore.capture` half) of [agterm-parity.md](../../agterm-parity.md).
 
 ## The restore-format rule this batch sets
 
@@ -539,6 +539,14 @@ note; round 2 is scoped to that commit.
 - Not taken: "persistence errors are swallowed before capture reports success" (pre-existing —
   `SaveState` ignores IO errors everywhere); "a checkpoint is never refreshed at quit while
   restore-commands is off" (immaterial — the replay is off too).
+
+**What revmux round 2 found** (`.revmux/tasks/p3-persistence/02-after-fix`, scoped to `375250a`):
+no Major or Critical — the bar #233 merged on. Seven Minors and one pre-existing item filed as
+**#234** for a follow-up PR with its own round: the `ISessionHost` contract lagging the r1 fix on
+the timeout wording and on the empty target; the pill origin still moving through `ctxReserve` (and
+a context that can be reserved for and then not drawn); two wrong comments; `--target true` refused
+by a value comparison the file's own rule forbids; and the quit-time capture — the Major-1 fix —
+still exercised by no cell. The plan's own two opening links are one directory short since the move.
 
 ## Technical Details
 
