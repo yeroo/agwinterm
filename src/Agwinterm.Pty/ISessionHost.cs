@@ -208,10 +208,27 @@ public interface ISessionHost
     /// <summary>Reorder a workspace among its siblings: dir = up|down|top|bottom.</summary>
     bool WorkspaceReorder(string? target, string dir);
 
-    /// <summary>Split the targeted session (null/"active" = the active one): op = on|off|toggle.
-    /// False when the target names no session. Splitting a session that is not the active one
-    /// does not move focus to it: the split appears when the user next selects that session.</summary>
-    bool Split(string? target, string op);
+    /// <summary>
+    /// <c>session.split</c>: split or collapse the targeted session (null/"active" = the active one):
+    /// op = on|off|toggle. <paramref name="axis"/> is <see cref="SplitAxes.Vertical"/> (left/right
+    /// panes — the default of a session never split) or <see cref="SplitAxes.Horizontal"/> (top/bottom
+    /// panes), already parsed by the server through <see cref="SplitAxes.TryParse"/>; null keeps the
+    /// session's current orientation.
+    /// <para><b>Returns a pane id</b> — a bare string, so the caller can address the shell it just
+    /// asked for (P4; before, the constant "split" from a Post-and-return-true, so the id was only
+    /// knowable by diffing the tree). Per op: <c>on</c> → the split pane's id, ALSO when the session
+    /// was already split (the caller that does not know whether it split gets something addressable
+    /// either way, and nothing changes); <c>off</c> → the survivor's id (pane 0), also when already
+    /// single; <c>toggle</c> → whichever it produced. Or <see cref="RefusePrefix"/> + a refusal —
+    /// <c>session not found</c>, the axis refusal — and nothing split.</para>
+    /// <para><b>Invariants (#230)</b>: the target is resolved on the caller's thread so an unknown
+    /// target answers a refusal with nothing queued; the split lands on THAT session, not on whichever
+    /// is active; splitting a session that is not the active one does not move focus to it (the
+    /// split appears when the user next selects it). The reply is read back off the session INSIDE
+    /// the same FIFO UI hop the write travelled (<see cref="SessionContext"/>'s threading), so the id
+    /// names a pane that exists; a hop that cannot be queued or run is a refusal.</para>
+    /// </summary>
+    string Split(string? target, string op, string? axis);
     /// <summary>Move pane focus in the active session: dir = left|right|other.</summary>
     void FocusPaneDir(string dir);
     /// <summary>Set the active session's split: an absolute left ratio (0..1) or grow left/right by N columns.</summary>
@@ -417,7 +434,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool WorkspaceCollapse(string? target, bool expand) => false;
     public bool WorkspaceSelect(string? target) => false;
     public bool WorkspaceReorder(string? target, string dir) => false;
-    public bool Split(string? target, string op) => false;
+    public string Split(string? target, string op, string? axis) => ISessionHost.RefusePrefix + "session not found";
     public void FocusPaneDir(string dir) { }
     public void ResizeSplit(double? ratio, int growLeft, int growRight) { }
     public IReadOnlyList<string> ThemeList() => Array.Empty<string>();

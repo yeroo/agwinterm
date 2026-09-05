@@ -251,7 +251,7 @@ public sealed class ControlServer : IDisposable
                 case "workspace.move": return host.WorkspaceReorder(target, GetString(args, "dir") ?? "down") ? Ok("moved") : Err("workspace not found");
                 case "workspace.collapse": return host.WorkspaceCollapse(target, expand: false) ? Ok("collapsed") : Err("workspace not found");
                 case "workspace.expand": return host.WorkspaceCollapse(target, expand: true) ? Ok("expanded") : Err("workspace not found");
-                case "session.split": return host.Split(target, GetString(args, "op") ?? "toggle") ? Ok("split") : Err("session not found");
+                case "session.split": return HandleSessionSplit(host, target, args);
                 case "session.focus": host.FocusPaneDir(GetString(args, "dir") ?? "right"); return Ok("focus");
                 case "session.resize":
                     {
@@ -505,6 +505,29 @@ public sealed class ControlServer : IDisposable
     /// surfaces cannot draw. A refusal leaves the old context in place — the host is never called.
     /// The host's own refusal is "no session", the same condition rename refuses.
     /// </summary>
+    /// <summary>
+    /// session.split: the reply is the PANE ID the op produced or found (a bare string — the shipped
+    /// conformance step on <c>split off</c> is a string type check, and a pane id is a string), see
+    /// <see cref="ISessionHost.Split"/> for the per-op rule. <c>axis</c> is read STRICTLY: absent is
+    /// "keep the session's orientation", a string must be one of <see cref="SplitAxes"/>' two words,
+    /// and a non-string (a number, an object) is refused with the same wording rather than defaulted —
+    /// a caller that sent <c>"axis": 1</c> meant something, and a vertical split with ok:true would
+    /// be the silent-success class. Every refusal splits nothing.
+    /// </summary>
+    private static string HandleSessionSplit(ISessionHost host, string? target, JsonElement args)
+    {
+        string? axis = null;
+        if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty(SplitAxes.Key, out var av))
+        {
+            if (av.ValueKind != JsonValueKind.String) return Err(SplitAxes.Refusal(av.GetRawText()));
+            if (!SplitAxes.TryParse(av.GetString(), out axis, out string? axisRefusal)) return Err(axisRefusal!);
+        }
+        string reply = host.Split(target, GetString(args, "op") ?? "toggle", axis);
+        return reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+            ? Err(reply[ISessionHost.RefusePrefix.Length..])
+            : Ok(reply);
+    }
+
     private static string HandleSessionContext(ISessionHost host, string? target, JsonElement args)
     {
         string? raw = GetString(args, SessionContexts.Key);

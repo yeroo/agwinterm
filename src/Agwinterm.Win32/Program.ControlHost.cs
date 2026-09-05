@@ -488,15 +488,34 @@ internal partial class Program
         return true;
     }
 
-    public bool Split(string? target, string op)
+    private const string SplitNotFound = ISessionHost.RefusePrefix + "session not found";
+
+    // session.split (P4): the reply is the pane id the op produced or found, read back off the session
+    // INSIDE the FIFO queued hop (SessionContext's threading) — the old Post(...); return true answered
+    // the constant "split" for a request that had merely been dropped on the queue, so the caller
+    // could not address the shell it asked for, and `on` when already split said ok having done
+    // nothing. Resolution stays on the caller's thread first (#230): a bad target answers a refusal
+    // with nothing queued; the hop re-resolves so a session closed in between is refused, not split.
+    // Same order as SessionScratch: null/"active" is the active session; otherwise a session id, a
+    // pane id, or a prefix of either. A hop that cannot be queued or run throws, which Dispatch
+    // turns into ok:false (after a timeout the action stays queued and the reply says so — #234).
+    public string Split(string? target, string op, string? axis)
     {
-        // Resolved here, on the caller's thread, so a bad target answers false instead of being
-        // dropped on the UI queue. Same order as SessionScratch: null/"active" is the active
-        // session; otherwise a session id, a pane id, or a prefix of either.
-        var ses = FindSesForTarget(target);
-        if (ses is null) return false;
-        Post(() => SplitOp(op, ses));
-        return true;
+        if (FindSesForTarget(target) is null) return SplitNotFound;
+        // The axis is parsed by the server; the layout learns the word in the next step of P4 (the
+        // axis task). Until then a horizontal request is refused, never laid out vertical with ok:true.
+        if (axis == SplitAxes.Horizontal) return ISessionHost.RefusePrefix + "axis horizontal is not laid out by this build; only vertical (left/right panes); nothing was split";
+        return InvokeOnUiQueued(() =>
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null) return SplitNotFound;
+            SplitOp(op, ses, axis);
+            // By position, not history: while split, the split pane is the one in slot 1 (SplitPane
+            // inserts it after the single pane it split); after a collapse the survivor is slot 0.
+            // So `on` when already split names the existing split pane, `off` when already single
+            // names the only pane, and toggle names whichever it produced.
+            return ses.Panes.Count > 1 ? ses.Panes[1].Id : ses.Panes[0].Id;
+        });
     }
 
     public void FocusPaneDir(string dir)

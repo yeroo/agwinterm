@@ -373,18 +373,36 @@ internal sealed class FakeSessionHost : ISessionHost
     public bool WorkspaceDelete(string? target) { var w = FindWs(target); if (w is null || Workspaces.Count <= 1) return false; Workspaces.Remove(w); if (ReferenceEquals(ActiveWs, w)) { ActiveWs = Workspaces[0]; ActiveSess = ActiveWs.Sessions.FirstOrDefault(); } return true; }
     public bool WorkspaceSelect(string? target) { var w = FindWs(target); if (w is null) return false; ActiveWs = w; ActiveSess = w.Sessions.FirstOrDefault(); return true; }
     public bool WorkspaceReorder(string? target, string dir) => FindWs(target) is not null;
-    public bool Split(string? target, string op)
+    public string Split(string? target, string op, string? axis)
     {
         // Mirrors the app: the target resolves like every other session verb (null/"active",
         // a session or pane id, or a prefix), and the split lands on THAT session - not on
         // whichever one is active. Toggle is modelled too, since the app's default op is toggle.
+        // The split pane is MINTED (AddPane), never counted — the reply is its id, read back off the
+        // pane list after the op exactly as the app reads ses.Panes, so a test can check that the id
+        // it got is the id the tree lists. `on` when on and `off` when off change nothing and answer
+        // the pane in slot 1 / slot 0. The axis word is the server's to validate; the fake has no
+        // layout for it to shape (P4's axis task gives Sess an Axis).
         var s = FindSes(target);
-        if (s is null) return false;
-        s.PaneCount = op switch { "on" => 2, "off" => 1, _ => s.PaneCount > 1 ? 1 : 2 };
-        s.Ratios = s.PaneCount == 1 ? new() { 1.0 } : new() { 0.5, 0.5 };
-        return true;
+        if (s is null) return ISessionHost.RefusePrefix + "session not found";
+        bool split = s.PaneCount > 1;
+        bool want = op switch { "on" => true, "off" => false, _ => !split };
+        if (want && !split) { s.AddPane(); s.Ratios = new() { 0.5, 0.5 }; s.FocusedPane = 1; }   // the app focuses the new pane
+        else if (!want && split)
+        {
+            // pane 0 survives (the app's CollapseToSinglePane); the others go with their per-pane state
+            foreach (var gone in s.PaneIds.Skip(1).ToList()) { s.RestorePins.Remove(gone); s.Captured.Remove(gone); s.Foreground.Remove(gone); }
+            s.Panes.RemoveRange(1, s.Panes.Count - 1); s.PaneIds.RemoveRange(1, s.PaneIds.Count - 1);
+            s.PaneCount = 1; s.Ratios = new() { 1.0 }; s.FocusedPane = 0;
+        }
+        return s.PaneIds[s.PaneCount > 1 ? 1 : 0];
     }
-    public void FocusPaneDir(string dir) { if (ActiveSess is { PaneCount: > 1 }) ActiveSess.FocusedPane ^= 1; }
+    // left = pane 0, right = pane 1, other = the one not focused — the app's FocusPane(dir) walk.
+    public void FocusPaneDir(string dir)
+    {
+        if (ActiveSess is not { PaneCount: > 1 } a) return;
+        a.FocusedPane = dir switch { "left" => 0, "right" => 1, _ => a.FocusedPane == 0 ? 1 : 0 };
+    }
     public void ResizeSplit(double? ratio, int growLeft, int growRight) { if (ActiveSess is { PaneCount: > 1 } && ratio is { } r) ActiveSess.Ratios = new() { r, 1 - r }; }
     public IReadOnlyList<string> ThemeList() => new[] { "dark", "light" };
     public bool ThemeSet(string name) => name is "dark" or "light";

@@ -13,6 +13,8 @@ using System.Text.Json;
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]
+//   agwintermctl session split [on|off|toggle] [--target ID]   (replies with a PANE ID: on/toggle-on = the split
+//       pane's, also when the session was already split; off/toggle-off = the survivor's. Default op = toggle)
 //   agwintermctl session context <text...> [--target ID]   (one line of "what is this pane for", shown dimmed
 //       beside the name and read back in `tree --json` as context; survives a restart. Blank, a control
 //       character or more than 200 characters is refused; replies {session,context})

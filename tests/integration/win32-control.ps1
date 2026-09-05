@@ -207,7 +207,7 @@ try {
     Invoke-Ctl @('session', 'scratch', 'on', '--target', $sessionId) | Out-Null
     Start-Sleep -Milliseconds 500
     Invoke-Ctl @('session', 'scratch', 'off', '--target', $sessionId) | Out-Null
-    Invoke-Ctl @('session', 'split', 'on') | Out-Null
+    $splitReply = Invoke-Ctl @('session', 'split', 'on')
 
     $survivorId = $null
     for ($i = 0; $i -lt 30; $i++) {
@@ -220,6 +220,17 @@ try {
         Start-Sleep -Milliseconds 200
     }
     Check 'the fixture has a second pane' (-not [string]::IsNullOrEmpty($survivorId))
+    # P4: `session split` answers the pane id it produced, read back off the session inside the UI
+    # hop — so it must be exactly the new entry the tree lists, not a constant and not a stale guess.
+    Check 'session split on replies with the new pane id the tree lists' `
+        ($splitReply.ok -and $survivorId -and ([string]$splitReply.result -eq $survivorId)) `
+        "reply=$($splitReply.result) tree=$survivorId"
+    # `on` when already split: the same id again, and still two panes (the P2 no-op class, now honest).
+    $splitAgain = Invoke-Ctl @('session', 'split', 'on')
+    $paneCountAgain = @((Get-SessionSnapshot $sessionId).paneIds).Count
+    Check 'session split on when already split replies with the existing split pane id' `
+        ($splitAgain.ok -and ([string]$splitAgain.result -eq $survivorId) -and $paneCountAgain -eq 2) `
+        "reply=$($splitAgain.result) panes=$paneCountAgain"
 
     if ($survivorId) {
         # While both meanings exist, an exact pane id has priority over the same exact session id.

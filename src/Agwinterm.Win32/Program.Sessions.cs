@@ -1528,12 +1528,16 @@ internal partial class Program
     }
 
     /// <summary>The keyboard, the title-bar button and the palette all split the active session.</summary>
-    private void SplitOp(string op) => SplitOp(op, _active);
+    private void SplitOp(string op) => SplitOp(op, _active, null);
 
     /// <summary>Split or collapse <paramref name="ses"/>. The control API reaches this with a
     /// resolved target, which need not be the active session: `session split on --target X` from
-    /// an agent's pane used to split whatever the user happened to be looking at.</summary>
-    private void SplitOp(string op, Ses? ses)
+    /// an agent's pane used to split whatever the user happened to be looking at. `on` when already
+    /// split and `off` when already single change nothing — the reply (the host reads it off
+    /// <c>ses.Panes</c> afterwards) is what makes those honest. <paramref name="axis"/> is one of
+    /// <see cref="SplitAxes"/>' words or null (keep the session's orientation); the host refuses
+    /// horizontal until the layout learns the axis (P4's axis task).</summary>
+    private void SplitOp(string op, Ses? ses, string? axis)
     {
         if (ses is null) return;
         int panes = ses.Panes.Count;
