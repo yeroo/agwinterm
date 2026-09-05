@@ -298,10 +298,34 @@ internal partial class Program
         float bellW = showBell ? 34f : 0f, bellGap = showBell ? 8f : 0f;
         float titleAvail = rgLeft - 14f - bellW - bellGap - titleX;
         float titleMeasured = MeasureText(title, _uiFont);
-        float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail));
+        // session.context (P3): a dimmed, smaller run AFTER the title, before the pill strip. It is a
+        // suffix and not a second caption line because TitleBarH is 40/30/0 by toolbar mode — there is
+        // no room for a second row at 30 and no row at all at 0. Title and context share the ONE
+        // titleAvail budget: a long title yields at most 40% of it to the context, both are ellipsized
+        // inside their share, and the run never grows past titleAvail — so the bell (which follows the
+        // run) is clamped exactly where it was without a context, and the right button group never moves.
+        string? ctx = _active?.Context;
+        float ctxGap = 8f, ctxMeasured = 0f, ctxReserve = 0f;
+        if (ctx is not null)
+        {
+            ctxMeasured = MeasureText(ctx, _uiSmall);
+            ctxReserve = MathF.Min(ctxMeasured + ctxGap, titleAvail * 0.4f);
+        }
+        float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail - ctxReserve));
         brush.Color = ChromeText;
         rt.DrawText(title, _uiTitle, new Rect(titleX, 0f, titleW, TitleBarH), brush);  // one vertically-centered, ellipsized row
-        float pillX = titleX + titleW + 10f;
+        float runEnd = titleX + titleW;   // right edge of the title run (title, then the context suffix when set)
+        if (ctx is not null)
+        {
+            float ctxW = MathF.Min(ctxMeasured, titleAvail - titleW - ctxGap);
+            if (ctxW >= 20f)   // nothing drawn when the title alone fills the budget — the palette line carries the long form
+            {
+                brush.Color = ChromeDim;
+                rt.DrawText(ctx, _uiSmallTrim, new Rect(runEnd + ctxGap, 0f, ctxW, TitleBarH), brush, DrawTextOptions.Clip);
+                runEnd += ctxGap + ctxW;
+            }
+        }
+        float pillX = runEnd + 10f;
         void Pill(string label, Color4 bg)   // small status pill after the title
         {
             float w = MeasureText(label, _uiSmall) + 14f;
@@ -317,7 +341,7 @@ internal partial class Program
         // dim = nothing, plain = active/completed, blocked-color = any blocked (uses the configured status color).
         if (showBell)
         {
-            float bellX = MathF.Min(titleX + titleW + bellGap, rgLeft - bellW - 14f);
+            float bellX = MathF.Min(runEnd + bellGap, rgLeft - bellW - 14f);
             var (bellBlocked, bellActive) = AttentionState();
             var bellBase = bellBlocked ? StatusDot(AgentStatus.Blocked) : (bellActive ? ChromeText : ChromeDim);
             if ((bellBlocked || bellActive) && !_cursorOn && AnyBlinkAttention())

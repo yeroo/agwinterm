@@ -195,6 +195,7 @@ internal partial class Program
         return new WindowStateSnapshot(
             SidebarVisible: _sidebarW > 0, Fullscreen: _fullscreen, Maximized: IsZoomed(_hwnd),
             QuickTerminalVisible: _coverKind == 2 && _cover is not null && ReferenceEquals(_cover, _quick),
+            // ActiveSession is the NAME; session.context is not a name and is not folded in — it is read from the tree (P3).
             ActiveWorkspace: a?.Ws.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
     }
 

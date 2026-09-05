@@ -183,8 +183,26 @@ internal partial class Program
         bool isDrag = _dragging && ReferenceEquals(s, _dragItem);
         brush.Color = isDrag ? new Color4(0.5f, 0.53f, 0.57f, 0.45f) : (active ? SbActiveText : SbDimText);
         if (!ReferenceEquals(_editing, s)) // the rename box covers the name while editing
+        {
+            float nameAvail = _sidebarW - nameX - 22f;
             // Clip + ellipsis-trim so a long name (or an enlarged sidebar font) never spills over the dot.
-            rt.DrawText(s.Name, _sidebarFont, new Rect(nameX, y, _sidebarW - nameX - 22f, rowH), brush, DrawTextOptions.Clip);
+            rt.DrawText(s.Name, _sidebarFont, new Rect(nameX, y, nameAvail, rowH), brush, DrawTextOptions.Clip);
+            // session.context (P3): a dimmer, smaller suffix after the name in the SAME row, clipped to
+            // the name rect. The name keeps its full width and the context takes what is left; it is
+            // never a second line and never changes rowH — DrawSidebar computes ONE rowH per paint and
+            // every consumer of _sidebarRows (click, RowAt, the rename EDIT, drag, UIA) assumes it.
+            // The palette's Secondary line is where the long form lives.
+            if (s.Context is string ctx && ctx.Length > 0)
+            {
+                float nameW = MathF.Min(MeasureText(s.Name, _sidebarFont), nameAvail);
+                float ctxX = nameX + nameW + 6f, ctxW = nameAvail - nameW - 6f;
+                if (ctxW >= 16f)
+                {
+                    brush.Color = isDrag ? brush.Color : WithA(SbDimText, active ? 0.9f : 0.7f);
+                    rt.DrawText(ctx, _sidebarCtx, new Rect(ctxX, y, ctxW, rowH), brush, DrawTextOptions.Clip);
+                }
+            }
+        }
         // Unread-notification count badge, just left of the status circle (can be hidden; the count still tracks).
         int unread = UnreadOf(s);
         if (unread > 0 && _config.NotificationBadges)
@@ -752,11 +770,16 @@ internal partial class Program
                     {
                         var sx = s;
                         string cwd = PrettyCwd(SafeCwd(sx));
+                        // session.context (P3) leads the dimmed line — "<context>  ·  <workspace>  ·  <cwd>" —
+                        // and is searchable, so a palette query finds a session by what it is for.
+                        string ctx = sx.Context ?? "";
+                        string secondary = cwd.Length > 0 ? $"{sx.Ws.Name}  ·  {cwd}" : sx.Ws.Name;
+                        if (ctx.Length > 0) secondary = $"{ctx}  ·  {secondary}";
                         _palAll.Add(new PalItem
                         {
                             Label = sx.Name,
-                            Secondary = cwd.Length > 0 ? $"{sx.Ws.Name}  ·  {cwd}" : sx.Ws.Name,
-                            Search = $"{sx.Name} {sx.Ws.Name} {cwd}",
+                            Secondary = secondary,
+                            Search = ctx.Length > 0 ? $"{sx.Name} {ctx} {sx.Ws.Name} {cwd}" : $"{sx.Name} {sx.Ws.Name} {cwd}",
                             Dot = AggStatus(sx),
                             Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
                         });

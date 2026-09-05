@@ -232,23 +232,39 @@ Server and tests:
 
 ### Task 2: the context on every surface
 - [x] `Ses.Context` (`Program.cs:320-346`), beside `CustomName` (added in Task 1 — the host needs the field)
-- [ ] title bar: a dimmed run in `_uiSmall` / `ChromeDim` after the title, **before** the pill strip
+- [x] title bar: a dimmed run in `_uiSmall` / `ChromeDim` after the title, **before** the pill strip
       (`Program.Services.cs:306-317`), ellipsized within the same `titleAvail` budget so the bell and
       the right button group never move; drawn only when set. Say in a comment why it is a suffix
       and not a second line (`TitleBarH` 40/30/0)
-- [ ] sidebar row (`DrawSessionRow`, `Chrome.cs:143-206`): the same dimmed suffix after the name in
+- [x] sidebar row (`DrawSessionRow`, `Chrome.cs:143-206`): the same dimmed suffix after the name in
       the **same** row, clipped to the row's name rect; no per-row height change (state why: every
       consumer of `_sidebarRows` assumes one `rowH`, and the palette is where the long form lives)
-- [ ] session palette (`Chrome.cs:749-764`): `Secondary` becomes `"<context>  ·  <workspace>  ·
+- [x] session palette (`Chrome.cs:749-764`): `Secondary` becomes `"<context>  ·  <workspace>  ·
       <cwd>"` when set, and `Search` includes the context so a palette query finds a session by it
-- [ ] undo-close: `ClosedSession` (`Program.Sessions.cs:1275`) carries the context, captured at
+- [x] undo-close: `ClosedSession` (`Program.Sessions.cs:1275`) carries the context, captured at
       `:1292-1295` and replayed at `:1355` / `:1372`
-- [ ] `window.state`'s `ActiveSession` and the UIA `Name` stay the name — the context is not a name
+- [x] `window.state`'s `ActiveSession` and the UIA `Name` stay the name — the context is not a name
       (comment at the UIA line)
-- [ ] `RequestRedraw()` after every mutation; the inline rename EDIT (`Chrome.cs:328`, `:376`) is
+- [x] `RequestRedraw()` after every mutation; the inline rename EDIT (`Chrome.cs:328`, `:376`) is
       untouched — rename edits the name, not the context
-- [ ] run the .NET suite, then a sandbox smoke: set a context, `PrintWindow` the title bar and the
+- [x] run the .NET suite, then a sandbox smoke: set a context, `PrintWindow` the title bar and the
       row, attach the capture to the task note
+  - ➕ verified 2026-09-05 by a sandbox smoke (`.ralphex/progress/p3-task2-smoke.ps1`, gitignored with
+    its captures `p3-task2-smoke-{titlebar,sidebar,palette,palette-query,cleared}.png`): set → reply and
+    `tree --json` carry the text; the title bar shows `~  build the persistence batch` dimmed before the
+    bell; the row shows `session 1  build the persistence…` ellipsized before the dot; the palette line
+    reads `build the persistence batch  ·  workspace 1  ·  C:\Users\boris` and the query `persist` finds
+    the session by it; `session rename` keeps the context; `window.state` answers the name only;
+    close + Ctrl+Shift+R brings the context back on the same id; `--clear` empties the reply, the tree
+    and the surfaces. 10/10 checks, twice. No unit test reaches the Win32 draw path — the smoke is the check.
+  - ⚠️ harness note, not a product defect: a posted Ctrl+P chord (`[AgwUi]::Chord`) leaves a translated
+    `p` in the palette query — the sandbox's own loop translates the key without the Ctrl the real key
+    path carries. The smoke sends one Backspace first; the palette's WM_CHAR handling is untouched.
+  - title bar layout: title and context share ONE `titleAvail` budget — a long title yields at most 40% of
+    it to the context, both ellipsize inside their share, the bell follows the run (clamped as before)
+    and the right group never moves. A title that fills the budget shows no suffix; the palette carries it.
+  - row suffix draws in its own `_sidebarCtx` format (`_sidebarSmall`'s size + "…" trimming) so the
+    counts stay untrimmed and the suffix never hard-clips mid-glyph against the dot.
 
 ### Task 3: the restore format — `Context` persists, and the format gets a test
 - [ ] move `AppState`, `WorkspaceState`, `SessionState`, `PaneState` and the serializer options out of
