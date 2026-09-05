@@ -17,7 +17,7 @@
 #              relaunch the captured command is typed back into the pane (`session text` shows it
 #              with the `& ` prefix the replay adds, which the original typed line never had)
 #
-# P4 (docs/plans/2026-09-06-p4-splits.md, task 3) adds the split axis to the file, and two cells:
+# P4 (docs/plans/completed/2026-09-06-p4-splits.md, task 3) adds the split axis to the file, and two cells:
 #
 #   axis-graceful   `session split on --axis horizontal`, WM_CLOSE, relaunch: `tree --json` says
 #                   horizontal with the SAME two pane ids in the same order, and `session metrics`

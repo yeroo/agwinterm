@@ -1,6 +1,6 @@
 # Panes — the two panes of a session, and what a split verb may and may not move
 
-Batch P4 (`docs/plans/2026-09-06-p4-splits.md`) gives a session's split its full shape: `session split`
+Batch P4 (`docs/plans/completed/2026-09-06-p4-splits.md`) gives a session's split its full shape: `session split`
 answers the **pane id** it produced, `--axis vertical|horizontal` chooses the arrangement (agterm's
 words: **vertical = left/right panes, horizontal = top/bottom panes**), `session split close` closes
 **either** pane, and `session swap` exchanges the two panes while every id stays where it was. The

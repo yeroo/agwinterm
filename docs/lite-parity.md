@@ -211,7 +211,7 @@ Not a one-way list, and these should move the other way.
 
 - ~~**`session.split` returns the split's id.** agwinterm's returns nothing, and a hidden split shell
   has no other handle. **agwinterm should copy this** — tracked in `agterm-parity.md` too.~~
-  **Matched in batch P4** (agwinterm, PR pending): `session split` answers a pane id — the split
+  **Matched in batch P4** (agwinterm, #238): `session split` answers a pane id — the split
   pane's on `on` (also when the session was already split, lite's rule), the survivor's on `off`.
   lite had it right first.
 - **`window.select` says whether the raise was granted.** agwinterm answers `selected` whenever the

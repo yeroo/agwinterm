@@ -27,7 +27,8 @@ namespace Agwinterm.Pty;
 //     without a horizontal split is byte-identical to what 0.17.12 saved. Absent, or any spelling but
 //     the two wire words (case-sensitive), reads as vertical — what every file written before the key
 //     meant. TWO PANES PER SESSION: the model is primary + split and the axis is per session; a file
-//     with more panes restores the first two and the host logs the rest as dropped (the restore loop
+//     with more panes restores the first two and the host drops the rest — a Debug-build trace names the
+//     count; a Release build shows the drop only in its next save, which writes two (the restore loop
 //     being written for N was an accident, never a feature).
 //   * THE FORMAT HAS A TEST THAT CAN SEE IT (tests/Agwinterm.Pty.Tests/RestoreStateTests.cs) — that is
 //     why the POCOs live here rather than in the Win32 assembly: every format change is verified by a

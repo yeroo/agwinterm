@@ -39,10 +39,10 @@ named as such rather than left to look like a backlog nobody is working on.
 | `session.new` refuses an unknown workspace; a bare `session new` lands in the caller's workspace | — | agwinterm #226 *(P2)*, lite: P2-lite *(caller half)* |
 | `session.context` — one line per session, shown in the title bar, the row and the palette, in `tree` as `context`, restored after a restart | 0.26.0 | agwinterm #233 *(P3)*, lite: P3-lite |
 | `restore.capture` — fill the captured-command slots on demand, per-pane reply, `capturedCommands` in `tree` | 0.26.0 | agwinterm #233 *(P3)*, lite: P3-lite |
-| `session.split` replies with the **pane id** (the split pane's on `on`, also when already split; the survivor's on `off`) | — | agwinterm *(P4, PR pending)*; lite had it (#13) |
-| Horizontal splits — `--axis vertical\|horizontal` on `session.split` (agterm's words: vertical = left/right, horizontal = top/bottom), per session, re-orients live, survives restore, `axis` in `tree`; `session.focus` takes `primary\|split\|left\|right\|top\|bottom\|other`, `session.resize` gains `--grow-top` / `--grow-bottom` | 0.23.0 | agwinterm *(P4, PR pending)*, lite: P4-lite |
-| `session.split.close` — closes **either** pane, the survivor's id as the reply; a one-pane session refused | 0.23.0 | agwinterm *(P4, PR pending)*, lite: P4-lite |
-| `session.swap` — the panes exchanged; axis, ratio sequence, focus's pane, overlays, status and **every id** kept | 0.26.0 | agwinterm *(P4, PR pending)*, lite: P4-lite *(expensive there — see [lite-parity.md](lite-parity.md))* |
+| `session.split` replies with the **pane id** (the split pane's on `on`, also when already split; the survivor's on `off`) | — | agwinterm *(P4, #238)*; lite had it (#13) |
+| Horizontal splits — `--axis vertical\|horizontal` on `session.split` (agterm's words: vertical = left/right, horizontal = top/bottom), per session, re-orients live, survives restore, `axis` in `tree`; `session.focus` takes `primary\|split\|left\|right\|top\|bottom\|other`, `session.resize` gains `--grow-top` / `--grow-bottom` | 0.23.0 | agwinterm *(P4, #238)*, lite: P4-lite |
+| `session.split.close` — closes **either** pane, the survivor's id as the reply; a one-pane session refused | 0.23.0 | agwinterm *(P4, #238)*, lite: P4-lite |
+| `session.swap` — the panes exchanged; axis, ratio sequence, focus's pane, overlays, status and **every id** kept | 0.26.0 | agwinterm *(P4, #238)*, lite: P4-lite *(expensive there — see [lite-parity.md](lite-parity.md))* |
 
 The overlay entry is the *honesty* half only: a pane id is now refused rather than silently widened.
 Pane-scoped overlays themselves are still open, below.
@@ -60,7 +60,11 @@ discovered:
   places), moves the focus with its pane and leaves every id where it was — the session id keeps naming
   the pane it always named, now on the other side. The invariant "the first pane carries the session
   id" is therefore "exactly one pane carries the session id", and the resolver's exact-pane-first order
-  is what keeps the session id naming that pane.
+  is what keeps the session id naming that pane. What that costs on the way **down** (checked once,
+  #238's final task): the released 0.17.12 restores pane 0 under the session id, so a file saved
+  with a *swapped* session loads there with **both panes carrying the session id** and the split
+  shell's id gone — no `.bad`, no crash, two panes side by side; an unswapped file loses only the
+  axis. A P4 build loads what 0.17.12 writes back and re-mints the duplicate.
 
 The P1 rows were items **1, 2 and 8** of the open list before P1 closed them, the P2 rows were
 item **6**, the `sidebar.width` half of item **5** and two sub-items of item **11**, the P3 rows

@@ -272,7 +272,7 @@ public class RestoreStateTests
         AssertEveryOtherFieldIntact(st);
     }
 
-    // ---- P4: the split axis (docs/plans/2026-09-06-p4-splits.md, task 3) ----
+    // ---- P4: the split axis (docs/plans/completed/2026-09-06-p4-splits.md, task 3) ----
     //
     // SessionState.Axis is the LAST key of a session, written only when the session is split AND
     // horizontal (RestoreState.StoreAxis), read back through RestoreState.LoadAxis, which accepts
