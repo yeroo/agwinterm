@@ -350,7 +350,23 @@ switch (area)
     case "restore" when sub == "clear": cmd = "restore.clear"; break;
     // restore capture [--target ID]: no AGWINTERM_SESSION_ID default — a bare call captures EVERY real
     // pane, and only an explicit --target narrows it to one (a pane id, or a session id / name).
-    case "restore" when sub == "capture": cmd = "restore.capture"; target = Opt("target"); break;
+    // Because the bare call is the BROAD one, anything that looks like an attempt to narrow it and
+    // failed is refused rather than silently widened: a positional id (`restore capture s1`, the
+    // shape `session close <id>` takes), an unknown option (`--targt s1` — the splitter hands any
+    // flag the next word), or an empty `--target ""` (the request builder drops an empty target,
+    // which the server reads as "everything"). Each would otherwise clear the checkpoint of every
+    // idle pane in the window on a typo (revmux r1).
+    case "restore" when sub == "capture":
+    {
+        cmd = "restore.capture";
+        if (rest.Count > 0) { Console.Error.WriteLine($"restore capture: unexpected argument '{rest[0]}' — the target is `--target <pane or session>`; with no --target EVERY real pane is captured, so a stray word is refused rather than widened. Nothing sent."); return 2; }
+        var unknown = options.Keys.FirstOrDefault(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
+        if (unknown is not null) { Console.Error.WriteLine($"restore capture: unknown option --{unknown} (it takes only --target). Nothing sent."); return 2; }
+        if (options.TryGetValue("target", out var capTarget) && (capTarget.Length == 0 || capTarget == "true"))
+        { Console.Error.WriteLine("restore capture: --target is empty — omit it to capture every real pane, or name one pane or session. Nothing sent."); return 2; }
+        target = Opt("target");
+        break;
+    }
     case "restore": Console.Error.WriteLine("usage: agwintermctl restore capture [--target ID] | restore clear"); return 2;
     case "config" when sub == "set":
         cmd = "config.set";

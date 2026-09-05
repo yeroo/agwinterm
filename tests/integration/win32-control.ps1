@@ -553,8 +553,11 @@ try {
         $capCover = Invoke-Ctl @('restore', 'capture', '--target', ($sessionId + ':scratch'))
         Invoke-Ctl @('session', 'scratch', 'off', '--target', $sessionId) | Out-Null
         Start-Sleep -Milliseconds 400
+        # Matched on the COVER refusal's own wording, not on 'scratch': the unknown-target refusal
+        # interpolates the target, and this target contains 'scratch', so that word passed both arms —
+        # the check would have stayed green with the cover arm deleted (revmux r1).
         Check 'a scratch cover is refused: it has no restore slot' `
-            ((-not $capCover.ok) -and ("$($capCover.error)" -match 'scratch')) "error=$($capCover.error)"
+            ((-not $capCover.ok) -and ("$($capCover.error)" -match 'never restored') -and ("$($capCover.error)" -match 'no restore slot')) "error=$($capCover.error)"
         $capNode2 = Get-SessionSnapshot $sessionId
         Check 'and neither refusal touched the slot' ("$($capNode2.capturedCommands.$survivorId)" -match $pingPattern) `
             "capturedCommands=$($capNode2.capturedCommands | ConvertTo-Json -Compress)"
@@ -571,10 +574,22 @@ try {
         # sends 0x03 twice and then POLLS for the child to be gone. What this check proves is the
         # VERB's honesty (nothing running -> null), not ConPTY's ^C timing, so the child is stopped
         # deterministically and the re-capture is polled until the shell has no non-denylisted child.
-        # Only OUR fixture's exact command line, so no unrelated ping on the machine is touched.
-        @(Get-CimInstance Win32_Process -Filter "Name = 'PING.EXE'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -match '-n 300 127\.0\.0\.1' }) |
-            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        # Only a ping that is a DESCENDANT of this sandbox's app process: the command line alone is
+        # not an identity — restore-roundtrip.ps1 starts the identical line in its own sandbox, and a
+        # command-line match killed the other run's live fixture when the two overlapped (revmux r1).
+        # `session type` returns no pid, so the ancestry walk (pane shell -> conhost/ptyhost -> app)
+        # is the only handle on which ping is ours.
+        $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+        $parentOf = @{}; foreach ($pr in $procs) { $parentOf[[int]$pr.ProcessId] = [int]$pr.ParentProcessId }
+        $procs | Where-Object { $_.Name -eq 'PING.EXE' -and $_.CommandLine -match '-n 300 127\.0\.0\.1' } | ForEach-Object {
+            $cur = [int]$_.ParentProcessId; $ours = $false
+            for ($hop = 0; $hop -lt 12 -and $cur -gt 4; $hop++) {
+                if ($cur -eq $process.Id) { $ours = $true; break }
+                if (-not $parentOf.ContainsKey($cur)) { break }
+                $cur = $parentOf[$cur]
+            }
+            if ($ours) { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        }
         $capNone = $null
         $capTries = 0
         while ($capTries -lt 10) {

@@ -491,6 +491,7 @@ public sealed class ControlServer : IDisposable
     /// </summary>
     private static string HandleRestoreCapture(ISessionHost host, string? target)
     {
+        if (target is not null && target.Length == 0) return Err(RestoreCaptureReply.EmptyTarget);   // present-but-empty is not "everything"
         var result = host.RestoreCapture(target);
         return result.Refusal is not null ? Err(result.Refusal) : OkRaw(RestoreCaptureReply.Build(result));
     }

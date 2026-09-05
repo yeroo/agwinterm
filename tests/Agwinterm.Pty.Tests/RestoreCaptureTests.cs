@@ -244,6 +244,26 @@ public class RestoreCaptureTests
     }
 
     [Fact]
+    public void EmptyTarget_IsRefused_NotBroadenedToEveryPane_AndNoSlotChanges()
+    {
+        // Omitting the target is "every real pane"; a PRESENT but empty one is a caller that meant
+        // to name something and built the request wrong. Treated as "everything" it would have
+        // written null into the slot of every idle pane in the window (revmux r1 of P3), so it is
+        // refused in the server before the host is asked.
+        var (server, host) = New();
+        var ses = host.ActiveSess!;
+        ses.AddPane();
+        ses.Captured["s1"] = "an earlier checkpoint";   // an idle pane's checkpoint, which a broadened capture would clear
+        ses.Foreground[ses.PaneIds[1]] = "tail -f log";
+        var r = Capture(server, "");
+        Assert.False(Ok(r));
+        Assert.Equal(RestoreCaptureReply.EmptyTarget, Error(r));
+        Assert.Contains("Omit --target", Error(r));
+        Assert.Equal("an earlier checkpoint", ses.Captured["s1"]);   // the checkpoint stands
+        Assert.False(ses.Captured.ContainsKey(ses.PaneIds[1]));       // and nothing was captured either
+    }
+
+    [Fact]
     public void AmbiguousName_IsRefused_AndNoSlotChanges()
     {
         var (server, host) = New();

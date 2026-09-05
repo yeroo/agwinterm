@@ -84,7 +84,7 @@ Alone because it is the first restore-format change of this backlog, and lite ha
 format later — as an additive line type, the way `P` was.
 
 **Shipped:** #233 (2026-09-05) — plan at
-[2026-09-05-p3-persistence.md](2026-09-05-p3-persistence.md); contract steps in a sibling PR after
+[completed/2026-09-05-p3-persistence.md](completed/2026-09-05-p3-persistence.md); contract steps in a sibling PR after
 this merges and before the release, as #229 followed #226. Set the restore-format rule the later
 batches inherit: additive keys only, no version field, every loaded value validated. Round-4
 leftovers from P2 (#227 / #228) remain, in `SessionOverlay`. Mirror: agliteterm P3-lite —

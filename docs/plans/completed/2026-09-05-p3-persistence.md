@@ -507,6 +507,39 @@ number, exactly as P1's #221 and P2's #226 were recorded before their review rou
   sides; `conformance -Strict` 58/58; `win32-control -Strict` 61/61 (twice); `restore-roundtrip
   -Strict` 32/32. `control-api.json` `git diff` is empty — the contract steps are the sibling PR's.
 
+**What revmux round 1 found** (`.revmux/tasks/p3-persistence/01-initial`, full branch at
+`7f92d62`): two Majors, both in the capture path, and seven Minors. Fixed in the commit after this
+note; round 2 is scoped to that commit.
+
+- **Major — a failed quit-time query wiped every durable checkpoint.** `CaptureCommandsIntoPanes`
+  called the discarding wrapper, which answers an EMPTY map for "nothing running" and for "the query
+  did not run" alike, and then wrote `null` into every pane's `CapturedCommand` and saved. The verb
+  had the rule (`QueryFailed` is a refusal, never an empty answer); the other writer of the same
+  field applied the opposite one. Before P3 the slot was not durable, so a lost query at quit cost
+  nothing; making it survive ordinary saves is what turned this into data loss — at the one moment
+  the checkpoint exists for. Now `TryCaptureForegroundCommands`, and a query that did not run leaves
+  every slot as it was.
+- **Major — the documented 15 s bound was never enforced.** `ReadToEnd()` ran BEFORE
+  `WaitForExit(timeout)`, so a powershell wedged inside the CIM query (stdout still open) hung the
+  caller — a control-pipe thread, for `restore capture` — forever. Pre-existing in the helper; new
+  because the verb put a pipe client on it. Now an async read beside the bounded wait, the process
+  TREE killed on expiry, the partial output never parsed.
+- Minors: the hop comments claimed a timed-out mutation cannot land later (it stays queued — the
+  comments now say what `InvokeOnUiQueued` says); `pillX` was anchored after the context run, so the
+  pill strip's origin depended on the context's width — the invariant `qa/persistence.md` itself
+  names (pills now sit between title and context, anchored on the title alone); the re-capture
+  fixture killed every `ping -n 300 127.0.0.1` on the machine, including `restore-roundtrip.ps1`'s
+  in an overlapping run (now only a descendant of the sandbox's app process); the scratch-cover
+  integration check matched on `scratch`, a word the unknown-target refusal also contains for that
+  target (now the cover wording); five references to the plan's pre-move path; the QA doc's crops
+  multiplied a device-pixel width by the scale and threw on any HiDPI display (now read off a
+  capture, and `Save-SandboxCapture` refuses an origin outside the bitmap); `restore capture s1`,
+  `--targt s1` and `--target ""` all silently broadened to every pane (refused in the CLI, and an
+  empty target refused in the server with its own wording — `EmptyTarget`, unit-tested).
+- Not taken: "persistence errors are swallowed before capture reports success" (pre-existing —
+  `SaveState` ignores IO errors everywhere); "a checkpoint is never refreshed at quit while
+  restore-commands is off" (immaterial — the replay is off too).
+
 ## Technical Details
 
 - **Why the context is per session and one line.** agterm's item is per session ("shown in the title

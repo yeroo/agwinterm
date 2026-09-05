@@ -313,6 +313,12 @@ function Save-SandboxCapture {
     [void][AgwUi]::PrintWindow($S.Hwnd, $dc, 2)
     $g.ReleaseHdc($dc); $g.Dispose()
     if ($Crop -and $Crop.Count -eq 4) {
+        # An origin at or past the edge would hand Bitmap.Clone a zero or negative width — refused
+        # with the sizes named, since the usual cause is a DIP figure where a device one was meant.
+        if ($Crop[0] -lt 0 -or $Crop[1] -lt 0 -or $Crop[0] -ge $w -or $Crop[1] -ge $h) {
+            $bmp.Dispose()
+            throw "Save-SandboxCapture: crop origin ($($Crop[0]),$($Crop[1])) is outside the ${w}x${h} device-pixel capture"
+        }
         $cw = [Math]::Min($Crop[2], $w - $Crop[0]); $ch = [Math]::Min($Crop[3], $h - $Crop[1])
         $c = $bmp.Clone((New-Object System.Drawing.Rectangle $Crop[0], $Crop[1], $cw, $ch), $bmp.PixelFormat)
         $bmp.Dispose(); $bmp = $c; $w = $cw; $h = $ch

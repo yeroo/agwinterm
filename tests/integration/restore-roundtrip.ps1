@@ -1,5 +1,5 @@
 # Restart round-trip: state an agent sets must survive the app it set it in (P3, batch P3 of the
-# parity programme; docs/plans/2026-09-05-p3-persistence.md).
+# parity programme; docs/plans/completed/2026-09-05-p3-persistence.md).
 #
 # Every cell is: sandbox up -> set a context and capture a running command -> the app goes down
 # (gracefully, or killed) -> the SAME instance relaunches WITHOUT --no-restore -> `tree --json` must

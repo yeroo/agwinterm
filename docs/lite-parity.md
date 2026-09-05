@@ -133,7 +133,7 @@ checks that need the newer client (`--stdin`, a strict `--size-percent`, `sideba
 probe it and SKIP — red under `-Strict`, which is the release gate, the P1-lite rule.
 
 ### Owed: what P3 (agwinterm, persistence) adds — P3-lite
-Batch **P3** (agwinterm, plan `docs/plans/2026-09-05-p3-persistence.md`; PR pending) adds two verbs
+Batch **P3** (agwinterm, plan `docs/plans/completed/2026-09-05-p3-persistence.md`; PR pending) adds two verbs
 agwinterm answers and lite does not, so the count above grows by two until **P3-lite** lands them:
 
 - **`session.context`** — one line of "what is this pane for", set over the API, shown dimmed after

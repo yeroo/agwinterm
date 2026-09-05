@@ -64,6 +64,13 @@ public static class RestoreCaptureReply
     public static string UnknownTarget(string target) =>
         $"restore capture: no pane or session matches '{target}'. Nothing captured, nothing saved.";
 
+    /// <summary>A target that is present but EMPTY. Omitting the target is the documented "every real
+    /// pane"; an empty one is a caller that meant to name something and built the request wrong, and
+    /// broadening it to every pane would clear the checkpoint of every idle pane in the window on a
+    /// typo (revmux r1). Refused in ControlServer, before the host is asked.</summary>
+    public const string EmptyTarget =
+        "restore capture: the target is empty. Omit --target to capture every real pane, or name one pane or session. Nothing captured, nothing saved.";
+
     /// <summary>A scratch / overlay / quick cover: it has no restore slot (covers are never in the saved
     /// tree), so there is nothing to capture into — the refusal <c>session.restore</c> gives a pin there.</summary>
     public static string CoverPane(string paneId) =>

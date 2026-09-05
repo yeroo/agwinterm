@@ -1,6 +1,6 @@
 # Persistence — what an agent sets survives, and is visible where it was promised
 
-Batch P3 (`docs/plans/2026-09-05-p3-persistence.md`) adds two things: **`session context`**, one
+Batch P3 (`docs/plans/completed/2026-09-05-p3-persistence.md`) adds two things: **`session context`**, one
 line of "what is this pane for" per session, and **`restore capture`**, a checkpoint of each pane's
 foreground command into its restore slot. Both are readable back in `tree --json`, and both survive
 a restart — the restart half is `tests/integration/restore-roundtrip.ps1` (graceful, killed, refusal,
@@ -37,9 +37,13 @@ function Sid($s)        { (Tree $s).workspaces[0].sessions[0].id }
 function Reply($s,$a)   { ConvertFrom-Json (Send-Ctl $s $a) }
 function Shot($name, [int[]]$crop) { $p = Join-Path $out "$name.png"; [void](Save-SandboxCapture $s $p -Crop $crop); $p }
 # Regions, device pixels: the whole title bar; its right 220 DIP (the button group); the sidebar's
-# first two rows (the sidebar is 220 DIP wide; the row band under the title bar).
-$TitleBar   = @(0, 0, (Px 1100), (Px 40))
-$RightGroup = @((Px 880), 0, (Px 220), (Px 40))
+# first two rows (the sidebar is 220 DIP wide; the row band under the title bar). The window's WIDTH
+# is read off a capture, not computed: Start-Sandbox sizes the window with SetWindowPos, which takes
+# DEVICE pixels, so the window is 1100 px wide at every scale and `Px 1100` / `Px 880` were past its
+# right edge on any HiDPI display (the crop threw before step 1 at 150 %; revmux r1).
+$probe = Save-SandboxCapture $s (Join-Path $out 'probe.png'); $W = [int]$probe[0]
+$TitleBar   = @(0, 0, $W, (Px 40))
+$RightGroup = @(($W - (Px 220)), 0, (Px 220), (Px 40))
 $Rows       = @(0, (Px 40), (Px 220), (Px 120))
 ```
 
@@ -75,7 +79,8 @@ as `$sid = Sid $s` and confirm `Node $s $sid` has no `context`.
 - step 5: `Compare-Capture $t0 $t3` is **true** — clearing puts the title bar back exactly.
 
 **Fails when:** `DrawTitleBar` draws the context outside the `titleAvail` budget, drops the trimming
-sign, or the pill strip origin (`pillX`) starts depending on the context's width.
+sign, or the pill strip origin (`pillX`) starts depending on the context's width — it is anchored on
+the title alone, and the context is drawn AFTER the pills for exactly that reason.
 
 *Seen (2026-09-05, task 2 smoke): `~  build the persistence batch` dimmed before the bell at 150%
 DPI; the row read `session 1  build the persistence…`.*

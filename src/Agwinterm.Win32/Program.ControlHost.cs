@@ -421,7 +421,10 @@ internal partial class Program
     // quick terminal on nothing). The write goes through the FIFO queued hop rather than Post(...);
     // return true, because the reply carries the value IN EFFECT, read back off the session after the
     // write — P2's session.restore round found that Post-and-return reports the value REQUESTED. A
-    // hop that cannot be queued or run throws, which Dispatch turns into ok:false; nothing was applied.
+    // hop that cannot be queued (the window is closing) or that the window closes under throws, which
+    // Dispatch turns into ok:false with nothing applied. A hop that TIMES OUT (15 s, a message loop
+    // that is alive but not pumping) is ok:false too, but the action stays queued and may still run
+    // when the loop resumes — the reply says so, in InvokeOnUiQueued's own words (revmux r1).
     // The target is resolved INSIDE the hop, so a session closed between the request and the write is
     // refused rather than written to. The server has already normalized and validated the text.
     public string SessionContext(string? target, string? context)
@@ -843,7 +846,9 @@ internal partial class Program
     //      not run is a refusal, never "nothing running" written into every slot.
     //   3. ONE FIFO queued hop (InvokeOnUiQueued, never InvokeOnUi): every CapturedCommand write plus
     //      one SaveState, so the reply describes a state that exists on disk. A hop that cannot be
-    //      queued or run throws, which Dispatch turns into ok:false — nothing written, nothing saved.
+    //      queued, or that the window closes under, throws — ok:false, nothing written, nothing
+    //      saved. A hop that times out is ok:false with the action still queued: it may land when
+    //      the loop resumes, and the reply says so rather than claiming nothing was written.
     //      A pane closed between the snapshot and the hop (its removal is ahead of us in the same
     //      queue) is dropped from the reply rather than written to.
     // The restore-commands toggle gates the REPLAY, not the capture — reported as replayOnRestore.

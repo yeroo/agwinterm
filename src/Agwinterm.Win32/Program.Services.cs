@@ -298,12 +298,14 @@ internal partial class Program
         float bellW = showBell ? 34f : 0f, bellGap = showBell ? 8f : 0f;
         float titleAvail = rgLeft - 14f - bellW - bellGap - titleX;
         float titleMeasured = MeasureText(title, _uiFont);
-        // session.context (P3): a dimmed, smaller run AFTER the title, before the pill strip. It is a
-        // suffix and not a second caption line because TitleBarH is 40/30/0 by toolbar mode — there is
-        // no room for a second row at 30 and no row at all at 0. Title and context share the ONE
+        // session.context (P3): a dimmed, smaller run AFTER the title and after the pill strip. It is
+        // a suffix and not a second caption line because TitleBarH is 40/30/0 by toolbar mode — there
+        // is no room for a second row at 30 and no row at all at 0. Title and context share the ONE
         // titleAvail budget: a long title yields at most 40% of it to the context, both are ellipsized
         // inside their share, and the run never grows past titleAvail — so the bell (which follows the
-        // run) is clamped exactly where it was without a context, and the right button group never moves.
+        // run) is clamped exactly where it was without a context, and the right button group never
+        // moves. The pills sit between them, anchored on the TITLE alone, so their origin does not
+        // depend on the context either (qa/persistence.md names that as the failure; revmux r1).
         string? ctx = _active?.Context;
         float ctxGap = 8f, ctxMeasured = 0f, ctxReserve = 0f;
         if (ctx is not null)
@@ -314,18 +316,9 @@ internal partial class Program
         float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail - ctxReserve));
         brush.Color = ChromeText;
         rt.DrawText(title, _uiTitle, new Rect(titleX, 0f, titleW, TitleBarH), brush);  // one vertically-centered, ellipsized row
-        float runEnd = titleX + titleW;   // right edge of the title run (title, then the context suffix when set)
-        if (ctx is not null)
-        {
-            float ctxW = MathF.Min(ctxMeasured, titleAvail - titleW - ctxGap);
-            if (ctxW >= 20f)   // nothing drawn when the title alone fills the budget — the palette line carries the long form
-            {
-                brush.Color = ChromeDim;
-                rt.DrawText(ctx, _uiSmallTrim, new Rect(runEnd + ctxGap, 0f, ctxW, TitleBarH), brush, DrawTextOptions.Clip);
-                runEnd += ctxGap + ctxW;
-            }
-        }
-        float pillX = runEnd + 10f;
+        float runEnd = titleX + titleW;   // right edge of the title run (title, pills, then the context suffix when set)
+        float pillX = runEnd + 10f;       // anchored on the title alone — never on the context
+        bool anyPill = false;
         void Pill(string label, Color4 bg)   // small status pill after the title
         {
             float w = MeasureText(label, _uiSmall) + 14f;
@@ -334,9 +327,23 @@ internal partial class Program
             brush.Color = new Color4(1f, 1f, 1f, 1f);
             rt.DrawText(label, _uiSmall, new Rect(pillX + 7f, (TitleBarH - 20f) / 2f + 2f, w, 16f), brush);
             pillX += w + 6f;
+            anyPill = true;
         }
         if (_broadcast) Pill("BROADCAST", new Color4(0.85f, 0.25f, 0.25f, 0.95f));  // typing fans out to the workspace
         if (ActiveSurface() is { ReadOnly: true }) Pill("READ-ONLY", new Color4(0.45f, 0.45f, 0.5f, 0.95f));
+        if (anyPill) runEnd = pillX - 6f;   // the strip's right edge (its last inter-pill gap removed)
+        if (ctx is not null)
+        {
+            // The context takes what is left of the title budget after the title and the pills, so a
+            // pill can shorten it but it can never move a pill.
+            float ctxW = MathF.Min(ctxMeasured, titleX + titleAvail - runEnd - ctxGap);
+            if (ctxW >= 20f)   // nothing drawn when the title (and pills) fill the budget — the palette line carries the long form
+            {
+                brush.Color = ChromeDim;
+                rt.DrawText(ctx, _uiSmallTrim, new Rect(runEnd + ctxGap, 0f, ctxW, TitleBarH), brush, DrawTextOptions.Clip);
+                runEnd += ctxGap + ctxW;
+            }
+        }
 
         // dim = nothing, plain = active/completed, blocked-color = any blocked (uses the configured status color).
         if (showBell)
@@ -1297,8 +1304,20 @@ internal partial class Program
             { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             using var proc = System.Diagnostics.Process.Start(psi);
             if (proc is null) return false;
-            string json = proc.StandardOutput.ReadToEnd();
-            if (!proc.WaitForExit(timeoutMs)) { try { proc.Kill(); } catch { } return false; }
+            // The read runs CONCURRENTLY with the bounded wait. Read-to-end first and the timeout is
+            // only consulted after the child has already closed stdout — a powershell wedged inside
+            // the CIM query keeps the handle open, so neither the 4 s nor the 15 s bound ever fired
+            // and the caller (a control-pipe thread, for restore.capture) hung with it (revmux r1).
+            // On expiry the whole tree goes (powershell + the WMI provider host it may have spawned),
+            // which also completes the pending read, and the partial output is never parsed.
+            var read = proc.StandardOutput.ReadToEndAsync();
+            if (!proc.WaitForExit(timeoutMs))
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { }
+                try { read.Wait(1000); } catch { }
+                return false;
+            }
+            string json = read.Wait(timeoutMs) ? read.Result : "";
             if (string.IsNullOrWhiteSpace(json)) return false;
 
             using var doc = JsonDocument.Parse(json);
@@ -1330,13 +1349,24 @@ internal partial class Program
     /// pane, written into each pane's <see cref="Pane.CapturedCommand"/> — the same field
     /// <c>restore capture</c> writes and every save reads. A fresh capture overrides an earlier
     /// checkpoint, including to empty when nothing is running now. On the UI thread, at quit only.
+    ///
+    /// A query that did NOT run leaves every slot exactly as it was — the rule the verb applies
+    /// (<see cref="RestoreCaptureReply.QueryFailed"/>), applied by the other writer of the same
+    /// field. Before P3 the slot was not durable, so a lost query at quit cost nothing that was not
+    /// already gone; once a `restore capture` checkpoint survives ordinary saves, "empty map for a
+    /// dead query" would erase it at the one moment it exists for (a cold CIM start past the 4 s
+    /// budget at quit is a case the 15 s callers were written for — revmux r1). The checkpoint kept
+    /// is at worst stale, and replay re-checks the denylist; a slot wiped is a replay that never
+    /// happens. Returns whether the query ran, so the caller can log the miss.
     /// </summary>
-    private void CaptureCommandsIntoPanes(IEnumerable<Ses> sessions)
+    private bool CaptureCommandsIntoPanes(IEnumerable<Ses> sessions)
     {
         var panes = sessions.SelectMany(s => PanesOf(s)).ToList();
-        var cmdByPid = CaptureForegroundCommands(panes.Select(p => p.S.ChildProcessId).Where(id => id is > 0).Select(id => id!.Value));
+        if (!TryCaptureForegroundCommands(panes.Select(p => p.S.ChildProcessId).Where(id => id is > 0).Select(id => id!.Value), timeoutMs: 4000, out var cmdByPid))
+            return false;   // nothing known, nothing touched: the earlier checkpoints stand
         foreach (var p in panes)
             p.CapturedCommand = p.S.ChildProcessId is int pid && cmdByPid.TryGetValue(pid, out var c) ? c : null;
+        return true;
     }
 
     /// <summary>Snapshot the tree/selection/sidebar to disk atomically. No-op while restoring; ignores IO errors.
@@ -1355,7 +1385,8 @@ internal partial class Program
                 rows = _workspaces.Select(w => (w.Id, w.Name, w.Expanded, w.Sessions.ToList())).ToList();
             string? activeId = _active?.Id;
 
-            if (captureCommands && _config.RestoreCommands) CaptureCommandsIntoPanes(rows.SelectMany(r => r.sessions));
+            if (captureCommands && _config.RestoreCommands && !CaptureCommandsIntoPanes(rows.SelectMany(r => r.sessions)))
+                System.Diagnostics.Debug.WriteLine("quit-time command capture did not run; the earlier restore checkpoints were kept as they were");
 
             var st = new AppState
             {

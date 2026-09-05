@@ -49,7 +49,7 @@ were item **1** and the `restore.capture` half of item **5** (which closes that 
 is renumbered after each, so read those plans' "closes items ..." against this note rather than
 against the current numbering. P3 is the first batch to touch the per-window restore file, and it
 set the format rule the later batches inherit: additive keys only, no version field, every loaded
-value validated (`plans/2026-09-05-p3-persistence.md`). `--stdin` is `session type` / `session write` here — `quick type` has
+value validated (`plans/completed/2026-09-05-p3-persistence.md`). `--stdin` is `session type` / `session write` here — `quick type` has
 no separate verb because the quick terminal is a pane with an id that `session type --target`
 reaches. The agliteterm mirrors are the per-batch `P<n>-lite` plans, tracked in
 [lite-parity.md](lite-parity.md) — agwinterm-first, so the contract is fixed before it is copied.
