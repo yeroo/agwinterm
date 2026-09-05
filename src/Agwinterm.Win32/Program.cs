@@ -297,6 +297,12 @@ internal partial class Program : ISessionHost, IWindowHost
         public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
         public string? AgentResume; // resumable agent bound to this pane (e.g. "claude") — relaunched on restart
         public string? RestoreCommand; // pinned restore command (agterm #271) — always re-run on restart
+        // The captured foreground command — the restore slot (PaneState.Command, "" on disk = none), re-run
+        // on restart when restore-commands is on. Written by `restore capture` and by the quit-time capture
+        // (SaveState(captureCommands: true)), READ by every save (P3). Before P3 the capture lived only in a
+        // local dictionary inside SaveState at quit, so every ordinary save wrote "" over the slot and a
+        // crash / Stop-Process never filled it; one field, one writer per capture, one reader.
+        public string? CapturedCommand;
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)

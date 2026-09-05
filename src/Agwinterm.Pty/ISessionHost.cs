@@ -7,14 +7,16 @@ namespace Agwinterm.Pty;
 /// <see cref="OverlaySize"/> is an open overlay's size-percent (0 = none/full);
 /// <see cref="StatusChangedAt"/> is epoch seconds of the last status write on the pane whose status
 /// won the aggregate — the age of the status actually shown; <see cref="Context"/> is the session's
-/// <c>session context</c> text (null = none; the tree omits the key). New optional fields go at the
-/// END: both hosts and <see cref="SingleSessionHost"/> construct this positionally.</summary>
+/// <c>session context</c> text (null = none; the tree omits the key); <see cref="CapturedCommands"/>
+/// is each pane's captured restore slot ("" = none), parallel to <see cref="PaneIds"/> like
+/// <see cref="RestoreCommands"/> — the <c>restore.capture</c> read-back (P3). New optional fields go
+/// at the END: both hosts and <see cref="SingleSessionHost"/> construct this positionally.</summary>
 public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
     bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
     int FocusedPane = 0, int PaneCount = 1, bool StatusBlink = false, int OverlaySize = 0,
     IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null,
     IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0,
-    string? Context = null);
+    string? Context = null, IReadOnlyList<string>? CapturedCommands = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -292,6 +294,35 @@ public interface ISessionHost
     /// session, pane prefix, session prefix/name) and returns the pane it landed on; null = nothing matched,
     /// and nothing was pinned.</summary>
     RestorePinTarget? SessionRestore(string target, string? command);
+    /// <summary>
+    /// <c>restore.capture</c> (P3): capture the foreground command of every real pane — or of the one
+    /// <paramref name="target"/> names — into its restore slot NOW, and report per pane what was
+    /// captured. Before this the capture happened exactly once, in the window's WM_DESTROY, which a
+    /// crash, a <c>Stop-Process</c>, a power loss or a missed update-quit never reaches; and every
+    /// ordinary save wrote "" into the slot because the captured command had no in-memory field. The
+    /// slot is durable now (the app's <c>Pane.CapturedCommand</c>, written by this verb and by the
+    /// quit-time capture, read by every save), so a checkpoint survives until the next capture.
+    /// <para><b>Target</b>: null / "" = every real pane of every session, in tree order; "active" =
+    /// the active session's active pane; else the resolver <c>session.restore</c> uses (exact pane,
+    /// exact session → its active pane, pane prefix, session prefix / unique name). An unknown target
+    /// is refused with <see cref="RestoreCaptureReply.UnknownTarget"/>; a scratch / overlay / quick
+    /// cover (never in the saved tree, so no slot) with <see cref="RestoreCaptureReply.CoverPane"/>.
+    /// A refusal captures nothing for anyone and saves nothing.</para>
+    /// <para><b>Null captured</b> = the shell had no non-denylisted child: the honest answer, written
+    /// into the slot (a fresh capture overrides an earlier checkpoint, including to empty). A process
+    /// query that fails or times out is a refusal (<see cref="RestoreCaptureReply.QueryFailed"/>),
+    /// never an empty answer for every pane.</para>
+    /// <para><b>The toggle</b> (<c>restore-commands</c>) gates only whether the slot is TYPED BACK at
+    /// restart, not the capture — the pin ignores it too, and a verb that did nothing on a default
+    /// install would be the silent-success class. <see cref="RestoreCaptureResult.ReplayOnRestore"/>
+    /// carries it so the caller knows.</para>
+    /// <para><b>Threading</b> (the app): the pane + pid snapshot and the CIM query run on the calling
+    /// pipe thread with the 15 s timeout the non-quit callers use — never on the UI thread — and
+    /// every slot write plus one save land in a single FIFO queued hop; a hop that cannot run throws,
+    /// which the server turns into ok:false with nothing written. A pane closed between the snapshot
+    /// and the hop is dropped from the reply rather than written to.</para>
+    /// </summary>
+    RestoreCaptureResult RestoreCapture(string? target);
     /// <summary>Poll the event log for events after <paramref name="since"/> (0 = all buffered), up to
     /// <paramref name="limit"/> (0 = no cap). Returns JSON {cursor, events:[{seq,type,session?,info?}]}. (agterm #273)</summary>
     string Events(long since, int limit);
@@ -412,6 +443,10 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;
     public RestorePinTarget? SessionRestore(string target, string? command) => null;
+    public RestoreCaptureResult RestoreCapture(string? target) =>
+        string.IsNullOrEmpty(target) || target == "active"
+            ? new RestoreCaptureResult(Array.Empty<CapturedPane>(), false)   // no restore file, no process notion: nothing to capture
+            : RestoreCaptureResult.Refuse(RestoreCaptureReply.UnknownTarget(target));
     public string Events(long since, int limit) => "{\"cursor\":0,\"events\":[]}";
     public string AdoptClaude() => "unsupported";
     public string RestartClaudeYolo(string? target) => "unsupported";

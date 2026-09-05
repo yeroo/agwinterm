@@ -183,7 +183,8 @@ internal partial class Program
                         PaneIds: s.Panes.Select(p => p.Id).ToList(),
                         RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList(),
                         StatusChangedAt: statusChangedAt,
-                        Context: s.Context);
+                        Context: s.Context,
+                        CapturedCommands: s.Panes.Select(p => p.CapturedCommand ?? "").ToList());
                 }).ToList()
             )).ToList();
     }
@@ -826,6 +827,64 @@ internal partial class Program
             hit.Value.pane.RestoreCommand = command;
             SaveState();
             return new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses!.Id);
+        });
+    }
+
+    // restore.capture (P3): capture every real pane's foreground command (or one pane's) into its
+    // durable slot NOW, and say per pane what was captured. Three steps on two threads:
+    //   1. PIPE THREAD: resolve the target and snapshot (pane, session, shell pid) under the
+    //      workspaces lock, the way Tree() reads. An unknown target or a cover is refused here,
+    //      before any process is queried — a refusal captures nothing for anyone.
+    //   2. PIPE THREAD: the CIM query, with the 15 s timeout the non-quit callers use (a cold CIM
+    //      start can exceed 4 s). RestartAllClaudeSessions is the precedent; AdoptClaudeSessions,
+    //      which blocks the UI thread on it through InvokeOnUi, is the one not to copy — a verb that
+    //      freezes the window for seconds is P2's defect class one layer down. The pipe thread
+    //      belongs to the caller who asked, so it is the right thread to wait on. A query that did
+    //      not run is a refusal, never "nothing running" written into every slot.
+    //   3. ONE FIFO queued hop (InvokeOnUiQueued, never InvokeOnUi): every CapturedCommand write plus
+    //      one SaveState, so the reply describes a state that exists on disk. A hop that cannot be
+    //      queued or run throws, which Dispatch turns into ok:false — nothing written, nothing saved.
+    //      A pane closed between the snapshot and the hop (its removal is ahead of us in the same
+    //      queue) is dropped from the reply rather than written to.
+    // The restore-commands toggle gates the REPLAY, not the capture — reported as replayOnRestore.
+    public RestoreCaptureResult RestoreCapture(string? target)
+    {
+        var snap = new List<(Pane pane, Ses ses, int pid)>();
+        if (string.IsNullOrEmpty(target))
+        {
+            lock (_workspaces)
+                foreach (var s in _workspaces.SelectMany(w => w.Sessions))
+                    foreach (var p in s.Panes) snap.Add((p, s, p.S.ChildProcessId ?? 0));
+        }
+        else if (target == "active")
+        {
+            Ses? a = _active;
+            if (a is null) return RestoreCaptureResult.Refuse(RestoreCaptureReply.UnknownTarget(target));
+            lock (_workspaces) { var p = a.ActivePane; snap.Add((p, a, p.S.ChildProcessId ?? 0)); }
+        }
+        else
+        {
+            var hit = FindControlPane(target);   // session.restore's resolver: exact pane, exact session, pane prefix, session prefix / name
+            if (hit is null) return RestoreCaptureResult.Refuse(RestoreCaptureReply.UnknownTarget(target));
+            if (hit.Value.cover || hit.Value.ses is null) return RestoreCaptureResult.Refuse(RestoreCaptureReply.CoverPane(hit.Value.pane.Id));
+            snap.Add((hit.Value.pane, hit.Value.ses, hit.Value.pane.S.ChildProcessId ?? 0));
+        }
+
+        if (!TryCaptureForegroundCommands(snap.Select(x => x.pid).Where(pid => pid > 0), timeoutMs: 15000, out var byPid))
+            return RestoreCaptureResult.Refuse(RestoreCaptureReply.QueryFailed);
+
+        return InvokeOnUiQueued(() =>
+        {
+            var landed = new List<CapturedPane>(snap.Count);
+            lock (_workspaces)
+                foreach (var (pane, ses, pid) in snap)
+                {
+                    if (!_workspaces.Contains(ses.Ws) || !ses.Ws.Sessions.Contains(ses) || !ses.Panes.Contains(pane)) continue;   // closed since the snapshot
+                    pane.CapturedCommand = pid > 0 && byPid.TryGetValue(pid, out var cmd) ? cmd : null;
+                    landed.Add(new CapturedPane(pane.Id, ses.Id, pane.CapturedCommand));
+                }
+            if (landed.Count > 0) SaveState();
+            return new RestoreCaptureResult(landed, _config.RestoreCommands);
         });
     }
 

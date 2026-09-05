@@ -264,6 +264,7 @@ public sealed class ControlServer : IDisposable
                 case "theme.set": return host.ThemeSet(GetString(args, "name") ?? "") ? Ok("theme set") : Err("theme not found");
                 case "keymap.reload": return Ok(host.KeymapReload());
                 case "restore.clear": return Ok(host.RestoreClear());
+                case "restore.capture": return HandleRestoreCapture(host, target);
                 case "config.set": return Ok(host.ConfigSet(GetString(args, "key") ?? "", GetString(args, "value") ?? ""));
                 case "config.get": return Ok(host.ConfigGet(GetString(args, "key") ?? ""));
                 case "config.list": return Ok(host.ConfigList());
@@ -426,7 +427,10 @@ public sealed class ControlServer : IDisposable
                 // context: the session.context read-back, emitted only when one is set — absent is
                 // "none", the same spelling the flags above use for "no" (P3).
                 if (n.Context is not null) sb.Append(",\"").Append(SessionContexts.Key).Append("\":").Append(JsonSerializer.Serialize(n.Context));
-                AppendRestoreCommands(sb, n);
+                AppendPaneMap(sb, "restoreCommands", n.RestoreCommands, n.PaneIds);
+                // capturedCommands: the restore.capture read-back, same spelling — emitted only when
+                // any pane's slot holds a capture (P3).
+                AppendPaneMap(sb, RestoreCaptureReply.TreeKey, n.CapturedCommands, n.PaneIds);
                 if (n.PaneCount > 1)
                 {
                     sb.Append(",\"paneCount\":").Append(n.PaneCount).Append(",\"focusedPane\":").Append(n.FocusedPane);
@@ -454,25 +458,41 @@ public sealed class ControlServer : IDisposable
     }
 
     /// <summary>
-    /// <c>restoreCommands</c>: the read-back for session.restore, an object keyed by PANE id (the id
-    /// the verb's reply names) listing only the panes that carry a pin. Omitted when no pane does, and
-    /// a pane with no pin is simply absent — the same spelling the flags above use for "no". The
-    /// snapshot carries one entry per pane ("" = none), parallel to PaneIds. AgentSkill promised this
-    /// field long before it was on the wire, so a caller reconnecting to a running app had no way to
-    /// ask which pane held what; the answer was only ever visible in the instant of the call.
+    /// A per-pane read-back map — <c>restoreCommands</c> for session.restore, <c>capturedCommands</c>
+    /// for restore.capture (P3): an object keyed by PANE id (the id the verb's reply names) listing
+    /// only the panes that carry a value. Omitted when no pane does, and a pane with none is simply
+    /// absent — the same spelling the flags above use for "no". The snapshot carries one entry per
+    /// pane ("" = none), parallel to PaneIds. AgentSkill promised <c>restoreCommands</c> long before
+    /// it was on the wire, so a caller reconnecting to a running app had no way to ask which pane
+    /// held what; the answer was only ever visible in the instant of the call.
     /// </summary>
-    private static void AppendRestoreCommands(StringBuilder sb, SessionSnapshot n)
+    private static void AppendPaneMap(StringBuilder sb, string key, IReadOnlyList<string>? values, IReadOnlyList<string>? paneIds)
     {
-        if (n.RestoreCommands is not { Count: > 0 } cmds || n.PaneIds is not { Count: > 0 } ids) return;
+        if (values is not { Count: > 0 } cmds || paneIds is not { Count: > 0 } ids) return;
         bool any = false;
         for (int r = 0; r < cmds.Count && r < ids.Count; r++)
         {
             if (string.IsNullOrEmpty(cmds[r])) continue;
-            sb.Append(any ? "," : ",\"restoreCommands\":{")
+            sb.Append(any ? "," : ",\"" + key + "\":{")
               .Append(JsonSerializer.Serialize(ids[r])).Append(':').Append(JsonSerializer.Serialize(cmds[r]));
             any = true;
         }
         if (any) sb.Append('}');
+    }
+
+    /// <summary>
+    /// restore.capture: capture every real pane's foreground command (or one pane's, with a target)
+    /// into its durable restore slot now, and report per pane what was captured (P3). The reply is
+    /// <see cref="RestoreCaptureReply"/>'s object, OkRaw; the read-back is <c>tree</c>'s
+    /// <c>capturedCommands</c>. Every refusal — an unknown target, a cover pane, a failed process
+    /// query, a UI hop that could not run — is the host's, behind <see cref="RestoreCaptureResult.Refusal"/>
+    /// or a throw, and each captures nothing for anyone. There is no server-side rule to apply: the
+    /// verb takes no value, only a target.
+    /// </summary>
+    private static string HandleRestoreCapture(ISessionHost host, string? target)
+    {
+        var result = host.RestoreCapture(target);
+        return result.Refusal is not null ? Err(result.Refusal) : OkRaw(RestoreCaptureReply.Build(result));
     }
 
     /// <summary>

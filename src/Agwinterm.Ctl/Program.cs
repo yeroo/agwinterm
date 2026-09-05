@@ -35,6 +35,11 @@ using System.Text.Json;
 //   agwintermctl session write <text...> [--target ID]                    (also takes --stdin)
 //   agwintermctl session restore <command...>|none --target PANE          (pin a command re-run on every restart;
 //       target mandatory; replies {action,pane,session}; read back in `tree --json` as restoreCommands)
+//   agwintermctl restore capture [--target ID]       (capture the foreground command of every real pane — or the one
+//       pane/session named — into its restore slot NOW, so a crash or Stop-Process keeps it; replies
+//       {captured,replayOnRestore,panes:[{pane,session,captured|null}]}; read back in `tree --json` as
+//       capturedCommands; replayOnRestore = the restore-commands toggle, which gates the replay, not the capture)
+//   agwintermctl restore clear                       (delete this window's saved session tree)
 //   agwintermctl session copy [--target ID]           (returns the selection text)
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
 //   agwintermctl selection all|copy|clear|finalize [--target ID]
@@ -343,6 +348,10 @@ switch (area)
     case "profiles" when sub == "list": cmd = "profiles.list"; break;
     case "profiles" when sub == "reload": cmd = "profiles.reload"; break;
     case "restore" when sub == "clear": cmd = "restore.clear"; break;
+    // restore capture [--target ID]: no AGWINTERM_SESSION_ID default — a bare call captures EVERY real
+    // pane, and only an explicit --target narrows it to one (a pane id, or a session id / name).
+    case "restore" when sub == "capture": cmd = "restore.capture"; target = Opt("target"); break;
+    case "restore": Console.Error.WriteLine("usage: agwintermctl restore capture [--target ID] | restore clear"); return 2;
     case "config" when sub == "set":
         cmd = "config.set";
         if (rest.Count < 1) { Console.Error.WriteLine("config set needs <key> <value>"); return 2; }

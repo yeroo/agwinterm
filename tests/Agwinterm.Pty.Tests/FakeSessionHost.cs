@@ -37,6 +37,15 @@ internal sealed class FakeSessionHost : ISessionHost
         /// The tree's <c>restoreCommands</c> is built from here, so a test reads a pin back the way a
         /// caller does, and a refused call is asserted to have left this empty.</summary>
         public readonly Dictionary<string, string> RestorePins = new();
+        /// <summary>What each pane's shell is RUNNING, keyed by pane id — the fake's stand-in for the
+        /// app's CIM process snapshot (the fake has no processes). A test seeds it; <see cref="RestoreCapture"/>
+        /// reads it. A pane absent here has no non-denylisted child, and captures null.</summary>
+        public readonly Dictionary<string, string> Foreground = new();
+        /// <summary>The restore SLOT, keyed by pane id — what the app keeps in Pane.CapturedCommand.
+        /// Written only by <see cref="RestoreCapture"/> (a capture of nothing REMOVES the entry, as the
+        /// app writes null), read back through the tree's <c>capturedCommands</c>, so a refused call is
+        /// asserted to have left it untouched.</summary>
+        public readonly Dictionary<string, string> Captured = new();
         /// <summary>Scratch / overlay COVERS over this session, kept the way the app keeps them: NOT
         /// in <see cref="Panes"/> / <see cref="PaneIds"/> / PaneCount / the tree (the app holds them in
         /// Ses.Scratch / Ses.Overlay, and Tree() walks s.Panes only), and reachable as a target by
@@ -81,6 +90,12 @@ internal sealed class FakeSessionHost : ISessionHost
     /// <summary>The app's _sidebarWShown: the width the sidebar has when visible, kept while hidden.</summary>
     internal int SidebarW = SidebarWidths.Default;
     internal readonly Dictionary<string, string> Config = new();
+    /// <summary>Stand-in for the app's process query failing or timing out: restore.capture must then
+    /// refuse (nothing written) rather than report "nothing running" for every pane.</summary>
+    internal bool CaptureFails;
+    /// <summary>The app's <c>restore-commands</c> toggle as the fake sees it: the config key, so a test
+    /// drives it through <c>config.set</c> the way a caller does. Gates the REPLAY, never the capture.</summary>
+    internal bool RestoreCommands => Config.TryGetValue("restore-commands", out var v) && v == "true";
     private int _idSeq;
 
     public FakeSessionHost()
@@ -190,7 +205,8 @@ internal sealed class FakeSessionHost : ISessionHost
                 PaneIds: s.PaneIds,
                 RestoreCommands: s.PaneIds.Select(id => s.RestorePins.TryGetValue(id, out var pin) ? pin : "").ToList(),   // "" = none, as the app's snapshot spells it; parallel to PaneIds, covers in neither
                 StatusChangedAt: statusChangedAt,
-                Context: s.Context);
+                Context: s.Context,
+                CapturedCommands: s.PaneIds.Select(id => s.Captured.TryGetValue(id, out var c) ? c : "").ToList());   // the slot, "" = none, parallel to PaneIds
         }).ToList())).ToList();
 
     public WindowStateSnapshot WindowState() =>
@@ -272,6 +288,38 @@ internal sealed class FakeSessionHost : ISessionHost
         string paneId = hit.s.PaneIds[hit.pane];
         if (command is null) hit.s.RestorePins.Remove(paneId); else hit.s.RestorePins[paneId] = command;
         return new RestorePinTarget(paneId, hit.s.Id);
+    }
+    // Real, not a stub, and in the app's order: resolve (null/"" = every real pane in tree order,
+    // "active" = the active session's focused pane, else the session.restore resolver — a cover is
+    // refused, an unknown target is refused, both BEFORE the "query"), then the query (Foreground,
+    // or a refusal when CaptureFails), then every slot write at once. A capture of nothing removes
+    // the slot entry (the app writes null), so an earlier checkpoint is overridden, not kept.
+    public RestoreCaptureResult RestoreCapture(string? target)
+    {
+        var snap = new List<(Sess s, string paneId)>();
+        if (string.IsNullOrEmpty(target))
+        {
+            foreach (var s in Workspaces.SelectMany(w => w.Sessions))
+                foreach (var id in s.PaneIds) snap.Add((s, id));
+        }
+        else if (target == "active")
+        {
+            if (ActiveSess is not { } a) return RestoreCaptureResult.Refuse(RestoreCaptureReply.UnknownTarget(target));
+            snap.Add((a, a.PaneIds[Math.Clamp(a.FocusedPane, 0, a.PaneIds.Count - 1)]));
+        }
+        else if (FindPane(target) is { } hit) snap.Add((hit.s, hit.s.PaneIds[hit.pane]));
+        else if (FindCover(target) is { } cover) return RestoreCaptureResult.Refuse(RestoreCaptureReply.CoverPane(cover.id));
+        else return RestoreCaptureResult.Refuse(RestoreCaptureReply.UnknownTarget(target));
+
+        if (CaptureFails) return RestoreCaptureResult.Refuse(RestoreCaptureReply.QueryFailed);
+
+        var landed = new List<CapturedPane>();
+        foreach (var (s, paneId) in snap)
+        {
+            if (s.Foreground.TryGetValue(paneId, out var running)) s.Captured[paneId] = running; else s.Captured.Remove(paneId);
+            landed.Add(new CapturedPane(paneId, s.Id, s.Captured.TryGetValue(paneId, out var c) ? c : null));
+        }
+        return new RestoreCaptureResult(landed, RestoreCommands);
     }
     public string Events(long since, int limit) => "{\"cursor\":0,\"events\":[]}";
 

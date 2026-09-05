@@ -302,41 +302,64 @@ Server and tests:
   - Pty 519/519 (incl. the 13 new), Core 246/246; Win32 host full rebuild (`--no-incremental`) 0 warnings
 
 ### Task 4: `restore.capture` — a durable slot, one capture path, a verb that reports
-- [ ] `Pane.CapturedCommand` (`string?`, `Program.cs:288-317`, beside `RestoreCommand`). `SaveState`
+- [x] `Pane.CapturedCommand` (`string?`, `Program.cs:288-317`, beside `RestoreCommand`). `SaveState`
       writes `p.CapturedCommand ?? ""` into `PaneState.Command` **on every save**; the
       `captureCommands: true` path becomes "run the capture, write the field, then save" — one
       field, one writer, and the `WM_DESTROY` call keeps its behaviour (a fresh capture at quit
       overrides an earlier checkpoint, including to empty when nothing is running). Delete the
       local `cmdByPid` shape once nothing else reads it
-- [ ] `TryRestoreState` loads `PaneState.Command` back into `Pane.CapturedCommand` so a restored
+  - the quit-time path is `CaptureCommandsIntoPanes` (UI thread, toggle-gated as before); `cmdByPid`
+    is gone from `SaveState`. `CaptureForegroundCommands` is now a wrapper over
+    `TryCaptureForegroundCommands(…, out map)`, which says whether the query RAN — the two Claude
+    callers keep the old shape, the verb uses the honest one
+- [x] `TryRestoreState` loads `PaneState.Command` back into `Pane.CapturedCommand` so a restored
       pane's slot is readable before it is replayed
-- [ ] `ISessionHost.RestoreCapture(string? target)` returning `IReadOnlyList<CapturedPane>` (a Pty
+  - and so the `SaveState()` at the end of the restore no longer writes `""` over it
+- [x] `ISessionHost.RestoreCapture(string? target)` returning `IReadOnlyList<CapturedPane>` (a Pty
       record: `PaneId, SessionId, string? Captured`) or a refusal for an unknown target; `null`
       captured = the shell had no non-denylisted child, which is the honest answer and distinct
       from a failed query
-- [ ] host: snapshot real panes + pids under `lock (_workspaces)` on the pipe thread (the way `Tree()`
+  - ➕ returns `RestoreCaptureResult(Panes, ReplayOnRestore, Refusal)` rather than a bare list: a list
+    cannot carry the refusal, and the toggle is the host's to report (the fake reads it from
+    `config.set restore-commands`, so a test drives it the way a caller does). A failed / timed-out
+    query is its own refusal (`RestoreCaptureReply.QueryFailed`), never an all-null answer
+- [x] host: snapshot real panes + pids under `lock (_workspaces)` on the pipe thread (the way `Tree()`
       does); run `CaptureForegroundCommands` **on the pipe thread** with the 15 s timeout the
       non-quit callers use; land every `CapturedCommand` write plus one `SaveState()` in a single
       `InvokeOnUiQueued` hop; a failed hop is a refusal (nothing captured, nothing saved). Never
       through `InvokeOnUi`. `--target` resolves with the resolver `session.restore` uses (a pane; a
       session id is its first pane); an unknown target is a verb-specific refusal, not `"no session"`
-- [ ] the verb ignores the `restore-commands` toggle for the **capture** — the pin ignores it too,
+  - `"active"` (only reachable as an explicit `--target active`) = the active session's active pane in
+    both hosts; null / `""` = every real pane. A pane closed between the snapshot and the hop is
+    dropped from the reply, not written to; the save runs only when something landed
+- [x] the verb ignores the `restore-commands` toggle for the **capture** — the pin ignores it too,
       and a no-op verb on a default install is the silent-success class — but the reply carries
       `"replayOnRestore": <toggle>` so the caller knows whether the slot will be typed back
-- [ ] server: `restore.capture` in the **host-verb block beside `restore.clear`**
+- [x] server: `restore.capture` in the **host-verb block beside `restore.clear`**
       (`ControlServer.cs:265`); reply built by `src/Agwinterm.Pty/RestoreCaptureReply.cs` and emitted
       with `OkRaw`: `{"captured":<n non-null>,"replayOnRestore":bool,"panes":[{"pane","session",
       "captured":string|null}]}`; a comment on the record says the shape is ours, not agterm's
       (the parity entry is one sentence)
-- [ ] `SessionSnapshot` / `HandleTree`: `capturedCommands` per session, emitted only when any pane
+- [x] `SessionSnapshot` / `HandleTree`: `capturedCommands` per session, emitted only when any pane
       has one — the read-back, exactly as `restoreCommands` got in P2
-- [ ] fake: a per-pane `Captured` table the test seeds, `RestoreCapture` reading it, covers refused
-- [ ] CLI: `restore capture [--target ID]`; usage header line
-- [ ] tests `tests/Agwinterm.Pty.Tests/RestoreCaptureTests.cs`: all-panes reply shape and count;
+  - `AppendRestoreCommands` became `AppendPaneMap(key, values, paneIds)` and writes both maps
+- [x] fake: a per-pane `Captured` table the test seeds, `RestoreCapture` reading it, covers refused
+  - two tables, because the app has two things: `Foreground` (seeded — what the shell is running, the
+    stand-in for the CIM snapshot) and `Captured` (the slot the verb writes and the tree reads), plus
+    a `CaptureFails` switch for the query-failed refusal
+- [x] CLI: `restore capture [--target ID]`; usage header line
+  - no `AGWINTERM_SESSION_ID` default: a bare call captures every pane. The header now also lists
+    `restore clear`, which it never had
+- [x] tests `tests/Agwinterm.Pty.Tests/RestoreCaptureTests.cs`: all-panes reply shape and count;
       one target; a pane with nothing running reports `null` and counts zero; unknown target refused
       and no pane's slot changed; a cover pane refused; the tree carries `capturedCommands` after a
       capture and not before; `replayOnRestore` mirrors the toggle
-- [ ] run the .NET suite — must pass before task 5
+  - 18 tests; also: session id → pane 0 regardless of focus, name → focused pane, `active`, a prefix,
+    an ambiguous name; a re-capture of nothing clears the earlier checkpoint; a failed query leaves
+    the earlier checkpoint standing; `restoreCommands` and `capturedCommands` stay apart on the tree
+- [x] run the .NET suite — must pass before task 5
+  - Pty 537/537 (519 + 18), Core 246/246; Win32 host `--no-incremental` rebuild 0 warnings, DLL
+    byte-probed for the three new method names (the build-gotchas rule)
 
 ### Task 5: the restart harness and the round-trip
 - [ ] `tests/ui/lib.ps1`: `Restart-Sandbox -Kill` — close the main window (`WM_CLOSE`) or

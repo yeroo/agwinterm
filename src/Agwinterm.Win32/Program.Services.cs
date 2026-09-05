@@ -1269,12 +1269,26 @@ internal partial class Program
     /// <summary>
     /// Best-effort foreground-command capture: for each shell PID, the command line of its most
     /// recently started non-denylisted child. One CIM process snapshot for all panes; ~1s at quit.
+    /// A failed query answers an empty map — callers that must tell "nothing running" from "could not
+    /// ask" (restore.capture) use <see cref="TryCaptureForegroundCommands"/>.
     /// </summary>
     private static Dictionary<int, string> CaptureForegroundCommands(IEnumerable<int> shellPids, int timeoutMs = 4000)
     {
-        var result = new Dictionary<int, string>();
+        TryCaptureForegroundCommands(shellPids, timeoutMs, out var result);
+        return result;
+    }
+
+    /// <summary>
+    /// <see cref="CaptureForegroundCommands"/> that also says whether the process query RAN: false
+    /// when powershell could not start, timed out (the process is killed) or returned nothing
+    /// parseable, in which case <paramref name="result"/> is empty and means nothing. True with an
+    /// empty map is the honest "no pane has a non-denylisted child"; no pids at all is true too.
+    /// </summary>
+    private static bool TryCaptureForegroundCommands(IEnumerable<int> shellPids, int timeoutMs, out Dictionary<int, string> result)
+    {
+        result = new Dictionary<int, string>();
         var pids = shellPids.Distinct().ToHashSet();
-        if (pids.Count == 0) return result;
+        if (pids.Count == 0) return true;
         var deny = LoadDenylist();
         try
         {
@@ -1282,10 +1296,10 @@ internal partial class Program
                 "-NoProfile -NonInteractive -Command \"Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='C';e={if($_.CreationDate){$_.CreationDate.Ticks}else{0}}} | ConvertTo-Json -Compress\"")
             { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             using var proc = System.Diagnostics.Process.Start(psi);
-            if (proc is null) return result;
+            if (proc is null) return false;
             string json = proc.StandardOutput.ReadToEnd();
-            if (!proc.WaitForExit(timeoutMs)) { try { proc.Kill(); } catch { } return result; }
-            if (string.IsNullOrWhiteSpace(json)) return result;
+            if (!proc.WaitForExit(timeoutMs)) { try { proc.Kill(); } catch { } return false; }
+            if (string.IsNullOrWhiteSpace(json)) return false;
 
             using var doc = JsonDocument.Parse(json);
             var rows = doc.RootElement.ValueKind == JsonValueKind.Array
@@ -1306,13 +1320,29 @@ internal partial class Program
             }
             foreach (var (ppid, list) in byParent)
                 result[ppid] = list.OrderByDescending(x => x.created).First().cmd;
+            return true;
         }
-        catch { }
-        return result;
+        catch { result.Clear(); return false; }
+    }
+
+    /// <summary>
+    /// The quit-time capture (WM_DESTROY, restore-commands on): one process snapshot for every real
+    /// pane, written into each pane's <see cref="Pane.CapturedCommand"/> — the same field
+    /// <c>restore capture</c> writes and every save reads. A fresh capture overrides an earlier
+    /// checkpoint, including to empty when nothing is running now. On the UI thread, at quit only.
+    /// </summary>
+    private void CaptureCommandsIntoPanes(IEnumerable<Ses> sessions)
+    {
+        var panes = sessions.SelectMany(s => PanesOf(s)).ToList();
+        var cmdByPid = CaptureForegroundCommands(panes.Select(p => p.S.ChildProcessId).Where(id => id is > 0).Select(id => id!.Value));
+        foreach (var p in panes)
+            p.CapturedCommand = p.S.ChildProcessId is int pid && cmdByPid.TryGetValue(pid, out var c) ? c : null;
     }
 
     /// <summary>Snapshot the tree/selection/sidebar to disk atomically. No-op while restoring; ignores IO errors.
-    /// <paramref name="captureCommands"/> (quit only) captures each pane's foreground command when restore-commands is on.</summary>
+    /// <paramref name="captureCommands"/> (quit only) first captures each pane's foreground command into its
+    /// <see cref="Pane.CapturedCommand"/> when restore-commands is on; every save then writes that field —
+    /// one slot, one reader, so a `restore capture` checkpoint survives the ordinary saves in between (P3).</summary>
     private void SaveState(bool captureCommands = false)
     {
         if (_restoring) return;
@@ -1325,11 +1355,7 @@ internal partial class Program
                 rows = _workspaces.Select(w => (w.Id, w.Name, w.Expanded, w.Sessions.ToList())).ToList();
             string? activeId = _active?.Id;
 
-            // Foreground-command capture (opt-in, quit only): one process snapshot for all panes.
-            Dictionary<int, string> cmdByPid = (captureCommands && _config.RestoreCommands)
-                ? CaptureForegroundCommands(rows.SelectMany(r => r.sessions).SelectMany(s => PanesOf(s))
-                    .Select(p => p.S.ChildProcessId).Where(id => id is > 0).Select(id => id!.Value))
-                : new Dictionary<int, string>();
+            if (captureCommands && _config.RestoreCommands) CaptureCommandsIntoPanes(rows.SelectMany(r => r.sessions));
 
             var st = new AppState
             {
@@ -1365,7 +1391,7 @@ internal partial class Program
                     {
                         string live = PrettyCwd(SafeCwd(p));                       // OSC 7 cwd if the shell reports it
                         string cwd = live.Length > 0 ? live : (p.StartCwd ?? ""); // else the launch dir
-                        string cmd = (p.S.ChildProcessId is int pid && cmdByPid.TryGetValue(pid, out var c)) ? c : "";
+                        string cmd = p.CapturedCommand ?? "";   // the durable slot; "" on disk = none (RestoreState)
                         List<string>? buf = null;
                         string? blob = null;
                         if (_config.RestoreBuffer)
@@ -1518,6 +1544,10 @@ internal partial class Program
                             ses.Panes[i].Ratio = pl[i].Ratio > 0 ? pl[i].Ratio : 1f;
                             ses.Panes[i].AgentResume = string.IsNullOrWhiteSpace(pl[i].AgentResume) ? null : pl[i].AgentResume;
                             ses.Panes[i].RestoreCommand = string.IsNullOrWhiteSpace(pl[i].RestoreCommand) ? null : pl[i].RestoreCommand;
+                            // The captured slot comes back too, so it is readable (tree's capturedCommands) before it
+                            // is replayed and survives the save at the end of this restore — before P3 that save
+                            // wrote "" over it (P3). Validated at replay (denylist), not here: it is a command line.
+                            ses.Panes[i].CapturedCommand = string.IsNullOrWhiteSpace(pl[i].Command) ? null : pl[i].Command;
                         }
                         ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
                     }
