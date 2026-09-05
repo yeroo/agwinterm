@@ -562,17 +562,33 @@ try {
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
         Check 'the capture is in the state file under Command (what a restart, or a kill, leaves)' `
             ($capState -and ((Get-Content -LiteralPath $capState.FullName -Raw) -match '(?i)"Command":\s*"[^"]*ping')) "file=$($capState.FullName)"
-        # Ctrl+C the child, then a re-capture of NOTHING must report null and clear the earlier
+        # End the child, then a re-capture of NOTHING must report null and clear the earlier
         # checkpoint — a stale capture replayed at the next start would be the wrong command.
-        Invoke-Ctl @('session', 'type', ([string][char]3), '--allow-control', '--target', $survivorId) | Out-Null
-        Start-Sleep -Milliseconds 1500
-        $capNone = Invoke-Ctl @('restore', 'capture', '--target', $survivorId)
+        # The child is ENDED BY PID, not by typing ^C: a lone 0x03 written to ConPTY over the pipe
+        # does not reliably raise a console Ctrl+C (it depends on the input buffer's processed-input
+        # mode at that instant), so ping kept running and the check failed intermittently (2026-09-05:
+        # failed in the full run, passed in isolation). The product knows this — QuitClaudeAndRelaunch
+        # sends 0x03 twice and then POLLS for the child to be gone. What this check proves is the
+        # VERB's honesty (nothing running -> null), not ConPTY's ^C timing, so the child is stopped
+        # deterministically and the re-capture is polled until the shell has no non-denylisted child.
+        # Only OUR fixture's exact command line, so no unrelated ping on the machine is touched.
+        @(Get-CimInstance Win32_Process -Filter "Name = 'PING.EXE'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -match '-n 300 127\.0\.0\.1' }) |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        $capNone = $null
+        $capTries = 0
+        while ($capTries -lt 10) {
+            Start-Sleep -Milliseconds 700
+            $capTries++
+            $capNone = Invoke-Ctl @('restore', 'capture', '--target', $survivorId)
+            if ($capNone.ok -and $capNone.result.captured -eq 0) { break }
+        }
         Start-Sleep -Milliseconds 400
         $capNode3 = Get-SessionSnapshot $sessionId
         Check 'a re-capture with nothing running reports null, counts zero, and clears the checkpoint' `
             ($capNone.ok -and $capNone.result.captured -eq 0 -and $null -eq @($capNone.result.panes)[0].captured -and
              -not ($capNode3.PSObject.Properties['capturedCommands'] -and $capNode3.capturedCommands.PSObject.Properties[$survivorId])) `
-            "reply=$($capNone | ConvertTo-Json -Compress -Depth 5) capturedCommands=$($capNode3.capturedCommands | ConvertTo-Json -Compress)"
+            "after $capTries capture(s): reply=$($capNone | ConvertTo-Json -Compress -Depth 5) capturedCommands=$($capNode3.capturedCommands | ConvertTo-Json -Compress)"
 
         # Run a mouse-aware process in a 50%-sized floating cover. It captures one SGR cell report,
         # consumes its release, enables SGR-Pixels, then captures a pixel report for the same client
