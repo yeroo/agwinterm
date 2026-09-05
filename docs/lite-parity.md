@@ -133,7 +133,7 @@ checks that need the newer client (`--stdin`, a strict `--size-percent`, `sideba
 probe it and SKIP — red under `-Strict`, which is the release gate, the P1-lite rule.
 
 ### Mirrored: what P3 (agwinterm #233) owed lite — P3-lite shipped
-Batch **P3-lite** — agliteterm **#TBD** (2026-09-05; plan `docs/plans/2026-09-05-p3-lite-mirror.md`
+Batch **P3-lite** — agliteterm **#28** (2026-09-05; plan `docs/plans/2026-09-05-p3-lite-mirror.md`
 there) — delivered both verbs batch **P3** (agwinterm **#233**, plan
 `docs/plans/completed/2026-09-05-p3-persistence.md`) added; lite's verb count is **45** with them,
 and the two items below read as what was owed. Three deliberate divergences, each recorded in
