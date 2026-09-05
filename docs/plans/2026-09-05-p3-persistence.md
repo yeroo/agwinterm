@@ -461,25 +461,51 @@ Server and tests:
   unchanged (`git diff` empty)
 
 ### Task 7: [Final] Verify acceptance criteria
-- [ ] verify every item in Overview is implemented, and that the format rule at the top of this plan
+- [x] verify every item in Overview is implemented, and that the format rule at the top of this plan
       matches what shipped (one new key, `Command` reused, validated on load)
-- [ ] verify the edge cases: a context on a session that is then renamed (both survive); `session
+- [x] verify the edge cases: a context on a session that is then renamed (both survive); `session
       context` on a session whose window is closing (refusal, not `ok`); a context of exactly
       `MaxLength` accepted and `MaxLength + 1` refused; `restore capture` while a pane's child is
       exiting (null or the command — never a crash, never a frozen window); `restore capture
       --target` naming a cover pane; two `restore capture` calls back to back (the second's hop
       queues behind the first); a restore file with `Context` holding a newline (dropped, not shown)
-- [ ] confirm `tests/conformance/control-api.json` is **unchanged** — `git diff` must be empty for it
-- [ ] run the conformance suite against a sandbox with `-Strict`
-- [ ] run the full .NET suite, the Rust suite, and `tools/check-abi.ps1` — nothing here should move
+- [x] confirm `tests/conformance/control-api.json` is **unchanged** — `git diff` must be empty for it
+- [x] run the conformance suite against a sandbox with `-Strict`
+- [x] run the full .NET suite, the Rust suite, and `tools/check-abi.ps1` — nothing here should move
       the core ABI
-- [ ] run `tests/integration/win32-control.ps1` and `tests/integration/restore-roundtrip.ps1` end to
+- [x] run `tests/integration/win32-control.ps1` and `tests/integration/restore-roundtrip.ps1` end to
       end against a sandbox
-- [ ] a state file saved by this build loads in a **0.17.11** build (installed at
+- [x] a state file saved by this build loads in a **0.17.11** build (installed at
       `%LOCALAPPDATA%\Programs\agwinterm`, run with a copy of the sandbox app dir under its own
       sandbox app-id) without a `.bad` rename — the downgrade case is loss, not a crash, and that
       claim gets checked once rather than asserted
-- [ ] mark P3 **Shipped** in `docs/plans/2026-09-03-parity-batches.md` with the PR number
+- [x] mark P3 **Shipped** in `docs/plans/2026-09-03-parity-batches.md` with the PR number
+
+**What the verification found** (PR **#233**, opened from this task so the trackers could carry the
+number, exactly as P1's #221 and P2's #226 were recorded before their review rounds).
+
+- **Overview and the format rule match the code.** One new key (`SessionState.Context`,
+  `WhenWritingNull`), `PaneState.Command` reused for the captured slot, both validated on load
+  (`RestoreState.LoadContext`, `SidebarWidth` for out-of-range). `session.context` and
+  `restore.capture` both report the value in effect through one `InvokeOnUiQueued` hop, and both are
+  readable back in `tree --json`.
+- **The edge cases hold.** `MaxLength` / `MaxLength + 1` and a `Context` holding a newline are unit
+  tests (`SessionContextTests`, `RestoreStateTests`); rename-leaves-the-context, a cover-pane refusal
+  and back-to-back captures are in `win32-control.ps1`; the closing-window refusal is the hop throwing
+  into `ok:false`.
+- **A test-robustness fix, committed here** (`5f0924a`). The re-capture check ended its ping child by
+  typing a lone `0x03`, which ConPTY does not reliably turn into a console Ctrl+C, so the child kept
+  running and the check failed in the full run (passed in isolation). It now ends the child by pid
+  (only the fixture's exact command line) and polls the re-capture until the slot clears — the check
+  proves the verb's honesty, not ConPTY's ^C timing. The product already polls after `0x03` for the
+  same reason (`QuitClaudeAndRelaunch`).
+- **The downgrade case is loss, not a crash — checked once, not asserted.** A P3 file this build wrote
+  (with `Context` and a captured `Command`) was loaded by the released **0.17.11** portable under a
+  minted sandbox app-id: it started and answered `ping`, did **not** rename the file `.bad`, restored
+  the tree, did not surface the `Context` it does not know, and dropped that key on its next save.
+- **Suites, all green on this branch:** Core 246/246, Pty 538/538, Rust 36/36, `check-abi` v18 both
+  sides; `conformance -Strict` 58/58; `win32-control -Strict` 61/61 (twice); `restore-roundtrip
+  -Strict` 32/32. `control-api.json` `git diff` is empty — the contract steps are the sibling PR's.
 
 ## Technical Details
 
