@@ -68,8 +68,10 @@ pane received the content · `sidebar.width` distinguishing a clamped request fr
 **Shipped:** #226 (2026-09-04, four revmux rounds) — plan at
 [completed/2026-09-04-p2-honesty.md](completed/2026-09-04-p2-honesty.md); contract steps in this
 PR; release to follow, as #224 followed P1. Grew one item on the way: a bare `session new` lands in
-the **caller's** workspace (task 5a). Round-4 leftovers: #228. Mirror: agliteterm P2-lite (plan
-`docs/plans/2026-09-04-p2-lite-mirror.md` there, with lite #23 and #24 riding along).
+the **caller's** workspace (task 5a). Round-4 leftovers: #228. Mirror: agliteterm P2-lite —
+**shipped** as agliteterm #26 (2026-09-04; plan `docs/plans/2026-09-04-p2-lite-mirror.md` there,
+closing lite #23 and #24 with it; its `--size-percent`, `sidebar width`, `caller` and `--stdin`
+checks SKIP against the released `agwintermctl` until the release that carries #226 is tagged).
 
 Every item is the same defect class as the control-byte refusal already shipped in #213: a call that
 appears to succeed while doing something other than what was asked. Same test shape throughout.
@@ -122,7 +124,7 @@ Same model as P6, different surface — split because it is UI work with a diffe
 `surface.cursor` · `statusChangedAt` · `version` → **P1-lite — shipped** (agliteterm #20,
 2026-09-04, six revmux rounds; plan `docs/plans/completed/2026-09-03-p1-lite-mirror.md` there) ·
 `--stdin` · size-percent validation · `sidebar width` · the caller-workspace default for a bare
-`session new` → P2-lite · `session.context` → P3-lite. Each runs right after its agwinterm batch
+`session new` → **P2-lite — shipped** (agliteterm #26, 2026-09-04) · `session.context` → P3-lite. Each runs right after its agwinterm batch
 merges.
 
 ### P9 · lite · driving a pane

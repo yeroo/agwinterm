@@ -93,34 +93,44 @@ canonical file as of this PR — agwinterm-first, as the contract rule says. Unt
 agliteterm's `check-contract` is red by design; that is the gate, not a bug. `statusChangedAt` is a
 nested tree field the shape runner cannot express, so each product pins it in its own tests.
 
-### Being mirrored next: what P2 (agwinterm #226) owes lite
-Batch **P2-lite** (agliteterm `docs/plans/2026-09-04-p2-lite-mirror.md`) owes four things, one of
-them a new verb:
+### Mirrored: what P2 (agwinterm #226) owed lite — P2-lite shipped
+Batch **P2-lite** — agliteterm **#26** (2026-09-04; plan `docs/plans/2026-09-04-p2-lite-mirror.md`
+there; two lite reports, #23 a pane collapsing to 2 columns and #24 the window coming to the front
+on its own, rode along and close with it) — delivered the four things P2 owed, one of them a new
+verb:
 
-- **`--stdin` on `session type` / `session write`**, refusing invalid UTF-8 client-side with the
-  byte offset named, sending nothing, stripping exactly one trailing newline, and refusing `--stdin`
-  beside positional text. The detection has to be in the CLI: a JSON request is text by the time a
-  server reads it, so the server cannot see the bad bytes at all.
-- **`--size-percent` validated as 1–100, not clamped** — absent means the full region, anything else
-  outside the range is refused with the value, the range and the way to ask for full named. No
-  overlay opens or resizes on a refusal.
-- **A bare `session new` lands in the caller's own workspace** (P2 task 5a, and the item Boris is
-  actually feeling — the report came from agliteterm on the work laptop). lite's `newSession()` reads
-  `g_activeWs`, which every click, selection and API `workspace.new` rewrites; the mirror adds a
-  `caller` argument to the dispatcher (the CLI already sends `AGWINTERM_SESSION_ID`) and resolves
-  that pane's workspace before creating, with *active* as the last fallback rather than the first.
+- **`--stdin` on `session type` / `session write`** — the shared CLI's half; lite's decoder is
+  unchanged and is proved against it (a quote, a newline, two spaces and a leading `--` round-trip
+  byte for byte; a lone `0x80` is refused client-side and the pane receives nothing). The detection
+  has to be in the CLI: a JSON request is text by the time a server reads it.
+- **`--size-percent` validated as 1–100, not clamped** — refused with the value, the range and the
+  way to ask for the default named, and NO popup opens or moves on a refusal. lite keeps its 70 %
+  default where agwinterm's absent means the full region (its overlay is a separate popup window;
+  "full" would hide the main window); the contract pins the reply and the refusal, not the geometry.
+  lite also gained `resize`, a refusal for an unknown action, for `open` with no command and for a
+  target that names no session, and `close` with nothing open answers `no overlay`.
+- **A bare `session new` lands in the caller's own workspace** (P2 task 5a, and the item Boris was
+  actually feeling — the report came from agliteterm on the work laptop). lite resolves the
+  `caller` the CLI sends (inside `args`, as `Program.cs` puts it) by id or ≥4-char prefix only —
+  never by name — under its lock, with *active* as the last fallback; `--workspace` beside
+  `--workspace-name` is refused before anything is created.
+- **`sidebar width`** — the new verb, and the one the contract pins: reads or sets the width, answers
+  the width **in effect** with `visible` and `applied` (a set while hidden is remembered), and lite's
+  `sidebar` no longer toggles on an op it does not know — `sideways` and a typo are refused naming
+  the five ops and nothing changes. Lite's own range (90..900, what its splitter and registry already
+  allow) replaces agwinterm's 120..600, plus a second refusal against the live window for a width
+  that would leave the terminal under 20 columns; the contract pins the reply shape and the
+  refusal, not the numbers. So **`sidebar.width` is mirrored here, in P2-lite**, not deferred to a
+  later batch; lite's verb count is 43 with it.
 
-- **`sidebar width`** — the new verb, and the one the contract now pins: lite has a real `g_sidebarW`
-  and a `sidebar` verb that today **toggles on any op it does not know** (`sidebar width` flips the
-  sidebar and answers ok), so the mirror is cheap and the honesty fix is overdue. Lite's own range
-  (90..900, what its splitter and registry already allow) replaces agwinterm's 120..600; the contract
-  pins the reply shape and the refusal, not the numbers.
-
-`session.new`'s **refusal** of an unknown workspace needs no mirror — lite had it first, which is why
-decision 1 went that way. `session.restore`'s pane reply stays agwinterm-only until P9 brings the
-verb to lite at all. The conformance steps for `session new --workspace no-such-workspace`,
-`--size-percent`, `sidebar width` and the two sidebar refusals landed in the sibling contract PR
-right after #226, so `check-contract` is red by design for the gap between that merge and P2-lite.
+`session.new`'s **refusal** of an unknown workspace needed no mirror — lite had it first, which is
+why decision 1 went that way. `session.restore`'s pane reply stays agwinterm-only until **P9**
+brings the verb to lite at all. The conformance steps for `session new --workspace
+no-such-workspace`, `--size-percent`, `sidebar width` and the two sidebar refusals landed in the
+sibling contract PR (#229) right after #226; agliteterm's `test/control-api.json` is that file
+again and `check-contract` is in step. Until the agwinterm release that carries #226 is tagged, lite's
+checks that need the newer client (`--stdin`, a strict `--size-percent`, `sidebar width N`, `caller`)
+probe it and SKIP — red under `-Strict`, which is the release gate, the P1-lite rule.
 
 ---
 
@@ -130,6 +140,11 @@ Not a one-way list, and these should move the other way.
 
 - **`session.split` returns the split's id.** agwinterm's returns nothing, and a hidden split shell
   has no other handle. **agwinterm should copy this** — tracked in `agterm-parity.md` too.
+- **`window.select` says whether the raise was granted.** agwinterm answers `selected` whenever the
+  window exists; Windows refuses a background process the foreground while the user is typing
+  elsewhere, so that reply is a guess. lite (P2-lite, its #24) answers `selected` only when
+  `GetForegroundWindow` is the window afterwards, and a string starting `not raised:` otherwise —
+  still `ok`, the contract's shape, so one script works against both. **agwinterm should copy this.**
 - **Splits scroll into main-screen history on the alt screen.** lite's renderer and hit-test derive
   their row from the same offset on either screen; agwinterm pins the alt screen to 0. Both are
   self-consistent (highlight and clipboard agree either way), so this is a difference to decide about
