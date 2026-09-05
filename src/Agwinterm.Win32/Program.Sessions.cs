@@ -1259,17 +1259,45 @@ internal partial class Program
         var ses = _active;
         if (ses is null) return;
         if (ses.Panes.Count <= 1) { if (ConfirmCloseOk()) CloseSessionInternal(ses); return; }
-        var cur = ses.ActivePane;
-        int idx = ses.Panes.IndexOf(cur);
-        try { cur.S.Dispose(); } catch { }
+        ClosePane(ses, ses.ActivePane);
+    }
+
+    /// <summary>Close ONE pane of a split session — either side — and promote the survivor (P4). The one
+    /// primitive behind Ctrl+Shift+W (<see cref="CloseActivePane"/>: the focused pane), <c>session split
+    /// off</c> (<see cref="CollapseToSinglePane"/>: pane 1 goes, so pane 0 survives — agterm's <c>off</c>
+    /// minus the hide), <c>session split close</c> (the host: the TARGETED pane, either side) and a split
+    /// shell's exit (<see cref="OnPaneProcessExited"/>). Before P4 no control verb could close pane 0 of
+    /// two: <c>off</c> hard-coded <c>Panes[0]</c> as the survivor, and the keyboard was the only path to
+    /// the other side. Removes the pane from the list first (under the workspaces lock, so the control-pipe
+    /// reader never enumerates a disposed pane — issue #85), gives its share of the axis to the survivor
+    /// (one survivor takes the whole width or height; the N-general redistribution stays for the layout's
+    /// sake, nothing new depends on it), makes the survivor <c>Panes[0]</c> with <c>Active = 0</c>, then
+    /// disposes the shell. The window's focused surface is repointed only when <paramref name="ses"/> IS
+    /// the active session (#230: closing a pane of a background session must not steal focus), then
+    /// regrid, redraw, save, and a tree event — the tree changed (paneCount, paneIds, focusedPane and
+    /// axis are gone from the node). Nothing else moves: the session keeps its id, name, context, flag,
+    /// axis (for the next split), overlay and scratch. A one-pane session is not this function's business:
+    /// the callers route or refuse first (Ctrl+Shift+W closes the session; <c>split close</c> refuses
+    /// naming <c>session close</c>). A pane no longer in the session (closed by a removal ahead of us in
+    /// the queue) is a no-op, not a second dispose.</summary>
+    private void ClosePane(Ses ses, Pane pane)
+    {
+        if (ses.Panes.Count <= 1) return;
+        int idx = ses.Panes.IndexOf(pane);
+        if (idx < 0) return;
         lock (_workspaces) ses.Panes.RemoveAt(idx);   // exclude the control-pipe reader mid-enumeration (issue #85)
-        float freed = cur.Ratio / ses.Panes.Count;
-        foreach (var p in ses.Panes) p.Ratio += freed;   // redistribute the freed share of the axis (width or height)
+        float freed = pane.Ratio / ses.Panes.Count;
+        foreach (var q in ses.Panes) q.Ratio += freed;   // the survivor grows to fill the freed share of the axis
+        if (ses.Panes.Count == 1) ses.Panes[0].Ratio = 1f;   // exactly the full width or height, whatever the shares summed to
         ses.Active = Math.Clamp(idx, 0, ses.Panes.Count - 1);
-        _session = ses.S;
+        try { pane.S.Dispose(); } catch { }
+        // Only the active session's focused pane is the window's focused surface. Pointing `_session`
+        // at a pane of some other session would leave the window focused on a surface not on screen.
+        if (ReferenceEquals(ses, _active)) _session = ses.S;
         RegridSession(ses);
-        RequestRedraw();
+        if (ReferenceEquals(ses, _active)) RequestRedraw();
         SaveState();
+        EmitEvent("tree");   // control-API event log (#273): the node lost its split block
     }
 
     /// <summary>A pane's shell process exited: if it was one side of a split, collapse to the survivor
@@ -1277,21 +1305,9 @@ internal partial class Program
     private void OnPaneProcessExited(Pane p)
     {
         Ses? ses;
-        lock (_workspaces)
-        {
-            ses = _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Panes.Contains(p));
-            if (ses is null || ses.Panes.Count <= 1) return;   // not a live split pane → leave the shell as-is
-            int idx = ses.Panes.IndexOf(p);
-            ses.Panes.RemoveAt(idx);
-            float freed = p.Ratio / ses.Panes.Count;
-            foreach (var q in ses.Panes) q.Ratio += freed;     // survivor grows to fill the freed share (the full width or height)
-            ses.Active = Math.Clamp(idx, 0, ses.Panes.Count - 1);
-        }
-        try { p.S.Dispose(); } catch { }
-        if (ReferenceEquals(_active, ses)) _session = ses.S;
-        RegridSession(ses);
-        if (ReferenceEquals(_active, ses)) RequestRedraw();
-        SaveState();
+        lock (_workspaces) ses = _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Panes.Contains(p));
+        if (ses is null || ses.Panes.Count <= 1) return;   // not a live split pane → leave the shell as-is
+        ClosePane(ses, p);
     }
 
     /// <summary>A recently-closed session's restorable identity (IDE "reopen closed" / browser Ctrl+Shift+T).
@@ -1591,17 +1607,12 @@ internal partial class Program
     }
 
     /// <summary>Collapse <paramref name="ses"/> to its primary pane (dispose the rest). The axis is
-    /// kept for the next split.</summary>
+    /// kept for the next split. agterm: collapsing the split keeps the primary (left / top) pane, not
+    /// whichever is focused — so `session split off` closes pane 1, and `session split close` is the
+    /// verb for closing pane 0 (both through <see cref="ClosePane"/>).</summary>
     private void CollapseToSinglePane(Ses ses)
     {
-        if (ses.Panes.Count <= 1) return;
-        var keep = ses.Panes[0];   // agterm: collapsing the split keeps the primary (left / top) pane, not whichever is focused
-        foreach (var p in ses.Panes) if (!ReferenceEquals(p, keep)) { try { p.S.Dispose(); } catch { } }
-        // Clear+Add as one atomic step so the control-pipe reader never sees an empty pane list (issue #85).
-        lock (_workspaces) { ses.Panes.Clear(); ses.Panes.Add(keep); }
-        keep.Ratio = 1f; ses.Active = 0;
-        if (ReferenceEquals(ses, _active)) _session = ses.S;
-        RegridSession(ses); RequestRedraw(); SaveState();
+        while (ses.Panes.Count > 1) ClosePane(ses, ses.Panes[^1]);
     }
 
     /// <summary>Set the split boundary next to the active pane: an absolute ratio for the first

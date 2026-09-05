@@ -81,6 +81,19 @@ internal sealed class FakeSessionHost : ISessionHost
             Panes.Add(p); PaneIds.Add("p" + Guid.NewGuid().ToString("N")[..8]); PaneCount = Panes.Count;
             return p;
         }
+        /// <summary>Remove pane <paramref name="index"/> with its per-pane state (pin, slot, foreground) — in
+        /// the app the Pane record and its shell go together. The survivor keeps its id whichever slot it
+        /// was in, the ratio sequence collapses to a single 1.0 and focus lands on slot 0: the fake's one
+        /// primitive behind <c>split off</c> (slot 1 goes) and <c>split close</c> (the targeted slot goes),
+        /// as ClosePane is the app's.</summary>
+        public void RemovePane(int index)
+        {
+            string gone = PaneIds[index];
+            RestorePins.Remove(gone); Captured.Remove(gone); Foreground.Remove(gone);
+            Panes.RemoveAt(index); PaneIds.RemoveAt(index); PaneCount = Panes.Count;
+            Ratios = PaneCount > 1 ? Enumerable.Repeat(1.0 / PaneCount, PaneCount).ToList() : new() { 1.0 };
+            FocusedPane = Math.Clamp(index, 0, Panes.Count - 1);
+        }
         /// <summary>Seals pane 0's id to the session id once <see cref="Id"/> is set.</summary>
         public Sess Seed() { if (PaneIds.Count == 0) PaneIds.Add(Id); else PaneIds[0] = Id; return this; }
     }
@@ -162,10 +175,20 @@ internal sealed class FakeSessionHost : ISessionHost
     /// "active" is not a pane here — the verbs that default to it do so before calling this.</summary>
     private (Sess s, int pane)? FindPane(string target)
     {
-        if (FindPaneById(target) is { } byId) return byId;
+        // The app's FindControlPane, arm for arm: exact pane, exact SESSION → its focused pane, pane
+        // prefix, session prefix / unique name → its focused pane. While a pane carries the session id
+        // (always, until P4's `split close` removes that pane), the exact-pane arm takes the session id
+        // first and the exact-session arm is never reached for it; once that pane is gone the session
+        // id still resolves — to the survivor, the focused pane — exactly as win32-control.ps1's
+        // "exact session id resolves content verbs to the surviving regular pane" pins for the app.
         var sessions = Workspaces.SelectMany(w => w.Sessions).ToList();
+        static (Sess s, int pane) AtFocus(Sess s) => (s, Math.Clamp(s.FocusedPane, 0, s.Panes.Count - 1));
+        if (FindPaneById(target, exactOnly: true) is { } exactPane) return exactPane;
+        if (sessions.FirstOrDefault(s => s.Id == target) is { } exactSession) return AtFocus(exactSession);
+        if (FindPaneById(target) is { } byPrefix) return byPrefix;
+        if (sessions.FirstOrDefault(s => s.Id.StartsWith(target, StringComparison.Ordinal)) is { } sessionPrefix) return AtFocus(sessionPrefix);
         var named = sessions.Where(s => string.Equals(s.Name, target, StringComparison.OrdinalIgnoreCase)).ToList();
-        return named.Count == 1 ? (named[0], Math.Clamp(named[0].FocusedPane, 0, named[0].Panes.Count - 1)) : null;   // an ambiguous name resolves to nothing
+        return named.Count == 1 ? AtFocus(named[0]) : null;   // an ambiguous name resolves to nothing
     }
 
     /// <summary>A cover pane by exact id or id prefix — the tail of the app's FindPaneBy, after the
@@ -182,10 +205,12 @@ internal sealed class FakeSessionHost : ISessionHost
     /// <summary>The app's FindPaneById: a pane by exact id, then by id prefix, and never by a
     /// session name. This is how a <c>caller</c> on session.new resolves (the value is a pane's own
     /// AGWINTERM_SESSION_ID, never a name), so the fake must not reach a pane by name there either.</summary>
-    private (Sess s, int pane)? FindPaneById(string id)
+    private (Sess s, int pane)? FindPaneById(string id, bool exactOnly = false)
     {
         var sessions = Workspaces.SelectMany(w => w.Sessions).ToList();
-        foreach (var pred in new Func<string, bool>[] { pid => pid == id, pid => pid.StartsWith(id, StringComparison.Ordinal) })
+        var preds = new List<Func<string, bool>> { pid => pid == id };
+        if (!exactOnly) preds.Add(pid => pid.StartsWith(id, StringComparison.Ordinal));
+        foreach (var pred in preds)
             foreach (var s in sessions)
                 for (int i = 0; i < s.Panes.Count; i++)
                     if (i < s.PaneIds.Count && pred(s.PaneIds[i])) return (s, i);
@@ -396,12 +421,33 @@ internal sealed class FakeSessionHost : ISessionHost
         if (want && !split) { s.AddPane(); s.Ratios = new() { 0.5, 0.5 }; s.FocusedPane = 1; }   // the app focuses the new pane
         else if (!want && split)
         {
-            // pane 0 survives (the app's CollapseToSinglePane); the others go with their per-pane state
-            foreach (var gone in s.PaneIds.Skip(1).ToList()) { s.RestorePins.Remove(gone); s.Captured.Remove(gone); s.Foreground.Remove(gone); }
-            s.Panes.RemoveRange(1, s.Panes.Count - 1); s.PaneIds.RemoveRange(1, s.PaneIds.Count - 1);
-            s.PaneCount = 1; s.Ratios = new() { 1.0 }; s.FocusedPane = 0;
+            // pane 0 survives (the app's CollapseToSinglePane → ClosePane on slot 1); the others go with their per-pane state
+            while (s.PaneCount > 1) s.RemovePane(s.PaneCount - 1);
         }
         return s.PaneIds[s.PaneCount > 1 ? 1 : 0];
+    }
+    // session.split.close (P4), the app's rules: null/""/"active" = the active session's focused pane
+    // (Ctrl+Shift+W's target); else FindPane's order (exact pane, exact session → focused, pane prefix,
+    // session prefix / name → focused) — and because exactly one pane carries the session id, the
+    // session id names THAT pane, not the focused one. A cover is refused (not a side of a split), an
+    // unknown target is refused, a one-pane session is refused naming `session close`; each leaves
+    // everything as it was. The reply is the survivor's id, read back off slot 0 after the removal, as
+    // the app reads ses.Panes[0].
+    public string SplitClose(string? target)
+    {
+        Sess? s; int idx;
+        if (string.IsNullOrEmpty(target) || target == "active")
+        {
+            s = ActiveSess;
+            if (s is null) return ISessionHost.RefusePrefix + SplitCloseReply.NoActiveSession;
+            idx = Math.Clamp(s.FocusedPane, 0, s.Panes.Count - 1);
+        }
+        else if (FindPane(target) is { } hit) { s = hit.s; idx = hit.pane; }
+        else if (FindCover(target) is { } cover) return ISessionHost.RefusePrefix + SplitCloseReply.CoverPane(cover.id);
+        else return ISessionHost.RefusePrefix + SplitCloseReply.UnknownTarget(target);
+        if (s.PaneCount <= 1) return ISessionHost.RefusePrefix + SplitCloseReply.SinglePane(s.Id);
+        s.RemovePane(idx);
+        return s.PaneIds[0];
     }
     // The same rules as the app's host: the words and their axis are SplitAxes' (a direction that
     // does not exist on the session's axis is refused with focus unmoved), one pane is refused.

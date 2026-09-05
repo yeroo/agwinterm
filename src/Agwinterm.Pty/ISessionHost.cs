@@ -235,6 +235,28 @@ public interface ISessionHost
     /// names a pane that exists; a hop that cannot be queued or run is a refusal.</para>
     /// </summary>
     string Split(string? target, string op, string? axis);
+    /// <summary>
+    /// <c>session.split.close</c> (P4): close ONE pane of a split session — EITHER side — and reply
+    /// with the survivor's id (a bare string, the shape every <c>session split</c> reply has). The
+    /// survivor becomes pane 0 with the full width or height and the focus; the session keeps its id,
+    /// name, context, flag, axis (for the next split), overlay and scratch. <c>session split off</c>
+    /// keeps its own rule (pane 0 survives — agterm's <c>off</c> minus the hide); this verb is the
+    /// one that can close pane 0 of two, which before P4 only Ctrl+Shift+W on a focused pane 0 could.
+    /// <para><b>Target</b>: null / "" / "active" = the active session's focused pane (what Ctrl+Shift+W
+    /// closes); else the content verbs' resolver (exact pane, exact session → its focused pane, pane
+    /// prefix, session prefix / name → its focused pane). Exactly one pane carries the session id, so
+    /// the session id names THAT pane through the exact-pane arm; a session NAME names the focused
+    /// pane. <see cref="SplitCloseReply"/> has the wording of every refusal, each with nothing closed:
+    /// an unknown target; a scratch / overlay / quick cover (not a side of a split); a ONE-PANE session
+    /// (<c>session close</c> is the verb for that — a <c>split close</c> that closed the session would
+    /// be the silent-success class one verb over).</para>
+    /// <para><b>Invariants (#230)</b>: resolved on the caller's thread so a bad target answers a refusal
+    /// with nothing queued; the close lands on THAT session, not on whichever is active, and closing a
+    /// pane of a non-active session does not move focus to it; the pane is removed and the reply read
+    /// back INSIDE the same FIFO UI hop, re-resolving there, so a pane that exited or was closed in
+    /// between is refused rather than double-closed; a hop that cannot be queued or run is a refusal.</para>
+    /// </summary>
+    string SplitClose(string? target);
     /// <summary><c>session.focus</c>: move pane focus in the active session. dir is one of agterm's
     /// words — <c>primary|split|left|right|top|bottom|other</c> — judged against the session's axis by
     /// <see cref="SplitAxes.TryFocusIndex"/> (<c>top</c> on a vertical split is refused naming the
@@ -451,6 +473,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool WorkspaceSelect(string? target) => false;
     public bool WorkspaceReorder(string? target, string dir) => false;
     public string Split(string? target, string op, string? axis) => ISessionHost.RefusePrefix + "session not found";
+    public string SplitClose(string? target) => ISessionHost.RefusePrefix + SplitCloseReply.SinglePane(target ?? "active");
     public string FocusPaneDir(string dir) => ISessionHost.RefusePrefix + SplitAxes.NotSplit;
     public string ResizeSplit(double? ratio, int growLeft, int growRight, int growTop, int growBottom) => ISessionHost.RefusePrefix + SplitAxes.NoDivider;
     public IReadOnlyList<string> ThemeList() => Array.Empty<string>();

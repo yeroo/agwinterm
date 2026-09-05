@@ -79,8 +79,9 @@ is convenience here rather than a blocker.
 ### 3. Splits are thinner than theirs
 - **Horizontal splits** (0.23.0): an axis on `session.split`, surviving restore. Ours is
   `on|off|toggle` only.
-- **`session.split.close`** (0.23.0): destroys the pane. agwinterm's `off` and lite's unsplit already
-  destroy the shell, so this is naming, not behaviour.
+- **`session.split.close`** (0.23.0): destroys the pane. agwinterm's `off` and lite's unsplit destroy
+  the split shell too, but `off` hard-codes pane 0 as the survivor, so no control verb could close pane
+  0 of two — behaviour, not naming. P4 adds it: either side, the survivor's id as the reply.
 - **agwinterm's `session.split` returns nothing.** lite returns the split's id, which is the only
   handle on a hidden split shell. agwinterm should do the same — a small, real gap *within* our own
   family.

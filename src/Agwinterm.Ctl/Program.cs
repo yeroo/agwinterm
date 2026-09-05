@@ -18,6 +18,9 @@ using System.Text.Json;
 //       off/toggle-off = the survivor's. Default op = toggle. The axis names the ARRANGEMENT, agterm's words:
 //       vertical = left/right panes (the default of a session never split), horizontal = top/bottom panes.
 //       Omitted = keep the session's orientation; given on an already-split session = re-orient it live)
+//   agwintermctl session split close [--target ID]   (close ONE pane, EITHER side: a pane id = that pane; a session
+//       name or no target = the session's focused pane, what Ctrl+Shift+W closes; from a pane's own CLI, that pane.
+//       Replies with the SURVIVOR's id. A one-pane session is refused — `session close` closes a session)
 //   agwintermctl session focus [primary|split|left|right|top|bottom|other]   (default other; left/right exist on a
 //       vertical split only, top/bottom on a horizontal one — the wrong pair is refused naming the axis)
 //   agwintermctl session resize [--split-ratio R] [--grow-left N|--grow-right N|--grow-top N|--grow-bottom N]
@@ -286,6 +289,11 @@ switch (area)
             case "split":
                 cargs["op"] = rest.Count > 0 ? rest[0] : "toggle";
                 if (Opt("axis") is { } axisWord) cargs["axis"] = axisWord;   // passed through as typed; the server refuses anything but the two words
+                // `close` is a sub-op with its own verb (P4): `session split close [--target ID]` closes the
+                // targeted pane — either side — and replies with the survivor's id. It takes no op and no
+                // axis, so neither travels: an `--axis` beside `close` is dropped here rather than refused
+                // by a verb that never reads it.
+                if ((string)cargs["op"]! == "close") { cmd = "session.split.close"; cargs.Remove("op"); cargs.Remove("axis"); }
                 break;
             case "readonly": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|state; block input to the pane
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell

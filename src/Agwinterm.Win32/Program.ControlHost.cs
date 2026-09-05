@@ -518,6 +518,48 @@ internal partial class Program
         });
     }
 
+    // session.split.close (P4): close the targeted pane — either side — and answer the survivor's id.
+    // The same two-step shape as Split: resolve on the caller's thread so an unknown target, a cover or
+    // a one-pane session answers a refusal with nothing queued (#230), then ONE FIFO queued hop that
+    // re-resolves (a pane that exited or was closed by another client in between is refused, not
+    // double-closed — its removal is ahead of us in the same queue), closes through ClosePane (the
+    // primitive Ctrl+Shift+W, `split off` and a split shell's exit share) and reads the survivor back off
+    // ses.Panes[0]. Resolution: null/"active" is the active session's focused pane (what Ctrl+Shift+W
+    // closes); else FindControlPane's order, so the session id names the pane that carries it (exact
+    // pane wins — the order win32-control.ps1 pins) and a session NAME names the focused pane. A hop that
+    // cannot be queued or run throws, which Dispatch turns into ok:false (#234 wording).
+    public string SplitClose(string? target)
+    {
+        if (ResolveSplitClose(target, out var early) is null) return ISessionHost.RefusePrefix + early;
+        return InvokeOnUiQueued(() =>
+        {
+            var hit = ResolveSplitClose(target, out var refusal);
+            if (hit is null) return ISessionHost.RefusePrefix + refusal;
+            ClosePane(hit.Value.ses, hit.Value.pane);
+            return hit.Value.ses.Panes[0].Id;   // the survivor: ClosePane leaves exactly one pane, in slot 0
+        });
+    }
+
+    /// <summary>The pane <c>session split close</c> would close, or null with the refusal (SplitCloseReply's
+    /// wording) — nothing is touched here, so it is safe to run on the pipe thread first and again inside
+    /// the hop.</summary>
+    private (Pane pane, Ses ses)? ResolveSplitClose(string? target, out string? refusal)
+    {
+        refusal = null;
+        if (string.IsNullOrEmpty(target) || target == "active")
+        {
+            var a = _active;
+            if (a is null) { refusal = SplitCloseReply.NoActiveSession; return null; }
+            if (a.Panes.Count <= 1) { refusal = SplitCloseReply.SinglePane(a.Id); return null; }
+            return (a.ActivePane, a);
+        }
+        var hit = FindControlPane(target);   // the content verbs' resolver: exact pane, exact session, pane prefix, session prefix / name
+        if (hit is null) { refusal = SplitCloseReply.UnknownTarget(target); return null; }
+        if (hit.Value.cover || hit.Value.ses is null) { refusal = SplitCloseReply.CoverPane(hit.Value.pane.Id); return null; }
+        if (hit.Value.ses.Panes.Count <= 1) { refusal = SplitCloseReply.SinglePane(hit.Value.ses.Id); return null; }
+        return (hit.Value.pane, hit.Value.ses);
+    }
+
     // Both answer with state (a refusal must mean nothing moved), so they run in the FIFO UI hop and
     // read the active session INSIDE it — the axis a direction is judged against is the one the
     // session has when the move happens, not the one the pipe thread saw a moment earlier (P4).

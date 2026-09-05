@@ -167,6 +167,7 @@ function Send-TestClick([IntPtr]$hwnd, [int]$x, [int]$y) {
 # A real window is required: the assertions compare the renderer's live client-area geometry.
 $process = $null
 $sessionId = $null
+$scId = $null
 try {
     $process = Start-Process $Exe -ArgumentList @('--app-id', $appId, '--pipe', $pipe, '--no-restore') -PassThru
     $up = $false
@@ -279,6 +280,57 @@ try {
         Check 'session split on --axis vertical restores the side-by-side grid exactly' `
             ($backReply.ok -and $restored -and (Get-SessionSnapshot $sessionId).axis -eq 'vertical')
     }
+
+    # P4: `session split close` closes EITHER side and answers the survivor's id. Pane 0 carries the
+    # session id, so closing it by that id is the case no verb could do before (`off` hard-codes pane 0
+    # as the survivor); the old pane 1 must survive as the session's only pane, under its old id and
+    # with its shell — proved by typing a marker into it before the close and reading it back after,
+    # both by its own id and by the session id (the exact-session arm now reaches it as the focused
+    # pane, the promotion case pinned further down). A second close on the now single-pane session is
+    # refused naming `session close`. On its own --no-select fixture, so the active session — and every
+    # check below that reads it — is untouched.
+    $scMade = Invoke-Ctl @('session', 'new', '--name', 'p4-split-close', '--no-select')
+    $scId = [string]$scMade.result
+    for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $scId); $i++) { Start-Sleep -Milliseconds 200 }
+    $scSplit = Invoke-Ctl @('session', 'split', 'on', '--target', $scId)
+    $scPane1 = [string]$scSplit.result
+    $scNode = $null
+    for ($i = 0; $i -lt 30; $i++) {
+        $scNode = Get-SessionSnapshot $scId
+        if ($scNode -and @($scNode.paneIds).Count -eq 2) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    Check 'the split-close fixture is split, with the reply naming its pane 1' `
+        ($scMade.ok -and $scSplit.ok -and $scNode -and @($scNode.paneIds).Count -eq 2 -and @($scNode.paneIds)[1] -eq $scPane1) `
+        "made=$($scMade | ConvertTo-Json -Compress) split=$($scSplit | ConvertTo-Json -Compress)"
+    $scMarker = 'split-close-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $scTyped = $false
+    foreach ($attempt in 1, 2, 3) {   # typed input can be dropped while the shell starts (the ConPTY early-discard class): type again
+        Invoke-Ctl @('session', 'type', "Write-Output '$scMarker'`r", '--target', $scPane1) | Out-Null
+        for ($i = 0; $i -lt 16; $i++) {
+            Start-Sleep -Milliseconds 250
+            if (([string](Invoke-Ctl @('session', 'text', '--target', $scPane1)).result).Contains($scMarker)) { $scTyped = $true; break }
+        }
+        if ($scTyped) { break }
+    }
+    $scClose = Invoke-Ctl @('session', 'split', 'close', '--target', $scId)
+    Start-Sleep -Milliseconds 400
+    $scAfter = Get-SessionSnapshot $scId
+    $scText = Invoke-Ctl @('session', 'text', '--target', $scPane1)
+    $scViaSession = Invoke-Ctl @('session', 'text', '--target', $scId)
+    Check 'session split close on pane 0 (by the session id it carries) answers the old pane 1 id as the survivor, and the node is single' `
+        ($scClose.ok -and $scPane1 -and ([string]$scClose.result -eq $scPane1) -and $scAfter -and -not $scAfter.PSObject.Properties['paneCount']) `
+        "close=$($scClose | ConvertTo-Json -Compress) node=$($scAfter | ConvertTo-Json -Compress)"
+    Check 'the survivor keeps its id and its shell: session text by the old pane 1 id, and by the session id, still shows what was typed there' `
+        ($scTyped -and $scText.ok -and ([string]$scText.result).Contains($scMarker) -and $scViaSession.ok -and ([string]$scViaSession.result).Contains($scMarker)) `
+        "typed=$scTyped byPane=$($scText.ok) bySession=$($scViaSession.ok)"
+    $scRefused = Invoke-Ctl @('session', 'split', 'close', '--target', $scId)
+    $scStill = Get-SessionSnapshot $scId
+    Check 'session split close on a single-pane session is refused naming session close, and the session stands' `
+        ((-not $scRefused.ok) -and ([string]$scRefused.error).Contains('session close') -and $null -ne $scStill) `
+        "reply=$($scRefused | ConvertTo-Json -Compress)"
+    Invoke-Ctl @('session', 'close', $scId) | Out-Null
+    $scId = $null
 
     if ($survivorId) {
         # While both meanings exist, an exact pane id has priority over the same exact session id.
@@ -858,6 +910,9 @@ finally {
     }
     if ($sessionId) {
         try { Invoke-Ctl @('session', 'close', $sessionId) | Out-Null } catch { }
+    }
+    if ($scId) {
+        try { Invoke-Ctl @('session', 'close', $scId) | Out-Null } catch { }
     }
     # Every step here is guarded: $ErrorActionPreference is Stop, and a terminating error inside a
     # finally abandons the rest of the block - the environment restore at the end included.

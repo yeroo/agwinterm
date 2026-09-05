@@ -252,6 +252,11 @@ public sealed class ControlServer : IDisposable
                 case "workspace.collapse": return host.WorkspaceCollapse(target, expand: false) ? Ok("collapsed") : Err("workspace not found");
                 case "workspace.expand": return host.WorkspaceCollapse(target, expand: true) ? Ok("expanded") : Err("workspace not found");
                 case "session.split": return HandleSessionSplit(host, target, args);
+                // session.split.close (P4): close the targeted pane, either side; the reply is the
+                // survivor's id (a string, like every session.split reply). Every refusal is the
+                // host's, from SplitCloseReply's wordings, and each closes nothing. No arg to read:
+                // the verb takes only a target (null/"active" = the active session's focused pane).
+                case "session.split.close": return HostReply(host.SplitClose(target));
                 // The default direction is `other` — the one word that names a pane on either axis
                 // (P4: `right` would be refused on a horizontal split).
                 case "session.focus": return HostReply(host.FocusPaneDir(GetString(args, "dir") ?? "other"));

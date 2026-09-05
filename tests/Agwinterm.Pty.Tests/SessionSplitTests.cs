@@ -25,6 +25,14 @@ namespace Agwinterm.Pty.Tests;
 /// pane count unchanged. <c>session focus</c> takes agterm's seven words and refuses a direction
 /// that does not exist on the session's axis; <c>session resize</c> refuses the other axis's grow
 /// flags with the divider unmoved.
+///
+/// Section 3. <c>session split close</c> closes ONE pane — EITHER side — and replies with the survivor's
+/// id. The tracker had filed this as "naming, not behaviour" because <c>off</c> already destroys the
+/// split shell; it was behaviour: <c>off</c> hard-codes pane 0 as the survivor, so no verb could close
+/// pane 0 of two. The survivor becomes pane 0 whichever slot it was in, keeps its id and stays
+/// resolvable; a session NAME or no target means the focused pane; the session id means the pane that
+/// carries it (the resolver's exact-pane-first order); a one-pane session is refused naming
+/// <c>session close</c>; a cover is refused; every refusal closes nothing.
 /// </summary>
 public class SessionSplitTests
 {
@@ -494,6 +502,168 @@ public class SessionSplitTests
         Assert.True(SplitAxes.TryGrow(SplitAxes.Horizontal, 0, 0, 4, 1, out s, out _)); Assert.Equal(-3, s);
         Assert.False(SplitAxes.TryGrow(SplitAxes.Horizontal, 1, 0, 0, 0, out _, out var g1)); Assert.Contains("horizontal", g1);
         Assert.False(SplitAxes.TryGrow(SplitAxes.Vertical, 0, 0, 0, 1, out _, out var g2)); Assert.Contains("vertical", g2);
+    }
+
+    // ---- section 3: session split close ----
+
+    private static JsonElement Close(ControlServer server, string? target)
+        => JsonDocument.Parse(server.Dispatch(target is null
+            ? "{\"cmd\":\"session.split.close\"}"
+            : "{\"cmd\":\"session.split.close\",\"target\":" + JsonSerializer.Serialize(target) + "}")).RootElement;
+
+    /// <summary>Whether <c>session.text</c> — a content verb, through the host's Resolve — still reaches a target.</summary>
+    private static bool Resolves(ControlServer server, string target)
+        => Ok(JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.text\",\"target\":" + JsonSerializer.Serialize(target) + "}")).RootElement);
+
+    [Fact]
+    public void Close_PaneZero_ByTheSessionIdItCarries_PaneOneSurvivesAsSlotZero_AndStaysResolvable()
+    {
+        var (server, host) = New();
+        string splitId = Id(Op(server, "on", axis: SplitAxes.Horizontal));
+        var sess = host.ActiveSess!;
+        var survivor = sess.Panes[1];
+        server.Dispatch("{\"cmd\":\"session.restore\",\"target\":\"s1\",\"args\":{\"command\":\"gone-with-pane-0\"}}");
+        Assert.True(sess.RestorePins.ContainsKey("s1"));
+
+        string reply = Id(Close(server, "s1"));   // pane 0 carries the session id: exact pane wins, so THIS closes pane 0
+
+        Assert.Equal(splitId, reply);                          // the reply names the survivor
+        Assert.Equal(1, PaneCount(server));
+        Assert.Equal(new[] { splitId }, sess.PaneIds);          // the old pane 1 is now slot 0, under its old id
+        Assert.Same(survivor, sess.Panes[0]);                  // the same shell, not a re-minted one
+        Assert.Equal(0, sess.FocusedPane);
+        Assert.Equal(new[] { 1.0 }, sess.Ratios);
+        Assert.Equal(SplitAxes.Horizontal, sess.Axis);         // the axis is kept for the next split
+        Assert.Null(TreeAxis(server));                         // but a single pane shows no split block
+        Assert.False(sess.RestorePins.ContainsKey("s1"));      // pane 0's per-pane state went with it
+        Assert.True(Resolves(server, splitId));                // the survivor is addressable by its old id
+        Assert.Same(survivor, host.Resolve(splitId));
+        Assert.True(Resolves(server, "s1"));                   // and the session id now reaches it as the focused pane
+        Assert.Same(survivor, host.Resolve("s1"));
+        Assert.Equal("s1", TreeSession(server).GetProperty("id").GetString());   // the session's own id never moved
+    }
+
+    [Fact]
+    public void Close_PaneOne_ByItsId_PaneZeroSurvives()
+    {
+        var (server, host) = New();
+        string splitId = Id(Op(server, "on"));
+        var sess = host.ActiveSess!;
+        var primary = sess.Panes[0];
+
+        string reply = Id(Close(server, splitId));
+
+        Assert.Equal("s1", reply);
+        Assert.Equal(1, PaneCount(server));
+        Assert.Equal(new[] { "s1" }, sess.PaneIds);
+        Assert.Same(primary, sess.Panes[0]);
+        Assert.Equal(0, sess.FocusedPane);
+        Assert.False(Resolves(server, splitId));               // the closed pane is gone from the resolver
+    }
+
+    [Fact]
+    public void Close_NoTarget_ClosesTheFocusedPane_WhicheverSideItIs()
+    {
+        var (server, host) = New();
+        string splitId = Id(Op(server, "on"));
+        Assert.Equal(1, host.ActiveSess!.FocusedPane);         // a split focuses the new pane
+
+        Assert.Equal("s1", Id(Close(server, null)));           // so no target closes pane 1 and pane 0 survives
+
+        splitId = Id(Op(server, "on"));
+        Assert.True(Ok(Focus(server, "primary")));             // now focus pane 0
+        Assert.Equal(splitId, Id(Close(server, "active")));    // "active" is the same target: pane 0 goes, pane 1 survives
+        Assert.Equal(new[] { splitId }, host.ActiveSess!.PaneIds);
+    }
+
+    [Fact]
+    public void Close_BySessionName_ClosesTheFocusedPane_ButBySessionId_ThePaneCarryingIt()
+    {
+        var (server, host) = New();
+        string splitId = Id(Op(server, "on"));
+        Assert.Equal(1, host.ActiveSess!.FocusedPane);
+        Assert.Equal("s1", Id(Close(server, "session 1")));   // a NAME is a session: its focused pane (1) goes
+
+        splitId = Id(Op(server, "on"));
+        Assert.Equal(1, host.ActiveSess!.FocusedPane);
+        Assert.Equal(splitId, Id(Close(server, "s1")));        // the id is a PANE first: pane 0 goes although pane 1 is focused
+    }
+
+    [Fact]
+    public void Close_OnASinglePane_IsRefused_NamingSessionClose_AndNothingChanges()
+    {
+        var (server, host) = New();
+        var r = Close(server, null);
+        Assert.False(Ok(r));
+        Assert.Contains("session close", Error(r));
+        Assert.Contains("'s1'", Error(r));
+        Assert.Equal(1, PaneCount(server));
+        Assert.Single(host.ActiveSess!.PaneIds);
+        Assert.Equal("s1", TreeSession(server).GetProperty("id").GetString());   // the session still exists
+
+        var byId = Close(server, "s1");
+        Assert.False(Ok(byId));
+        Assert.Contains("session close", Error(byId));
+        Assert.Equal(1, PaneCount(server));
+    }
+
+    [Fact]
+    public void Close_ACover_IsRefused_AndTheSplitStands()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on"));
+        string coverId = host.ActiveSess!.AddCoverPane();
+
+        var r = Close(server, coverId);
+
+        Assert.False(Ok(r));
+        Assert.Contains("'" + coverId + "'", Error(r));
+        Assert.Contains("scratch/overlay/quick", Error(r));
+        Assert.Equal(2, PaneCount(server));
+        Assert.Single(host.ActiveSess!.CoverPanes);            // the cover was not closed either
+    }
+
+    [Fact]
+    public void Close_UnknownTarget_IsRefused_AndNothingCloses()
+    {
+        var (server, host) = New();
+        Id(Op(server, "on"));
+        var r = Close(server, "ghost");
+        Assert.False(Ok(r));
+        Assert.Contains("'ghost'", Error(r));
+        Assert.Equal(2, PaneCount(server));
+        Assert.Equal(2, host.ActiveSess!.PaneIds.Count);
+    }
+
+    [Fact]
+    public void Close_HonoursTarget_OnANonActiveSession_AndLeavesTheActiveOneAlone()
+    {
+        var (server, host) = New();
+        string other = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.new\",\"args\":{\"name\":\"other\"}}"))
+            .RootElement.GetProperty("result").GetString()!;
+        string otherSplit = Id(Op(server, "on", target: other));
+        server.Dispatch("{\"cmd\":\"session.select\",\"target\":\"s1\"}");
+        Id(Op(server, "on"));                                  // the active session (s1) is split too
+        Assert.Equal("s1", host.ActiveSess!.Id);
+
+        string reply = Id(Close(server, otherSplit));           // close the OTHER session's pane 1 by id
+
+        Assert.Equal(other, reply);
+        Assert.Equal("s1", host.ActiveSess!.Id);               // focus did not move
+        Assert.Equal(2, PaneCount(server, 0));                 // s1 keeps both panes
+        Assert.Equal(1, PaneCount(server, 1));                 // other is single
+    }
+
+    [Fact]
+    public void Close_ThenSplitAgain_MintsAFreshPane_AndTheSurvivorStaysSlotZero()
+    {
+        var (server, host) = New();
+        string first = Id(Op(server, "on"));
+        Assert.Equal(first, Id(Close(server, "s1")));           // pane 0 closed; the split pane survives
+        string second = Id(Op(server, "on"));
+        Assert.NotEqual(first, second);
+        Assert.Equal(new[] { first, second }, host.ActiveSess!.PaneIds);   // the survivor is primary now; the new pane is the split
+        Assert.Equal(2, PaneCount(server));
     }
 
     [Fact]
