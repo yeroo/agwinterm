@@ -379,9 +379,10 @@ public sealed class ControlServer : IDisposable
                 // asks). Targeting follows Resolve, exactly as session.text/session.type do, so the
                 // pane you CHECK is the pane you then type into: a pane id reports that pane, and a
                 // session NAME reports its focused pane — a cursor is a per-pane thing, and focus is
-                // the only non-arbitrary answer for a session-wide target. Note a session's id is
-                // also its first pane's id, so an id target reports pane 0 regardless of focus
-                // (pre-existing Resolve behaviour, verified in qa/control-read.md).
+                // the only non-arbitrary answer for a session-wide target. Note that exactly ONE
+                // pane carries the session's id — pane 0 until a session.swap moves it (P4) — so an
+                // id target reports that pane wherever it sits, regardless of focus (Resolve's
+                // exact-pane-first order, verified in qa/control-read.md).
                 "surface.cursor" => OkRaw(s.SnapshotCursor().Col.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 "image.show" => HandleImageShow(s, args),
                 "image.sixel" => HandleImageSixel(s, args),
@@ -519,15 +520,6 @@ public sealed class ControlServer : IDisposable
     }
 
     /// <summary>
-    /// session.context: set or clear a session's one-line context and reply with the value IN EFFECT,
-    /// as an object (<c>{session, context}</c>, OkRaw) — the read-back is <c>tree</c>'s <c>context</c>.
-    /// Every refusal happens HERE, before the host is reached, through <see cref="SessionContexts"/>
-    /// (the one wording the fake and the app share): text beside <c>clear</c> is two sources for one
-    /// field; blank, a control character (named with its offset) and over-length are what the
-    /// surfaces cannot draw. A refusal leaves the old context in place — the host is never called.
-    /// The host's own refusal is "no session", the same condition rename refuses.
-    /// </summary>
-    /// <summary>
     /// session.split: the reply is the PANE ID the op produced or found (a bare string — the shipped
     /// conformance step on <c>split off</c> is a string type check, and a pane id is a string), see
     /// <see cref="ISessionHost.Split"/> for the per-op rule. <c>axis</c> is read STRICTLY: absent is
@@ -554,6 +546,15 @@ public sealed class ControlServer : IDisposable
             ? Err(reply[ISessionHost.RefusePrefix.Length..])
             : Ok(reply);
 
+    /// <summary>
+    /// session.context: set or clear a session's one-line context and reply with the value IN EFFECT,
+    /// as an object (<c>{session, context}</c>, OkRaw) — the read-back is <c>tree</c>'s <c>context</c>.
+    /// Every refusal happens HERE, before the host is reached, through <see cref="SessionContexts"/>
+    /// (the one wording the fake and the app share): text beside <c>clear</c> is two sources for one
+    /// field; blank, a control character (named with its offset) and over-length are what the
+    /// surfaces cannot draw. A refusal leaves the old context in place — the host is never called.
+    /// The host's own refusal is "no session", the same condition rename refuses.
+    /// </summary>
     private static string HandleSessionContext(ISessionHost host, string? target, JsonElement args)
     {
         string? raw = GetString(args, SessionContexts.Key);
@@ -577,8 +578,9 @@ public sealed class ControlServer : IDisposable
     /// used, and the tree never emitted the field the skill file promised — so which pane took the pin
     /// was unknowable from the caller's side. Now the reply is
     /// <c>{action:"pinned"|"cleared", pane, session[, command]}</c>: <c>pane</c> is the pane the target
-    /// resolved to (a session NAME lands on that session's focused pane, a session ID on its first pane,
-    /// exactly as session.type does), <c>session</c> its owner. ""/"none" clear, and are reported as a
+    /// resolved to (a session NAME lands on that session's focused pane, a session ID on the one pane
+    /// that carries that id — pane 0 until a session.swap moves it — exactly as session.type does),
+    /// <c>session</c> its owner. ""/"none" clear, and are reported as a
     /// clear rather than a pin of nothing. The target is mandatory: a pin outlives whatever pane
     /// happens to be active now, so "active" is not a sensible default and is refused rather than
     /// guessed. Every refusal pins nothing.

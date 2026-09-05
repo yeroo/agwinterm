@@ -24,7 +24,8 @@ using System.Text.Json;
 //   agwintermctl session swap [--target ID]           (exchange the two panes: order reversed, focus follows the pane,
 //       axis and ratio sequence kept — the left/top box keeps its size, the contents change places — and EVERY ID
 //       kept: a swap moves panes, never ids, so the session id keeps naming the shell it named, now on the other
-//       side. Target = a session, either of its panes, or nothing for the active session. Replies
+//       side. Target = a session, either of its panes, or nothing — from a pane's own CLI, that pane's
+//       session; otherwise the active one. Replies
 //       {session,paneIds,focusedPane,axis} — the tree's split block after the swap. A one-pane session is refused)
 //   agwintermctl session focus [primary|split|left|right|top|bottom|other]   (default other; left/right exist on a
 //       vertical split only, top/bottom on a horizontal one — the wrong pair is refused naming the axis)
@@ -298,11 +299,22 @@ switch (area)
                 // targeted pane — either side — and replies with the survivor's id. It takes no op and no
                 // axis, so neither travels: an `--axis` beside `close` is dropped here rather than refused
                 // by a verb that never reads it.
-                if ((string)cargs["op"]! == "close") { cmd = "session.split.close"; cargs.Remove("op"); cargs.Remove("axis"); }
+                if ((string)cargs["op"]! == "close")
+                {
+                    // A positional after `close` is a pane id someone meant as the TARGET (`session close <id>`
+                    // and `session metrics <id>` take one), and dropping it would close the CALLER's own pane
+                    // and answer ok — the wrong shell destroyed, exit 0 (revmux r1). Refused, naming --target.
+                    if (rest.Count > 1) { Console.Error.WriteLine($"session split close: unexpected argument '{rest[1]}' — the pane to close is `--target <pane id>`; with no --target this closes the caller's own pane, so a stray word is refused rather than ignored. Nothing sent."); return 2; }
+                    cmd = "session.split.close"; cargs.Remove("op"); cargs.Remove("axis");
+                }
                 break;
             // session swap [--target ID] (P4): no args of its own — the target is a session, either of its
-            // panes, or nothing for the active session; the reply is an object, printed raw by --json and plain.
-            case "swap": break;
+            // panes, or nothing: from a pane's own CLI that pane's session, otherwise the active one; the
+            // reply is an object, printed raw by --json and plain. A positional is refused for the reason
+            // `split close` refuses one: it would swap the caller's own session and answer ok.
+            case "swap":
+                if (rest.Count > 0) { Console.Error.WriteLine($"session swap: unexpected argument '{rest[0]}' — the session (or either of its panes) is `--target <id>`; with no --target this swaps the caller's own session, so a stray word is refused rather than ignored. Nothing sent."); return 2; }
+                break;
             case "readonly": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|state; block input to the pane
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
             case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay resize --size-percent N | overlay result

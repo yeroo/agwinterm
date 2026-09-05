@@ -906,9 +906,10 @@ internal partial class Program
     // Pin (or clear, command = null) a restore command on a specific pane (agterm #271). Persisted so
     // restart always re-runs it. Resolves through FindControlPane, the path every other content verb
     // uses (exact pane, exact session, pane prefix, session prefix/name) rather than the FindPaneById
-    // it used before P2. While pane 0 still exists the two agree for every target the old resolver
-    // accepted: pane 0 shares its session's id, so the exact-session step only repeats the exact-
-    // pane hit, and the prefix step is the same predicate in the same order. Two things changed. A
+    // it used before P2. While the pane carrying the session id still exists the two agree for every
+    // target the old resolver accepted: exactly one pane carries its session's id (pane 0 until a
+    // session.swap moves it — P4), so the exact-session step only repeats the exact-pane hit, and the
+    // prefix step is the same predicate in the same order. Two things changed. A
     // session NAME now reaches that session's focused pane instead of being refused. And once pane 0
     // has been CLOSED in a split (split panes get fresh ids, and closing the focused pane can remove
     // index 0), a session id or id-prefix that the old resolver either refused or steered onto a

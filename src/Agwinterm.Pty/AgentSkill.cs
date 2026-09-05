@@ -84,7 +84,8 @@ public static class AgentSkill
         - `agwintermctl session restore "<command>" --target PANE` — pin a command to re-run on every restart for that pane; `none` clears.
           The target is mandatory (no active-pane default: a pin outlives whatever is active now; inside a session `AGWINTERM_SESSION_ID`
           is the pane). Replies `{action:"pinned"|"cleared", pane, session[, command]}` naming the pane it landed on — a session
-          NAME lands on its focused pane, a session ID on its first pane, exactly as `session type` does. Read it back in
+          NAME lands on its focused pane, a session ID on the ONE pane that carries that id — pane 0 until a `session swap`
+          puts it on the other side — exactly as `session type` does. Read it back in
           `tree --json` as `restoreCommands`: an object keyed by pane id listing only pinned panes (absent when none).
           An unknown target, or a scratch/overlay/quick pane (never restored), is refused and nothing is pinned.
         - `agwintermctl profiles list` — shell profiles (cmd, Windows PowerShell, PowerShell 7, Git Bash, WSL:*, custom); `* ` marks the default.
@@ -134,9 +135,10 @@ public static class AgentSkill
           composer row before typing. After a print into the last column the answer equals the pane width
           (the wrap is deferred), so do not use it as an index into a `session text` row without clamping.
           A pane id
-          reports that pane; a session NAME reports its focused pane. (A session's id is also its first pane's
-          id, so an id targets that pane — same as `session text`/`session type`, so the pane you check is the
-          pane you type into.) Reading rendered text and guessing at placeholder strings is what this replaces
+          reports that pane; a session NAME reports its focused pane. (Exactly one pane carries the session's id —
+          pane 0 until a `session swap` moves it — so an id targets that pane wherever it sits, same as
+          `session text`/`session type`: the pane you check is the pane you type into.) Reading rendered text and
+          guessing at placeholder strings is what this replaces
         - `agwintermctl session search "<term>"`                 — open the find bar over the active session; returns "N of M" (or "no matches")
         - `agwintermctl session search --next|--prev|--close`    — step matches / close the find bar
 
@@ -241,7 +243,9 @@ public static class AgentSkill
           string: `on` = the split pane's id — ALSO when the session was already split (nothing changes; a caller that does not
           know whether it split gets something addressable either way); `off` = the survivor's id (pane 0), also when already
           single; `toggle` = whichever it produced. Default op = toggle. The axis names the ARRANGEMENT, agterm's words: vertical = left/right panes (the default of a session never split), horizontal = top/bottom panes.
-          Omitted = keep the session's orientation (remembered per session, through `off` and a restart); given on an
+          Omitted = keep the session's orientation — remembered for the life of the session, through `off`, and across a
+          restart only while the session is still split (a collapsed session writes no axis, so after a restart it is
+          vertical again; pass `--axis` if it matters); given on an
           already-split session = re-orient it live. Anything but the two words is refused and nothing is split. `tree --json`
           reports `axis` beside `paneIds` / `focusedPane` / `splitRatios` whenever `paneCount` > 1.
         - `agwintermctl session split close [--target <id>]` — close ONE pane, EITHER side (`off` can only keep pane 0): a pane id

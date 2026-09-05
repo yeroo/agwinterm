@@ -513,7 +513,8 @@ internal partial class Program
         if (_cover is not null) RegridCover();
     }
 
-    /// <summary>Resize every pane's PTY grid to fit its column using the pane's own font metrics.
+    /// <summary>Resize every pane's PTY grid to fit its box along the session's axis (a column of a
+    /// vertical split, a row of a horizontal one), using the pane's own font metrics.
     /// Does nothing while the window has no usable client area — see the guard.</summary>
     private void RegridSession(Ses ses)
     {
@@ -1248,6 +1249,7 @@ internal partial class Program
         RegridSession(ses);
         RequestRedraw();
         SaveState();
+        EmitEvent("tree");   // control-API event log (#273): the node gained its split block (paneCount, paneIds, focusedPane, axis)
     }
 
     private void FocusPane(int dir)
@@ -1631,8 +1633,12 @@ internal partial class Program
     private void SetAxis(Ses ses, string axis)
     {
         if (ses.Axis == axis) return;
+        // A divider drag in progress is tied to the OLD axis (its next WM_MOUSEMOVE would read the
+        // other coordinate and throw the ratio at an edge); cancelled the way SwapPanes cancels it.
+        if (ReferenceEquals(ses, _active) && _divDragging) { _divDragging = false; ReleaseCapture(); }
         ses.Axis = axis;
         RegridSession(ses); RequestRedraw(); SaveState();
+        EmitEvent("tree");   // control-API event log (#273): the split block's `axis` changed
     }
 
     /// <summary>Collapse <paramref name="ses"/> to its primary pane (dispose the rest). The axis is

@@ -276,8 +276,9 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   has no overlay, or when no target was given — there is nothing to close, and nothing is what you
   asked for.
 - `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
-  the target resolved to (a session name lands on its focused pane, a session id on its first pane,
-  exactly as `session type` does), and `action` is `pinned` or `cleared` (`none` clears). The target
+  the target resolved to (a session name lands on its focused pane, a session id on the one pane that
+  carries that id — pane 0 until a `session swap` moves it — exactly as `session type` does), and
+  `action` is `pinned` or `cleared` (`none` clears). The target
   is mandatory, because a pin outlives whatever pane is active now. `tree --json` reads the pins back
   as `restoreCommands`, an object keyed by pane id that lists only pinned panes.
 - `restore capture [--target ID]` fills the captured-command slot of every real pane (or of one) **now**
@@ -307,8 +308,9 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   just asked for is addressable from the reply: `on` on an already-split session answers the existing
   split pane's id and changes nothing, `off` answers the survivor's. `--axis vertical|horizontal` picks
   the arrangement in agterm's words — vertical is left/right panes, horizontal is top/bottom — and is
-  remembered per session, through `off` and a restart; `tree --json` carries it as `axis` on a split
-  session. `session split close --target <pane>` closes **either** pane and answers the survivor's id
+  remembered for the life of the session, through `off`, and across a restart only while the session
+  is still split (a collapsed session writes no axis key); `tree --json` carries it as `axis` on a
+  split session. `session split close --target <pane>` closes **either** pane and answers the survivor's id
   (`off` can only keep pane 0); a one-pane session is refused, because `session close` is that verb.
   `session swap` exchanges the two panes and keeps the axis, the divider position, the focus's pane
   and **every id**: a swap moves panes, never ids, so a handle you hold keeps reaching the same shell
