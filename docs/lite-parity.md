@@ -161,7 +161,13 @@ The persistence lands as two additive line types in lite's `sessions.tsv` — `C
 `S` block) and `K` (the captured slots, after the `P` lines whose split its second field names) —
 positional like `P`, refused wholesale on a count mismatch with the `P` guard's wording, and every
 loaded context validated through the verb's own rules (`docs/state-file.md` there). The refusal
-wording is `SessionContexts` / `RestoreCaptureReply` verbatim. What P3 owed, for the record:
+wording is `SessionContexts` / `RestoreCaptureReply` verbatim. Two revmux rounds, both without a
+Major: round 1's nine Minors were fixed in one commit (a stale save overtaking a newer one, a
+`restore capture` answering ok on a failed save, an exited pane's recycled pid, an unlocked paint
+read), and that commit's own suite run found lite's JSON was not ASCII-safe — `café 🚀` came back
+through the CLI's stdout as `caf? ??` on a non-UTF-8 console — so lite's `jsonEscape` now escapes
+non-ASCII as `\uXXXX` the way agwinterm's server does. Round 2's six Minors are agliteterm #29.
+Both products' P3 checks run for real since agwinterm **0.17.12** (2026-09-05). What P3 owed, for the record:
 
 - **`session.context`** — one line of "what is this pane for", set over the API, shown dimmed after
   the name in the title bar and the sidebar row, carried in `tree --json` as `context` on the session
@@ -194,7 +200,8 @@ step pinning the reply keys, and the two errors-block refusals) landed in the si
 that file again and `check-contract` is in step. P3-lite's own checks (the honesty P3 block, the
 matrix's context/capture cells, the four conformance steps) probe the client (`agwintermctl
 restore` answers a usage line on a post-#233 build) and SKIP against the released `agwintermctl`
-until the release that carries #233 + #235 is tagged — red under `-Strict`, the release gate.
+until the release that carries #233 + #235 is tagged — red under `-Strict`, the release gate
+(**0.17.12**, tagged 2026-09-05, closed it).
 
 ---
 
