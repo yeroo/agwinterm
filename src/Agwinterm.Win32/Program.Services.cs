@@ -298,10 +298,27 @@ internal partial class Program
         float bellW = showBell ? 34f : 0f, bellGap = showBell ? 8f : 0f;
         float titleAvail = rgLeft - 14f - bellW - bellGap - titleX;
         float titleMeasured = MeasureText(title, _uiFont);
-        float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail));
+        // session.context (P3): a dimmed, smaller run AFTER the title and after the pill strip. It is
+        // a suffix and not a second caption line because TitleBarH is 40/30/0 by toolbar mode — there
+        // is no room for a second row at 30 and no row at all at 0. Title and context share the ONE
+        // titleAvail budget: a long title yields at most 40% of it to the context, both are ellipsized
+        // inside their share, and the run never grows past titleAvail — so the bell (which follows the
+        // run) is clamped exactly where it was without a context, and the right button group never
+        // moves. The pills sit between them, anchored on the TITLE alone, so their origin does not
+        // depend on the context either (qa/persistence.md names that as the failure; revmux r1).
+        string? ctx = _active?.Context;
+        float ctxGap = 8f, ctxMeasured = 0f, ctxReserve = 0f;
+        if (ctx is not null)
+        {
+            ctxMeasured = MeasureText(ctx, _uiSmall);
+            ctxReserve = MathF.Min(ctxMeasured + ctxGap, titleAvail * 0.4f);
+        }
+        float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail - ctxReserve));
         brush.Color = ChromeText;
         rt.DrawText(title, _uiTitle, new Rect(titleX, 0f, titleW, TitleBarH), brush);  // one vertically-centered, ellipsized row
-        float pillX = titleX + titleW + 10f;
+        float runEnd = titleX + titleW;   // right edge of the title run (title, pills, then the context suffix when set)
+        float pillX = runEnd + 10f;       // anchored on the title alone — never on the context
+        bool anyPill = false;
         void Pill(string label, Color4 bg)   // small status pill after the title
         {
             float w = MeasureText(label, _uiSmall) + 14f;
@@ -310,14 +327,28 @@ internal partial class Program
             brush.Color = new Color4(1f, 1f, 1f, 1f);
             rt.DrawText(label, _uiSmall, new Rect(pillX + 7f, (TitleBarH - 20f) / 2f + 2f, w, 16f), brush);
             pillX += w + 6f;
+            anyPill = true;
         }
         if (_broadcast) Pill("BROADCAST", new Color4(0.85f, 0.25f, 0.25f, 0.95f));  // typing fans out to the workspace
         if (ActiveSurface() is { ReadOnly: true }) Pill("READ-ONLY", new Color4(0.45f, 0.45f, 0.5f, 0.95f));
+        if (anyPill) runEnd = pillX - 6f;   // the strip's right edge (its last inter-pill gap removed)
+        if (ctx is not null)
+        {
+            // The context takes what is left of the title budget after the title and the pills, so a
+            // pill can shorten it but it can never move a pill.
+            float ctxW = MathF.Min(ctxMeasured, titleX + titleAvail - runEnd - ctxGap);
+            if (ctxW >= 20f)   // nothing drawn when the title (and pills) fill the budget — the palette line carries the long form
+            {
+                brush.Color = ChromeDim;
+                rt.DrawText(ctx, _uiSmallTrim, new Rect(runEnd + ctxGap, 0f, ctxW, TitleBarH), brush, DrawTextOptions.Clip);
+                runEnd += ctxGap + ctxW;
+            }
+        }
 
         // dim = nothing, plain = active/completed, blocked-color = any blocked (uses the configured status color).
         if (showBell)
         {
-            float bellX = MathF.Min(titleX + titleW + bellGap, rgLeft - bellW - 14f);
+            float bellX = MathF.Min(runEnd + bellGap, rgLeft - bellW - 14f);
             var (bellBlocked, bellActive) = AttentionState();
             var bellBase = bellBlocked ? StatusDot(AgentStatus.Blocked) : (bellActive ? ChromeText : ChromeDim);
             if ((bellBlocked || bellActive) && !_cursorOn && AnyBlinkAttention())
@@ -1110,40 +1141,9 @@ internal partial class Program
 
     // ---- Persistence: workspace/session tree + selection + sidebar state ----
 
-    private sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public string? RestoreCommand { get; set; } public List<string>? Buffer { get; set; } public string? BufferBlob { get; set; } }
-    // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
-    private sealed class SessionState
-    {
-        public string Id { get; set; } = ""; public string Name { get; set; } = ""; public string? CustomName { get; set; }
-        public string? Profile { get; set; }
-        public int Active { get; set; }
-        public bool Flagged { get; set; }
-        public List<PaneState> Panes { get; set; } = new(); public string Cwd { get; set; } = ""; public float FontSize { get; set; }
-        // Wave F2: background watermark (BgFile = the copied file's name under backgrounds\; null = none).
-        public string? BgFile { get; set; }
-        public int BgOpacity { get; set; } = 15; public string BgMode { get; set; } = "fit";
-    }
-    private sealed class WorkspaceState { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public bool Expanded { get; set; } = true; public List<SessionState> Sessions { get; set; } = new(); }
-    private sealed class AppState
-    {
-        public List<WorkspaceState> Workspaces { get; set; } = new();
-        public string? ActiveId { get; set; }
-        public float SidebarWidth { get; set; } = SidebarWFull;
-        public bool SidebarVisible { get; set; } = true;
-        // Window geometry (restore rect; 0 width = unset). WindowMaximized reopens maximized.
-        public int WindowX { get; set; }
-        public int WindowY { get; set; }
-        public int WindowWidth { get; set; }
-        public int WindowHeight { get; set; }
-        public bool WindowMaximized { get; set; }
-        // Wave D1: sidebar view mode ("tree"|"flagged") + focused workspace id (null = show all).
-        public string SidebarMode { get; set; } = "tree";
-        public string? FocusedWorkspaceId { get; set; }
-        // Ctrl+Tab MRU session order (most recent first); restored on relaunch.
-        public List<string> Mru { get; set; } = new();
-    }
-
-    private static readonly JsonSerializerOptions _stateJson = new() { WriteIndented = true };
+    // The POCOs (AppState / WorkspaceState / SessionState / PaneState) and the serializer live in
+    // Agwinterm.Pty.RestoreState so the format has a round-trip test beside it (P3); the format rule
+    // (additive keys, no version, unknown keys ignored, older builds drop them on write-back) is there.
 
     // Data root: %LOCALAPPDATA%\<instance-id> — "agwinterm" for the release, "agwinterm-dev" for dev builds,
     // so the two keep separate config, sessions, themes, keymap, and window library. See Program._appId.
@@ -1183,7 +1183,7 @@ internal partial class Program
                 {
                     if (File.Exists(LegacyStatePath))
                     {
-                        var st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(LegacyStatePath));
+                        RestoreState.TryDeserialize(File.ReadAllText(LegacyStatePath), out var st);
                         if (st is not null)
                         {
                             m.X = st.WindowX; m.Y = st.WindowY; m.W = st.WindowWidth; m.H = st.WindowHeight; m.Max = st.WindowMaximized;
@@ -1213,7 +1213,7 @@ internal partial class Program
             var idx = new WindowsIndexFile { Version = 1, Frontmost = _frontmostId, Windows = copy };
             Directory.CreateDirectory(AppDir);
             string tmp = WindowsIndexPath + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(idx, _stateJson));
+            File.WriteAllText(tmp, JsonSerializer.Serialize(idx, RestoreState.Json));
             File.Move(tmp, WindowsIndexPath, overwrite: true);
         }
         catch { }
@@ -1276,12 +1276,26 @@ internal partial class Program
     /// <summary>
     /// Best-effort foreground-command capture: for each shell PID, the command line of its most
     /// recently started non-denylisted child. One CIM process snapshot for all panes; ~1s at quit.
+    /// A failed query answers an empty map — callers that must tell "nothing running" from "could not
+    /// ask" (restore.capture) use <see cref="TryCaptureForegroundCommands"/>.
     /// </summary>
     private static Dictionary<int, string> CaptureForegroundCommands(IEnumerable<int> shellPids, int timeoutMs = 4000)
     {
-        var result = new Dictionary<int, string>();
+        TryCaptureForegroundCommands(shellPids, timeoutMs, out var result);
+        return result;
+    }
+
+    /// <summary>
+    /// <see cref="CaptureForegroundCommands"/> that also says whether the process query RAN: false
+    /// when powershell could not start, timed out (the process is killed) or returned nothing
+    /// parseable, in which case <paramref name="result"/> is empty and means nothing. True with an
+    /// empty map is the honest "no pane has a non-denylisted child"; no pids at all is true too.
+    /// </summary>
+    private static bool TryCaptureForegroundCommands(IEnumerable<int> shellPids, int timeoutMs, out Dictionary<int, string> result)
+    {
+        result = new Dictionary<int, string>();
         var pids = shellPids.Distinct().ToHashSet();
-        if (pids.Count == 0) return result;
+        if (pids.Count == 0) return true;
         var deny = LoadDenylist();
         try
         {
@@ -1289,10 +1303,22 @@ internal partial class Program
                 "-NoProfile -NonInteractive -Command \"Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='C';e={if($_.CreationDate){$_.CreationDate.Ticks}else{0}}} | ConvertTo-Json -Compress\"")
             { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             using var proc = System.Diagnostics.Process.Start(psi);
-            if (proc is null) return result;
-            string json = proc.StandardOutput.ReadToEnd();
-            if (!proc.WaitForExit(timeoutMs)) { try { proc.Kill(); } catch { } return result; }
-            if (string.IsNullOrWhiteSpace(json)) return result;
+            if (proc is null) return false;
+            // The read runs CONCURRENTLY with the bounded wait. Read-to-end first and the timeout is
+            // only consulted after the child has already closed stdout — a powershell wedged inside
+            // the CIM query keeps the handle open, so neither the 4 s nor the 15 s bound ever fired
+            // and the caller (a control-pipe thread, for restore.capture) hung with it (revmux r1).
+            // On expiry the whole tree goes (powershell + the WMI provider host it may have spawned),
+            // which also completes the pending read, and the partial output is never parsed.
+            var read = proc.StandardOutput.ReadToEndAsync();
+            if (!proc.WaitForExit(timeoutMs))
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { }
+                try { read.Wait(1000); } catch { }
+                return false;
+            }
+            string json = read.Wait(timeoutMs) ? read.Result : "";
+            if (string.IsNullOrWhiteSpace(json)) return false;
 
             using var doc = JsonDocument.Parse(json);
             var rows = doc.RootElement.ValueKind == JsonValueKind.Array
@@ -1313,13 +1339,40 @@ internal partial class Program
             }
             foreach (var (ppid, list) in byParent)
                 result[ppid] = list.OrderByDescending(x => x.created).First().cmd;
+            return true;
         }
-        catch { }
-        return result;
+        catch { result.Clear(); return false; }
+    }
+
+    /// <summary>
+    /// The quit-time capture (WM_DESTROY, restore-commands on): one process snapshot for every real
+    /// pane, written into each pane's <see cref="Pane.CapturedCommand"/> — the same field
+    /// <c>restore capture</c> writes and every save reads. A fresh capture overrides an earlier
+    /// checkpoint, including to empty when nothing is running now. On the UI thread, at quit only.
+    ///
+    /// A query that did NOT run leaves every slot exactly as it was — the rule the verb applies
+    /// (<see cref="RestoreCaptureReply.QueryFailed"/>), applied by the other writer of the same
+    /// field. Before P3 the slot was not durable, so a lost query at quit cost nothing that was not
+    /// already gone; once a `restore capture` checkpoint survives ordinary saves, "empty map for a
+    /// dead query" would erase it at the one moment it exists for (a cold CIM start past the 4 s
+    /// budget at quit is a case the 15 s callers were written for — revmux r1). The checkpoint kept
+    /// is at worst stale, and replay re-checks the denylist; a slot wiped is a replay that never
+    /// happens. Returns whether the query ran, so the caller can log the miss.
+    /// </summary>
+    private bool CaptureCommandsIntoPanes(IEnumerable<Ses> sessions)
+    {
+        var panes = sessions.SelectMany(s => PanesOf(s)).ToList();
+        if (!TryCaptureForegroundCommands(panes.Select(p => p.S.ChildProcessId).Where(id => id is > 0).Select(id => id!.Value), timeoutMs: 4000, out var cmdByPid))
+            return false;   // nothing known, nothing touched: the earlier checkpoints stand
+        foreach (var p in panes)
+            p.CapturedCommand = p.S.ChildProcessId is int pid && cmdByPid.TryGetValue(pid, out var c) ? c : null;
+        return true;
     }
 
     /// <summary>Snapshot the tree/selection/sidebar to disk atomically. No-op while restoring; ignores IO errors.
-    /// <paramref name="captureCommands"/> (quit only) captures each pane's foreground command when restore-commands is on.</summary>
+    /// <paramref name="captureCommands"/> (quit only) first captures each pane's foreground command into its
+    /// <see cref="Pane.CapturedCommand"/> when restore-commands is on; every save then writes that field —
+    /// one slot, one reader, so a `restore capture` checkpoint survives the ordinary saves in between (P3).</summary>
     private void SaveState(bool captureCommands = false)
     {
         if (_restoring) return;
@@ -1332,11 +1385,8 @@ internal partial class Program
                 rows = _workspaces.Select(w => (w.Id, w.Name, w.Expanded, w.Sessions.ToList())).ToList();
             string? activeId = _active?.Id;
 
-            // Foreground-command capture (opt-in, quit only): one process snapshot for all panes.
-            Dictionary<int, string> cmdByPid = (captureCommands && _config.RestoreCommands)
-                ? CaptureForegroundCommands(rows.SelectMany(r => r.sessions).SelectMany(s => PanesOf(s))
-                    .Select(p => p.S.ChildProcessId).Where(id => id is > 0).Select(id => id!.Value))
-                : new Dictionary<int, string>();
+            if (captureCommands && _config.RestoreCommands && !CaptureCommandsIntoPanes(rows.SelectMany(r => r.sessions)))
+                System.Diagnostics.Debug.WriteLine("quit-time command capture did not run; the earlier restore checkpoints were kept as they were");
 
             var st = new AppState
             {
@@ -1358,6 +1408,7 @@ internal partial class Program
                         Id = s.Id,
                         Name = s.Name,
                         CustomName = s.CustomName,
+                        Context = s.Context,   // P3: null = no key written (RestoreState explains why)
                         Profile = s.ProfileName,
                         Active = s.Active,
                         Flagged = s.Flagged,
@@ -1371,7 +1422,7 @@ internal partial class Program
                     {
                         string live = PrettyCwd(SafeCwd(p));                       // OSC 7 cwd if the shell reports it
                         string cwd = live.Length > 0 ? live : (p.StartCwd ?? ""); // else the launch dir
-                        string cmd = (p.S.ChildProcessId is int pid && cmdByPid.TryGetValue(pid, out var c)) ? c : "";
+                        string cmd = p.CapturedCommand ?? "";   // the durable slot; "" on disk = none (RestoreState)
                         List<string>? buf = null;
                         string? blob = null;
                         if (_config.RestoreBuffer)
@@ -1397,7 +1448,7 @@ internal partial class Program
             string path = StatePath;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             string tmp = path + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(st, _stateJson));
+            File.WriteAllText(tmp, RestoreState.Serialize(st));
             File.Move(tmp, path, overwrite: true); // atomic replace so a crash never leaves a truncated file
 
             // Mirror name + geometry into the window-library entry so windows.json can position the
@@ -1477,7 +1528,7 @@ internal partial class Program
         {
             string path = StatePath;
             if (!File.Exists(path)) return false;
-            st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(path));
+            if (!RestoreState.TryDeserialize(File.ReadAllText(path), out st)) throw new FormatException();
         }
         catch
         {
@@ -1524,6 +1575,10 @@ internal partial class Program
                             ses.Panes[i].Ratio = pl[i].Ratio > 0 ? pl[i].Ratio : 1f;
                             ses.Panes[i].AgentResume = string.IsNullOrWhiteSpace(pl[i].AgentResume) ? null : pl[i].AgentResume;
                             ses.Panes[i].RestoreCommand = string.IsNullOrWhiteSpace(pl[i].RestoreCommand) ? null : pl[i].RestoreCommand;
+                            // The captured slot comes back too, so it is readable (tree's capturedCommands) before it
+                            // is replayed and survives the save at the end of this restore — before P3 that save
+                            // wrote "" over it (P3). Validated at replay (denylist), not here: it is a command line.
+                            ses.Panes[i].CapturedCommand = string.IsNullOrWhiteSpace(pl[i].Command) ? null : pl[i].Command;
                         }
                         ses.Active = Math.Clamp(s.Active, 0, ses.Panes.Count - 1);
                     }
@@ -1554,6 +1609,7 @@ internal partial class Program
                             }
                     ses.Flagged = s.Flagged;
                     ses.CustomName = string.IsNullOrWhiteSpace(s.CustomName) ? null : s.CustomName;
+                    ses.Context = RestoreState.LoadContext(s.Context); // validated, not trusted: an out-of-rules value is dropped, not shown
                     if (!string.IsNullOrEmpty(s.BgFile)) // restore the watermark if its copied file still exists
                     {
                         string bg = Path.Combine(BackgroundsDir, s.BgFile!);

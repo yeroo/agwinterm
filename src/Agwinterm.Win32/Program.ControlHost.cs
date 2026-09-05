@@ -182,7 +182,9 @@ internal partial class Program
                         SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
                         PaneIds: s.Panes.Select(p => p.Id).ToList(),
                         RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList(),
-                        StatusChangedAt: statusChangedAt);
+                        StatusChangedAt: statusChangedAt,
+                        Context: s.Context,
+                        CapturedCommands: s.Panes.Select(p => p.CapturedCommand ?? "").ToList());
                 }).ToList()
             )).ToList();
     }
@@ -194,6 +196,7 @@ internal partial class Program
         return new WindowStateSnapshot(
             SidebarVisible: _sidebarW > 0, Fullscreen: _fullscreen, Maximized: IsZoomed(_hwnd),
             QuickTerminalVisible: _coverKind == 2 && _cover is not null && ReferenceEquals(_cover, _quick),
+            // ActiveSession is the NAME; session.context is not a name and is not folded in — it is read from the tree (P3).
             ActiveWorkspace: a?.Ws.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
     }
 
@@ -407,8 +410,33 @@ internal partial class Program
     {
         var ses = FindSesForTarget(target);
         if (ses is null || string.IsNullOrWhiteSpace(name)) return false;
-        Post(() => { ses.Name = name; ses.CustomName = name; RequestRedraw(); SaveState(); }); // CustomName drives the title bar
-        return true;
+        // The post's result IS the reply (#228 item 5): a rename racing the window's WM_DESTROY used
+        // to answer ok with the action stranded in the queue. The rename does not touch Context —
+        // the name and the context are two fields, and rename edits one of them.
+        return Post(() => { ses.Name = name; ses.CustomName = name; RequestRedraw(); SaveState(); }); // CustomName drives the title bar
+    }
+
+    // session.context (P3). Resolution is rename's (FindSesForTarget: exact pane, exact session, pane
+    // prefix, session prefix / name; a scratch or overlay cover id lands on the session it covers, the
+    // quick terminal on nothing). The write goes through the FIFO queued hop rather than Post(...);
+    // return true, because the reply carries the value IN EFFECT, read back off the session after the
+    // write — P2's session.restore round found that Post-and-return reports the value REQUESTED. A
+    // hop that cannot be queued (the window is closing) or that the window closes under throws, which
+    // Dispatch turns into ok:false with nothing applied. A hop that TIMES OUT (15 s, a message loop
+    // that is alive but not pumping) is ok:false too, but the action stays queued and may still run
+    // when the loop resumes — the reply says so, in InvokeOnUiQueued's own words (revmux r1).
+    // The target is resolved INSIDE the hop, so a session closed between the request and the write is
+    // refused rather than written to. The server has already normalized and validated the text.
+    public string SessionContext(string? target, string? context)
+    {
+        return InvokeOnUiQueued(() =>
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
+            ses.Context = context;
+            RequestRedraw(); SaveState();
+            return SessionContexts.Reply(ses.Id, ses.Context);
+        });
     }
 
     public bool WorkspaceRename(string? target, string name)
@@ -802,6 +830,66 @@ internal partial class Program
             hit.Value.pane.RestoreCommand = command;
             SaveState();
             return new RestorePinTarget(hit.Value.pane.Id, hit.Value.ses!.Id);
+        });
+    }
+
+    // restore.capture (P3): capture every real pane's foreground command (or one pane's) into its
+    // durable slot NOW, and say per pane what was captured. Three steps on two threads:
+    //   1. PIPE THREAD: resolve the target and snapshot (pane, session, shell pid) under the
+    //      workspaces lock, the way Tree() reads. An unknown target or a cover is refused here,
+    //      before any process is queried — a refusal captures nothing for anyone.
+    //   2. PIPE THREAD: the CIM query, with the 15 s timeout the non-quit callers use (a cold CIM
+    //      start can exceed 4 s). RestartAllClaudeSessions is the precedent; AdoptClaudeSessions,
+    //      which blocks the UI thread on it through InvokeOnUi, is the one not to copy — a verb that
+    //      freezes the window for seconds is P2's defect class one layer down. The pipe thread
+    //      belongs to the caller who asked, so it is the right thread to wait on. A query that did
+    //      not run is a refusal, never "nothing running" written into every slot.
+    //   3. ONE FIFO queued hop (InvokeOnUiQueued, never InvokeOnUi): every CapturedCommand write plus
+    //      one SaveState, so the reply describes a state that exists on disk. A hop that cannot be
+    //      queued, or that the window closes under, throws — ok:false, nothing written, nothing
+    //      saved. A hop that times out is ok:false with the action still queued: it may land when
+    //      the loop resumes, and the reply says so rather than claiming nothing was written.
+    //      A pane closed between the snapshot and the hop (its removal is ahead of us in the same
+    //      queue) is dropped from the reply rather than written to.
+    // The restore-commands toggle gates the REPLAY, not the capture — reported as replayOnRestore.
+    public RestoreCaptureResult RestoreCapture(string? target)
+    {
+        var snap = new List<(Pane pane, Ses ses, int pid)>();
+        if (string.IsNullOrEmpty(target))
+        {
+            lock (_workspaces)
+                foreach (var s in _workspaces.SelectMany(w => w.Sessions))
+                    foreach (var p in s.Panes) snap.Add((p, s, p.S.ChildProcessId ?? 0));
+        }
+        else if (target == "active")
+        {
+            Ses? a = _active;
+            if (a is null) return RestoreCaptureResult.Refuse(RestoreCaptureReply.UnknownTarget(target));
+            lock (_workspaces) { var p = a.ActivePane; snap.Add((p, a, p.S.ChildProcessId ?? 0)); }
+        }
+        else
+        {
+            var hit = FindControlPane(target);   // session.restore's resolver: exact pane, exact session, pane prefix, session prefix / name
+            if (hit is null) return RestoreCaptureResult.Refuse(RestoreCaptureReply.UnknownTarget(target));
+            if (hit.Value.cover || hit.Value.ses is null) return RestoreCaptureResult.Refuse(RestoreCaptureReply.CoverPane(hit.Value.pane.Id));
+            snap.Add((hit.Value.pane, hit.Value.ses, hit.Value.pane.S.ChildProcessId ?? 0));
+        }
+
+        if (!TryCaptureForegroundCommands(snap.Select(x => x.pid).Where(pid => pid > 0), timeoutMs: 15000, out var byPid))
+            return RestoreCaptureResult.Refuse(RestoreCaptureReply.QueryFailed);
+
+        return InvokeOnUiQueued(() =>
+        {
+            var landed = new List<CapturedPane>(snap.Count);
+            lock (_workspaces)
+                foreach (var (pane, ses, pid) in snap)
+                {
+                    if (!_workspaces.Contains(ses.Ws) || !ses.Ws.Sessions.Contains(ses) || !ses.Panes.Contains(pane)) continue;   // closed since the snapshot
+                    pane.CapturedCommand = pid > 0 && byPid.TryGetValue(pid, out var cmd) ? cmd : null;
+                    landed.Add(new CapturedPane(pane.Id, ses.Id, pane.CapturedCommand));
+                }
+            if (landed.Count > 0) SaveState();
+            return new RestoreCaptureResult(landed, _config.RestoreCommands);
         });
     }
 

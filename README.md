@@ -225,6 +225,9 @@ say "hi"
 "@ | agwintermctl session type --stdin   # text with quotes/newlines: stdin as bytes (see below)
 agwintermctl session overlay open "git diff" --size-percent 60
 agwintermctl session restore "npm run dev" --target <pane>   # re-run on every restart; reply names the pane
+agwintermctl restore capture                 # capture every pane's running command into its restore slot NOW, not only at quit
+agwintermctl session rename api              # the custom name in the sidebar and title bar
+agwintermctl session context "reviewing PR 226, left pane is the diff"   # one line of what the session is FOR; survives a restart
 agwintermctl dashboard build test deploy     # grid overview of chosen sessions
 agwintermctl theme set "Tokyo Night"         # retint the whole window
 agwintermctl window new --name scratchpad    # open a second window
@@ -232,7 +235,7 @@ agwintermctl surface cursor --target <pane>  # the caret column of a pane, as a 
 agwintermctl version                         # which CLI ran, and which app answered the pipe
 ```
 
-Eight of those answer a question a script would otherwise have to guess at:
+Ten of those answer a question a script would otherwise have to guess at:
 
 - `surface cursor` returns the caret **column** and nothing else, so "is that agent's composer empty
   before I type into it" is a comparison, not a hunt for its placeholder text. A different column is
@@ -272,6 +275,29 @@ Eight of those answer a question a script would otherwise have to guess at:
   exactly as `session type` does), and `action` is `pinned` or `cleared` (`none` clears). The target
   is mandatory, because a pin outlives whatever pane is active now. `tree --json` reads the pins back
   as `restoreCommands`, an object keyed by pane id that lists only pinned panes.
+- `restore capture [--target ID]` fills the captured-command slot of every real pane (or of one) **now**
+  and saves, and replies per pane with what it found. Until this verb the capture ran exactly once,
+  on a clean quit, which is the one exit a crash, a `Stop-Process`, a power cut or a missed update
+  never reaches, so the restart that most needed the command was the restart guaranteed to have
+  none. A pane's `captured` is the command line its shell is running, or `null` when the shell has
+  no child worth restoring (the shells on `restore-denylist.conf` never count), and null is written
+  too: a fresh capture replaces an older checkpoint. The reply's `replayOnRestore` is the
+  `restore-commands` setting, off by default: the capture always happens, the typing-back at restart
+  only happens when that is on, and a script that wants the replay checks the flag rather than
+  assuming. It takes one process query for all panes, so allow seconds, not milliseconds. An unknown
+  target, a scratch/overlay/quick pane, or a query that fails is refused and nothing is written;
+  `tree --json` reads the slots back as `capturedCommands`, keyed by pane id like `restoreCommands`.
+- `session context "<text>"` sets one line of **what a session is for**, shown dimmed after the name
+  in the title bar and the sidebar row and on the session palette's second line, where a name has to
+  stay short. It survives a restart and an undo-close, and `tree --json` carries it as `context` on
+  the session node, so an agent that sets it when it starts a task leaves a note every other agent
+  can read. It is one line by rule: a newline, tab or other control character is refused rather than
+  drawn (the control-byte class from #213), blank is refused, and more than 200 characters is refused
+  because the ceiling is the width of the row, not a storage limit. `--clear` removes it, and
+  `--stdin` takes it as bytes the way `session type --stdin` does. The reply `{session, context}` is
+  the value **in effect** after the write, read off the session rather than echoed from the request.
+  `session rename <name>` is its neighbour: the short custom name, same target resolution, and the
+  two survive each other (renaming does not clear the context).
 - `sidebar width [N]` reads or sets the sidebar width in device-independent pixels and replies
   `{width, visible, applied}` with the width **actually in effect**, so a script compares what it
   asked for with what it got. Outside 120..600 is refused with the range named and nothing moves

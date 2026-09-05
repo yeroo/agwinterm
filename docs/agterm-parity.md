@@ -6,7 +6,7 @@ not, and what we have closed.
 - Compared against **agterm v0.26.0** (2026-09-02), releases 0.22.0 → 0.26.0.
 - **The running order lives in [plans/2026-09-03-parity-batches.md](plans/2026-09-03-parity-batches.md)** —
   this file is what is missing, that file is which batch builds it and when.
-- Ours: agwinterm **0.17.10** released (main is ahead), agliteterm **0.17.13** released.
+- Ours: agwinterm **0.17.11** released (main is ahead), agliteterm **0.17.13** released.
 - Update this file in the PR that closes an item. A line that says "missing" long after it shipped
   is worse than no tracker.
 - **This supersedes the earlier gap docs in this directory** (`agterm-gap-analysis*.md`,
@@ -37,14 +37,19 @@ named as such rather than left to look like a backlog nobody is working on.
 | `session.restore` reports which pane received the content (+ `restoreCommands` in `tree`) | 0.26.0 | agwinterm #226 *(P2)* |
 | `sidebar.width` — the width in effect, out of range refused; unknown `sidebar` ops refused | 0.26.0 | agwinterm #226 *(P2)* |
 | `session.new` refuses an unknown workspace; a bare `session new` lands in the caller's workspace | — | agwinterm #226 *(P2)*, lite: P2-lite *(caller half)* |
+| `session.context` — one line per session, shown in the title bar, the row and the palette, in `tree` as `context`, restored after a restart | 0.26.0 | agwinterm #233 *(P3)*, lite: P3-lite |
+| `restore.capture` — fill the captured-command slots on demand, per-pane reply, `capturedCommands` in `tree` | 0.26.0 | agwinterm #233 *(P3)*, lite: P3-lite |
 
 The overlay entry is the *honesty* half only: a pane id is now refused rather than silently widened.
 Pane-scoped overlays themselves are still open, below.
 
-The P1 rows were items **1, 2 and 8** of the open list before P1 closed them, and the P2 rows were
-item **6**, the `sidebar.width` half of item **5** and two sub-items of item **11**; the list below
+The P1 rows were items **1, 2 and 8** of the open list before P1 closed them, the P2 rows were
+item **6**, the `sidebar.width` half of item **5** and two sub-items of item **11**, and the P3 rows
+were item **1** and the `restore.capture` half of item **5** (which closes that item); the list below
 is renumbered after each, so read those plans' "closes items ..." against this note rather than
-against the current numbering. `--stdin` is `session type` / `session write` here — `quick type` has
+against the current numbering. P3 is the first batch to touch the per-window restore file, and it
+set the format rule the later batches inherit: additive keys only, no version field, every loaded
+value validated (`plans/completed/2026-09-05-p3-persistence.md`). `--stdin` is `session type` / `session write` here — `quick type` has
 no separate verb because the quick terminal is a pane with an id that `session type --target`
 reaches. The agliteterm mirrors are the per-batch `P<n>-lite` plans, tracked in
 [lite-parity.md](lite-parity.md) — agwinterm-first, so the contract is fixed before it is copied.
@@ -55,14 +60,7 @@ reaches. The agliteterm mirrors are the per-batch `P<n>-lite` plans, tracked in
 
 Everything here is portable. Ordered by what costs us work today.
 
-### 1. `session.context` — per-session descriptive text
-**agterm 0.26.0.** Text set over the API, shown in the title bar and tree, persisted across restarts.
-
-"What is this pane for" is currently guessable only from a name that also has to be short.
-
-**Size:** small, plus one field in the restore format (lite: an additive line type, the way `P` was).
-
-### 2. Pane-scoped overlays, and reading an overlay
+### 1. Pane-scoped overlays, and reading an overlay
 **agterm 0.24.0 (`session.overlay.copy`, `session.overlay.text`), pane scoping 2026-08-01.**
 
 An overlay covers the whole session, so a review TUI aimed at the right pane blanks the left pane the
@@ -72,13 +70,13 @@ overlay, so an overlay's own output cannot be read at all.
 
 **Size:** medium (the scoping is real work in the renderer); the two read verbs are small.
 
-### 3. `session.swap`
+### 2. `session.swap`
 **agterm 0.26.0.** Exchange the split panes, preserving axis, ratio, focus, overlays and status
 ownership. We cannot swap at all. Our peer tooling addresses panes by id rather than by side, so this
 is convenience here rather than a blocker.
 **Size:** small–medium.
 
-### 4. Splits are thinner than theirs
+### 3. Splits are thinner than theirs
 - **Horizontal splits** (0.23.0): an axis on `session.split`, surviving restore. Ours is
   `on|off|toggle` only.
 - **`session.split.close`** (0.23.0): destroys the pane. agwinterm's `off` and lite's unsplit already
@@ -87,35 +85,31 @@ is convenience here rather than a blocker.
   handle on a hidden split shell. agwinterm should do the same — a small, real gap *within* our own
   family.
 
-### 5. `restore.capture`
-**agterm 0.26.0.** Fill captured-command slots on demand rather than only at exit. Small; batch
-**P3**, beside `session.context`. (`sidebar.width`, the other half of this item, closed in P2.)
-
 ---
 
 ## Open — UI
 
-### 6. `control.pick` — the native picker, driven over the API
+### 4. `control.pick` — the native picker, driven over the API
 **agterm 2026-07-28.** Half the agterm cookbook is built on it: project launcher, workspace picker,
 conversation picker, backlog picker, SQLite browser. Nothing here can do that without shipping a
 picker binary of its own.
 **The biggest single capability gap.** Size: large.
 
-### 7. `session.hud` and `--position`
+### 5. `session.hud` and `--position`
 **agterm 0.22.0 / 0.24.0.** A transient overlay for status an agent wants seen without printing into
 the terminal, anchored to one of nine positions. Size: medium.
 
-### 8. Quick terminal: screen percentage, and a global hotkey
+### 6. Quick terminal: screen percentage, and a global hotkey
 **agterm 0.24.0 / 0.25.0.** Sizes as 40–90% of the screen, and a system-wide hotkey summons it over
 any app. Ours is a fixed size with no global hotkey. Size: medium (the hotkey is a `RegisterHotKey`
 and a policy decision about stealing a chord system-wide).
 
-### 9. Workspace navigation and keymap alternatives
+### 7. Workspace navigation and keymap alternatives
 **agterm 0.23.0 / 0.24.0.** `workspace.go next|prev`, `toggle_workspace_collapse`, and keymap entries
 that accept several chords for one action separated by `|` (a native chord *and* a tmux-style
 leader). We have `session go`; workspaces are keyboard-unreachable without a chord. Size: small.
 
-### 10. Smaller things from 0.26
+### 8. Smaller things from 0.26
 Cursor shape and blink settings; sidebar tooltips revealing truncated names; the tree naming the
 shell holding each pane's foreground process. (The other two that were here — `session.restore`
 reporting the pane, and `--size-percent` validated rather than clamped — closed in P2.)

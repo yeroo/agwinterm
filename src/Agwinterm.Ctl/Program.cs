@@ -13,6 +13,12 @@ using System.Text.Json;
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]
+//   agwintermctl session context <text...> [--target ID]   (one line of "what is this pane for", shown dimmed
+//       beside the name and read back in `tree --json` as context; survives a restart. Blank, a control
+//       character or more than 200 characters is refused; replies {session,context})
+//   agwintermctl session context --clear [--target ID]      (remove it; text beside --clear is refused)
+//   agwintermctl session context --stdin [--target ID]      (text = stdin, one trailing newline dropped; an
+//       embedded newline is then refused — the context is one line)
 //   agwintermctl session seen [--target ID]        (clear the unseen-notification badge)
 //   agwintermctl sidebar state                      (read-back: "visible tree 220" = visibility, mode, width)
 //   agwintermctl sidebar width [N]                  (read, or set, the sidebar width in DIP; replies {width,visible[,applied]}
@@ -29,6 +35,11 @@ using System.Text.Json;
 //   agwintermctl session write <text...> [--target ID]                    (also takes --stdin)
 //   agwintermctl session restore <command...>|none --target PANE          (pin a command re-run on every restart;
 //       target mandatory; replies {action,pane,session}; read back in `tree --json` as restoreCommands)
+//   agwintermctl restore capture [--target ID]       (capture the foreground command of every real pane — or the one
+//       pane/session named — into its restore slot NOW, so a crash or Stop-Process keeps it; replies
+//       {captured,replayOnRestore,panes:[{pane,session,captured|null}]}; read back in `tree --json` as
+//       capturedCommands; replayOnRestore = the restore-commands toggle, which gates the replay, not the capture)
+//   agwintermctl restore clear                       (delete this window's saved session tree)
 //   agwintermctl session copy [--target ID]           (returns the selection text)
 //   agwintermctl session paste <text...> [--target ID] (pastes text; clipboard if omitted)
 //   agwintermctl selection all|copy|clear|finalize [--target ID]
@@ -168,6 +179,33 @@ switch (area)
                 if (rest.Count == 0 && Opt("name") is null) { Console.Error.WriteLine("session rename needs a name"); return 2; }
                 cargs["name"] = rest.Count > 0 ? string.Join(' ', rest) : Opt("name")!;
                 break;
+            case "context": // session context <text...> | --clear | --stdin  [--target ID]
+            {
+                // One source for the value, refused client-side otherwise (nothing is sent): text
+                // beside --clear, text beside --stdin, --stdin beside --clear. The rules themselves
+                // (blank, control characters, the ceiling) are the server's — SessionContexts — so the
+                // CLI does not pre-judge them; --stdin strips exactly one trailing newline (StdinText)
+                // and an embedded newline is then refused by the server, deliberately: a context is one
+                // line, and a here-string with two lines is not one.
+                bool clearFlag = options.ContainsKey("clear"), stdinFlag = options.ContainsKey("stdin");
+                // The splitter hands ANY flag the next bare word, so text can hide behind `--clear "text"`
+                // or `--stdin "text"`; detect the shape the way session type --stdin does.
+                bool swallowedWord = valued.Any(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
+                if (clearFlag && stdinFlag) { Console.Error.WriteLine("session context: --clear and --stdin cannot be combined (one says there is no context, the other supplies one); nothing was sent"); return 2; }
+                if ((clearFlag || stdinFlag) && (rest.Count > 0 || swallowedWord))
+                { Console.Error.WriteLine($"session context: --{(clearFlag ? "clear" : "stdin")} cannot be combined with positional text (one source for the context, not two); nothing was sent"); return 2; }
+                if (clearFlag) { cargs["clear"] = true; break; }
+                if (stdinFlag)
+                {
+                    var ctxStdin = Agwinterm.Pty.StdinText.Read(Console.OpenStandardInput());
+                    if (!ctxStdin.Ok) { Console.Error.WriteLine($"session context --stdin: {ctxStdin.Error}; nothing was sent"); return 2; }
+                    cargs[Agwinterm.Pty.SessionContexts.Key] = ctxStdin.Text;
+                    break;
+                }
+                if (rest.Count == 0) { Console.Error.WriteLine("session context needs text, --clear or --stdin"); return 2; }
+                cargs[Agwinterm.Pty.SessionContexts.Key] = string.Join(' ', rest);
+                break;
+            }
             // session metrics [<pane-id>] — cell size + pixel box of a pane, for sizing an
             // image.frameshm buffer. No args of its own; --json is the useful form.
             case "metrics":
@@ -310,6 +348,26 @@ switch (area)
     case "profiles" when sub == "list": cmd = "profiles.list"; break;
     case "profiles" when sub == "reload": cmd = "profiles.reload"; break;
     case "restore" when sub == "clear": cmd = "restore.clear"; break;
+    // restore capture [--target ID]: no AGWINTERM_SESSION_ID default — a bare call captures EVERY real
+    // pane, and only an explicit --target narrows it to one (a pane id, or a session id / name).
+    // Because the bare call is the BROAD one, anything that looks like an attempt to narrow it and
+    // failed is refused rather than silently widened: a positional id (`restore capture s1`, the
+    // shape `session close <id>` takes), an unknown option (`--targt s1` — the splitter hands any
+    // flag the next word), or an empty `--target ""` (the request builder drops an empty target,
+    // which the server reads as "everything"). Each would otherwise clear the checkpoint of every
+    // idle pane in the window on a typo (revmux r1).
+    case "restore" when sub == "capture":
+    {
+        cmd = "restore.capture";
+        if (rest.Count > 0) { Console.Error.WriteLine($"restore capture: unexpected argument '{rest[0]}' — the target is `--target <pane or session>`; with no --target EVERY real pane is captured, so a stray word is refused rather than widened. Nothing sent."); return 2; }
+        var unknown = options.Keys.FirstOrDefault(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
+        if (unknown is not null) { Console.Error.WriteLine($"restore capture: unknown option --{unknown} (it takes only --target). Nothing sent."); return 2; }
+        if (options.TryGetValue("target", out var capTarget) && (capTarget.Length == 0 || capTarget == "true"))
+        { Console.Error.WriteLine("restore capture: --target is empty — omit it to capture every real pane, or name one pane or session. Nothing sent."); return 2; }
+        target = Opt("target");
+        break;
+    }
+    case "restore": Console.Error.WriteLine("usage: agwintermctl restore capture [--target ID] | restore clear"); return 2;
     case "config" when sub == "set":
         cmd = "config.set";
         if (rest.Count < 1) { Console.Error.WriteLine("config set needs <key> <value>"); return 2; }

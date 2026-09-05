@@ -132,6 +132,41 @@ again and `check-contract` is in step. Until the agwinterm release that carries 
 checks that need the newer client (`--stdin`, a strict `--size-percent`, `sidebar width N`, `caller`)
 probe it and SKIP — red under `-Strict`, which is the release gate, the P1-lite rule.
 
+### Owed: what P3 (agwinterm, persistence) adds — P3-lite
+Batch **P3** (agwinterm, plan `docs/plans/completed/2026-09-05-p3-persistence.md`; PR pending) adds two verbs
+agwinterm answers and lite does not, so the count above grows by two until **P3-lite** lands them:
+
+- **`session.context`** — one line of "what is this pane for", set over the API, shown dimmed after
+  the name in the title bar and the sidebar row, carried in `tree --json` as `context` on the session
+  node (absent when none), persisted so it survives a restart and an undo-close. The rules are the
+  shared `SessionContexts` class in `Agwinterm.Pty` and lite mirrors them exactly, not
+  approximately: a control character (newline, tab, escape) is refused naming the offset, blank is
+  refused (`--clear` is how you remove one, and text beside `--clear` is refused), more than 200
+  characters is refused — the ceiling is a display budget, not a storage limit. The reply is
+  `{session, context}` with the value **in effect** after the write. A rename leaves the context
+  alone; the two are separate fields. **Lite's restore file** takes it as a **`C` line type appended
+  after the `S` lines**, positional like `P` and refused wholesale on a count mismatch the way `P`
+  is (`main.cpp:7866-7871`) — an additive line type, which is the rule agwinterm's own format set
+  for this batch (additive keys only, no version, every loaded value validated: a stored context
+  that fails the rules is dropped on load, not drawn). The title-bar and row suffix are lite's UI
+  half of the item.
+- **`restore.capture [--target ID]`** — capture the foreground command of every real pane (or of
+  the one named) into its restore slot **now** and save, against lite's own capture path rather than
+  a port of agwinterm's CIM query. The reply is `{captured, replayOnRestore, panes:[{pane, session,
+  captured|null}]}`: `null` = the shell had no non-denylisted child, and null is written too (a
+  fresh capture replaces an older checkpoint); `replayOnRestore` reports the restore-commands
+  toggle, which gates the replay at restart and never the capture. An unknown target or a pane
+  that is never restored is refused with nothing written; a process query that fails is a refusal,
+  not an empty answer for every pane. `tree --json` reads the slots back as `capturedCommands`,
+  keyed by pane id like `restoreCommands`. Lite has no `session.restore` yet (that is **P9**), so
+  this lands the slot and the verb first and the pin later.
+
+The conformance steps for both (a `session context` step after the `session.rename` one, a `tree`
+read-back asserting `context`, the errors-block refusal, and a `restore capture` step pinning the
+reply keys) land in the sibling contract PR right after P3 merges, agwinterm-first as the rule says;
+agliteterm's `check-contract` is red for the gap until P3-lite, which is the gate. P3-lite's own
+checks SKIP against the released `agwintermctl` until the release that carries P3 is tagged.
+
 ---
 
 ## Where agliteterm is AHEAD

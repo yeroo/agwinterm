@@ -240,6 +240,7 @@ public sealed class ControlServer : IDisposable
                         : host.SessionReorder(target, GetString(args, "dir") ?? "down"))
                         ? Ok("moved") : Err("not found");
                 case "session.rename": return host.SessionRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("session not found / blank name");
+                case "session.context": return HandleSessionContext(host, target, args);
                 case "session.seen": return host.SessionSeen(target) ? Ok("seen") : Err("session not found");
                 case "broadcast": return Ok(host.BroadcastOp(GetString(args, "op") ?? "toggle"));
                 case "session.readonly": return Ok(host.ReadOnlyOp(target, GetString(args, "op") ?? "toggle"));
@@ -263,6 +264,7 @@ public sealed class ControlServer : IDisposable
                 case "theme.set": return host.ThemeSet(GetString(args, "name") ?? "") ? Ok("theme set") : Err("theme not found");
                 case "keymap.reload": return Ok(host.KeymapReload());
                 case "restore.clear": return Ok(host.RestoreClear());
+                case "restore.capture": return HandleRestoreCapture(host, target);
                 case "config.set": return Ok(host.ConfigSet(GetString(args, "key") ?? "", GetString(args, "value") ?? ""));
                 case "config.get": return Ok(host.ConfigGet(GetString(args, "key") ?? ""));
                 case "config.list": return Ok(host.ConfigList());
@@ -422,7 +424,13 @@ public sealed class ControlServer : IDisposable
                 if (n.Notifications > 0) sb.Append(",\"notifications\":").Append(n.Notifications);
                 if (n.StatusBlink) sb.Append(",\"statusBlink\":true");
                 if (n.OverlaySize > 0) sb.Append(",\"overlaySize\":").Append(n.OverlaySize);
-                AppendRestoreCommands(sb, n);
+                // context: the session.context read-back, emitted only when one is set — absent is
+                // "none", the same spelling the flags above use for "no" (P3).
+                if (n.Context is not null) sb.Append(",\"").Append(SessionContexts.Key).Append("\":").Append(JsonSerializer.Serialize(n.Context));
+                AppendPaneMap(sb, "restoreCommands", n.RestoreCommands, n.PaneIds);
+                // capturedCommands: the restore.capture read-back, same spelling — emitted only when
+                // any pane's slot holds a capture (P3).
+                AppendPaneMap(sb, RestoreCaptureReply.TreeKey, n.CapturedCommands, n.PaneIds);
                 if (n.PaneCount > 1)
                 {
                     sb.Append(",\"paneCount\":").Append(n.PaneCount).Append(",\"focusedPane\":").Append(n.FocusedPane);
@@ -450,25 +458,68 @@ public sealed class ControlServer : IDisposable
     }
 
     /// <summary>
-    /// <c>restoreCommands</c>: the read-back for session.restore, an object keyed by PANE id (the id
-    /// the verb's reply names) listing only the panes that carry a pin. Omitted when no pane does, and
-    /// a pane with no pin is simply absent — the same spelling the flags above use for "no". The
-    /// snapshot carries one entry per pane ("" = none), parallel to PaneIds. AgentSkill promised this
-    /// field long before it was on the wire, so a caller reconnecting to a running app had no way to
-    /// ask which pane held what; the answer was only ever visible in the instant of the call.
+    /// A per-pane read-back map — <c>restoreCommands</c> for session.restore, <c>capturedCommands</c>
+    /// for restore.capture (P3): an object keyed by PANE id (the id the verb's reply names) listing
+    /// only the panes that carry a value. Omitted when no pane does, and a pane with none is simply
+    /// absent — the same spelling the flags above use for "no". The snapshot carries one entry per
+    /// pane ("" = none), parallel to PaneIds. AgentSkill promised <c>restoreCommands</c> long before
+    /// it was on the wire, so a caller reconnecting to a running app had no way to ask which pane
+    /// held what; the answer was only ever visible in the instant of the call.
     /// </summary>
-    private static void AppendRestoreCommands(StringBuilder sb, SessionSnapshot n)
+    private static void AppendPaneMap(StringBuilder sb, string key, IReadOnlyList<string>? values, IReadOnlyList<string>? paneIds)
     {
-        if (n.RestoreCommands is not { Count: > 0 } cmds || n.PaneIds is not { Count: > 0 } ids) return;
+        if (values is not { Count: > 0 } cmds || paneIds is not { Count: > 0 } ids) return;
         bool any = false;
         for (int r = 0; r < cmds.Count && r < ids.Count; r++)
         {
             if (string.IsNullOrEmpty(cmds[r])) continue;
-            sb.Append(any ? "," : ",\"restoreCommands\":{")
+            sb.Append(any ? "," : ",\"" + key + "\":{")
               .Append(JsonSerializer.Serialize(ids[r])).Append(':').Append(JsonSerializer.Serialize(cmds[r]));
             any = true;
         }
         if (any) sb.Append('}');
+    }
+
+    /// <summary>
+    /// restore.capture: capture every real pane's foreground command (or one pane's, with a target)
+    /// into its durable restore slot now, and report per pane what was captured (P3). The reply is
+    /// <see cref="RestoreCaptureReply"/>'s object, OkRaw; the read-back is <c>tree</c>'s
+    /// <c>capturedCommands</c>. Every refusal — an unknown target, a cover pane, a failed process
+    /// query, a UI hop that could not run — is the host's, behind <see cref="RestoreCaptureResult.Refusal"/>
+    /// or a throw, and each captures nothing for anyone. There is no server-side rule to apply: the
+    /// verb takes no value, only a target.
+    /// </summary>
+    private static string HandleRestoreCapture(ISessionHost host, string? target)
+    {
+        if (target is not null && target.Length == 0) return Err(RestoreCaptureReply.EmptyTarget);   // present-but-empty is not "everything"
+        var result = host.RestoreCapture(target);
+        return result.Refusal is not null ? Err(result.Refusal) : OkRaw(RestoreCaptureReply.Build(result));
+    }
+
+    /// <summary>
+    /// session.context: set or clear a session's one-line context and reply with the value IN EFFECT,
+    /// as an object (<c>{session, context}</c>, OkRaw) — the read-back is <c>tree</c>'s <c>context</c>.
+    /// Every refusal happens HERE, before the host is reached, through <see cref="SessionContexts"/>
+    /// (the one wording the fake and the app share): text beside <c>clear</c> is two sources for one
+    /// field; blank, a control character (named with its offset) and over-length are what the
+    /// surfaces cannot draw. A refusal leaves the old context in place — the host is never called.
+    /// The host's own refusal is "no session", the same condition rename refuses.
+    /// </summary>
+    private static string HandleSessionContext(ISessionHost host, string? target, JsonElement args)
+    {
+        string? raw = GetString(args, SessionContexts.Key);
+        bool clear = GetBool(args, "clear");
+        if (clear && raw is not null) return Err(SessionContexts.TextAndClear);
+        string? context = null;
+        if (!clear)
+        {
+            if (!SessionContexts.TryNormalize(raw, out string text, out string? refusal)) return Err(refusal!);
+            context = text;
+        }
+        string reply = host.SessionContext(target, context);
+        return reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+            ? Err(reply[ISessionHost.RefusePrefix.Length..])
+            : OkRaw(reply);
     }
 
     /// <summary>

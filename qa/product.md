@@ -46,6 +46,14 @@ regardless, so a case that relied on it would be writing to the user's own sessi
 
 `Stop-Sandbox $s` kills the instance and removes its directory. Always in a `finally`.
 
+**The one relaunch without `--no-restore`** is `Restart-Sandbox $s` (`-Kill` for `Stop-Process`
+instead of `WM_CLOSE`): it closes the instance, relaunches the **same** `--pipe` / `--app-id` so the
+app reads its own saved tree, and updates `$s` in place. `--no-restore` gates only the restore —
+saves still happen — so the first launch needs no special form. It refuses any app-id that is not
+one `Start-Sandbox` minted (`Test-SandboxAppId`): against the product's own ids the relaunch would
+restore, and on its next save overwrite, the user's real session list. The persisted cases live in
+`tests/integration/restore-roundtrip.ps1`; `qa/persistence.md` has the visible surfaces.
+
 ## Driving input
 
 `tests/ui/lib.ps1` defines `[AgwUi]`, all `PostMessage` to the sandbox window:
@@ -85,6 +93,12 @@ Against a sandbox that session does not exist — `session text` comes back empt
 is accepted and thrown away, with no error anywhere. A pass built on that is a pass over nothing;
 it happened on the first run of this suite.
 
+**Pixels** come from `Save-SandboxCapture $s <png> [-Crop x,y,w,h]` — `PrintWindow` with
+`PW_RENDERFULLCONTENT` (a Direct2D window renders nothing into a plain DC), never `CopyFromScreen`,
+which grabs whatever is on top. Crops are window-relative **device** pixels: multiply DIP by
+`Get-SandboxScale $s`. `Compare-Capture a b` says whether two captures are identical, which is how a
+case asserts "this region did not move" instead of eyeballing it.
+
 The clipboard is read with `Get-Clipboard`. Some machines have none — the cases that need it skip
 rather than fail, and say so. Always restore what was on it.
 
@@ -97,7 +111,7 @@ forward slashes so no case has to quote a backslash.
 
 ```powershell
 . tests\ui\lib.ps1     # driver
-# then follow qa/selection.md, qa/control-read.md, qa/control-honesty.md, qa/clipboard.md
+# then follow qa/selection.md, qa/control-read.md, qa/control-honesty.md, qa/clipboard.md, qa/persistence.md
 ```
 
 There is no runner script by design: the cases are the specification, and the agent executing them

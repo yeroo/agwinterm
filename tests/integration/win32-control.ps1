@@ -10,6 +10,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $fail = 0
 
+if (('Agwinterm.Win32ControlTest.NativeMethods' -as [type]) -and
+    -not ('Agwinterm.Win32ControlTest.NativeMethods' -as [type]).GetMethod('Chord')) {
+    throw 'a NativeMethods type from an older run of this script is loaded in this shell (no Chord); run it from a fresh pwsh'
+}
 if (-not ('Agwinterm.Win32ControlTest.NativeMethods' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -28,6 +32,33 @@ namespace Agwinterm.Win32ControlTest
 
         [DllImport("user32.dll")]
         public static extern IntPtr SendMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
+        [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+        [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+        [DllImport("user32.dll")] static extern bool SetKeyboardState(byte[] s);
+        [DllImport("user32.dll")] static extern bool GetKeyboardState(byte[] s);
+
+        /// <summary>Ctrl (+Shift) + key through the window's own key path — the same shape as
+        /// AgwUi.Chord in tests/ui/lib.ps1. A posted WM_KEYDOWN cannot make GetKeyState see the
+        /// modifier, so this attaches to the target's input queue and sets the shared key state for
+        /// the duration. Scoped to this instance; nothing is injected globally.</summary>
+        public static void Chord(IntPtr h, int vk, bool shift) {
+            uint me = GetCurrentThreadId(), it = GetWindowThreadProcessId(h, IntPtr.Zero);
+            AttachThreadInput(me, it, true);
+            var st = new byte[256]; GetKeyboardState(st);
+            st[0x11] = 0x80; st[0xA2] = 0x80;                      // VK_CONTROL, VK_LCONTROL
+            if (shift) { st[0x10] = 0x80; st[0xA0] = 0x80; }       // VK_SHIFT, VK_LSHIFT
+            SetKeyboardState(st);
+            PostMessageW(h, 0x0100, (IntPtr)vk, (IntPtr)1);
+            System.Threading.Thread.Sleep(400);
+            st[0x11] = 0; st[0xA2] = 0; st[0x10] = 0; st[0xA0] = 0;
+            SetKeyboardState(st);
+            PostMessageW(h, 0x0101, (IntPtr)vk, (IntPtr)1);
+            AttachThreadInput(me, it, false);
+            System.Threading.Thread.Sleep(300);
+        }
     }
 }
 '@
@@ -400,6 +431,179 @@ try {
 
         Invoke-Ctl @('sidebar', 'hide') | Out-Null
         Start-Sleep -Milliseconds 500
+
+        # session.context (P3): the reply carries the value IN EFFECT (read back off the session
+        # inside the UI hop, not echoed from the request) and `tree` reads it back under `context`.
+        # Every refusal is asserted twice — the reply, and that the old value still stands — because
+        # a refusal that still wrote, or a success that did not, passes a reply-only check. The unit
+        # tests drive the fake host's copy of the rules; this is the verb against the app.
+        $ctxText = 'p3 context ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $ctxSet = Invoke-Ctl @('session', 'context', $ctxText, '--target', $sessionId)
+        Start-Sleep -Milliseconds 400
+        $ctxNode = Get-SessionSnapshot $sessionId
+        Check 'session.context replies with the session id and the value in effect' `
+            ($ctxSet.ok -and $ctxSet.result.session -eq $sessionId -and $ctxSet.result.context -eq $ctxText) `
+            "reply=$($ctxSet | ConvertTo-Json -Compress)"
+        Check 'tree reads the context back under "context"' ($ctxNode.context -eq $ctxText) "context=$($ctxNode.context)"
+        $ctxPadded = Invoke-Ctl @('session', 'context', "  $ctxText  ", '--target', $sessionId)
+        Check 'leading and trailing whitespace is trimmed, and the reply says so' `
+            ($ctxPadded.ok -and $ctxPadded.result.context -eq $ctxText) "reply=$($ctxPadded | ConvertTo-Json -Compress)"
+        $ctxCtl = Invoke-Ctl @('session', 'context', "bad`tvalue", '--target', $sessionId)
+        $ctxLong = Invoke-Ctl @('session', 'context', ('x' * 201), '--target', $sessionId)
+        $ctxBlank = Invoke-Ctl @('session', 'context', '   ', '--target', $sessionId)
+        $ctxGhost = Invoke-Ctl @('session', 'context', 'ghost', '--target', 'no-such-session-zz')
+        # text beside --clear is refused CLIENT-side (exit 2, nothing sent), like `session type --stdin "text"`
+        $ctxBothOut = (& $ctl session context 'text' --clear --target $sessionId --pipe $pipe 2>&1) -join ' '
+        $ctxBothCode = $LASTEXITCODE
+        Start-Sleep -Milliseconds 400
+        $ctxNode2 = Get-SessionSnapshot $sessionId
+        Check 'a control character is refused naming it and its offset' `
+            ((-not $ctxCtl.ok) -and ("$($ctxCtl.error)" -match 'U\+0009') -and ("$($ctxCtl.error)" -match 'offset 3')) "error=$($ctxCtl.error)"
+        Check 'over the ceiling is refused naming the ceiling' `
+            ((-not $ctxLong.ok) -and ("$($ctxLong.error)" -match '\b201\b') -and ("$($ctxLong.error)" -match '\b200\b')) "error=$($ctxLong.error)"
+        Check 'blank is refused and names --clear as the way to remove one' `
+            ((-not $ctxBlank.ok) -and ("$($ctxBlank.error)" -match '--clear')) "error=$($ctxBlank.error)"
+        Check 'an unknown target is refused with the rename wording' `
+            ((-not $ctxGhost.ok) -and ("$($ctxGhost.error)" -match 'session not found')) "error=$($ctxGhost.error)"
+        Check 'text beside --clear is refused by the CLI and nothing is sent' `
+            ($ctxBothCode -eq 2 -and $ctxBothOut -match 'one source') "exit $ctxBothCode, output: $ctxBothOut"
+        Check 'and after every refusal the old context stands' ($ctxNode2.context -eq $ctxText) "context=$($ctxNode2.context)"
+        $ctxRename = Invoke-Ctl @('session', 'rename', 'p3-renamed', '--target', $sessionId)
+        Start-Sleep -Milliseconds 400
+        $ctxNode3 = Get-SessionSnapshot $sessionId
+        Check 'a rename edits the name and leaves the context alone (two fields)' `
+            ($ctxRename.ok -and $ctxNode3.name -eq 'p3-renamed' -and $ctxNode3.context -eq $ctxText) "name=$($ctxNode3.name) context=$($ctxNode3.context)"
+        $ctxState = Get-ChildItem -LiteralPath (Join-Path $testAppDir 'windows') -Filter '*.json' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        Check 'the context is in the state file (what a restart reads)' `
+            ($ctxState -and ((Get-Content -LiteralPath $ctxState.FullName -Raw) -match ('"Context":\s*"' + [regex]::Escape($ctxText) + '"'))) "file=$($ctxState.FullName)"
+        $ctxClear = Invoke-Ctl @('session', 'context', '--clear', '--target', $sessionId)
+        Start-Sleep -Milliseconds 400
+        $ctxNode4 = Get-SessionSnapshot $sessionId
+        Check 'clear replies context:null and the tree omits the key' `
+            ($ctxClear.ok -and $ctxClear.result.PSObject.Properties['context'] -and $null -eq $ctxClear.result.context -and
+             -not $ctxNode4.PSObject.Properties['context']) "reply=$($ctxClear | ConvertTo-Json -Compress)"
+
+        # session reopen carries the context (P3): the undo-close record holds it, so the reopened
+        # session comes back on the same id WITH it. Reopen is not a control verb — it is the
+        # Ctrl+Shift+R binding — so it is driven through the window's own key path (PostMessage to
+        # this instance's hwnd with the modifier set on its input queue; nothing global).
+        $reopenCtx = 'reopen me ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $reopenMade = Invoke-Ctl @('session', 'new', '--name', 'p3-reopen', '--no-select')
+        $reopenId = [string]$reopenMade.result
+        for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $reopenId); $i++) { Start-Sleep -Milliseconds 200 }
+        $reopenSet = Invoke-Ctl @('session', 'context', $reopenCtx, '--target', $reopenId)
+        Start-Sleep -Milliseconds 400
+        Invoke-Ctl @('session', 'close', $reopenId) | Out-Null
+        for ($i = 0; $i -lt 30 -and (Get-SessionSnapshot $reopenId); $i++) { Start-Sleep -Milliseconds 200 }
+        $reopenGone = -not (Get-SessionSnapshot $reopenId)
+        $process.Refresh()
+        [Agwinterm.Win32ControlTest.NativeMethods]::Chord($process.MainWindowHandle, 0x52, $true)   # Ctrl+Shift+R = reopen_session
+        $reopenNode = $null
+        for ($i = 0; $i -lt 30; $i++) { $reopenNode = Get-SessionSnapshot $reopenId; if ($reopenNode) { break }; Start-Sleep -Milliseconds 200 }
+        Check 'session reopen (Ctrl+Shift+R) brings the session back on its id with its context' `
+            ($reopenMade.ok -and $reopenSet.ok -and $reopenGone -and $reopenNode -and $reopenNode.context -eq $reopenCtx) `
+            "gone=$reopenGone node=$($reopenNode | ConvertTo-Json -Compress)"
+        if ($reopenNode) { Invoke-Ctl @('session', 'close', $reopenId) | Out-Null; Start-Sleep -Milliseconds 400 }
+
+        # restore.capture (P3): the slot is written NOW and the reply says, per pane, what landed;
+        # `tree` reads it back under capturedCommands keyed by pane id, and the state file carries it
+        # so a kill after this point still restores it. The long-lived child is ping: powershell,
+        # pwsh and cmd are on the restore denylist, so a shell child is the honest null, not a capture.
+        $capBefore = Get-SessionSnapshot $sessionId
+        Check 'no pane carries a capture before the verb has run' (-not $capBefore.PSObject.Properties['capturedCommands'])
+        $pingLine = 'ping -n 300 127.0.0.1'
+        $pingPattern = '(?i)ping(\.exe)?"?\s+-n 300 127\.0\.0\.1'
+        $pingUp = $false
+        foreach ($attempt in 1, 2) {   # typed input can be dropped while the shell is busy (the ConPTY early-discard class): type again
+            Invoke-Ctl @('session', 'type', "$pingLine`r", '--target', $survivorId) | Out-Null
+            for ($i = 0; $i -lt 16; $i++) {
+                Start-Sleep -Milliseconds 250
+                if (([string](Invoke-Ctl @('session', 'text', '--target', $survivorId)).result) -match 'Pinging 127\.0\.0\.1') { $pingUp = $true; break }
+            }
+            if ($pingUp) { break }
+        }
+        Check 'the fixture child (ping) is running in the survivor pane' $pingUp
+        $capOne = Invoke-Ctl @('restore', 'capture', '--target', $survivorId)
+        $capOnePanes = @($capOne.result.panes)
+        Check 'restore capture --target names the pane, its session, what it captured, and the replay toggle' `
+            ($capOne.ok -and $capOne.result.captured -eq 1 -and $capOnePanes.Count -eq 1 -and
+             $capOnePanes[0].pane -eq $survivorId -and $capOnePanes[0].session -eq $sessionId -and
+             ("$($capOnePanes[0].captured)" -match $pingPattern) -and
+             $capOne.result.PSObject.Properties['replayOnRestore'] -and $capOne.result.replayOnRestore -eq $false) `
+            "reply=$($capOne | ConvertTo-Json -Compress -Depth 5)"
+        Start-Sleep -Milliseconds 400
+        $capNode = Get-SessionSnapshot $sessionId
+        Check 'tree reads the capture back under capturedCommands keyed by pane id' `
+            ($capNode.PSObject.Properties['capturedCommands'] -and ("$($capNode.capturedCommands.$survivorId)" -match $pingPattern)) `
+            "capturedCommands=$($capNode.capturedCommands | ConvertTo-Json -Compress)"
+        $capAll = Invoke-Ctl @('restore', 'capture')
+        $capAllPanes = @($capAll.result.panes)
+        $capAllShape = $capAll.ok -and $capAllPanes.Count -ge 2 -and
+            @($capAllPanes | Where-Object { -not ($_.PSObject.Properties['pane'] -and $_.PSObject.Properties['session'] -and $_.PSObject.Properties['captured']) }).Count -eq 0 -and
+            ("$(($capAllPanes | Where-Object { $_.pane -eq $survivorId }).captured)" -match $pingPattern) -and
+            $capAll.result.captured -ge 1
+        Check 'a bare restore capture reaches every real pane and every entry has pane/session/captured' $capAllShape `
+            "reply=$($capAll | ConvertTo-Json -Compress -Depth 5)"
+        $capGhost = Invoke-Ctl @('restore', 'capture', '--target', 'no-such-pane-zz')
+        Check 'an unknown target is refused in the verb''s own words, naming the target' `
+            ((-not $capGhost.ok) -and ("$($capGhost.error)" -match 'restore capture') -and ("$($capGhost.error)" -match 'no-such-pane-zz')) "error=$($capGhost.error)"
+        Invoke-Ctl @('session', 'scratch', 'on', '--target', $sessionId) | Out-Null
+        Start-Sleep -Milliseconds 800
+        $capCover = Invoke-Ctl @('restore', 'capture', '--target', ($sessionId + ':scratch'))
+        Invoke-Ctl @('session', 'scratch', 'off', '--target', $sessionId) | Out-Null
+        Start-Sleep -Milliseconds 400
+        # Matched on the COVER refusal's own wording, not on 'scratch': the unknown-target refusal
+        # interpolates the target, and this target contains 'scratch', so that word passed both arms —
+        # the check would have stayed green with the cover arm deleted (revmux r1).
+        Check 'a scratch cover is refused: it has no restore slot' `
+            ((-not $capCover.ok) -and ("$($capCover.error)" -match 'never restored') -and ("$($capCover.error)" -match 'no restore slot')) "error=$($capCover.error)"
+        $capNode2 = Get-SessionSnapshot $sessionId
+        Check 'and neither refusal touched the slot' ("$($capNode2.capturedCommands.$survivorId)" -match $pingPattern) `
+            "capturedCommands=$($capNode2.capturedCommands | ConvertTo-Json -Compress)"
+        $capState = Get-ChildItem -LiteralPath (Join-Path $testAppDir 'windows') -Filter '*.json' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        Check 'the capture is in the state file under Command (what a restart, or a kill, leaves)' `
+            ($capState -and ((Get-Content -LiteralPath $capState.FullName -Raw) -match '(?i)"Command":\s*"[^"]*ping')) "file=$($capState.FullName)"
+        # End the child, then a re-capture of NOTHING must report null and clear the earlier
+        # checkpoint — a stale capture replayed at the next start would be the wrong command.
+        # The child is ENDED BY PID, not by typing ^C: a lone 0x03 written to ConPTY over the pipe
+        # does not reliably raise a console Ctrl+C (it depends on the input buffer's processed-input
+        # mode at that instant), so ping kept running and the check failed intermittently (2026-09-05:
+        # failed in the full run, passed in isolation). The product knows this — QuitClaudeAndRelaunch
+        # sends 0x03 twice and then POLLS for the child to be gone. What this check proves is the
+        # VERB's honesty (nothing running -> null), not ConPTY's ^C timing, so the child is stopped
+        # deterministically and the re-capture is polled until the shell has no non-denylisted child.
+        # Only a ping that is a DESCENDANT of this sandbox's app process: the command line alone is
+        # not an identity — restore-roundtrip.ps1 starts the identical line in its own sandbox, and a
+        # command-line match killed the other run's live fixture when the two overlapped (revmux r1).
+        # `session type` returns no pid, so the ancestry walk (pane shell -> conhost/ptyhost -> app)
+        # is the only handle on which ping is ours.
+        $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+        $parentOf = @{}; foreach ($pr in $procs) { $parentOf[[int]$pr.ProcessId] = [int]$pr.ParentProcessId }
+        $procs | Where-Object { $_.Name -eq 'PING.EXE' -and $_.CommandLine -match '-n 300 127\.0\.0\.1' } | ForEach-Object {
+            $cur = [int]$_.ParentProcessId; $ours = $false
+            for ($hop = 0; $hop -lt 12 -and $cur -gt 4; $hop++) {
+                if ($cur -eq $process.Id) { $ours = $true; break }
+                if (-not $parentOf.ContainsKey($cur)) { break }
+                $cur = $parentOf[$cur]
+            }
+            if ($ours) { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        }
+        $capNone = $null
+        $capTries = 0
+        while ($capTries -lt 10) {
+            Start-Sleep -Milliseconds 700
+            $capTries++
+            $capNone = Invoke-Ctl @('restore', 'capture', '--target', $survivorId)
+            if ($capNone.ok -and $capNone.result.captured -eq 0) { break }
+        }
+        Start-Sleep -Milliseconds 400
+        $capNode3 = Get-SessionSnapshot $sessionId
+        Check 'a re-capture with nothing running reports null, counts zero, and clears the checkpoint' `
+            ($capNone.ok -and $capNone.result.captured -eq 0 -and $null -eq @($capNone.result.panes)[0].captured -and
+             -not ($capNode3.PSObject.Properties['capturedCommands'] -and $capNode3.capturedCommands.PSObject.Properties[$survivorId])) `
+            "after $capTries capture(s): reply=$($capNone | ConvertTo-Json -Compress -Depth 5) capturedCommands=$($capNode3.capturedCommands | ConvertTo-Json -Compress)"
 
         # Run a mouse-aware process in a 50%-sized floating cover. It captures one SGR cell report,
         # consumes its release, enables SGR-Pixels, then captures a pixel report for the same client

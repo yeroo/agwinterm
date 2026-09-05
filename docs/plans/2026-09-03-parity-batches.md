@@ -83,6 +83,14 @@ appears to succeed while doing something other than what was asked. Same test sh
 Alone because it is the first restore-format change of this backlog, and lite has to mirror the
 format later — as an additive line type, the way `P` was.
 
+**Shipped:** #233 (2026-09-05) — plan at
+[completed/2026-09-05-p3-persistence.md](completed/2026-09-05-p3-persistence.md); contract steps in a sibling PR after
+this merges and before the release, as #229 followed #226. Set the restore-format rule the later
+batches inherit: additive keys only, no version field, every loaded value validated. Round-4
+leftovers from P2 (#227 / #228) remain, in `SessionOverlay`. Mirror: agliteterm P3-lite —
+`session.context` as a `C` line type after the `S` lines, plus `restore.capture`; its checks SKIP
+against the released `agwintermctl` until the release that carries this batch is tagged.
+
 ### P4 · agwinterm · splits get their full shape
 axis on `session.split` (`h|v`, surviving restore) · `session.split.close` · `session.split` **returns
 the pane id** · `session.swap`

@@ -1271,10 +1271,11 @@ internal partial class Program
     }
 
     /// <summary>A recently-closed session's restorable identity (IDE "reopen closed" / browser Ctrl+Shift+T).
-    /// SessionId is the original id, reused on reopen so control-API/agent references stay stable.</summary>
+    /// SessionId is the original id, reused on reopen so control-API/agent references stay stable.
+    /// Context is the session.context text (P3) — it rides here so `session reopen` brings it back.</summary>
     private sealed record ClosedSession(string? CustomName, string? ProfileName, string Cwd,
         string WorkspaceId, string WorkspaceName, bool Flagged, string Display, string Name,
-        string SessionId = "", long Seq = 0);
+        string SessionId = "", long Seq = 0, string? Context = null);
     /// <summary>A recently-closed workspace (its name + all its sessions), so it can be reopened whole.
     /// WorkspaceId is the original id, reused on reopen to keep it stable across close→reopen.</summary>
     private sealed record ClosedWorkspace(string Name, IReadOnlyList<ClosedSession> Sessions, long Seq, string WorkspaceId = "");
@@ -1292,7 +1293,7 @@ internal partial class Program
         string display = !string.IsNullOrEmpty(ses.CustomName) ? ses.CustomName!
             : (!string.IsNullOrEmpty(cwd) ? Path.GetFileName(cwd.TrimEnd('\\', '/')) : ses.Name);
         if (string.IsNullOrEmpty(display)) display = ses.Name;
-        return new ClosedSession(ses.CustomName, ses.ProfileName, cwd, ses.Ws.Id, ses.Ws.Name, ses.Flagged, display, ses.Name, ses.Id, ++_closeSeq);
+        return new ClosedSession(ses.CustomName, ses.ProfileName, cwd, ses.Ws.Id, ses.Ws.Name, ses.Flagged, display, ses.Name, ses.Id, ++_closeSeq, ses.Context);
     }
 
     /// <summary>Remember a session's identity so it can be reopened after it's closed.</summary>
@@ -1355,6 +1356,7 @@ internal partial class Program
         if (!string.IsNullOrEmpty(c.CustomName)) { ses.CustomName = c.CustomName; ses.Name = c.CustomName!; } // mirror rename
         else if (!string.IsNullOrEmpty(c.Name)) ses.Name = c.Name;   // restore the original label
         if (c.Flagged) ses.Flagged = true;
+        ses.Context = c.Context;   // session.context comes back with the session (P3)
         RequestRedraw();
         SaveState();
     }
@@ -1372,6 +1374,7 @@ internal partial class Program
             if (!string.IsNullOrEmpty(cs.CustomName)) { ses.CustomName = cs.CustomName; ses.Name = cs.CustomName!; }
             else if (!string.IsNullOrEmpty(cs.Name)) ses.Name = cs.Name;
             if (cs.Flagged) ses.Flagged = true;
+            ses.Context = cs.Context;   // session.context comes back with the session (P3)
             first ??= ses;
         }
         if (first is not null) SetActive(first);
@@ -1473,7 +1476,7 @@ internal partial class Program
         {
             string p = Path.Combine(AppDir, "windows", windowId + ".json");
             if (!File.Exists(p)) return;
-            var st = JsonSerializer.Deserialize<AppState>(File.ReadAllText(p));
+            RestoreState.TryDeserialize(File.ReadAllText(p), out var st);
             if (st is null) return;
             foreach (var ws in st.Workspaces)
                 foreach (var s in ws.Sessions)

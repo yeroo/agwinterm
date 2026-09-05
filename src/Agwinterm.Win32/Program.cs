@@ -278,9 +278,13 @@ internal partial class Program : ISessionHost, IWindowHost
     private static IDWriteTextFormat _uiSmall = null!;
     private static IDWriteTextFormat _sidebarFont = null!;     // sidebar names (size = config sidebar-font-size)
     private static IDWriteTextFormat _sidebarSmall = null!;    // sidebar counts/badges (sidebar-font-size − 1.5)
+    private static IDWriteTextFormat _sidebarCtx = null!;      // the row's dimmed session.context suffix: _sidebarSmall's size + "…" trimming (P3)
+    private static IDWriteInlineObject? _sidebarCtxEllipsis;   // its trimming sign (rebuilt with the font)
     private static IDWriteTextFormat _uiSmallCenter = null!;   // horizontally centered (panel buttons)
     private static IDWriteTextFormat _uiTitle = null!;      // single centered title-bar line (vertically centered + ellipsized)
     private static IDWriteInlineObject _ellipsis = null!;   // "…" trimming sign for the title (kept alive)
+    private static IDWriteTextFormat _uiSmallTrim = null!;  // _uiSmall + "…" trimming: the title bar's dimmed session.context suffix (P3)
+    private static IDWriteInlineObject _ellipsisSmall = null!; // its trimming sign (kept alive)
     private static IDWriteInlineObject? _sidebarEllipsis;   // "…" trimming sign for sidebar names (rebuilt with the font)
     private static IDWriteTextFormat _iconFont = null!;
     private static IDWriteTextFormat _iconSmall = null!;   // small Fluent glyphs (e.g. the row flag marker)
@@ -293,6 +297,12 @@ internal partial class Program : ISessionHost, IWindowHost
         public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
         public string? AgentResume; // resumable agent bound to this pane (e.g. "claude") — relaunched on restart
         public string? RestoreCommand; // pinned restore command (agterm #271) — always re-run on restart
+        // The captured foreground command — the restore slot (PaneState.Command, "" on disk = none), re-run
+        // on restart when restore-commands is on. Written by `restore capture` and by the quit-time capture
+        // (SaveState(captureCommands: true)), READ by every save (P3). Before P3 the capture lived only in a
+        // local dictionary inside SaveState at quit, so every ordinary save wrote "" over the slot and a
+        // crash / Stop-Process never filled it; one field, one writer per capture, one reader.
+        public string? CapturedCommand;
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
@@ -327,6 +337,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public bool Flagged;       // durable working-set flag (survives moves; persisted; drives flagged sidebar mode)
         public bool Elevated;      // shell runs at High integrity (admin) — shown with a ⚡; false for de-elevated sessions
         public string? CustomName; // user-renamed title (null = show the cwd/OSC title in the title bar, agterm-style)
+        public string? Context;    // session.context: one line of "what is this pane for", set over the API (P3); drawn dimmed beside the name; persisted; null = none. Per session, not per pane — SessionContexts holds the rules.
         public string? ProfileName; // shell profile this session launched with (null = default; persisted)
         public Pane? Scratch;      // per-session scratch terminal (lazy; kept alive when hidden; not restored)
         public Pane? Overlay;      // ephemeral overlay terminal running a program over this session (Wave B3)
@@ -510,6 +521,9 @@ internal partial class Program : ISessionHost, IWindowHost
         _uiTitle = NewChromeFormat("Segoe UI", 13f, center: true); // vertically centered single line
         _ellipsis = _dwrite.CreateEllipsisTrimmingSign(_uiTitle);
         _uiTitle.SetTrimming(new Trimming { Granularity = TrimmingGranularity.Character }, _ellipsis);
+        _uiSmallTrim = NewChromeFormat("Segoe UI", 11.5f, center: false);
+        _ellipsisSmall = _dwrite.CreateEllipsisTrimmingSign(_uiSmallTrim);
+        _uiSmallTrim.SetTrimming(new Trimming { Granularity = TrimmingGranularity.Character }, _ellipsisSmall);
         _iconFont = NewChromeFormat("Segoe Fluent Icons", 14f, center: true);
         _iconSmall = NewChromeFormat("Segoe Fluent Icons", 10.5f, center: true);
 
@@ -773,14 +787,20 @@ internal partial class Program : ISessionHost, IWindowHost
     private static void RebuildSidebarFonts()
     {
         float px = System.Math.Clamp(_config.SidebarFontSize, 9, 20);
-        _sidebarFont?.Dispose(); _sidebarSmall?.Dispose();
+        _sidebarFont?.Dispose(); _sidebarSmall?.Dispose(); _sidebarCtx?.Dispose();
         try { _sidebarEllipsis?.Dispose(); } catch { }
+        try { _sidebarCtxEllipsis?.Dispose(); } catch { }
         _sidebarFont = NewChromeFormat("Segoe UI", px, center: false);
         _sidebarSmall = NewChromeFormat("Segoe UI", System.Math.Max(9f, px - 1.5f), center: false);
         // Trim over-long names with a "…" (esp. once the font is enlarged) so they never spill over the
         // right-aligned status dot. Paired with DrawTextOptions.Clip at the draw sites.
         _sidebarEllipsis = _dwrite.CreateEllipsisTrimmingSign(_sidebarFont);
         _sidebarFont.SetTrimming(new Trimming { Granularity = TrimmingGranularity.Character }, _sidebarEllipsis);
+        // The context suffix gets the same treatment on its own format: a hard clip mid-glyph against
+        // the dot reads as a rendering accident, and _sidebarSmall (the counts) must stay untrimmed.
+        _sidebarCtx = NewChromeFormat("Segoe UI", System.Math.Max(9f, px - 1.5f), center: false);
+        _sidebarCtxEllipsis = _dwrite.CreateEllipsisTrimmingSign(_sidebarCtx);
+        _sidebarCtx.SetTrimming(new Trimming { Granularity = TrimmingGranularity.Character }, _sidebarCtxEllipsis);
     }
 
     private static IDWriteTextFormat NewChromeFormat(string family, float px, bool center)
@@ -908,7 +928,7 @@ internal partial class Program : ISessionHost, IWindowHost
             {
                 Kind = Uia.NodeKind.Session,
                 Index = i,
-                Name = s.Name,
+                Name = s.Name,   // the name only — session.context is a note beside it, not a name; a reader gets it from tree --json / the palette line (P3)
                 Parent = list,
                 Focused = _chromeFocus && ReferenceEquals(_focusRow, s),
                 Selected = ReferenceEquals(_active, s),

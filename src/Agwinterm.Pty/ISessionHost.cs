@@ -6,12 +6,17 @@ namespace Agwinterm.Pty;
 /// <see cref="SplitRatios"/> describe its split layout; <see cref="StatusBlink"/> is the attention pulse;
 /// <see cref="OverlaySize"/> is an open overlay's size-percent (0 = none/full);
 /// <see cref="StatusChangedAt"/> is epoch seconds of the last status write on the pane whose status
-/// won the aggregate — the age of the status actually shown.</summary>
+/// won the aggregate — the age of the status actually shown; <see cref="Context"/> is the session's
+/// <c>session context</c> text (null = none; the tree omits the key); <see cref="CapturedCommands"/>
+/// is each pane's captured restore slot ("" = none), parallel to <see cref="PaneIds"/> like
+/// <see cref="RestoreCommands"/> — the <c>restore.capture</c> read-back (P3). New optional fields go
+/// at the END: both hosts and <see cref="SingleSessionHost"/> construct this positionally.</summary>
 public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
     bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
     int FocusedPane = 0, int PaneCount = 1, bool StatusBlink = false, int OverlaySize = 0,
     IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null,
-    IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0);
+    IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0,
+    string? Context = null, IReadOnlyList<string>? CapturedCommands = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -134,8 +139,39 @@ public interface ISessionHost
     /// <summary>Relocate a session to another workspace (by id/prefix/active), appending.</summary>
     bool SessionToWorkspace(string? target, string workspace);
 
-    /// <summary>Rename a session: sets its custom name (shown in the sidebar and title bar).</summary>
+    /// <summary>Rename a session: sets its custom name (shown in the sidebar and title bar). Resolves
+    /// the target the way every content verb does (exact pane, exact session, pane prefix, session
+    /// prefix / name — a scratch or overlay cover id lands on the session it covers). False when no
+    /// session resolves, the name is blank, or the window is closing and the rename could not be
+    /// queued (#228 item 5: the post's result is the reply, not a constant true).</summary>
     bool SessionRename(string? target, string name);
+
+    /// <summary>
+    /// <c>session.context</c>: set (or, with <paramref name="context"/> null, clear) a session's
+    /// context — the one-line "what is this pane for" shown dimmed beside the name in the title bar
+    /// and the sidebar row, carried in <c>tree</c> as <c>context</c>, and persisted so it survives a
+    /// restart (P3). The server has already normalized and validated the text through
+    /// <see cref="SessionContexts"/> (control characters, blank, over-length and text-beside-clear are
+    /// refused before this is reached), so the host stores what it is given.
+    /// <para><b>Resolution</b> is <see cref="SessionRename"/>'s: null / "" / "active" is the active
+    /// session, else exact pane, exact session, pane prefix, session prefix / unique name; a scratch
+    /// or overlay cover id resolves to the session it covers, because a CLI launched inside a cover
+    /// inherits the cover's id and "this session" is the one under it. The window-level quick
+    /// terminal covers no session and is refused.</para>
+    /// <para><b>Returns</b> the JSON reply <see cref="SessionContexts.Reply"/> builds —
+    /// <c>{"session":id,"context":text|null}</c> — naming the session the value landed on and the
+    /// value IN EFFECT after the write, read back off the session rather than echoed from the
+    /// request; the server emits it raw. A target that resolves to no session returns
+    /// <see cref="ISessionHost.RefusePrefix"/> + <see cref="SessionContexts.NoSession"/> and changes
+    /// nothing.</para>
+    /// <para><b>Threading</b>: the write is applied on the UI thread through the FIFO queued hop (the
+    /// same queue every posted action travels), and the calling pipe thread waits for it, so the
+    /// reply describes a state that exists. A hop that cannot be queued or run (the window is
+    /// closing, or a message loop that never pumps within the bound) throws, which the server turns
+    /// into ok:false — never ok:true for a write that did not land. The session is resolved INSIDE
+    /// the hop so a session closed between the request and the write is refused, not written to.</para>
+    /// </summary>
+    string SessionContext(string? target, string? context);
 
     /// <summary>Clear a session's unseen-notification badge without visiting it (headless "seen").</summary>
     bool SessionSeen(string? target);
@@ -258,6 +294,35 @@ public interface ISessionHost
     /// session, pane prefix, session prefix/name) and returns the pane it landed on; null = nothing matched,
     /// and nothing was pinned.</summary>
     RestorePinTarget? SessionRestore(string target, string? command);
+    /// <summary>
+    /// <c>restore.capture</c> (P3): capture the foreground command of every real pane — or of the one
+    /// <paramref name="target"/> names — into its restore slot NOW, and report per pane what was
+    /// captured. Before this the capture happened exactly once, in the window's WM_DESTROY, which a
+    /// crash, a <c>Stop-Process</c>, a power loss or a missed update-quit never reaches; and every
+    /// ordinary save wrote "" into the slot because the captured command had no in-memory field. The
+    /// slot is durable now (the app's <c>Pane.CapturedCommand</c>, written by this verb and by the
+    /// quit-time capture, read by every save), so a checkpoint survives until the next capture.
+    /// <para><b>Target</b>: null / "" = every real pane of every session, in tree order; "active" =
+    /// the active session's active pane; else the resolver <c>session.restore</c> uses (exact pane,
+    /// exact session → its active pane, pane prefix, session prefix / unique name). An unknown target
+    /// is refused with <see cref="RestoreCaptureReply.UnknownTarget"/>; a scratch / overlay / quick
+    /// cover (never in the saved tree, so no slot) with <see cref="RestoreCaptureReply.CoverPane"/>.
+    /// A refusal captures nothing for anyone and saves nothing.</para>
+    /// <para><b>Null captured</b> = the shell had no non-denylisted child: the honest answer, written
+    /// into the slot (a fresh capture overrides an earlier checkpoint, including to empty). A process
+    /// query that fails or times out is a refusal (<see cref="RestoreCaptureReply.QueryFailed"/>),
+    /// never an empty answer for every pane.</para>
+    /// <para><b>The toggle</b> (<c>restore-commands</c>) gates only whether the slot is TYPED BACK at
+    /// restart, not the capture — the pin ignores it too, and a verb that did nothing on a default
+    /// install would be the silent-success class. <see cref="RestoreCaptureResult.ReplayOnRestore"/>
+    /// carries it so the caller knows.</para>
+    /// <para><b>Threading</b> (the app): the pane + pid snapshot and the CIM query run on the calling
+    /// pipe thread with the 15 s timeout the non-quit callers use — never on the UI thread — and
+    /// every slot write plus one save land in a single FIFO queued hop; a hop that cannot run throws,
+    /// which the server turns into ok:false with nothing written. A pane closed between the snapshot
+    /// and the hop is dropped from the reply rather than written to.</para>
+    /// </summary>
+    RestoreCaptureResult RestoreCapture(string? target);
     /// <summary>Poll the event log for events after <paramref name="since"/> (0 = all buffered), up to
     /// <paramref name="limit"/> (0 = no cap). Returns JSON {cursor, events:[{seq,type,session?,info?}]}. (agterm #273)</summary>
     string Events(long since, int limit);
@@ -340,6 +405,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionReorder(string? target, string dir) => false;
     public bool SessionToWorkspace(string? target, string workspace) => false;
     public bool SessionRename(string? target, string name) => false;
+    public string SessionContext(string? target, string? context) => ISessionHost.RefusePrefix + SessionContexts.NoSession;
     public bool SessionSeen(string? target) => false;
     public string SidebarState() => $"visible tree {SidebarWidths.Default}";
     public SidebarWidthSnapshot SidebarWidth(int? set) => new(SidebarWidths.Default, true);
@@ -377,6 +443,10 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;
     public RestorePinTarget? SessionRestore(string target, string? command) => null;
+    public RestoreCaptureResult RestoreCapture(string? target) =>
+        string.IsNullOrEmpty(target) || target == "active"
+            ? new RestoreCaptureResult(Array.Empty<CapturedPane>(), false)   // no restore file, no process notion: nothing to capture
+            : RestoreCaptureResult.Refuse(RestoreCaptureReply.UnknownTarget(target));
     public string Events(long since, int limit) => "{\"cursor\":0,\"events\":[]}";
     public string AdoptClaude() => "unsupported";
     public string RestartClaudeYolo(string? target) => "unsupported";
