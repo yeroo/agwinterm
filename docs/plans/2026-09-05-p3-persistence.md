@@ -362,13 +362,24 @@ Server and tests:
     byte-probed for the three new method names (the build-gotchas rule)
 
 ### Task 5: the restart harness and the round-trip
-- [ ] `tests/ui/lib.ps1`: `Restart-Sandbox -Kill` — close the main window (`WM_CLOSE`) or
+- [x] `tests/ui/lib.ps1`: `Restart-Sandbox -Kill` — close the main window (`WM_CLOSE`) or
       `Stop-Process`, wait for exit, relaunch the same `--pipe` / `--app-id` **without**
       `--no-restore`, wait for `ping`. It must refuse to run when the app-id is not a sandbox
       (`qa/product.md:47`). Confirm first whether `--no-restore` suppresses *saving* as well as
       restoring; if it does, the first launch of the cell also runs without it against the fresh
       sandbox app dir
-- [ ] `tests/integration/restore-roundtrip.ps1`, modelled on `agliteterm/test/restore-matrix.ps1`:
+  - `--no-restore` gates only `TryRestoreState` (`Program.cs:1337`); `SaveState` has no such gate, so
+    the first launch keeps the flag and still writes `windows\<id>.json`. Documented on `Start-Sandbox`
+  - the refusal is positive, not a denylist: `Test-SandboxAppId` accepts only the `<pipe>-<8 hex>`
+    shape `Start-Sandbox` mints, with the dir directly under LocalApplicationData. A graceful close that
+    does not exit in time is an error, never a fallback kill (that would turn cell A into cell B).
+    `Start-Sandbox` / `Restart-Sandbox` share one launcher (`Start-SandboxProcess`); `$s` now carries
+    `Exe`, `AppId`, `Width`, `Height` and is updated in place, so a caller's `finally { Stop-Sandbox }`
+    tears down whichever process is current
+  - ➕ `Save-SandboxCapture` (PrintWindow + PW_RENDERFULLCONTENT, optional crop), `Get-SandboxScale`,
+    `Compare-Capture` (byte-identical PNGs) — the plumbing `qa/persistence.md` needs; `qa/product.md`
+    gained a paragraph for each of Restart-Sandbox and the captures
+- [x] `tests/integration/restore-roundtrip.ps1`, modelled on `agliteterm/test/restore-matrix.ps1`:
       **cell A (graceful)** — set a context on a session, start a long-lived child in its pane
       (`powershell -NoProfile -Command Start-Sleep 300` typed over `session type`, so the capture has
       something non-denylisted to find), `restore capture`, assert the reply names it, close
@@ -377,14 +388,43 @@ Server and tests:
       the batch exists for, and before Task 4 it fails by construction (the last ordinary save wrote
       `""`); **cell C (refusal left nothing)** — a refused context before a restart, the old value
       comes back
-- [ ] if the sandbox config can enable `restore-commands` (`TerminalConfig.cs:41`), a fourth cell
+  - ⚠️ the child is `ping -n 300 127.0.0.1`, not the powershell one-liner the plan named: `powershell`,
+    `pwsh` and `cmd` are ON the restore denylist (`LoadDenylist`), so that child captures as the honest
+    null and the cell would prove nothing. ping is not denylisted, quiet, and ends by itself; a stray
+    one (dead parent) is stopped after every cell
+  - each cell also asserts the world BEFORE the restart: the reply, and the state file on disk already
+    carrying `Context` and `Command` (what a kill leaves); an idle second session comes back without
+    either; cell A additionally asserts nothing was replayed with the toggle off
+- [x] if the sandbox config can enable `restore-commands` (`TerminalConfig.cs:41`), a fourth cell
       asserts the replay actually typed the command after relaunch (`session read` shows it); if it
       cannot, say so in the script header rather than skipping silently
-- [ ] `tests/integration/win32-control.ps1`: the no-restart checks — set, read-back in the tree,
+  - it can (`-Conf @('restore-commands = true')` lands in the sandbox's own `agwinterm.conf`): cell
+    `replay` (killed) asserts `replayOnRestore:true` in the capture reply and, after the relaunch, the
+    pane text carrying `& "…PING.EXE" -n 300 127.0.0.1` — the `& ` prefix is what the replay adds and
+    the originally typed line never had, so the restored buffer cannot satisfy it
+- [x] `tests/integration/win32-control.ps1`: the no-restart checks — set, read-back in the tree,
       each refusal, `restore capture` reply shape, `session reopen` carrying the context
-- [ ] `qa/persistence.md`: cases in the `qa/control-honesty.md` format for the visible surfaces
+  - 24 checks: set (reply = value in effect, tree, whitespace trimmed), every refusal twice (control
+    character with offset, over-ceiling, blank naming `--clear`, unknown target, text+`--clear` refused
+    client-side with exit 2) + the old value standing, rename leaves the context, the state file, clear
+    (`context:null`, key omitted); capture with `--target` (pane, session, captured, `replayOnRestore`),
+    tree read-back, bare capture over every pane, unknown target and scratch cover refused + slot
+    untouched, `Command` in the state file, Ctrl+C then a re-capture of nothing clearing the checkpoint
+  - ⚠️ `session reopen` is not a control verb (it is the `ctrl+shift+r` binding, `Keymap.cs:51`), so
+    the check drives the window's own key path: `NativeMethods.Chord` (the `AgwUi.Chord` shape —
+    AttachThreadInput + SetKeyboardState + PostMessage to this instance's hwnd, nothing global)
+- [x] `qa/persistence.md`: cases in the `qa/control-honesty.md` format for the visible surfaces
       (title bar suffix, row suffix, palette line, palette search) with `PrintWindow` evidence
-- [ ] run both integration scripts end to end against a sandbox; attach the transcripts
+  - five cases: title bar (suffix dimmed before the bell; the right button group byte-identical before /
+    after / with a budget-filling value; clear restores the bar exactly), sidebar row (the `below` row
+    byte-identical, `rowH` derived from `session metrics`), palette line + search by context, reopen,
+    and a pointer to the round-trip script for the persisted half. Driven 2026-09-05 by
+    `.ralphex/progress/p3-task5-qa-persistence.ps1` (gitignored, captures in `p3-task5-qa/`): 12/12
+- [x] run both integration scripts end to end against a sandbox; attach the transcripts
+  - `restore-roundtrip.ps1 -Strict`: 34/34 (graceful 8, killed 7, refusal 8, replay 9+2), twice;
+    `win32-control.ps1 -Strict`: 61/61 (37 existing + 24 new). Transcripts (gitignored):
+    `.ralphex/progress/p3-task5-restore-roundtrip.txt`, `p3-task5-win32-control.txt`,
+    `p3-task5-qa-persistence.txt`. No sandbox process or dir left behind afterwards
 
 ### Task 6: docs
 - [ ] `AgentSkill.cs`: `session context` after the `session rename` line (`:93`), saying it is one

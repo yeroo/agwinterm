@@ -46,6 +46,10 @@ public static class AgwUi {
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] static extern bool SetKeyboardState(byte[] s);
     [DllImport("user32.dll")] static extern bool GetKeyboardState(byte[] s);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint f);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
 
     static IntPtr Pt(int x, int y) { return (IntPtr)((y << 16) | (x & 0xFFFF)); }
 
@@ -127,8 +131,64 @@ public static class AgwUi {
 '@
 
 <#
+.SYNOPSIS Is this app-id one Start-Sandbox minted — the only kind that may be relaunched WITHOUT --no-restore?
+Start-Sandbox mints "<pipe>-<8 hex>" and nothing else runs under such an id. Restart-Sandbox is the
+one place this suite lets the app READ a saved tree, and that is safe only when the tree is the
+sandbox's own: an app-id the product uses for itself ("agwinterm" is the release identity,
+"agwinterm-dev" a Debug build's) would restore the user's real session list and, on its next save,
+write over it (qa/product.md, "Launching an isolated instance"; the 2026-07-29 wipe). So the check
+is positive — the minted shape, and the directory sitting directly under LocalApplicationData like
+every sandbox dir does — rather than a denylist of the ids known to be dangerous today.
+#>
+function Test-SandboxAppId {
+    param([string]$AppId, [string]$AppDir)
+    if (-not $AppId -or $AppId -notmatch '^[A-Za-z0-9_.-]+-[0-9a-f]{8}$') { return $false }
+    if (-not $AppDir) { return $false }
+    $root = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)).TrimEnd('\')
+    $full = [IO.Path]::GetFullPath($AppDir).TrimEnd('\')
+    $parent = [IO.Directory]::GetParent($full)
+    return [bool]($parent -and $parent.FullName.TrimEnd('\').Equals($root, [StringComparison]::OrdinalIgnoreCase) -and
+                  ([IO.Path]::GetFileName($full)).Equals($AppId, [StringComparison]::Ordinal))
+}
+
+# Launch the sandbox's exe with these arguments, wait for its control pipe, and put the window at the
+# fixed geometry. Shared by Start-Sandbox and Restart-Sandbox so a relaunch is the same launch minus
+# one flag. Fills $S.Proc / $S.Hwnd in place; returns whether `ping` answered.
+function Start-SandboxProcess {
+    param([Parameter(Mandatory)]$S, [Parameter(Mandatory)][string[]]$Arguments)
+
+    # A check must never inherit the pane it is being RUN from, or `session type` lands in the
+    # caller's own terminal instead of the sandbox.
+    foreach ($v in 'AGWINTERM_SESSION_ID', 'AGWINTERM_PANE_ID', 'AGWINTERM_PIPE') {
+        Remove-Item "env:$v" -ErrorAction SilentlyContinue
+    }
+
+    $p = Start-Process $S.Exe -ArgumentList $Arguments -PassThru
+    $S.Proc = $p; $S.Hwnd = [IntPtr]::Zero
+    $up = $false
+    for ($i = 0; $i -lt 80; $i++) {
+        Start-Sleep -Milliseconds 500
+        if ((Send-Ctl $S @('ping')) -match '"ok":true') { $up = $true; break }
+    }
+    Start-Sleep 5
+    $p.Refresh()
+    $S.Hwnd = $p.MainWindowHandle
+    if ($S.Hwnd -ne [IntPtr]::Zero) {
+        # A maximised window makes every coordinate in every check depend on the monitor.
+        if ([AgwUi]::IsZoomed($S.Hwnd)) { [void][AgwUi]::ShowWindow($S.Hwnd, 9); Start-Sleep 1 }
+        [void][AgwUi]::SetWindowPos($S.Hwnd, [IntPtr]::Zero, 150, 100, $S.Width, $S.Height, 0x0004)
+        Start-Sleep 2
+    }
+    return $up
+}
+
+<#
 .SYNOPSIS Launch an isolated agwinterm and wait until its control pipe answers.
 .PARAMETER Conf Lines for the instance's agwinterm.conf, e.g. "scrollback-lines = 0".
+.NOTES --no-restore suppresses only the RESTORE (Program.cs: `if (!_argNoRestore && TryRestoreState())`);
+SaveState has no such gate, so a sandbox launched this way still writes windows\<id>.json on every
+save. That is what lets Restart-Sandbox relaunch the same instance without the flag and have a tree
+to read — the first launch of a restore cell needs no special form.
 #>
 function Start-Sandbox {
     param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Ctl,
@@ -140,27 +200,51 @@ function Start-Sandbox {
     New-Item -ItemType Directory -Force $appDir | Out-Null
     if ($Conf.Count) { ($Conf -join "`n") | Set-Content (Join-Path $appDir 'agwinterm.conf') -Encoding UTF8 }
 
-    # A check must never inherit the pane it is being RUN from, or `session type` lands in the
-    # caller's own terminal instead of the sandbox.
-    foreach ($v in 'AGWINTERM_SESSION_ID', 'AGWINTERM_PANE_ID', 'AGWINTERM_PIPE') {
-        Remove-Item "env:$v" -ErrorAction SilentlyContinue
-    }
-
-    $p = Start-Process $Exe -ArgumentList @('--pipe', $Pipe, '--app-id', $appId, '--no-restore') -PassThru
-    $s = [pscustomobject]@{ Proc = $p; Ctl = $Ctl; Pipe = $Pipe; AppDir = $appDir; Hwnd = [IntPtr]::Zero }
-    for ($i = 0; $i -lt 80; $i++) {
-        Start-Sleep -Milliseconds 500
-        if ((Send-Ctl $s @('ping')) -match '"ok":true') { break }
-    }
-    Start-Sleep 5
-    $s.Hwnd = $p.MainWindowHandle
-    if ($s.Hwnd -ne [IntPtr]::Zero) {
-        # A maximised window makes every coordinate in every check depend on the monitor.
-        if ([AgwUi]::IsZoomed($s.Hwnd)) { [void][AgwUi]::ShowWindow($s.Hwnd, 9); Start-Sleep 1 }
-        [void][AgwUi]::SetWindowPos($s.Hwnd, [IntPtr]::Zero, 150, 100, $Width, $Height, 0x0004)
-        Start-Sleep 2
-    }
+    $s = [pscustomobject]@{ Proc = $null; Exe = $Exe; Ctl = $Ctl; Pipe = $Pipe; AppId = $appId; AppDir = $appDir
+                            Hwnd = [IntPtr]::Zero; Width = $Width; Height = $Height }
+    [void](Start-SandboxProcess $s @('--pipe', $Pipe, '--app-id', $appId, '--no-restore'))
     return $s
+}
+
+<#
+.SYNOPSIS Close (or kill) the sandbox and relaunch the SAME instance so it restores its saved tree.
+The one launch in this suite WITHOUT --no-restore, which is why it refuses any app-id that is not a
+Start-Sandbox one (Test-SandboxAppId). The default is the graceful path — WM_CLOSE to the main window,
+which DefWindowProc turns into WM_DESTROY, where the app saves the tree one last time and quits; a
+process that does not exit in time is an ERROR, never silently killed, because a kill would turn a
+graceful cell into a killed one and the two are different cases (the killed one is where a restore
+bug hides — the last ordinary save is all a killed app leaves). -Kill is Stop-Process -Force: no
+WM_DESTROY, no final save.
+The same $S object is updated in place (Proc, Hwnd) and returned, so a caller's `finally
+{ Stop-Sandbox $s }` tears down whichever process is current.
+#>
+function Restart-Sandbox {
+    param([Parameter(Mandatory)]$S, [switch]$Kill, [int]$ExitTimeoutSec = 20)
+    if (-not (Test-SandboxAppId $S.AppId $S.AppDir)) {
+        throw "Restart-Sandbox refuses app-id '$($S.AppId)' (dir '$($S.AppDir)'): only an id Start-Sandbox minted may be relaunched without --no-restore"
+    }
+    if (-not $S.Exe -or -not (Test-Path $S.Exe)) { throw "Restart-Sandbox: no exe recorded for pipe '$($S.Pipe)'" }
+    $p = $S.Proc
+    if (-not $p -or $p.HasExited) { throw "Restart-Sandbox: the sandbox on pipe '$($S.Pipe)' is not running" }
+
+    if ($Kill) {
+        Stop-Process -Id $p.Id -Force
+        if (-not $p.WaitForExit(10000)) { throw "Restart-Sandbox: pid $($p.Id) survived Stop-Process -Force" }
+    } else {
+        $h = $S.Hwnd
+        if ($h -eq [IntPtr]::Zero) { $p.Refresh(); $h = $p.MainWindowHandle }
+        if ($h -eq [IntPtr]::Zero) { throw "Restart-Sandbox: no main window to close on pipe '$($S.Pipe)'" }
+        [void][AgwUi]::PostMessageW($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_CLOSE
+        if (-not $p.WaitForExit($ExitTimeoutSec * 1000)) {
+            throw "Restart-Sandbox: pid $($p.Id) did not exit within ${ExitTimeoutSec}s of WM_CLOSE; not killing it (that would make this a killed cell)"
+        }
+    }
+    Start-Sleep -Milliseconds 500   # let the old pipe name and window class go away before the same names come back
+
+    if (-not (Start-SandboxProcess $S @('--pipe', $S.Pipe, '--app-id', $S.AppId))) {
+        throw "Restart-Sandbox: the relaunched sandbox on pipe '$($S.Pipe)' never answered ping"
+    }
+    return $S
 }
 
 <#
@@ -178,8 +262,9 @@ function Connect-Sandbox {
     $p = Get-Process -Id $proc.ProcessId
     $appId = ([regex]::Match($proc.CommandLine, '--app-id\s+(\S+)')).Groups[1].Value
     [pscustomobject]@{
-        Proc = $p; Ctl = $Ctl; Pipe = $Pipe; Hwnd = $p.MainWindowHandle
+        Proc = $p; Exe = $proc.ExecutablePath; Ctl = $Ctl; Pipe = $Pipe; AppId = $appId; Hwnd = $p.MainWindowHandle
         AppDir = if ($appId) { Join-Path $env:LOCALAPPDATA $appId } else { $null }
+        Width = 1100; Height = 700
     }
 }
 
@@ -207,6 +292,50 @@ function Get-CtlResult {
     param([Parameter(Mandatory)]$S, [Parameter(Mandatory)][string[]]$Argv)
     $raw = Send-Ctl $S $Argv
     try { (ConvertFrom-Json $raw).result } catch { '' }
+}
+
+<#
+.SYNOPSIS Capture the sandbox window to a PNG with PrintWindow — never CopyFromScreen, which grabs
+whatever is on top. PW_RENDERFULLCONTENT (2) is what makes a Direct2D HwndRenderTarget render into
+the DC at all. Returns the capture's size in DEVICE pixels, and -Crop (x, y, w, h — device pixels,
+window-relative) keeps only that rectangle, so a case can save the title bar or one sidebar row and
+compare two of them byte for byte (Compare-Capture).
+#>
+function Save-SandboxCapture {
+    param([Parameter(Mandatory)]$S, [Parameter(Mandatory)][string]$Path, [int[]]$Crop)
+    Add-Type -AssemblyName System.Drawing
+    $r = New-Object AgwUi+RECT
+    [void][AgwUi]::GetWindowRect($S.Hwnd, [ref]$r)
+    $w = $r.R - $r.L; $h = $r.B - $r.T
+    $bmp = New-Object System.Drawing.Bitmap $w, $h
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $dc = $g.GetHdc()
+    [void][AgwUi]::PrintWindow($S.Hwnd, $dc, 2)
+    $g.ReleaseHdc($dc); $g.Dispose()
+    if ($Crop -and $Crop.Count -eq 4) {
+        $cw = [Math]::Min($Crop[2], $w - $Crop[0]); $ch = [Math]::Min($Crop[3], $h - $Crop[1])
+        $c = $bmp.Clone((New-Object System.Drawing.Rectangle $Crop[0], $Crop[1], $cw, $ch), $bmp.PixelFormat)
+        $bmp.Dispose(); $bmp = $c; $w = $cw; $h = $ch
+    }
+    $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $bmp.Dispose()
+    return @($w, $h)
+}
+
+<#
+.SYNOPSIS The scale a DIP coordinate has to be multiplied by to land on this window's device pixels.
+#>
+function Get-SandboxScale { param([Parameter(Mandatory)]$S) [AgwUi]::GetDpiForWindow($S.Hwnd) / 96.0 }
+
+<#
+.SYNOPSIS Are two captures pixel-identical? The check for "this region did not move / did not change".
+#>
+function Compare-Capture {
+    param([Parameter(Mandatory)][string]$A, [Parameter(Mandatory)][string]$B)
+    # Both files come from Save-SandboxCapture — the same encoder over bitmaps of the same pixel
+    # format — so identical pixels encode to identical bytes, and a byte compare is the pixel compare
+    # without a GetPixel loop over a million pixels.
+    [System.Linq.Enumerable]::SequenceEqual([IO.File]::ReadAllBytes($A), [IO.File]::ReadAllBytes($B))
 }
 
 function Get-PaneText { param([Parameter(Mandatory)]$S, [string]$Target)
