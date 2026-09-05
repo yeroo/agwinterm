@@ -86,8 +86,10 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
 - **A scriptable control API**: `agwintermctl` (or newline-JSON over a named pipe) — any language can
   drive it, including full **read-back** (tree with split ratios + pane ids, window state, session
   output). Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.
-- **Splits** (a split collapses to the survivor when a pane exits), **scratch** & **quick** terminals,
-  ephemeral **overlays** (open/resize/close via API), **multi-window** with per-window addressing.
+- **Splits** — side by side or stacked (`--axis vertical|horizontal`, agterm's words), either pane
+  closable, the two swappable with every id kept; a split collapses to the survivor when a pane exits —
+  **scratch** & **quick** terminals, ephemeral **overlays** (open/resize/close via API), **multi-window**
+  with per-window addressing.
 
 ### A real Windows terminal
 - **Default Terminal Application**: register agwinterm from *Settings → General* (per-user, no admin,
@@ -215,6 +217,9 @@ agwinterm is scriptable through a local named pipe speaking newline-delimited JS
 agwintermctl tree --json                     # workspace/session tree (+ splits, badges, overlays)
 agwintermctl window state                    # sidebar/fullscreen/active read-back
 agwintermctl sidebar width 300               # move the divider; the reply is the width in effect
+agwintermctl session split on --axis horizontal   # stack the panes; the reply is the split pane's id
+agwintermctl session split close --target <pane>  # close EITHER pane; the reply is the survivor's id
+agwintermctl session swap                    # the two panes change places; every id stays where it was
 agwintermctl session status blocked --sound  # report agent status (a dot + bell in the UI)
 agwintermctl session new --name build        # from a pane: lands in THAT pane's workspace, not the last-clicked one
 agwintermctl session new --name build --workspace-name CI --create-workspace
@@ -235,7 +240,7 @@ agwintermctl surface cursor --target <pane>  # the caret column of a pane, as a 
 agwintermctl version                         # which CLI ran, and which app answered the pipe
 ```
 
-Ten of those answer a question a script would otherwise have to guess at:
+Thirteen of those answer a question a script would otherwise have to guess at:
 
 - `surface cursor` returns the caret **column** and nothing else, so "is that agent's composer empty
   before I type into it" is a comparison, not a hunt for its placeholder text. A different column is
@@ -298,6 +303,17 @@ Ten of those answer a question a script would otherwise have to guess at:
   the value **in effect** after the write, read off the session rather than echoed from the request.
   `session rename <name>` is its neighbour: the short custom name, same target resolution, and the
   two survive each other (renaming does not clear the context).
+- `session split` answers the **pane id** it produced instead of the word "split", so the shell you
+  just asked for is addressable from the reply: `on` on an already-split session answers the existing
+  split pane's id and changes nothing, `off` answers the survivor's. `--axis vertical|horizontal` picks
+  the arrangement in agterm's words — vertical is left/right panes, horizontal is top/bottom — and is
+  remembered per session, through `off` and a restart; `tree --json` carries it as `axis` on a split
+  session. `session split close --target <pane>` closes **either** pane and answers the survivor's id
+  (`off` can only keep pane 0); a one-pane session is refused, because `session close` is that verb.
+  `session swap` exchanges the two panes and keeps the axis, the divider position, the focus's pane
+  and **every id**: a swap moves panes, never ids, so a handle you hold keeps reaching the same shell
+  on the other side. Its reply `{session, paneIds, focusedPane, axis}` is the tree's split block after
+  the swap.
 - `sidebar width [N]` reads or sets the sidebar width in device-independent pixels and replies
   `{width, visible, applied}` with the width **actually in effect**, so a script compares what it
   asked for with what it got. Outside 120..600 is refused with the range named and nothing moves

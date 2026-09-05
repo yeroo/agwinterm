@@ -213,10 +213,10 @@ public interface ISessionHost
 
     /// <summary>
     /// <c>session.split</c>: split or collapse the targeted session (null/"active" = the active one):
-    /// op = on|off|toggle. <paramref name="axis"/> is <see cref="SplitAxes.Vertical"/> (left/right
-    /// panes — the default of a session never split) or <see cref="SplitAxes.Horizontal"/> (top/bottom
-    /// panes), already parsed by the server through <see cref="SplitAxes.TryParse"/>; null keeps the
-    /// session's current orientation. The axis is PER SESSION and survives <c>off</c> (agterm:
+    /// op = on|off|toggle. The axis names the ARRANGEMENT, agterm's words: vertical = left/right panes
+    /// (the default of a session never split), horizontal = top/bottom panes. <paramref name="axis"/> is
+    /// <see cref="SplitAxes.Vertical"/> or <see cref="SplitAxes.Horizontal"/>, already parsed by the
+    /// server through <see cref="SplitAxes.TryParse"/>; null keeps the session's current orientation. The axis is PER SESSION and survives <c>off</c> (agterm:
     /// omitting the flag preserves the orientation, so a later <c>on</c> without one splits the way
     /// the session was last split); <c>on</c> WITH an axis on an already-split session re-orients it
     /// live and still answers the existing split pane's id; <c>off</c> ignores the axis.

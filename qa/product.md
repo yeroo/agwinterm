@@ -111,7 +111,7 @@ forward slashes so no case has to quote a backslash.
 
 ```powershell
 . tests\ui\lib.ps1     # driver
-# then follow qa/selection.md, qa/control-read.md, qa/control-honesty.md, qa/clipboard.md, qa/persistence.md
+# then follow qa/selection.md, qa/control-read.md, qa/control-honesty.md, qa/clipboard.md, qa/persistence.md, qa/panes.md
 ```
 
 There is no runner script by design: the cases are the specification, and the agent executing them
