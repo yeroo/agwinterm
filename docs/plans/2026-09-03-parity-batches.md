@@ -84,12 +84,15 @@ Alone because it is the first restore-format change of this backlog, and lite ha
 format later — as an additive line type, the way `P` was.
 
 **Shipped:** #233 (2026-09-05) — plan at
-[completed/2026-09-05-p3-persistence.md](completed/2026-09-05-p3-persistence.md); contract steps in a sibling PR after
-this merges and before the release, as #229 followed #226. Set the restore-format rule the later
-batches inherit: additive keys only, no version field, every loaded value validated. Round-4
-leftovers from P2 (#227 / #228) remain, in `SessionOverlay`. Mirror: agliteterm P3-lite —
-`session.context` as a `C` line type after the `S` lines, plus `restore.capture`; its checks SKIP
-against the released `agwintermctl` until the release that carries this batch is tagged.
+[completed/2026-09-05-p3-persistence.md](completed/2026-09-05-p3-persistence.md); contract steps in
+the sibling PR #235, as #229 followed #226. Set the restore-format rule the later batches inherit:
+additive keys only, no version field, every loaded value validated. Round-4 leftovers from P2
+(#227 / #228) remain, in `SessionOverlay`. Mirror: agliteterm P3-lite — **shipped** as agliteterm
+#28 (2026-09-05; plan `docs/plans/2026-09-05-p3-lite-mirror.md` there): `session.context` as a `C`
+line type after the `S` lines, `restore.capture` as a `K` line with an in-process Toolhelp32 + PEB
+query instead of the CIM one, `replayOnRestore` a constant `false` until P9 lands the replay, and a
+hidden pane refusing `session context` (the three divergences are in `docs/lite-parity.md`); its
+checks SKIP against the released `agwintermctl` until the release that carries #233 + #235 is tagged.
 
 ### P4 · agwinterm · splits get their full shape
 axis on `session.split` (`h|v`, surviving restore) · `session.split.close` · `session.split` **returns
@@ -132,8 +135,9 @@ Same model as P6, different surface — split because it is UI work with a diffe
 `surface.cursor` · `statusChangedAt` · `version` → **P1-lite — shipped** (agliteterm #20,
 2026-09-04, six revmux rounds; plan `docs/plans/completed/2026-09-03-p1-lite-mirror.md` there) ·
 `--stdin` · size-percent validation · `sidebar width` · the caller-workspace default for a bare
-`session new` → **P2-lite — shipped** (agliteterm #26, 2026-09-04) · `session.context` → P3-lite. Each runs right after its agwinterm batch
-merges.
+`session new` → **P2-lite — shipped** (agliteterm #26, 2026-09-04) · `session.context` ·
+`restore.capture` → **P3-lite — shipped** (agliteterm #28, 2026-09-05). Each runs right after its
+agwinterm batch merges.
 
 ### P9 · lite · driving a pane
 `session.readonly` **first** — it is how you stop stray keys reaching a running agent — then

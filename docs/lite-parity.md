@@ -132,9 +132,42 @@ again and `check-contract` is in step. Until the agwinterm release that carries 
 checks that need the newer client (`--stdin`, a strict `--size-percent`, `sidebar width N`, `caller`)
 probe it and SKIP — red under `-Strict`, which is the release gate, the P1-lite rule.
 
-### Owed: what P3 (agwinterm, persistence) adds — P3-lite
-Batch **P3** (agwinterm, plan `docs/plans/completed/2026-09-05-p3-persistence.md`; PR pending) adds two verbs
-agwinterm answers and lite does not, so the count above grows by two until **P3-lite** lands them:
+### Mirrored: what P3 (agwinterm #233) owed lite — P3-lite shipped
+Batch **P3-lite** — agliteterm **#28** (2026-09-05; plan `docs/plans/2026-09-05-p3-lite-mirror.md`
+there) — delivered both verbs batch **P3** (agwinterm **#233**, plan
+`docs/plans/completed/2026-09-05-p3-persistence.md`) added; lite's verb count is **45** with them,
+and the two items below read as what was owed. Three deliberate divergences, each recorded in
+lite's README and its shipped skill text rather than left for a reader to trip over:
+
+- **No title-bar surface.** lite's caption is the OS caption, set once to the instance name; no
+  session name has ever been in it, so a context there would be a new behaviour, not a mirror, and
+  could not be "dimmed". The sidebar row — lite's one per-session text surface — draws the context
+  dimmed after the name in its post-paint pass, beside the pennant and the unread pill it already
+  draws, and the badges do not move (`qa/persistence.md` there has the capture).
+- **`replayOnRestore` is a constant `false`.** lite restores a session's LAUNCH spec at the next
+  start and never types a slot back (`session.restore` is P9), so the truthful answer is `false`;
+  a toggle with nothing behind it, or `true`, would be the lie P2 existed to end. The shape is the
+  contract's, so one script reads both products; the field starts reporting a toggle when P9 lands
+  the replay. The capture itself is in-process (one Toolhelp32 snapshot plus the PEB read lite
+  already does for a shell's cwd — milliseconds, no child process, so none of the CIM query's
+  timeout-and-kill semantics), with agwinterm's default denylist frozen as a constant: lite has no
+  `restore-denylist.conf`.
+- **A hidden pane refuses `session context`.** lite's `resolveTarget` reaches a split shell by id;
+  a context set on it would be drawn nowhere (no row) and saved nowhere (no `S` line, so no `C`
+  slot) — "succeeded, then vanished". Refused naming the id, the same rule as the cover-pane
+  refusal on `restore.capture`.
+
+The persistence lands as two additive line types in lite's `sessions.tsv` — `C` (context, after the
+`S` block) and `K` (the captured slots, after the `P` lines whose split its second field names) —
+positional like `P`, refused wholesale on a count mismatch with the `P` guard's wording, and every
+loaded context validated through the verb's own rules (`docs/state-file.md` there). The refusal
+wording is `SessionContexts` / `RestoreCaptureReply` verbatim. Two revmux rounds, both without a
+Major: round 1's nine Minors were fixed in one commit (a stale save overtaking a newer one, a
+`restore capture` answering ok on a failed save, an exited pane's recycled pid, an unlocked paint
+read), and that commit's own suite run found lite's JSON was not ASCII-safe — `café 🚀` came back
+through the CLI's stdout as `caf? ??` on a non-UTF-8 console — so lite's `jsonEscape` now escapes
+non-ASCII as `\uXXXX` the way agwinterm's server does. Round 2's six Minors are agliteterm #29.
+Both products' P3 checks run for real since agwinterm **0.17.12** (2026-09-05). What P3 owed, for the record:
 
 - **`session.context`** — one line of "what is this pane for", set over the API, shown dimmed after
   the name in the title bar and the sidebar row, carried in `tree --json` as `context` on the session
@@ -161,11 +194,14 @@ agwinterm answers and lite does not, so the count above grows by two until **P3-
   keyed by pane id like `restoreCommands`. Lite has no `session.restore` yet (that is **P9**), so
   this lands the slot and the verb first and the pin later.
 
-The conformance steps for both (a `session context` step after the `session.rename` one, a `tree`
-read-back asserting `context`, the errors-block refusal, and a `restore capture` step pinning the
-reply keys) land in the sibling contract PR right after P3 merges, agwinterm-first as the rule says;
-agliteterm's `check-contract` is red for the gap until P3-lite, which is the gate. P3-lite's own
-checks SKIP against the released `agwintermctl` until the release that carries P3 is tagged.
+The conformance steps for both (the `session context` set and `--clear` steps, the `restore capture`
+step pinning the reply keys, and the two errors-block refusals) landed in the sibling contract PR
+**#235** right after #233, agwinterm-first as the rule says; agliteterm's `test/control-api.json` is
+that file again and `check-contract` is in step. P3-lite's own checks (the honesty P3 block, the
+matrix's context/capture cells, the four conformance steps) probe the client (`agwintermctl
+restore` answers a usage line on a post-#233 build) and SKIP against the released `agwintermctl`
+until the release that carries #233 + #235 is tagged — red under `-Strict`, the release gate
+(**0.17.12**, tagged 2026-09-05, closed it).
 
 ---
 
