@@ -391,9 +391,15 @@ internal partial class Program
         catch (Exception ex) { ShowToast("elevated launch failed: " + ex.Message); }
     }
 
+    /// <summary>Create a session with its first pane. <paramref name="paneId"/> is pane 0's id; null = the
+    /// session id, which is what every caller but restore passes (a <c>session new</c> mints pane 0 =
+    /// session id). Restore passes the SAVED pane-0 id, because after a <c>session swap</c> the pane that
+    /// carries the session id sits in slot 1 and pane 0 has its own id — re-minting pane 0 as the session
+    /// id would duplicate that id and rename the other shell (P4: ids are durable, never reassigned by a
+    /// split, a close, a swap or a restore).</summary>
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
-        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false)
+        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false, string? paneId = null)
     {
         // Elevated profile from a non-elevated app: hand off to a separate elevated window (UAC).
         if (profileName is not null && !IsElevated()
@@ -418,7 +424,10 @@ internal partial class Program
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         if (name is null && handoff is { Title.Length: > 0 } ht) name = ht.Title;   // label handoff sessions with the app's title
         var ses = new Ses { Id = id, Name = name ?? $"session {ordinal}", Ws = ws, ProfileName = profileName, Elevated = IsElevated() && !deElevate };
-        ses.Panes.Add(CreatePane(id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff, wait: wait));   // first pane shares the session id (control-API back-compat)
+        // Exactly one pane carries the session id (control-API back-compat: a fresh session's pane 0 IS
+        // the session id, so a session id addresses a pane). A swap may put that pane on either side,
+        // and a restore hands the saved pane-0 id in — see the summary.
+        ses.Panes.Add(CreatePane(paneId ?? id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff, wait: wait));
         ses.Active = 0;
         DetectSessionElevation(ses);   // refine ⚡ from the shell's real integrity once it's running
 
@@ -450,23 +459,47 @@ internal partial class Program
         return (x0, y0, w, h);
     }
 
-    /// <summary>Lay out a session's panes as columns (px) by ratio, with a divider gutter between.</summary>
+    /// <summary>Lay out a session's panes (DIP) by ratio along its axis, with a divider gutter between:
+    /// columns left→right when <see cref="Ses.Axis"/> is vertical, rows top→bottom when horizontal.
+    /// The ONE source of layout truth — the same (x, y, w, h) tuples either way, so the callers
+    /// (renderer, hit-tests, metrics, regrid) never branch on the axis themselves.</summary>
     private List<(Pane pane, float x, float y, float w, float h)> PaneLayout(Ses ses)
     {
         var (x0, y0, totalW, totalH) = ContentArea();
         int n = ses.Panes.Count;
-        float avail = MathF.Max(n, totalW - (n - 1) * DividerW);
+        bool horizontal = ses.Axis == SplitAxes.Horizontal;
+        float extent = horizontal ? totalH : totalW;          // the span the ratios divide
+        float avail = MathF.Max(n, extent - (n - 1) * DividerW);
         float sum = ses.Panes.Sum(p => p.Ratio);
         if (sum <= 0) { foreach (var p in ses.Panes) p.Ratio = 1f / n; sum = 1f; }
         var list = new List<(Pane, float, float, float, float)>(n);
-        float x = x0;
+        float pos = horizontal ? y0 : x0;
         for (int i = 0; i < n; i++)
         {
-            float w = avail * (ses.Panes[i].Ratio / sum);
-            list.Add((ses.Panes[i], x, y0, w, totalH));
-            x += w + DividerW;
+            float share = avail * (ses.Panes[i].Ratio / sum);
+            list.Add(horizontal
+                ? (ses.Panes[i], x0, pos, totalW, share)
+                : (ses.Panes[i], pos, y0, share, totalH));
+            pos += share + DividerW;
         }
         return list;
+    }
+
+    /// <summary>The laid-out pane of <paramref name="ses"/> whose extent ALONG THE AXIS contains the
+    /// point — the gutter after it included, so a press in the gutter belongs to the pane before it
+    /// (what the x-only tests did before P4). Null when the point is past every pane. The one
+    /// point-to-pane test; the axis is read off the layout tuples, never re-derived by a caller.</summary>
+    private (Pane pane, float x, float y, float w, float h)? PaneAlongAxisAt(Ses ses, int px, int py)
+    {
+        bool horizontal = ses.Axis == SplitAxes.Horizontal;
+        foreach (var box in PaneLayout(ses))
+        {
+            bool hit = horizontal
+                ? py >= box.y && py < box.y + box.h + DividerW
+                : px >= box.x && px < box.x + box.w + DividerW;
+            if (hit) return box;
+        }
+        return null;
     }
 
     /// <summary>Regrid EVERY session (not just the active one) to the current window/sidebar size, so an
@@ -480,7 +513,8 @@ internal partial class Program
         if (_cover is not null) RegridCover();
     }
 
-    /// <summary>Resize every pane's PTY grid to fit its column using the pane's own font metrics.
+    /// <summary>Resize every pane's PTY grid to fit its box along the session's axis (a column of a
+    /// vertical split, a row of a horizontal one), using the pane's own font metrics.
     /// Does nothing while the window has no usable client area — see the guard.</summary>
     private void RegridSession(Ses ses)
     {
@@ -1136,7 +1170,10 @@ internal partial class Program
     /// <summary>
     /// Resolve a pane-capable control target without letting a derived cover id shadow its owning
     /// session id. The ordering is part of the control contract: exact pane, exact session, pane
-    /// prefix, then session prefix/name.
+    /// prefix, then session prefix/name. EXACT PANE FIRST is also what keeps the session id naming the
+    /// pane that carries it after a <c>session swap</c> moved that pane to slot 1 (P4): a swap moves
+    /// panes, never ids, so the session id keeps reaching the same shell wherever it sits, and the
+    /// exact-session arm (→ the focused pane) is reached only once that pane is gone (<c>split close</c>).
     /// </summary>
     private (Pane pane, Ses? ses, bool cover)? FindControlPane(string target)
     {
@@ -1212,6 +1249,7 @@ internal partial class Program
         RegridSession(ses);
         RequestRedraw();
         SaveState();
+        EmitEvent("tree");   // control-API event log (#273): the node gained its split block (paneCount, paneIds, focusedPane, axis)
     }
 
     private void FocusPane(int dir)
@@ -1235,17 +1273,45 @@ internal partial class Program
         var ses = _active;
         if (ses is null) return;
         if (ses.Panes.Count <= 1) { if (ConfirmCloseOk()) CloseSessionInternal(ses); return; }
-        var cur = ses.ActivePane;
-        int idx = ses.Panes.IndexOf(cur);
-        try { cur.S.Dispose(); } catch { }
+        ClosePane(ses, ses.ActivePane);
+    }
+
+    /// <summary>Close ONE pane of a split session — either side — and promote the survivor (P4). The one
+    /// primitive behind Ctrl+Shift+W (<see cref="CloseActivePane"/>: the focused pane), <c>session split
+    /// off</c> (<see cref="CollapseToSinglePane"/>: pane 1 goes, so pane 0 survives — agterm's <c>off</c>
+    /// minus the hide), <c>session split close</c> (the host: the TARGETED pane, either side) and a split
+    /// shell's exit (<see cref="OnPaneProcessExited"/>). Before P4 no control verb could close pane 0 of
+    /// two: <c>off</c> hard-coded <c>Panes[0]</c> as the survivor, and the keyboard was the only path to
+    /// the other side. Removes the pane from the list first (under the workspaces lock, so the control-pipe
+    /// reader never enumerates a disposed pane — issue #85), gives its share of the axis to the survivor
+    /// (one survivor takes the whole width or height; the N-general redistribution stays for the layout's
+    /// sake, nothing new depends on it), makes the survivor <c>Panes[0]</c> with <c>Active = 0</c>, then
+    /// disposes the shell. The window's focused surface is repointed only when <paramref name="ses"/> IS
+    /// the active session (#230: closing a pane of a background session must not steal focus), then
+    /// regrid, redraw, save, and a tree event — the tree changed (paneCount, paneIds, focusedPane and
+    /// axis are gone from the node). Nothing else moves: the session keeps its id, name, context, flag,
+    /// axis (for the next split), overlay and scratch. A one-pane session is not this function's business:
+    /// the callers route or refuse first (Ctrl+Shift+W closes the session; <c>split close</c> refuses
+    /// naming <c>session close</c>). A pane no longer in the session (closed by a removal ahead of us in
+    /// the queue) is a no-op, not a second dispose.</summary>
+    private void ClosePane(Ses ses, Pane pane)
+    {
+        if (ses.Panes.Count <= 1) return;
+        int idx = ses.Panes.IndexOf(pane);
+        if (idx < 0) return;
         lock (_workspaces) ses.Panes.RemoveAt(idx);   // exclude the control-pipe reader mid-enumeration (issue #85)
-        float freed = cur.Ratio / ses.Panes.Count;
-        foreach (var p in ses.Panes) p.Ratio += freed;   // redistribute the freed width
+        float freed = pane.Ratio / ses.Panes.Count;
+        foreach (var q in ses.Panes) q.Ratio += freed;   // the survivor grows to fill the freed share of the axis
+        if (ses.Panes.Count == 1) ses.Panes[0].Ratio = 1f;   // exactly the full width or height, whatever the shares summed to
         ses.Active = Math.Clamp(idx, 0, ses.Panes.Count - 1);
-        _session = ses.S;
+        try { pane.S.Dispose(); } catch { }
+        // Only the active session's focused pane is the window's focused surface. Pointing `_session`
+        // at a pane of some other session would leave the window focused on a surface not on screen.
+        if (ReferenceEquals(ses, _active)) _session = ses.S;
         RegridSession(ses);
-        RequestRedraw();
+        if (ReferenceEquals(ses, _active)) RequestRedraw();
         SaveState();
+        EmitEvent("tree");   // control-API event log (#273): the node lost its split block
     }
 
     /// <summary>A pane's shell process exited: if it was one side of a split, collapse to the survivor
@@ -1253,21 +1319,9 @@ internal partial class Program
     private void OnPaneProcessExited(Pane p)
     {
         Ses? ses;
-        lock (_workspaces)
-        {
-            ses = _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Panes.Contains(p));
-            if (ses is null || ses.Panes.Count <= 1) return;   // not a live split pane → leave the shell as-is
-            int idx = ses.Panes.IndexOf(p);
-            ses.Panes.RemoveAt(idx);
-            float freed = p.Ratio / ses.Panes.Count;
-            foreach (var q in ses.Panes) q.Ratio += freed;     // survivor grows to fill the freed width
-            ses.Active = Math.Clamp(idx, 0, ses.Panes.Count - 1);
-        }
-        try { p.S.Dispose(); } catch { }
-        if (ReferenceEquals(_active, ses)) _session = ses.S;
-        RegridSession(ses);
-        if (ReferenceEquals(_active, ses)) RequestRedraw();
-        SaveState();
+        lock (_workspaces) ses = _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Panes.Contains(p));
+        if (ses is null || ses.Panes.Count <= 1) return;   // not a live split pane → leave the shell as-is
+        ClosePane(ses, p);
     }
 
     /// <summary>A recently-closed session's restorable identity (IDE "reopen closed" / browser Ctrl+Shift+T).
@@ -1326,6 +1380,23 @@ internal partial class Program
         => !string.IsNullOrEmpty(preferred) && !WorkspaceIdInUse(preferred!) ? preferred! : Guid.NewGuid().ToString();
     private string StableSessionId(string? preferred)
         => !string.IsNullOrEmpty(preferred) && !SessionIdInUse(preferred!) ? preferred! : Guid.NewGuid().ToString();
+    /// <summary>True if any live pane (in any session) currently uses this id.</summary>
+    private bool PaneIdInUse(string id) { lock (_workspaces) return _workspaces.Any(w => w.Sessions.Any(s => s.Panes.Any(p => p.Id == id))); }
+    /// <summary>The id a restored pane keeps (P4: ids are durable — a restore uses the saved ids verbatim,
+    /// so a swapped-then-saved session comes back with the session id on the pane that carried it, which
+    /// may be slot 1). Three folds only: an EMPTY saved id mints one (pane 0: the session id, what a
+    /// pre-splits file meant; a later pane: fresh); a saved id equal to the file's session id follows
+    /// the session id wherever <see cref="StableSessionId"/> put it (a duplicate session id in the file
+    /// is folded to a fresh one, and the pane that carried it must carry the new one, or no pane would);
+    /// a saved id already used by a live pane (a duplicated session block in a hand-edited file) mints
+    /// a fresh one rather than making two shells answer to one handle.</summary>
+    private string StablePaneId(string? saved, string fileSessionId, string sessionId, bool first)
+    {
+        string id = string.IsNullOrEmpty(saved) ? (first ? sessionId : Guid.NewGuid().ToString())
+                  : saved == fileSessionId ? sessionId
+                  : saved;
+        return PaneIdInUse(id) ? Guid.NewGuid().ToString() : id;
+    }
 
     /// <summary>Reopen the most recently closed item — a session or a whole workspace, whichever was closed last.</summary>
     private void ReopenMostRecent()
@@ -1528,41 +1599,106 @@ internal partial class Program
     }
 
     /// <summary>The keyboard, the title-bar button and the palette all split the active session.</summary>
-    private void SplitOp(string op) => SplitOp(op, _active);
+    private void SplitOp(string op) => SplitOp(op, _active, null);
 
     /// <summary>Split or collapse <paramref name="ses"/>. The control API reaches this with a
     /// resolved target, which need not be the active session: `session split on --target X` from
-    /// an agent's pane used to split whatever the user happened to be looking at.</summary>
-    private void SplitOp(string op, Ses? ses)
+    /// an agent's pane used to split whatever the user happened to be looking at. `on` when already
+    /// split and `off` when already single change nothing — the reply (the host reads it off
+    /// <c>ses.Panes</c> afterwards) is what makes those honest. <paramref name="axis"/> is one of
+    /// <see cref="SplitAxes"/>' words or null (keep the session's orientation): <c>on</c> and a
+    /// splitting <c>toggle</c> set it before laying out; <c>on</c> with an axis on an ALREADY-split
+    /// session re-orients it live (regrid, redraw, save — agterm: omitting the flag preserves the
+    /// orientation, so passing it sets it); <c>off</c> ignores it.</summary>
+    private void SplitOp(string op, Ses? ses, string? axis)
     {
         if (ses is null) return;
         int panes = ses.Panes.Count;
         switch (op)
         {
-            case "on": if (panes <= 1) SplitPane(ses); break;
+            case "on":
+                if (panes <= 1) { if (axis is not null) ses.Axis = axis; SplitPane(ses); }
+                else if (axis is not null) SetAxis(ses, axis);
+                break;
             case "off": if (panes > 1) CollapseToSinglePane(ses); break;
-            default: if (panes > 1) CollapseToSinglePane(ses); else SplitPane(ses); break; // toggle
+            default: // toggle
+                if (panes > 1) CollapseToSinglePane(ses);
+                else { if (axis is not null) ses.Axis = axis; SplitPane(ses); }
+                break;
         }
     }
 
-    /// <summary>Collapse the active session to just its focused pane (dispose the rest).</summary>
-    private void CollapseToSinglePane(Ses ses)
+    /// <summary>Re-orient a split session live. The ratio SEQUENCE is kept (pane 0's share of the
+    /// width becomes its share of the height), so a 70/30 stays a 70/30 across the turn.</summary>
+    private void SetAxis(Ses ses, string axis)
     {
-        if (ses.Panes.Count <= 1) return;
-        var keep = ses.Panes[0];   // agterm: collapsing the split keeps the primary (left) pane, not whichever is focused
-        foreach (var p in ses.Panes) if (!ReferenceEquals(p, keep)) { try { p.S.Dispose(); } catch { } }
-        // Clear+Add as one atomic step so the control-pipe reader never sees an empty pane list (issue #85).
-        lock (_workspaces) { ses.Panes.Clear(); ses.Panes.Add(keep); }
-        keep.Ratio = 1f; ses.Active = 0;
-        if (ReferenceEquals(ses, _active)) _session = ses.S;
+        if (ses.Axis == axis) return;
+        // A divider drag in progress is tied to the OLD axis (its next WM_MOUSEMOVE would read the
+        // other coordinate and throw the ratio at an edge); cancelled the way SwapPanes cancels it.
+        if (ReferenceEquals(ses, _active) && _divDragging) { _divDragging = false; ReleaseCapture(); }
+        ses.Axis = axis;
         RegridSession(ses); RequestRedraw(); SaveState();
+        EmitEvent("tree");   // control-API event log (#273): the split block's `axis` changed
     }
 
-    /// <summary>Set the split boundary next to the active pane: an absolute left ratio, or grow by columns.</summary>
-    private void ResizeActiveSplitInternal(double? ratio, int growLeft, int growRight)
+    /// <summary>Collapse <paramref name="ses"/> to its primary pane (dispose the rest). The axis is
+    /// kept for the next split. agterm: collapsing the split keeps the primary (left / top) pane, not
+    /// whichever is focused — so `session split off` closes pane 1, and `session split close` is the
+    /// verb for closing pane 0 (both through <see cref="ClosePane"/>).</summary>
+    private void CollapseToSinglePane(Ses ses)
+    {
+        while (ses.Panes.Count > 1) ClosePane(ses, ses.Panes[^1]);
+    }
+
+    /// <summary>Exchange the two panes of <paramref name="ses"/> (<c>session swap</c>, P4): the order is
+    /// reversed, the focus follows the pane, the axis is kept, the ratio SEQUENCE is kept, and every id
+    /// is kept — a swap moves panes, never ids (<see cref="SwapReply"/> has the why).
+    /// <para>The ratio: <see cref="Pane.Ratio"/> is each pane's OWN share, so reversing the list alone
+    /// would turn a 70/30 into a 30/70 and the divider would jump. agterm says "axis and divider ratio
+    /// remain fixed"; in our representation that is the two panes exchanging their values — the
+    /// left/top box keeps its size and the contents change places. Both panes are regridded (their boxes
+    /// changed), a divider drag in progress ends (the pane under the pointer is no longer the one the
+    /// drag began on; ending it is what a release would do, and nothing tears), <c>_divLeft</c> is reset
+    /// to the one boundary a two-pane session has, the window's focused surface is repointed only when
+    /// <paramref name="ses"/> IS the active session (#230: swapping a background session must not steal
+    /// focus), then redraw, save, and a tree event (paneIds and focusedPane changed).</para>
+    /// <para>Nothing else moves. Checked, and found per-session or order-independent: overlay, scratch
+    /// and the quick cover (<see cref="Ses.Overlay"/> / <see cref="Ses.Scratch"/> / <c>_cover</c> —
+    /// session-wide until P5, which inherits the obligation to move a pane-scoped overlay with its pane);
+    /// the status aggregate (<see cref="StatusAggregate"/> is a max over the panes); context, flag, name,
+    /// profile, elevation, background (all on <see cref="Ses"/>); MRU and the multi-selection (session
+    /// ids); broadcast (per window); the UIA tree (one node per window, no per-pane node); the sidebar
+    /// row (per session). Per-PANE state — scroll offset, selection, read-only, unread, font size, the
+    /// restore pin and the captured slot, the agent binding — lives on <see cref="Pane"/> and travels
+    /// with it, which is the point. Events carry pane ids, which did not change.</para></summary>
+    private void SwapPanes(Ses ses)
+    {
+        if (ses.Panes.Count < 2) return;
+        lock (_workspaces)   // exclude the control-pipe reader mid-enumeration (issue #85)
+        {
+            var first = ses.Panes[0]; var last = ses.Panes[^1];
+            (first.Ratio, last.Ratio) = (last.Ratio, first.Ratio);   // the sequence of shares stays; the panes under it change
+            ses.Panes.Reverse();
+            ses.Active = ses.Panes.Count - 1 - ses.Active;            // focus follows the pane
+        }
+        if (ReferenceEquals(ses, _active) && _divDragging) { _divDragging = false; ReleaseCapture(); }
+        _divLeft = 0;
+        RegridSession(ses);
+        if (ReferenceEquals(ses, _active)) { _session = ses.S; RequestRedraw(); }
+        SaveState();
+        EmitEvent("tree");   // control-API event log (#273): paneIds and focusedPane changed
+    }
+
+    /// <summary>Set the split boundary next to the active pane: an absolute ratio for the first
+    /// (left / top) pane, or move the divider by N cells along the axis — columns of the pane's cell
+    /// width against the content WIDTH on a vertical split, rows of its cell height against the
+    /// content HEIGHT on a horizontal one. Grow flags from the other axis are refused by
+    /// <see cref="SplitAxes.TryGrow"/> before anything moves. Returns null, or the refusal.</summary>
+    private string? ResizeActiveSplitInternal(double? ratio, int growLeft, int growRight, int growTop, int growBottom)
     {
         var ses = _active;
-        if (ses is null || ses.Panes.Count < 2) return;
+        if (ses is null || ses.Panes.Count < 2) return SplitAxes.NoDivider;
+        if (!SplitAxes.TryGrow(ses.Axis, growLeft, growRight, growTop, growBottom, out int cells, out string? refusal)) return refusal;
         int i = Math.Min(ses.Active, ses.Panes.Count - 2); // boundary between pane i and i+1
         var a = ses.Panes[i]; var b = ses.Panes[i + 1];
         float total = a.Ratio + b.Ratio;
@@ -1573,13 +1709,16 @@ internal partial class Program
         }
         else
         {
-            var (_, _, totalW, _) = ContentArea();
-            var (_, cw, _) = Metrics(a.FontSize);
-            float shift = ((growRight - growLeft) * cw / MathF.Max(1f, totalW)) * total;
+            var (_, _, totalW, totalH) = ContentArea();
+            var (_, cw, ch) = Metrics(a.FontSize);
+            bool horizontal = ses.Axis == SplitAxes.Horizontal;
+            float cell = horizontal ? ch : cw, extent = horizontal ? totalH : totalW;
+            float shift = (cells * cell / MathF.Max(1f, extent)) * total;
             float ra = Math.Clamp(a.Ratio + shift, 0.05f * total, 0.95f * total);
             a.Ratio = ra; b.Ratio = total - ra;
         }
         RegridSession(ses); RequestRedraw(); SaveState();
+        return null;
     }
 
     private void SidebarOpInternal(string op)

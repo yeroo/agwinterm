@@ -209,8 +209,11 @@ until the release that carries #233 + #235 is tagged — red under `-Strict`, th
 
 Not a one-way list, and these should move the other way.
 
-- **`session.split` returns the split's id.** agwinterm's returns nothing, and a hidden split shell
-  has no other handle. **agwinterm should copy this** — tracked in `agterm-parity.md` too.
+- ~~**`session.split` returns the split's id.** agwinterm's returns nothing, and a hidden split shell
+  has no other handle. **agwinterm should copy this** — tracked in `agterm-parity.md` too.~~
+  **Matched in batch P4** (agwinterm, #238): `session split` answers a pane id — the split
+  pane's on `on` (also when the session was already split, lite's rule), the survivor's on `off`.
+  lite had it right first.
 - **`window.select` says whether the raise was granted.** agwinterm answers `selected` whenever the
   window exists; Windows refuses a background process the foreground while the user is typing
   elsewhere, so that reply is a guess. lite (P2-lite, its #24) answers `selected` only when
@@ -253,7 +256,13 @@ and the list should grow as more turn up.
   it is not worth unifying.
 - **Splits as sessions.** lite models a split as a hidden session; agwinterm models panes inside a
   session. Behaviour matches now (a split belongs to its session, closes with it, restores with it),
-  and the internal shape can stay different.
+  and the internal shape can stay different. **P4's `session swap` is the first item this model makes
+  expensive**: agwinterm reverses two panes inside one session and no id moves, while lite would have
+  to exchange the visible session's tree identity with its hidden split's (name, context, flag,
+  workspace position, the `D`/`C`/`K` lines) or invert `splitId` and both `hidden` flags — the P4-lite
+  plan should decide whether to defer the swap the way `session.restore` went to P9 rather than let
+  the batch discover it. The axis (a fifth field on the `P` line) and `split close` (promote the hidden
+  session when pane 0 closes) are cheap there.
 - **The native core is shared.** Both load `agwinterm_core.dll` across the same C ABI, so emulator
   behaviour — widths, scrollback, alt screen — is common by construction. A difference there is a
   bug in one of the clients, not a parity gap.

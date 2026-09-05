@@ -9,14 +9,17 @@ namespace Agwinterm.Pty;
 /// won the aggregate — the age of the status actually shown; <see cref="Context"/> is the session's
 /// <c>session context</c> text (null = none; the tree omits the key); <see cref="CapturedCommands"/>
 /// is each pane's captured restore slot ("" = none), parallel to <see cref="PaneIds"/> like
-/// <see cref="RestoreCommands"/> — the <c>restore.capture</c> read-back (P3). New optional fields go
+/// <see cref="RestoreCommands"/> — the <c>restore.capture</c> read-back (P3); <see cref="Axis"/> is
+/// the session's split orientation, one of <see cref="SplitAxes"/>' words (null = vertical), emitted
+/// by the tree only while the session is split (P4). New optional fields go
 /// at the END: both hosts and <see cref="SingleSessionHost"/> construct this positionally.</summary>
 public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
     bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
     int FocusedPane = 0, int PaneCount = 1, bool StatusBlink = false, int OverlaySize = 0,
     IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null,
     IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0,
-    string? Context = null, IReadOnlyList<string>? CapturedCommands = null);
+    string? Context = null, IReadOnlyList<string>? CapturedCommands = null,
+    string? Axis = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -208,14 +211,88 @@ public interface ISessionHost
     /// <summary>Reorder a workspace among its siblings: dir = up|down|top|bottom.</summary>
     bool WorkspaceReorder(string? target, string dir);
 
-    /// <summary>Split the targeted session (null/"active" = the active one): op = on|off|toggle.
-    /// False when the target names no session. Splitting a session that is not the active one
-    /// does not move focus to it: the split appears when the user next selects that session.</summary>
-    bool Split(string? target, string op);
-    /// <summary>Move pane focus in the active session: dir = left|right|other.</summary>
-    void FocusPaneDir(string dir);
-    /// <summary>Set the active session's split: an absolute left ratio (0..1) or grow left/right by N columns.</summary>
-    void ResizeSplit(double? ratio, int growLeft, int growRight);
+    /// <summary>
+    /// <c>session.split</c>: split or collapse the targeted session (null/"active" = the active one):
+    /// op = on|off|toggle. The axis names the ARRANGEMENT, agterm's words: vertical = left/right panes
+    /// (the default of a session never split), horizontal = top/bottom panes. <paramref name="axis"/> is
+    /// <see cref="SplitAxes.Vertical"/> or <see cref="SplitAxes.Horizontal"/>, already parsed by the
+    /// server through <see cref="SplitAxes.TryParse"/>; null keeps the session's current orientation. The axis is PER SESSION and survives <c>off</c> (agterm:
+    /// omitting the flag preserves the orientation, so a later <c>on</c> without one splits the way
+    /// the session was last split); <c>on</c> WITH an axis on an already-split session re-orients it
+    /// live and still answers the existing split pane's id; <c>off</c> ignores the axis.
+    /// <para><b>Returns a pane id</b> — a bare string, so the caller can address the shell it just
+    /// asked for (P4; before, the constant "split" from a Post-and-return-true, so the id was only
+    /// knowable by diffing the tree). Per op: <c>on</c> → the split pane's id, ALSO when the session
+    /// was already split (the caller that does not know whether it split gets something addressable
+    /// either way, and nothing changes); <c>off</c> → the survivor's id (pane 0), also when already
+    /// single; <c>toggle</c> → whichever it produced. Or <see cref="RefusePrefix"/> + a refusal —
+    /// <c>session not found</c>, the axis refusal — and nothing split.</para>
+    /// <para><b>Invariants (#230)</b>: the target is resolved on the caller's thread so an unknown
+    /// target answers a refusal with nothing queued; the split lands on THAT session, not on whichever
+    /// is active; splitting a session that is not the active one does not move focus to it (the
+    /// split appears when the user next selects it). The reply is read back off the session INSIDE
+    /// the same FIFO UI hop the write travelled (<see cref="SessionContext"/>'s threading), so the id
+    /// names a pane that exists; a hop that cannot be queued or run is a refusal.</para>
+    /// </summary>
+    string Split(string? target, string op, string? axis);
+    /// <summary>
+    /// <c>session.split.close</c> (P4): close ONE pane of a split session — EITHER side — and reply
+    /// with the survivor's id (a bare string, the shape every <c>session split</c> reply has). The
+    /// survivor becomes pane 0 with the full width or height and the focus; the session keeps its id,
+    /// name, context, flag, axis (for the next split), overlay and scratch. <c>session split off</c>
+    /// keeps its own rule (pane 0 survives — agterm's <c>off</c> minus the hide); this verb is the
+    /// one that can close pane 0 of two, which before P4 only Ctrl+Shift+W on a focused pane 0 could.
+    /// <para><b>Target</b>: null / "" / "active" = the active session's focused pane (what Ctrl+Shift+W
+    /// closes); else the content verbs' resolver (exact pane, exact session → its focused pane, pane
+    /// prefix, session prefix / name → its focused pane). Exactly one pane carries the session id, so
+    /// the session id names THAT pane through the exact-pane arm; a session NAME names the focused
+    /// pane. <see cref="SplitCloseReply"/> has the wording of every refusal, each with nothing closed:
+    /// an unknown target; a scratch / overlay / quick cover (not a side of a split); a ONE-PANE session
+    /// (<c>session close</c> is the verb for that — a <c>split close</c> that closed the session would
+    /// be the silent-success class one verb over).</para>
+    /// <para><b>Invariants (#230)</b>: resolved on the caller's thread so a bad target answers a refusal
+    /// with nothing queued; the close lands on THAT session, not on whichever is active, and closing a
+    /// pane of a non-active session does not move focus to it; the pane is removed and the reply read
+    /// back INSIDE the same FIFO UI hop, re-resolving there, so a pane that exited or was closed in
+    /// between is refused rather than double-closed; a hop that cannot be queued or run is a refusal.</para>
+    /// </summary>
+    string SplitClose(string? target);
+    /// <summary>
+    /// <c>session.swap</c> (P4): exchange the two panes of a split session and reply with the session's
+    /// split block after the swap — <see cref="SwapResult"/>, which <see cref="SwapReply.Build"/> spells
+    /// as <c>{"session","paneIds","focusedPane","axis"}</c> (an object, the one <c>session split</c>
+    /// family reply that is not a bare string). The pane ORDER is reversed, the FOCUS follows the pane,
+    /// the axis is kept, the ratio SEQUENCE is kept (the left/top box stays the size it was; the two
+    /// panes exchange their shares), and EVERY ID IS KEPT — a swap moves panes, never ids, so an agent
+    /// holding a pane id keeps reaching the same shell. That relaxes one invariant: "the first pane
+    /// shares the session id" becomes "exactly one pane carries the session id, and a swap may put it
+    /// on either side"; the resolver's exact-pane-first order is what keeps the session id naming that
+    /// pane wherever it sits, and restore keeps the saved ids verbatim rather than re-minting pane 0.
+    /// <see cref="SwapReply"/> has what else was checked and found session-wide or order-independent.
+    /// <para><b>Target</b>: null / "" / "active" = the active session; else the content verbs' resolver
+    /// (a session id, either pane's id, a prefix, or a session name) — the session either pane belongs
+    /// to. Refusals, each with nothing moved (<see cref="SwapReply"/>'s wording): an unknown target; a
+    /// scratch / overlay / quick cover; a ONE-PANE session (nothing to exchange).</para>
+    /// <para><b>Invariants (#230)</b>: resolved on the caller's thread so a bad target answers a refusal
+    /// with nothing queued; the swap lands on THAT session, not on whichever is active, and swapping a
+    /// non-active session does not move focus to it; the panes are exchanged and the reply read back
+    /// INSIDE the same FIFO UI hop, re-resolving there; a hop that cannot be queued or run is a refusal.</para>
+    /// </summary>
+    SwapResult Swap(string? target);
+    /// <summary><c>session.focus</c>: move pane focus in the active session. dir is one of agterm's
+    /// words — <c>primary|split|left|right|top|bottom|other</c> — judged against the session's axis by
+    /// <see cref="SplitAxes.TryFocusIndex"/> (<c>top</c> on a vertical split is refused naming the
+    /// axis). Returns <c>"focus"</c>, or <see cref="RefusePrefix"/> + a refusal with focus unmoved:
+    /// the axis refusal, an unknown word, or <see cref="SplitAxes.NotSplit"/> for a one-pane session
+    /// (P4; before, every case answered ok having possibly done nothing).</summary>
+    string FocusPaneDir(string dir);
+    /// <summary><c>session.resize</c>: set the active session's split — an absolute ratio (0..1) for
+    /// the first (left/top) pane, or move the divider by N cells: <c>growLeft</c>/<c>growRight</c>
+    /// in columns on a vertical split, <c>growTop</c>/<c>growBottom</c> in rows on a horizontal one
+    /// (<see cref="SplitAxes.TryGrow"/>; flags from the other axis are refused naming the axis, and
+    /// the divider does not move). Returns <c>"resized"</c>, or <see cref="RefusePrefix"/> + the
+    /// refusal — also <see cref="SplitAxes.NoDivider"/> for a one-pane session.</summary>
+    string ResizeSplit(double? ratio, int growLeft, int growRight, int growTop, int growBottom);
 
     IReadOnlyList<string> ThemeList();
     bool ThemeSet(string name);
@@ -417,9 +494,11 @@ public sealed class SingleSessionHost : ISessionHost
     public bool WorkspaceCollapse(string? target, bool expand) => false;
     public bool WorkspaceSelect(string? target) => false;
     public bool WorkspaceReorder(string? target, string dir) => false;
-    public bool Split(string? target, string op) => false;
-    public void FocusPaneDir(string dir) { }
-    public void ResizeSplit(double? ratio, int growLeft, int growRight) { }
+    public string Split(string? target, string op, string? axis) => ISessionHost.RefusePrefix + "session not found";
+    public string SplitClose(string? target) => ISessionHost.RefusePrefix + SplitCloseReply.SinglePane(target ?? "active");
+    public SwapResult Swap(string? target) => SwapResult.Refuse(SwapReply.SinglePane(target ?? "active"));
+    public string FocusPaneDir(string dir) => ISessionHost.RefusePrefix + SplitAxes.NotSplit;
+    public string ResizeSplit(double? ratio, int growLeft, int growRight, int growTop, int growBottom) => ISessionHost.RefusePrefix + SplitAxes.NoDivider;
     public IReadOnlyList<string> ThemeList() => Array.Empty<string>();
     public bool ThemeSet(string name) => false;
     public string KeymapReload() => "";

@@ -102,8 +102,9 @@ pane B would be worse than no check at all.
 Two behaviours of `Resolve` are worth knowing before reading the expectations, because both look like
 bugs until you have seen them:
 
-- the **first pane's id IS the session id**, so a session-**id** target matches as a pane and always
-  answers for pane 0, whatever `focusedPane` says;
+- **exactly one pane carries the session id** (pane 0 until a `session swap` moves it — P4), so a
+  session-**id** target matches as a pane and always answers for THAT pane, whatever `focusedPane`
+  says;
 - a session-**name** target goes down the other path and answers for the **focused** pane.
 
 Both are pre-existing and shared by every content verb. What matters here is that the cursor read and

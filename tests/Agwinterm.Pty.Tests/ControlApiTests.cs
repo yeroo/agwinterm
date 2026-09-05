@@ -58,7 +58,7 @@ public class ControlApiTests
     public void Tree_ExposesSplitReadBack_AfterSplit()
     {
         var (server, host) = New();
-        host.Split(null, "on");   // 2 panes, 0.5/0.5
+        host.Split(null, "on", null);   // 2 panes, 0.5/0.5
         host.FocusPaneDir("right");
         var s = Sessions0(server);
         Assert.Equal(2, s.GetProperty("paneCount").GetInt32());
@@ -75,6 +75,7 @@ public class ControlApiTests
         var s = Sessions0(server);
         Assert.False(s.TryGetProperty("paneCount", out _));   // single-pane sessions stay lean
         Assert.False(s.TryGetProperty("splitRatios", out _));
+        Assert.False(s.TryGetProperty("axis", out _));        // P4: the axis is a fact about a split, not about a session
     }
 
     [Fact]

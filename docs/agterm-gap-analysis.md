@@ -44,7 +44,7 @@ Roughly: the **single-window core** (sessions, workspaces, splits, palettes, ren
 
 - **Session** (named shell, cwd, scrollback, restored). — **Done**.
 - **Workspace** (named group; sessions move between, keep shell). — **Done** (move via menu + drag).
-- **Panes / split** (session splits into two side-by-side, shared row, divider remembered). — **Done** (we allow N horizontal panes — superset; ratio persisted).
+- **Panes / split** (session splits into two side-by-side, shared row, divider remembered). — **Done** (two panes per session; in agterm's vocabulary the side-by-side layout is the **vertical** axis and the stacked one is **horizontal** — both since P4, `session split --axis vertical|horizontal`; ratio and axis persisted).
 - **Agent status** (per-row state). — **Done** (see Agent status).
 - **Scratch terminal** (per-session extra shell toggled over the session, not restored). — **Missing** (title-bar icon is a toast stub). M.
 - **Quick terminal** (one throwaway shell per window, drops over active session). — **Missing** (stub). M.

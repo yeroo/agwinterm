@@ -17,6 +17,25 @@
 #              relaunch the captured command is typed back into the pane (`session text` shows it
 #              with the `& ` prefix the replay adds, which the original typed line never had)
 #
+# P4 (docs/plans/completed/2026-09-06-p4-splits.md, task 3) adds the split axis to the file, and two cells:
+#
+#   axis-graceful   `session split on --axis horizontal`, WM_CLOSE, relaunch: `tree --json` says
+#                   horizontal with the SAME two pane ids in the same order, and `session metrics`
+#                   proves the layout — each restored pane has the idle session's columns and at most
+#                   half its rows (the axis is provable from the grid without a pixel)
+#   axis-killed     the same after Stop-Process -Force: the split's own save wrote "Axis": "horizontal"
+#                   at the time of the split (asserted on the file before the kill), so a killed app
+#                   comes back stacked too
+#
+# P4 task 5 adds `session swap` — a swap moves panes, never ids, so after one the pane carrying the
+# session id sits in slot 1 — and one cell:
+#
+#   swap-killed     split, swap (the tree lists [split id, session id]; the swap's own save wrote the
+#                   panes in that order), Stop-Process -Force, relaunch: the same two ids come back in
+#                   the SAME order with no duplicate — the loader creates pane 0 under its saved id
+#                   rather than re-minting it as the session id — both still answer `session text`,
+#                   and the file written after the restore lists them in that order again
+#
 # The long-lived child is `ping -n 300 127.0.0.1`, not a powershell one-liner: powershell, pwsh and
 # cmd are on the restore denylist (restore-denylist.conf), so a shell child is the honest null and
 # would prove nothing. ping is not denylisted, is quiet enough, and ends on its own.
@@ -29,7 +48,7 @@
 param(
     [string]$Exe,
     [switch]$Strict,
-    [string]$Only = ''          # run a single cell by name: graceful | killed | refusal | replay
+    [string]$Only = ''          # run a single cell by name: graceful | killed | refusal | replay | axis-graceful | axis-killed | swap-killed
 )
 
 $ErrorActionPreference = 'Stop'
@@ -237,6 +256,121 @@ Cell -Name 'replay' -Kill -Conf @('restore-commands = true') -Setup {
         Start-Sleep -Milliseconds 500
     }
     Check 'replay: the captured command was typed back into the pane (with the `& ` prefix the replay adds)' $typed "text=$text"
+}
+
+# ---- P4: the split axis survives the restart ----
+#
+# The idle session is the ruler: one pane, the full content grid. A stacked pane has its columns
+# (the full width) and at most half its rows (the height, minus the divider, halved); a side-by-side
+# pane would have its rows and about half its columns. `session metrics` answers per pane, so the
+# comparison needs no pixel and no PrintWindow.
+function Setup-HorizontalSplit($s, [string]$name) {
+    $sid = Sid $s
+    if (-not (Wait-Prompt $s $sid)) { throw 'the first shell never drew a prompt' }
+    $idle = [string](Reply $s @('session', 'new', '--name', 'idle', '--no-select')).result
+    for ($i = 0; $i -lt 30 -and -not (Node $s $idle); $i++) { Start-Sleep -Milliseconds 200 }
+    $split = Reply $s @('session', 'split', 'on', '--axis', 'horizontal', '--target', $sid)
+    $n = Node $s $sid
+    Check "$name`: session split on --axis horizontal answers the new pane id and the tree says horizontal" `
+        ($split.ok -and $n -and $n.axis -eq 'horizontal' -and @($n.paneIds).Count -eq 2 -and ([string]$n.paneIds[1] -eq [string]$split.result)) `
+        "split=$($split | ConvertTo-Json -Compress) node=$($n | ConvertTo-Json -Compress)"
+    Start-Sleep -Milliseconds 600
+    $file = StateFile $s
+    $raw = if ($file) { Get-Content -LiteralPath $file.FullName -Raw } else { '' }
+    Check "$name`: the state file already carries ""Axis"": ""horizontal"" (the split's own save — what a kill leaves)" `
+        ($raw -match '"Axis":\s*"horizontal"') "file=$($file.FullName)"
+    Check "$name`: the idle (single-pane, vertical) session writes no Axis key" `
+        (([regex]::Matches($raw, '"Axis":')).Count -eq 1) "file=$($file.FullName)"
+    return @{ Sid = $sid; Idle = $idle; PaneIds = @($n.paneIds | ForEach-Object { [string]$_ }) }
+}
+
+function Assert-HorizontalSplit($s, $ctx, [string]$name) {
+    Start-Sleep -Seconds 3   # the restored shells come up; the tree and the grids are readable before they do
+    $n = Node $s $ctx.Sid
+    Check "$name`: the axis is back on the same session, with the same two pane ids in the same order" `
+        ($n -and $n.axis -eq 'horizontal' -and ((@($n.paneIds) -join ',') -eq ($ctx.PaneIds -join ','))) "node=$($n | ConvertTo-Json -Compress)"
+    $idle   = Reply $s @('session', 'metrics', '--target', $ctx.Idle)
+    $top    = Reply $s @('session', 'metrics', '--target', $ctx.PaneIds[0])
+    $bottom = Reply $s @('session', 'metrics', '--target', $ctx.PaneIds[1])
+    $halfRows = [math]::Ceiling([int]$idle.result.rows / 2)
+    Check "$name`: the restored panes are stacked — the idle session's columns, and at most half its rows, on both" `
+        ($idle.ok -and $top.ok -and $bottom.ok -and
+         [int]$top.result.cols -eq [int]$idle.result.cols -and [int]$bottom.result.cols -eq [int]$idle.result.cols -and
+         [int]$top.result.rows -ge 1 -and [int]$top.result.rows -le $halfRows -and
+         [int]$bottom.result.rows -ge 1 -and [int]$bottom.result.rows -le $halfRows) `
+        "idle=$($idle.result.cols)x$($idle.result.rows) top=$($top.result.cols)x$($top.result.rows) bottom=$($bottom.result.cols)x$($bottom.result.rows)"
+    $idleNode = Node $s $ctx.Idle
+    Check "$name`: the idle session is back with one pane and no axis" `
+        ($idleNode -and -not $idleNode.PSObject.Properties['paneCount'] -and -not $idleNode.PSObject.Properties['axis']) "node=$($idleNode | ConvertTo-Json -Compress)"
+    $raw = (Get-Content -LiteralPath (StateFile $s).FullName -Raw)
+    Check "$name`: the file written after the restore still carries the key, once" `
+        ((([regex]::Matches($raw, '"Axis":\s*"horizontal"')).Count -eq 1) -and (([regex]::Matches($raw, '"Axis":')).Count -eq 1)) ''
+}
+
+Cell -Name 'axis-graceful' -Setup {
+    param($s)
+    Setup-HorizontalSplit $s 'axis-graceful'
+} -Assert {
+    param($s, $ctx)
+    Assert-HorizontalSplit $s $ctx 'axis-graceful'
+}
+
+Cell -Name 'axis-killed' -Kill -Setup {
+    param($s)
+    Setup-HorizontalSplit $s 'axis-killed'
+} -Assert {
+    param($s, $ctx)
+    Assert-HorizontalSplit $s $ctx 'axis-killed'
+}
+
+# P4 task 5: a swapped session — the session id on pane 1 — restores with its ids where the swap left
+# them. Before durable ids the loader created pane 0 as the session id and appended pane 1 under its
+# saved id (also the session id): a duplicate, and the split shell renamed. The file's own shape is
+# pinned first (the swap's save lists the panes in the swapped order), then the kill, then the tree,
+# the resolver (both ids answer `session text`) and the next save.
+function Get-SavedSession($s, [string]$id) {
+    $file = StateFile $s
+    if (-not $file) { return $null }
+    $st = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+    foreach ($w in @($st.Workspaces)) { foreach ($ss in @($w.Sessions)) { if ($ss.Id -eq $id) { return $ss } } }
+    return $null
+}
+
+Cell -Name 'swap-killed' -Kill -Setup {
+    param($s)
+    $sid = Sid $s
+    if (-not (Wait-Prompt $s $sid)) { throw 'the first shell never drew a prompt' }
+    $split = Reply $s @('session', 'split', 'on', '--target', $sid)
+    $splitId = [string]$split.result
+    $swap = Reply $s @('session', 'swap', '--target', $sid)
+    $n = Node $s $sid
+    Check "swap-killed: session swap answers the session, the pane ids reversed and the axis, and the tree agrees" `
+        ($split.ok -and $swap.ok -and $swap.result.session -eq $sid -and
+         ((@($swap.result.paneIds) -join ',') -eq "$splitId,$sid") -and $swap.result.axis -eq 'vertical' -and
+         $n -and ((@($n.paneIds) -join ',') -eq "$splitId,$sid") -and [int]$n.focusedPane -eq 0) `
+        "split=$($split | ConvertTo-Json -Compress) swap=$($swap | ConvertTo-Json -Compress) node=$($n | ConvertTo-Json -Compress)"
+    Start-Sleep -Milliseconds 600
+    $saved = Get-SavedSession $s $sid
+    Check "swap-killed: the swap's own save lists the panes in the swapped order — the session id on pane 1 (what a kill leaves)" `
+        ($saved -and @($saved.Panes).Count -eq 2 -and $saved.Panes[0].Id -eq $splitId -and $saved.Panes[1].Id -eq $sid -and $saved.Id -eq $sid) `
+        "saved=$($saved | ConvertTo-Json -Compress -Depth 4)"
+    return @{ Sid = $sid; SplitId = $splitId; PaneIds = @($n.paneIds | ForEach-Object { [string]$_ }) }
+} -Assert {
+    param($s, $ctx)
+    Start-Sleep -Seconds 3
+    $n = Node $s $ctx.Sid
+    $ids = @($n.paneIds | ForEach-Object { [string]$_ })
+    Check "swap-killed: the same two pane ids are back in the same order — the session id on pane 1 — with no duplicate" `
+        ($n -and $ids.Count -eq 2 -and (($ids -join ',') -eq ($ctx.PaneIds -join ',')) -and ($ids | Select-Object -Unique).Count -eq 2 -and $ids[1] -eq $ctx.Sid) `
+        "node=$($n | ConvertTo-Json -Compress)"
+    $bySplit = Reply $s @('session', 'text', '--target', $ctx.SplitId)
+    $bySession = Reply $s @('session', 'text', '--target', $ctx.Sid)
+    Check "swap-killed: both ids still answer session text (the session id reaches its own pane, in slot 1)" `
+        ($bySplit.ok -and $bySession.ok) "bySplit=$($bySplit.ok) bySession=$($bySession.ok)"
+    $saved = Get-SavedSession $s $ctx.Sid
+    Check "swap-killed: the file written after the restore lists the panes in the swapped order again" `
+        ($saved -and @($saved.Panes).Count -eq 2 -and $saved.Panes[0].Id -eq $ctx.SplitId -and $saved.Panes[1].Id -eq $ctx.Sid) `
+        "saved=$($saved | ConvertTo-Json -Compress -Depth 4)"
 }
 
 if ($fail) { "restore round-trip: $fail FAILED"; exit 1 }

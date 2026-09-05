@@ -13,6 +13,25 @@ using System.Text.Json;
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]
+//   agwintermctl session split [on|off|toggle] [--axis vertical|horizontal] [--target ID]
+//       (replies with a PANE ID: on/toggle-on = the split pane's, also when the session was already split;
+//       off/toggle-off = the survivor's. Default op = toggle. The axis names the ARRANGEMENT, agterm's words:
+//       vertical = left/right panes (the default of a session never split), horizontal = top/bottom panes.
+//       Omitted = keep the session's orientation; given on an already-split session = re-orient it live)
+//   agwintermctl session split close [--target ID]   (close ONE pane, EITHER side: a pane id = that pane; a session
+//       name or no target = the session's focused pane, what Ctrl+Shift+W closes; from a pane's own CLI, that pane.
+//       Replies with the SURVIVOR's id. A one-pane session is refused — `session close` closes a session)
+//   agwintermctl session swap [--target ID]           (exchange the two panes: order reversed, focus follows the pane,
+//       axis and ratio sequence kept — the left/top box keeps its size, the contents change places — and EVERY ID
+//       kept: a swap moves panes, never ids, so the session id keeps naming the shell it named, now on the other
+//       side. Target = a session, either of its panes, or nothing — from a pane's own CLI, that pane's
+//       session; otherwise the active one. Replies
+//       {session,paneIds,focusedPane,axis} — the tree's split block after the swap. A one-pane session is refused)
+//   agwintermctl session focus [primary|split|left|right|top|bottom|other]   (default other; left/right exist on a
+//       vertical split only, top/bottom on a horizontal one — the wrong pair is refused naming the axis)
+//   agwintermctl session resize [--split-ratio R] [--grow-left N|--grow-right N|--grow-top N|--grow-bottom N]
+//       (left/right move a vertical split's divider by N columns, top/bottom a horizontal one's by N rows;
+//       the other axis's flags are refused, and the divider does not move)
 //   agwintermctl session context <text...> [--target ID]   (one line of "what is this pane for", shown dimmed
 //       beside the name and read back in `tree --json` as context; survives a restart. Blank, a control
 //       character or more than 200 characters is refused; replies {session,context})
@@ -273,7 +292,29 @@ switch (area)
                 else if (Opt("prev") is not null) cargs["action"] = "prev";
                 else if (rest.Count > 0) cargs["query"] = string.Join(' ', rest);
                 break;
-            case "split": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break;
+            case "split":
+                cargs["op"] = rest.Count > 0 ? rest[0] : "toggle";
+                if (Opt("axis") is { } axisWord) cargs["axis"] = axisWord;   // passed through as typed; the server refuses anything but the two words
+                // `close` is a sub-op with its own verb (P4): `session split close [--target ID]` closes the
+                // targeted pane — either side — and replies with the survivor's id. It takes no op and no
+                // axis, so neither travels: an `--axis` beside `close` is dropped here rather than refused
+                // by a verb that never reads it.
+                if ((string)cargs["op"]! == "close")
+                {
+                    // A positional after `close` is a pane id someone meant as the TARGET (`session close <id>`
+                    // and `session metrics <id>` take one), and dropping it would close the CALLER's own pane
+                    // and answer ok — the wrong shell destroyed, exit 0 (revmux r1). Refused, naming --target.
+                    if (rest.Count > 1) { Console.Error.WriteLine($"session split close: unexpected argument '{rest[1]}' — the pane to close is `--target <pane id>`; with no --target this closes the caller's own pane, so a stray word is refused rather than ignored. Nothing sent."); return 2; }
+                    cmd = "session.split.close"; cargs.Remove("op"); cargs.Remove("axis");
+                }
+                break;
+            // session swap [--target ID] (P4): no args of its own — the target is a session, either of its
+            // panes, or nothing: from a pane's own CLI that pane's session, otherwise the active one; the
+            // reply is an object, printed raw by --json and plain. A positional is refused for the reason
+            // `split close` refuses one: it would swap the caller's own session and answer ok.
+            case "swap":
+                if (rest.Count > 0) { Console.Error.WriteLine($"session swap: unexpected argument '{rest[0]}' — the session (or either of its panes) is `--target <id>`; with no --target this swaps the caller's own session, so a stray word is refused rather than ignored. Nothing sent."); return 2; }
+                break;
             case "readonly": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|state; block input to the pane
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
             case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay resize --size-percent N | overlay result
@@ -295,7 +336,7 @@ switch (area)
                 if (options.ContainsKey("wait")) cargs["wait"] = true;
                 if (options.ContainsKey("block")) cargs["block"] = true;
                 break;
-            case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
+            case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "other"; break; // primary|split|left|right|top|bottom|other — `other` is the one word valid on either axis
             case "flag": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|clear
             case "bind": cargs["agent"] = rest.Count > 0 ? rest[0] : "claude"; break; // bind a resumable agent (claude) | none to clear
             case "restore": cargs["command"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("command") ?? ""); break; // pin a per-pane restore command | none to clear
@@ -311,6 +352,8 @@ switch (area)
                 if (double.TryParse(Opt("split-ratio"), System.Globalization.CultureInfo.InvariantCulture, out var sr)) cargs["ratio"] = sr;
                 if (int.TryParse(Opt("grow-left"), out var gl)) cargs["grow-left"] = gl;
                 if (int.TryParse(Opt("grow-right"), out var gr)) cargs["grow-right"] = gr;
+                if (int.TryParse(Opt("grow-top"), out var gt)) cargs["grow-top"] = gt;         // a horizontal split's divider, in rows (P4)
+                if (int.TryParse(Opt("grow-bottom"), out var gb)) cargs["grow-bottom"] = gb;
                 break;
             default:
                 Console.Error.WriteLine($"unknown session command '{sub}'"); return 2;

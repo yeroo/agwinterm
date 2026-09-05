@@ -292,6 +292,8 @@ internal static class Win32
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
     public static readonly IntPtr IDC_ARROW = (IntPtr)32512;
     public static readonly IntPtr IDC_HAND = (IntPtr)32649;
+    public static readonly IntPtr IDC_SIZEWE = (IntPtr)32644;   // ⇔ over a vertical split's divider
+    public static readonly IntPtr IDC_SIZENS = (IntPtr)32645;   // ⇕ over a horizontal split's divider
     public const uint WM_SETCURSOR = 0x0020;
 
     [DllImport("user32.dll")] public static extern IntPtr SetCursor(IntPtr hCursor);
