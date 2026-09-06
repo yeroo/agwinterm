@@ -277,6 +277,9 @@ Cell -Name 'quit-capture' -Conf @('restore-commands = true') -Setup {
     Check 'quit-capture: session context replies with the value in effect' ($set.ok -and $set.result.context -eq $ctxText) ($set | ConvertTo-Json -Compress)
     $idle = [string](Reply $s @('session', 'new', '--name', 'idle', '--no-select')).result
     for ($i = 0; $i -lt 30 -and -not (Node $s $idle); $i++) { Start-Sleep -Milliseconds 200 }
+    # The idle shell must have a pid before the warm-up names it: a pane whose child has not started
+    # yet is filtered out of the query, and a capture with no pids never runs powershell at all.
+    if (-not (Wait-Prompt $s $idle)) { throw 'the idle shell never drew a prompt' }
     if (-not (Start-Child $s $sid)) { throw 'the ping child never echoed in the first pane' }
     $warm = Reply $s @('restore', 'capture', '--target', $idle)
     $warmMine = @($warm.result.panes) | Where-Object { $_.pane -eq $sid }

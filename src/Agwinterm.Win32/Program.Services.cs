@@ -306,9 +306,10 @@ internal partial class Program
         // actually be drawn (a context under 20 px reserves nothing, so a title is never cut for a
         // run that then does not appear), and the title takes the rest, ellipsized. The pill strip is
         // anchored on the TITLE: it starts where the title ends, so a context moves it only through
-        // the title, and only when the title is longer than its share — a title that fits is never
-        // shortened by a context and its pills never move (qa/persistence.md states it that way; the
-        // earlier "never depends on the context" was more than the layout does — #234). The bell
+        // the title — only when the title is longer than what is left of the shared budget after the
+        // pills and the context's reserve (at least 60% of `titleShare`); a shorter title is drawn in
+        // full and its pills stay put, whatever the context (qa/persistence.md states the same bound;
+        // the earlier "never depends on the context" was more than the layout does — #234). The bell
         // follows the run (title, pills, then the context) and clamps on its own at `rgLeft - bellW -
         // 14`, the same edge the budget was cut from, so a run that fills the budget puts it exactly
         // there and the right button group never moves (revmux r1).

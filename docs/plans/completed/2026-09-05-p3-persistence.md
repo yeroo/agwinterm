@@ -232,8 +232,9 @@ Server and tests:
 
 ### Task 2: the context on every surface
 - [x] `Ses.Context` (`Program.cs:320-346`), beside `CustomName` (added in Task 1 — the host needs the field)
-- [x] title bar: a dimmed run in `_uiSmall` / `ChromeDim` after the title, **before** the pill strip
-      (`Program.Services.cs:306-317`), ellipsized within the same `titleAvail` budget so the bell and
+- [x] title bar: a dimmed run in `_uiSmall` / `ChromeDim` after the title and **after** the pill strip
+      (as shipped by the round-1 fix — the strip is anchored on the title, see the round record below;
+      `Program.Services.cs:301-355`), ellipsized within the same `titleAvail` budget so the bell and
       the right button group never move; drawn only when set. Say in a comment why it is a suffix
       and not a second line (`TitleBarH` 40/30/0)
 - [x] sidebar row (`DrawSessionRow`, `Chrome.cs:143-206`): the same dimmed suffix after the name in
