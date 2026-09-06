@@ -173,8 +173,9 @@ public interface ISessionHost
     /// <para><b>Threading</b>: the write is applied on the UI thread through the FIFO queued hop (the
     /// same queue every posted action travels), and the calling pipe thread waits for it, so the
     /// reply describes a state that exists. A hop that cannot be queued or run (the window is
-    /// closing, or a message loop that never pumps within the bound) throws, which the server turns
-    /// into ok:false — never ok:true for a write that did not land. The session is resolved INSIDE
+    /// closing, its message queue refused the wake-up, or a message loop that never pumps within the
+    /// bound) throws, which the server turns into ok:false — never ok:true for a write that did not
+    /// land. The session is resolved INSIDE
     /// the hop so a session closed between the request and the write is refused, not written to.</para>
     /// </summary>
     string SessionContext(string? target, string? context);
@@ -358,18 +359,23 @@ public interface ISessionHost
     /// an ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
     /// floating panel; wait = keep it after the program exits (press a key to close); block = wait for
     /// the program to exit and return its status. Returns the overlay pane id (open), "exit N" (block;
-    /// result when the most recently opened overlay's program has exited — result is "no overlay"
-    /// before any overlay has been opened, while the current one is still running, and again after a
-    /// new open resets it; the value is one per window, not per session, so an open on any session
-    /// resets it), "closed", "resized N%", or "no overlay" (deliberately ok for close: a session that
+    /// result), "closed", "resized N%", or "no overlay" (deliberately ok for close: a session that
     /// resolves and has no overlay, or a target that is absent, empty or the word "active" while
     /// nothing is active — the guard is the app's `target != "active"`, so those three targets are one
-    /// case).
+    /// case). The value `result` reads is ONE PER WINDOW, not per session or per overlay: it is "no
+    /// overlay" until the first open in that window, every open resets it to "no overlay", and the
+    /// exit of ANY overlay in the window — whichever session's, including one an open has since
+    /// replaced — writes "exit N" over it, so a caller that runs overlays on two sessions at once
+    /// reads the last exit in the window, not its own; `--block` waits on the same per-window signal
+    /// and can return on another session's exit (agwinterm #246 tracks keying both to the open that
+    /// produced them). `result` skips the target check entirely.
     /// A FAILURE is signalled by prefixing <see cref="RefusePrefix"/>, which the server turns into
     /// ok:false: open with no command; open or resize whenever NO session resolves (a named target
     /// that matches nothing, or no target and no active session); close only when a target other than
-    /// absent, empty or "active" resolves to nothing; resize with no overlay open. A second host that
-    /// returns those as plain strings reproduces the ok:true-on-failure P2 removed.
+    /// absent, empty or "active" resolves to nothing; open, close and resize whenever the target names
+    /// one pane of a multi-pane session (the overlay covers the whole session; the app's
+    /// OverlayTargetRefusal); resize with no overlay open. A second host that returns those as plain
+    /// strings reproduces the ok:true-on-failure P2 removed.
     /// </summary>
     string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block);
 
@@ -475,7 +481,9 @@ public interface ISessionHost
 
     /// <summary>Apply an oh-my-posh theme (by name or .omp.json path) live to the active session's shell
     /// (re-inits oh-my-posh and re-applies the OSC-7 prompt wrap). When <paramref name="persist"/>, also
-    /// save it to config so new sessions launch with it. Returns an ack / "not found".</summary>
+    /// save it to config so new sessions launch with it. Returns an ack / "not found". A change the
+    /// window could not queue (it is closing, or its message queue refused the wake-up) is a throw the
+    /// server turns into ok:false with the reason, never the ack (#228 item 5).</summary>
     string OmpSet(string nameOrPath, bool persist);
 }
 

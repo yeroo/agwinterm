@@ -120,7 +120,7 @@ public class OverlaySizeTests
         var (server, host) = New();
         var r = Open(server, "40");
         Assert.True(Ok(r));
-        Assert.Equal(host.ActiveSess!.Id, Result(r));   // the fake answers the session id, as the app's "id" reply does
+        Assert.Equal(host.ActiveSess!.Id, Result(r));   // the fake answers the session id (the app answers the overlay pane id — not mirrored, see FakeSessionHost.SessionOverlay); this pins the fake's shape only
     }
 
     [Fact]

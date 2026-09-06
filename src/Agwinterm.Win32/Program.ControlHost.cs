@@ -32,12 +32,13 @@ internal partial class Program
             return _windowIndex.Select(m => new WindowSnapshot(m.Id, m.Name, m.IsOpen, m.Id == _frontmostId)).ToList();
     }
 
-    // The window verbs post on the window they RESOLVED, and the ones that resolve none (new, or a
-    // meta that may be closed) on a window that is not closing: every window shares the one UI
-    // thread, so any live one runs the action, but the refusal PostVerb raises names the window it
-    // was posted on — posting on Frontmost while Frontmost sits inside its WM_DESTROY (Frontmost is
-    // reassigned only near the end of it) refused `window close --target B` as "the window is
-    // closing" about a healthy B, and `window new` with a healthy window one line away.
+    // The window verbs all post on ONE window that is not closing — Frontmost, or the first live
+    // window while Frontmost sits inside its WM_DESTROY (it is reassigned only near the end of it).
+    // Every window shares the one UI thread, so any live one runs the action; one queue keeps the
+    // verbs FIFO across windows (`window select A`, `select B`, `select A` on per-window queues could
+    // drain A's two before B's one); and a refusal is raised only when NO window is live, so "the
+    // window is closing" is true of every window, where posting on Frontmost refused `window close
+    // --target B` as "closing" about a healthy B.
     private static Program LiveWindow()
     {
         var f = Frontmost;
@@ -68,7 +69,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        p.PostVerb(() => { if (IsIconic(p._hwnd)) ShowWindow(p._hwnd, SW_RESTORE); SetForegroundWindow(p._hwnd); });
+        LiveWindow().PostVerb(() => { if (IsIconic(p._hwnd)) ShowWindow(p._hwnd, SW_RESTORE); SetForegroundWindow(p._hwnd); });
         return true;
     }
 
@@ -76,7 +77,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        p.PostVerb(() => DestroyWindow(p._hwnd)); // WM_DESTROY does teardown + index bookkeeping
+        LiveWindow().PostVerb(() => DestroyWindow(p._hwnd)); // WM_DESTROY does teardown + index bookkeeping
         return true;
     }
 
@@ -119,7 +120,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null || w <= 0 || h <= 0) return false;
-        p.PostVerb(() => { SetWindowPos(p._hwnd, IntPtr.Zero, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
+        LiveWindow().PostVerb(() => { SetWindowPos(p._hwnd, IntPtr.Zero, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
         return true;
     }
 
@@ -127,7 +128,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        p.PostVerb(() => { SetWindowPos(p._hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
+        LiveWindow().PostVerb(() => { SetWindowPos(p._hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
         return true;
     }
 
@@ -135,7 +136,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        p.PostVerb(() => { ShowWindow(p._hwnd, IsZoomed(p._hwnd) ? SW_RESTORE : SW_MAXIMIZE); p.SaveState(); });
+        LiveWindow().PostVerb(() => { ShowWindow(p._hwnd, IsZoomed(p._hwnd) ? SW_RESTORE : SW_MAXIMIZE); p.SaveState(); });
         return true;
     }
 
@@ -438,7 +439,8 @@ internal partial class Program
     // quick terminal on nothing). The write goes through the FIFO queued hop rather than Post(...);
     // return true, because the reply carries the value IN EFFECT, read back off the session after the
     // write — P2's session.restore round found that Post-and-return reports the value REQUESTED. A
-    // hop that cannot be queued (the window is closing) or that the window closes under throws, which
+    // hop that cannot be queued (the window is closing, or its message queue refused the wake-up —
+    // NothingApplied names which) or that the window closes under throws, which
     // Dispatch turns into ok:false with nothing applied. A hop that TIMES OUT (15 s, a message loop
     // that is alive but not pumping) is ok:false too, but the action stays queued and may still run
     // when the loop resumes — the reply says so, in InvokeOnUiQueued's own words (revmux r1).
