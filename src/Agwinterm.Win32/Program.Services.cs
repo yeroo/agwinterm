@@ -705,7 +705,7 @@ internal partial class Program
     {
         string? path = Agwinterm.Pty.OmpThemes.Resolve(nameOrPath);
         if (path is null) return "oh-my-posh theme not found: " + nameOrPath;
-        Post(() => ApplyOmp(path, persist));
+        PostVerb(() => ApplyOmp(path, persist));   // a control verb: the post's outcome is the reply (#228 item 5)
         return "oh-my-posh theme set: " + nameOrPath;
     }
 

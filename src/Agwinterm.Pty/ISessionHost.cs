@@ -145,8 +145,9 @@ public interface ISessionHost
     /// <summary>Rename a session: sets its custom name (shown in the sidebar and title bar). Resolves
     /// the target the way every content verb does (exact pane, exact session, pane prefix, session
     /// prefix / name — a scratch or overlay cover id lands on the session it covers). False when no
-    /// session resolves or the name is blank. A rename the window could not queue (it is closing) is
-    /// a throw, not a false — the server reads false as "session not found", and Dispatch turns the
+    /// session resolves or the name is blank. A rename the window could not queue (it is closing, or
+    /// its message queue refused the wake-up) is a throw, not a false — the server reads false as
+    /// "session not found", and Dispatch turns the
     /// throw into ok:false with the real reason (#228 item 5: every verb that posts to the UI thread
     /// answers with the post's outcome, never a constant true; nothing was applied when it says so).</summary>
     bool SessionRename(string? target, string name);
@@ -356,11 +357,14 @@ public interface ISessionHost
     /// Overlay control. action = open|close|resize|result. For open: run <paramref name="command"/> in
     /// an ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
     /// floating panel; wait = keep it after the program exits (press a key to close); block = wait for
-    /// the program to exit and return its status. Returns the session id (open), "exit N" (block;
-    /// result once any overlay's program has exited — before that, result is "no overlay"), "closed",
-    /// "resized N%", or "no overlay" (deliberately ok, three states for close: a session that resolves
-    /// and has no overlay, and a target that is absent, empty or the word "active" while nothing is
-    /// active — the guard is the app's `target != "active"`, and those three targets are one case).
+    /// the program to exit and return its status. Returns the overlay pane id (open), "exit N" (block;
+    /// result when the most recently opened overlay's program has exited — result is "no overlay"
+    /// before any overlay has been opened, while the current one is still running, and again after a
+    /// new open resets it; the value is one per window, not per session, so an open on any session
+    /// resets it), "closed", "resized N%", or "no overlay" (deliberately ok for close: a session that
+    /// resolves and has no overlay, or a target that is absent, empty or the word "active" while
+    /// nothing is active — the guard is the app's `target != "active"`, so those three targets are one
+    /// case).
     /// A FAILURE is signalled by prefixing <see cref="RefusePrefix"/>, which the server turns into
     /// ok:false: open with no command; open or resize whenever NO session resolves (a named target
     /// that matches nothing, or no target and no active session); close only when a target other than

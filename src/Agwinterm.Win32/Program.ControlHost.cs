@@ -32,10 +32,23 @@ internal partial class Program
             return _windowIndex.Select(m => new WindowSnapshot(m.Id, m.Name, m.IsOpen, m.Id == _frontmostId)).ToList();
     }
 
+    // The window verbs post on the window they RESOLVED, and the ones that resolve none (new, or a
+    // meta that may be closed) on a window that is not closing: every window shares the one UI
+    // thread, so any live one runs the action, but the refusal PostVerb raises names the window it
+    // was posted on — posting on Frontmost while Frontmost sits inside its WM_DESTROY (Frontmost is
+    // reassigned only near the end of it) refused `window close --target B` as "the window is
+    // closing" about a healthy B, and `window new` with a healthy window one line away.
+    private static Program LiveWindow()
+    {
+        var f = Frontmost;
+        if (!f._uiGone.IsCancellationRequested) return f;
+        lock (_windowIndex) return _byId.Values.FirstOrDefault(w => !w._uiGone.IsCancellationRequested) ?? f;
+    }
+
     public string WindowNew(string? name)
     {
         string id = Guid.NewGuid().ToString();
-        Frontmost.PostVerb(() =>
+        LiveWindow().PostVerb(() =>
         {
             var m = new WinMeta { Id = id, Name = name ?? "", IsOpen = true };
             CascadeGeometry(m);
@@ -55,7 +68,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        Frontmost.PostVerb(() => { if (IsIconic(p._hwnd)) ShowWindow(p._hwnd, SW_RESTORE); SetForegroundWindow(p._hwnd); });
+        p.PostVerb(() => { if (IsIconic(p._hwnd)) ShowWindow(p._hwnd, SW_RESTORE); SetForegroundWindow(p._hwnd); });
         return true;
     }
 
@@ -63,7 +76,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        Frontmost.PostVerb(() => DestroyWindow(p._hwnd)); // WM_DESTROY does teardown + index bookkeeping
+        p.PostVerb(() => DestroyWindow(p._hwnd)); // WM_DESTROY does teardown + index bookkeeping
         return true;
     }
 
@@ -72,7 +85,7 @@ internal partial class Program
         var target = ResolveMeta(selector);
         if (target is null) return false;
         lock (_windowIndex) if (_windowIndex.Count <= 1) return false; // never delete the last window
-        Frontmost.PostVerb(() =>
+        LiveWindow().PostVerb(() =>
         {
             Program? open; lock (_windowIndex) _byId.TryGetValue(target.Id, out open);
             if (open is not null) DestroyWindow(open._hwnd);
@@ -93,7 +106,7 @@ internal partial class Program
         if (string.IsNullOrWhiteSpace(name)) return false;
         var target = ResolveMeta(selector);
         if (target is null) return false;
-        Frontmost.PostVerb(() =>
+        LiveWindow().PostVerb(() =>
         {
             lock (_windowIndex) target.Name = name;
             if (_byId.TryGetValue(target.Id, out var p)) { p.WinName = name; p.RequestRedraw(); }
@@ -106,7 +119,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null || w <= 0 || h <= 0) return false;
-        Frontmost.PostVerb(() => { SetWindowPos(p._hwnd, IntPtr.Zero, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
+        p.PostVerb(() => { SetWindowPos(p._hwnd, IntPtr.Zero, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
         return true;
     }
 
@@ -114,7 +127,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        Frontmost.PostVerb(() => { SetWindowPos(p._hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
+        p.PostVerb(() => { SetWindowPos(p._hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
         return true;
     }
 
@@ -122,7 +135,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        Frontmost.PostVerb(() => { ShowWindow(p._hwnd, IsZoomed(p._hwnd) ? SW_RESTORE : SW_MAXIMIZE); p.SaveState(); });
+        p.PostVerb(() => { ShowWindow(p._hwnd, IsZoomed(p._hwnd) ? SW_RESTORE : SW_MAXIMIZE); p.SaveState(); });
         return true;
     }
 
