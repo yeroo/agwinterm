@@ -1017,7 +1017,8 @@ internal partial class Program
     // durable slot NOW, and say per pane what was captured. Three steps on two threads:
     //   1. PIPE THREAD: resolve the target and snapshot (pane, session, shell pid) under the
     //      workspaces lock, the way Tree() reads. An unknown target or a cover is refused here,
-    //      before any process is queried — a refusal captures nothing for anyone.
+    //      before any process is queried — a refusal at this step captures nothing for anyone (the
+    //      one refusal that does leave slots behind is step 3's NotSaved, below).
     //   2. PIPE THREAD: the CIM query, with the 15 s timeout the non-quit callers use (a cold CIM
     //      start can exceed 4 s). RestartAllClaudeSessions is the precedent; AdoptClaudeSessions,
     //      which blocks the UI thread on it through InvokeOnUi, is the one not to copy — a verb that
@@ -1068,7 +1069,12 @@ internal partial class Program
                     pane.CapturedCommand = pid > 0 && byPid.TryGetValue(pid, out var cmd) ? cmd : null;
                     landed.Add(new CapturedPane(pane.Id, ses.Id, pane.CapturedCommand));
                 }
-            if (landed.Count > 0) SaveState();
+            // The reply claims a checkpoint ON DISK. A save that did not land is a refusal that says
+            // what did happen: the slots are in memory (tree shows them) and are left as captured —
+            // rolling them back would make the tree disagree with a query that read the processes
+            // correctly (#246; lite's restore.capture refuses the same way).
+            if (landed.Count > 0 && !TrySaveState(out string? why))
+                return RestoreCaptureResult.Refuse(RestoreCaptureReply.NotSaved(landed.Count, why));
             return new RestoreCaptureResult(landed, _config.RestoreCommands);
         });
     }

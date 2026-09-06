@@ -360,7 +360,7 @@ public sealed class ControlServer : IDisposable
                     }
                 case "command.list": return Ok(host.CommandList());
                 case "command.leader": return Ok(host.CommandLeader(GetString(args, "op") ?? "state"));
-                case "omp.set": return Ok(host.OmpSet(GetString(args, "name") ?? "", GetBool(args, "persist")));
+                case "omp.set": return HostReply(host.OmpSet(GetString(args, "name") ?? "", GetBool(args, "persist")));   // not-found is ok:false (#246)
             }
 
             // Session-targeted commands.
@@ -516,7 +516,8 @@ public sealed class ControlServer : IDisposable
     /// target means every real pane; the hosts' "" arms are unreachable through the wire). Every
     /// other refusal — an unknown target, a cover pane, a failed process query, a UI hop that could
     /// not run — is the host's, behind <see cref="RestoreCaptureResult.Refusal"/> or a throw, and each
-    /// captures nothing for anyone. The verb takes no value, only the target.
+    /// captures nothing for anyone — except <see cref="RestoreCaptureReply.NotSaved"/>, whose text says
+    /// what it left: slots written in memory, no state file (#246). The verb takes no value, only the target.
     /// </summary>
     private static string HandleRestoreCapture(ISessionHost host, string? target)
     {

@@ -17,7 +17,9 @@ public sealed record CapturedPane(string PaneId, string SessionId, string? Captu
 /// written, in tree order, and the value of the <c>restore-commands</c> toggle
 /// (<see cref="ReplayOnRestore"/>) — the one thing the caller cannot otherwise learn: whether the
 /// slot it just filled will be typed back at the next restart. <see cref="Refusal"/> non-null means
-/// nothing was captured and nothing was saved; the server turns it into ok:false.
+/// nothing was captured and nothing was saved — with one exception that says so in its text,
+/// <see cref="RestoreCaptureReply.NotSaved"/>: the slots were written in memory and the state file
+/// could not be. The server turns every refusal into ok:false.
 /// </summary>
 public sealed record RestoreCaptureResult(IReadOnlyList<CapturedPane> Panes, bool ReplayOnRestore, string? Refusal = null)
 {
@@ -81,4 +83,11 @@ public static class RestoreCaptureReply
     /// null into every slot and look exactly like a quiet desk.</summary>
     public const string QueryFailed =
         "restore capture: the process query failed or timed out, so what each shell is running is unknown. Nothing captured, nothing saved.";
+
+    /// <summary>The slots were written but the state file was not (no state directory, an unwritable
+    /// one, a full disk): the reply's claim is durability, and that claim would be false. The slots
+    /// are left as captured — <c>tree</c> shows them — because rolling them back would make the tree
+    /// disagree with a query that read the processes correctly (#246; the wording is lite's).</summary>
+    public static string NotSaved(int panes, string? why) =>
+        $"restore capture: {panes} pane(s) were captured into memory but the state file could not be written ({why ?? "unknown reason"}) — the checkpoint is not on disk and will not survive a restart. tree still shows what was captured.";
 }

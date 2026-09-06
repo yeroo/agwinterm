@@ -598,7 +598,8 @@ try {
                 @('--stdin', '--allow-control', 'from argv'),
                 @('--stdin', '--wait', 'from argv'),
                 @('--stdin', '--allow-controll', 'from argv'),
-                @('--stdin', 'true'))) {
+                @('--stdin', 'true'),
+                @('--stdin', 'from argv', '--stdin'))) {   # #246 r1: a later BARE --stdin must not erase the swallow
             $out = 'from pipe' | & $ctl session type @shape --target $survivorId --pipe $pipe 2>&1
             $code = $LASTEXITCODE
             Check "session type --stdin refuses a swallowed positional ($($shape -join ' '))" ($code -eq 2 -and ("$out" -match 'one source')) "exit $code, output: $out"
@@ -991,6 +992,39 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
         Check 'the capture is in the state file under Command (what a restart, or a kill, leaves)' `
             ($capState -and ((Get-Content -LiteralPath $capState.FullName -Raw) -match '(?i)"Command":\s*"[^"]*ping')) "file=$($capState.FullName)"
+        # #246: the splitter's LAST occurrence of an option decides whether it consumed a value.
+        # `--target <id> --target` ends in a bare flag, so it is the empty-target refusal (exit 2,
+        # nothing sent) — it used to send the WORD "true" as the target, because the first occurrence
+        # had marked --target as valued for good.
+        $capDup = & $ctl restore capture --target $survivorId --target --pipe $pipe 2>&1
+        $capDupCode = $LASTEXITCODE
+        Check '--target <id> --target is refused before sending: the last occurrence decides (#246)' `
+            ($capDupCode -eq 2 -and ("$capDup" -match 'is empty') -and ("$capDup" -match 'Nothing sent')) "exit $capDupCode, output: $capDup"
+        # #246: a capture whose save does not land is REFUSED, saying what it left: the slots are in
+        # memory (tree shows them), the checkpoint is not on disk. The state file is replaced by a
+        # DIRECTORY of its own name, which the atomic File.Move cannot overwrite; the file goes back
+        # afterwards. This is the sandbox's own app-id directory, never the user's.
+        $capNoSave = $null; $capNodeNoSave = $null
+        if ($capState) {
+            $capStateBak = $capState.FullName + '.bak246'
+            Move-Item -LiteralPath $capState.FullName -Destination $capStateBak -Force
+            New-Item -ItemType Directory -Path $capState.FullName | Out-Null
+            try {
+                $capNoSave = Invoke-Ctl @('restore', 'capture', '--target', $survivorId)
+                Start-Sleep -Milliseconds 300
+                $capNodeNoSave = Get-SessionSnapshot $sessionId
+            } finally {
+                Remove-Item -LiteralPath $capState.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                Move-Item -LiteralPath $capStateBak -Destination $capState.FullName -Force
+            }
+        }
+        Check 'a capture whose state file cannot be written is refused: captured into memory, not on disk, will not survive a restart (#246)' `
+            ($capNoSave -and (-not $capNoSave.ok) -and ("$($capNoSave.error)" -match 'captured into memory') -and
+             ("$($capNoSave.error)" -match 'could not be written') -and ("$($capNoSave.error)" -match 'will not survive a restart')) `
+            "reply=$($capNoSave | ConvertTo-Json -Compress -Depth 5)"
+        Check 'and the slot was left as captured: tree still shows it' `
+            ($capNodeNoSave -and ("$($capNodeNoSave.capturedCommands.$survivorId)" -match $pingPattern)) `
+            "capturedCommands=$($capNodeNoSave.capturedCommands | ConvertTo-Json -Compress)"
         # End the child, then a re-capture of NOTHING must report null and clear the earlier
         # checkpoint — a stale capture replayed at the next start would be the wrong command.
         # The child is ENDED BY PID, not by typing ^C: a lone 0x03 written to ConPTY over the pipe

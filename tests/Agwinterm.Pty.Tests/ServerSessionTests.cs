@@ -80,6 +80,24 @@ public class ServerSessionTests : IDisposable
             .WaitAsync(TimeSpan.FromSeconds(15)));
     }
 
+    /// <summary>#246: "the process has exited" is not "the pane is complete" — conhost flushes the
+    /// last output after the child is gone. The host's exit watcher settles the pump before it
+    /// closes the data pipe, so the grid an Exited handler reads has the program's last line. A
+    /// regression guard more than a proof (the echo usually lands first anyway): the assert is on
+    /// what the handler saw AT the event, not later.</summary>
+    [Fact]
+    public async Task Exited_FiresAfterTheLastOutputSettled()
+    {
+        using var s = _backend.Create(Guid.NewGuid().ToString(), 80, 24);
+        var seen = new TaskCompletionSource<(int Code, string Grid)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        s.Exited += code => seen.TrySetResult((code, GridText(s)));
+        await s.StartAsync("cmd.exe", new[] { "/q", "/c", "echo settle-marker-246 & exit 3" }, verbatimCommandLine: true);
+        var (exit, grid) = await seen.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(3, exit);
+        Assert.Contains("settle-marker-246", grid);
+        Assert.True(s.HasExited);
+    }
+
     [Fact]
     public async Task Resize_UpdatesReplicaAndHost()
     {
