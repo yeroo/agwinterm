@@ -286,9 +286,39 @@
       "args": [
         "session",
         "split",
+        "on",
+        "--axis",
+        "horizontal",
+        "--target",
+        "{beta}"
+      ],
+      "result": "string",
+      "capture": "pane",
+      "settle": 2,
+      "note": "P4: the reply is the PANE ID the op produced or found (a bare string) — the only handle on the shell it just created. `--axis` in agterm's words: vertical = left/right panes (the default of a session never split), horizontal = top/bottom. `on` when already split answers the existing split pane's id; anything but the two axis words is refused (see errors). The tree carries `axis` beside `paneIds` on a split session."
+    },
+    {
+      "verb": "session.split.close",
+      "args": [
+        "session",
+        "split",
+        "close",
+        "--target",
+        "{pane}"
+      ],
+      "result": "string",
+      "settle": 1,
+      "note": "P4: closes the targeted pane — EITHER side, which `off` cannot (it keeps pane 0) — and answers the survivor's id. A one-pane session is refused (see errors): `session close` is the verb that closes a session."
+    },
+    {
+      "verb": "session.split",
+      "args": [
+        "session",
+        "split",
         "off"
       ],
-      "result": "string"
+      "result": "string",
+      "note": "P4: `off` answers the surviving pane's id, also when the session was already single — a caller that does not know whether the session was split gets something addressable either way."
     },
     {
       "verb": "session.scratch",
@@ -653,6 +683,28 @@
         "capture",
         "--target",
         "no-such-pane-zz"
+      ]
+    },
+    {
+      "note": "P4: `session split close` on a one-pane session is refused naming `session close` and closes nothing — a split close that quietly closed the session would be the silent-success class one verb over.",
+      "args": [
+        "session",
+        "split",
+        "close",
+        "--target",
+        "{alpha}"
+      ]
+    },
+    {
+      "note": "P4: an axis that is not `vertical` or `horizontal` is refused naming both words, and nothing is split.",
+      "args": [
+        "session",
+        "split",
+        "on",
+        "--axis",
+        "diagonal",
+        "--target",
+        "{alpha}"
       ]
     }
   ],
