@@ -35,7 +35,7 @@ internal partial class Program
     public string WindowNew(string? name)
     {
         string id = Guid.NewGuid().ToString();
-        Frontmost.Post(() =>
+        Frontmost.PostVerb(() =>
         {
             var m = new WinMeta { Id = id, Name = name ?? "", IsOpen = true };
             CascadeGeometry(m);
@@ -55,7 +55,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        Frontmost.Post(() => { if (IsIconic(p._hwnd)) ShowWindow(p._hwnd, SW_RESTORE); SetForegroundWindow(p._hwnd); });
+        Frontmost.PostVerb(() => { if (IsIconic(p._hwnd)) ShowWindow(p._hwnd, SW_RESTORE); SetForegroundWindow(p._hwnd); });
         return true;
     }
 
@@ -63,7 +63,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        Frontmost.Post(() => DestroyWindow(p._hwnd)); // WM_DESTROY does teardown + index bookkeeping
+        Frontmost.PostVerb(() => DestroyWindow(p._hwnd)); // WM_DESTROY does teardown + index bookkeeping
         return true;
     }
 
@@ -72,7 +72,7 @@ internal partial class Program
         var target = ResolveMeta(selector);
         if (target is null) return false;
         lock (_windowIndex) if (_windowIndex.Count <= 1) return false; // never delete the last window
-        Frontmost.Post(() =>
+        Frontmost.PostVerb(() =>
         {
             Program? open; lock (_windowIndex) _byId.TryGetValue(target.Id, out open);
             if (open is not null) DestroyWindow(open._hwnd);
@@ -93,7 +93,7 @@ internal partial class Program
         if (string.IsNullOrWhiteSpace(name)) return false;
         var target = ResolveMeta(selector);
         if (target is null) return false;
-        Frontmost.Post(() =>
+        Frontmost.PostVerb(() =>
         {
             lock (_windowIndex) target.Name = name;
             if (_byId.TryGetValue(target.Id, out var p)) { p.WinName = name; p.RequestRedraw(); }
@@ -106,7 +106,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null || w <= 0 || h <= 0) return false;
-        Frontmost.Post(() => { SetWindowPos(p._hwnd, IntPtr.Zero, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
+        Frontmost.PostVerb(() => { SetWindowPos(p._hwnd, IntPtr.Zero, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
         return true;
     }
 
@@ -114,7 +114,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        Frontmost.Post(() => { SetWindowPos(p._hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
+        Frontmost.PostVerb(() => { SetWindowPos(p._hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); p.SaveState(); });
         return true;
     }
 
@@ -122,7 +122,7 @@ internal partial class Program
     {
         var p = ResolveOpen(selector);
         if (p is null) return false;
-        Frontmost.Post(() => { ShowWindow(p._hwnd, IsZoomed(p._hwnd) ? SW_RESTORE : SW_MAXIMIZE); p.SaveState(); });
+        Frontmost.PostVerb(() => { ShowWindow(p._hwnd, IsZoomed(p._hwnd) ? SW_RESTORE : SW_MAXIMIZE); p.SaveState(); });
         return true;
     }
 
@@ -302,7 +302,7 @@ internal partial class Program
             ws ??= ActiveWorkspace();
         }
         string id = Guid.NewGuid().ToString();
-        Post(() =>
+        PostVerb(() =>
         {
             // The resolve above ran on the pipe thread; this runs on the UI thread some milliseconds
             // later, and in between the user (or a posted workspace.delete) can have removed `ws`
@@ -338,7 +338,7 @@ internal partial class Program
     {
         var ses = Find(target);
         if (ses is null) return false;
-        Post(() => SetActive(ses));
+        PostVerb(() => SetActive(ses));
         return true;
     }
 
@@ -346,14 +346,14 @@ internal partial class Program
     {
         var ses = Find(target);
         if (ses is null) return false;
-        Post(() => CloseSessionInternal(ses));
+        PostVerb(() => CloseSessionInternal(ses));
         return true;
     }
 
     public string NewWorkspace(string? name)
     {
         string id = Guid.NewGuid().ToString();
-        Post(() => CreateWorkspace(id, name));
+        PostVerb(() => CreateWorkspace(id, name));
         return id;
     }
 
@@ -364,11 +364,11 @@ internal partial class Program
         {
             var ses = Find(target);
             if (ses is null) return false;
-            Post(() => ChangeFontSizeOf(ses, delta));
+            PostVerb(() => ChangeFontSizeOf(ses, delta));
             return true;
         }
         if (FindControlPane(target) is not { } targetPane) return false;
-        Post(() => ZoomPane(targetPane, delta));
+        PostVerb(() => ZoomPane(targetPane, delta));
         return true;
     }
 
@@ -376,7 +376,7 @@ internal partial class Program
     /// most-recently-used), close it, and optionally pin a font size. (agterm #202 CLI.)</summary>
     public bool Dashboard(bool close, string? ids, int fontSize)
     {
-        Post(() =>
+        PostVerb(() =>
         {
             if (close) { CloseDashboard(); return; }
             List<Ses>? list = null;
@@ -389,13 +389,13 @@ internal partial class Program
     }
 
     // ---- Wave A1 verbs ----
-    public void SessionGo(string dir) => Post(() => SessionGoInternal(dir));
+    public void SessionGo(string dir) => PostVerb(() => SessionGoInternal(dir));
 
     public bool SessionReorder(string? target, string dir)
     {
         var s = Find(target);
         if (s is null) return false;
-        Post(() => { lock (_workspaces) ReorderInList(s.Ws.Sessions, s, dir); RequestRedraw(); SaveState(); });
+        PostVerb(() => { lock (_workspaces) ReorderInList(s.Ws.Sessions, s, dir); RequestRedraw(); SaveState(); });
         return true;
     }
 
@@ -403,7 +403,7 @@ internal partial class Program
     {
         var s = Find(target); var ws = FindWs(workspace);
         if (s is null || ws is null) return false;
-        Post(() => MoveSession(s, ws));
+        PostVerb(() => MoveSession(s, ws));
         return true;
     }
 
@@ -411,10 +411,13 @@ internal partial class Program
     {
         var ses = FindSesForTarget(target);
         if (ses is null || string.IsNullOrWhiteSpace(name)) return false;
-        // The post's result IS the reply (#228 item 5): a rename racing the window's WM_DESTROY used
-        // to answer ok with the action stranded in the queue. The rename does not touch Context —
-        // the name and the context are two fields, and rename edits one of them.
-        return Post(() => { ses.Name = name; ses.CustomName = name; RequestRedraw(); SaveState(); }); // CustomName drives the title bar
+        // The post's result IS the reply (#228 item 5), as for every verb that posts: a rename racing
+        // the window's WM_DESTROY used to answer ok with the action stranded in the queue; in P3 it
+        // returned the post's false, which the server read back as "session not found"; PostVerb's
+        // throw names the real reason. The rename does not touch Context — the name and the context
+        // are two fields, and rename edits one of them.
+        PostVerb(() => { ses.Name = name; ses.CustomName = name; RequestRedraw(); SaveState(); }); // CustomName drives the title bar
+        return true;
     }
 
     // session.context (P3). Resolution is rename's (FindSesForTarget: exact pane, exact session, pane
@@ -444,7 +447,7 @@ internal partial class Program
     {
         var ws = FindWs(target);
         if (ws is null || string.IsNullOrWhiteSpace(name)) return false;
-        Post(() => { ws.Name = name; RequestRedraw(); SaveState(); });
+        PostVerb(() => { ws.Name = name; RequestRedraw(); SaveState(); });
         return true;
     }
 
@@ -452,7 +455,7 @@ internal partial class Program
     public string DuplicateSession(string? target)
     {
         string id = Guid.NewGuid().ToString();
-        Post(() => DuplicateSession(FindSesForTarget(target), id));
+        PostVerb(() => DuplicateSession(FindSesForTarget(target), id));
         return id;
     }
 
@@ -461,7 +464,7 @@ internal partial class Program
     {
         var ws = string.IsNullOrEmpty(target) ? ActiveWorkspace() : FindWs(target);
         if (ws is null) return false;
-        Post(() => { lock (_workspaces) ws.Expanded = expand; RequestRedraw(); SaveState(); });
+        PostVerb(() => { lock (_workspaces) ws.Expanded = expand; RequestRedraw(); SaveState(); });
         return true;
     }
 
@@ -469,7 +472,7 @@ internal partial class Program
     {
         var ws = FindWs(target);
         if (ws is null) return false;
-        Post(() => DeleteWorkspace(ws));
+        PostVerb(() => DeleteWorkspace(ws));
         return true;
     }
 
@@ -477,7 +480,7 @@ internal partial class Program
     {
         var ws = FindWs(target);
         if (ws is null) return false;
-        Post(() => { var s = ws.Sessions.FirstOrDefault(); if (s is not null) SetActive(s); });
+        PostVerb(() => { var s = ws.Sessions.FirstOrDefault(); if (s is not null) SetActive(s); });
         return true;
     }
 
@@ -485,7 +488,7 @@ internal partial class Program
     {
         var ws = FindWs(target);
         if (ws is null) return false;
-        Post(() => { lock (_workspaces) ReorderInList(_workspaces, ws, dir); RequestRedraw(); SaveState(); });
+        PostVerb(() => { lock (_workspaces) ReorderInList(_workspaces, ws, dir); RequestRedraw(); SaveState(); });
         return true;
     }
 
@@ -630,16 +633,16 @@ internal partial class Program
     public bool ThemeSet(string name)
     {
         if (!_allThemes.Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase))) return false;
-        Post(() => CommitTheme(FindTheme(name)));
+        PostVerb(() => CommitTheme(FindTheme(name)));
         return true;
     }
 
-    public string KeymapReload() { Post(ReloadKeymap); return "keymap reload requested"; }
+    public string KeymapReload() { PostVerb(ReloadKeymap); return "keymap reload requested"; }
 
     public string ConfigSet(string key, string value) => InvokeOnUi(() => ConfigSetInternal(key, value));
     public string ConfigGet(string key) => InvokeOnUi(() => ConfigValue(key.Trim().ToLowerInvariant()));
     public string ConfigList() => InvokeOnUi(() => string.Join("\n", ConfigKeys.Select(k => $"{k} = {ConfigValue(k)}")));
-    public string SettingsOpen() { Post(OpenSettingsWindow); return "settings opened"; }
+    public string SettingsOpen() { PostVerb(OpenSettingsWindow); return "settings opened"; }
 
     public string ProfilesList() => InvokeOnUi(() => string.Join("\n", _profileCfg.Profiles.Select(p =>
         $"{(p.Name.Equals(_profileCfg.Default, StringComparison.OrdinalIgnoreCase) ? "*" : " ")} {p.Name}\t{p.Command}{(p.Args is { Length: > 0 } a ? " " + string.Join(" ", a) : "")}")));
@@ -651,7 +654,7 @@ internal partial class Program
         catch (Exception ex) { return "error: " + ex.Message; }
     }
 
-    public void SidebarOp(string op) => Post(() => SidebarOpInternal(op));
+    public void SidebarOp(string op) => PostVerb(() => SidebarOpInternal(op));
 
     // "<visible|hidden> <tree|flagged> <width>": the width is _sidebarWShown, the one in effect when
     // shown — beside "hidden" it is the width the next show will use, not a claim that it is on screen.
@@ -701,7 +704,7 @@ internal partial class Program
     {
         var ses = FindSesForTarget(target);
         if (ses is null) return false;
-        Post(() => { ClearUnread(ses); RequestRedraw(); });
+        PostVerb(() => { ClearUnread(ses); RequestRedraw(); });
         return true;
     }
 
@@ -790,11 +793,11 @@ internal partial class Program
     {
         var ses = FindSesForTarget(target);
         if (ses is null) return false;
-        Post(() => ScratchOp(ses, op));
+        PostVerb(() => ScratchOp(ses, op));
         return true;
     }
 
-    public void Quick(string op) => Post(() => QuickOp(op));
+    public void Quick(string op) => PostVerb(() => QuickOp(op));
 
     /// <summary>An overlay covers a whole SESSION. When the caller named one pane of a split, that
     /// is not what they asked for - say so rather than widen it in silence and blank the pane the
@@ -838,7 +841,7 @@ internal partial class Program
                     var ses = FindSesForTarget(target);
                     if (ses is null && !string.IsNullOrEmpty(target) && target != "active") return NoSessionRefusal;
                     if (ses?.Overlay is null) return "no overlay";
-                    Post(() => CloseOverlayOf(ses));
+                    PostVerb(() => CloseOverlayOf(ses));
                     return "closed";
                 }
             case "resize":
@@ -853,7 +856,7 @@ internal partial class Program
                     // this ran, so the N reported is always the N the caller asked for. A clamp here
                     // could only hide a bug upstream now. 0 = full content region; 1..100 = centered panel.
                     int sp = sizePercent;
-                    Post(() => { ses.OverlaySizePercent = sp; if (ReferenceEquals(_ovlOwner, ses)) RegridCover(); RequestRedraw(); });
+                    PostVerb(() => { ses.OverlaySizePercent = sp; if (ReferenceEquals(_ovlOwner, ses)) RegridCover(); RequestRedraw(); });
                     return $"resized {sp}%";
                 }
             default: // "open"
@@ -878,16 +881,16 @@ internal partial class Program
     {
         var ses = FindSesForTarget(target);
         if (ses is null) return false;
-        Post(() => OnNotified(ses.ActivePane, title ?? "", body));
+        PostVerb(() => OnNotified(ses.ActivePane, title ?? "", body));
         return true;
     }
 
     public bool SessionFlag(string? target, string op)
     {
-        if (op == "clear") { Post(() => FlagOp(null, "clear")); return true; } // clear is global; no target needed
+        if (op == "clear") { PostVerb(() => FlagOp(null, "clear")); return true; } // clear is global; no target needed
         var ses = FindSesForTarget(target);
         if (ses is null) return false;
-        Post(() => FlagOp(ses, op));
+        PostVerb(() => FlagOp(ses, op));
         return true;
     }
 
@@ -899,7 +902,7 @@ internal partial class Program
         var hit = FindPaneById(target!);
         if (hit is null) return false;
         string? val = string.IsNullOrWhiteSpace(agent) || agent.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : agent.ToLowerInvariant();
-        Post(() => { hit.Value.pane.AgentResume = val; SaveState(); });
+        PostVerb(() => { hit.Value.pane.AgentResume = val; SaveState(); });
         return true;
     }
 
@@ -1073,7 +1076,7 @@ internal partial class Program
         return SetBackground(ses, path!, opacity, mode);
     });
 
-    public void WorkspaceFocus(string op) => Post(() => WorkspaceFocusOp(op));
+    public void WorkspaceFocus(string op) => PostVerb(() => WorkspaceFocusOp(op));
 
     public string SessionSwitch(string op) => InvokeOnUi(() => SwitchOp(op));
 

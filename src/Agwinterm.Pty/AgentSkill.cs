@@ -184,8 +184,8 @@ public static class AgentSkill
         - What is REFUSED (`ok:false`, nothing happened): `open` with no command; `open` and `resize` whenever no
           session resolves (a `--target` that matches nothing, or no target while no session is active); a `close`
           whose `--target` names something that does not exist; and `resize` on a session with no overlay open.
-          `close` answers `ok` ("no overlay") in two cases — the session resolves and has no overlay, or no target
-          was given and nothing is active — because closing nothing leaves "no overlay open" true. These used to
+          `close` answers `ok` ("no overlay") when the session resolves and has no overlay, or when the target is
+          absent, empty or `active` while nothing is active — closing nothing leaves "no overlay open" true. These used to
           answer `ok:true` with the failure as the result text; branch on `ok`.
 
         ## Notify the user (desktop notification)

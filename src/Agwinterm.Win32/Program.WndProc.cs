@@ -173,7 +173,7 @@ internal partial class Program
 
             case WM_APP_ACTION:
                 while (_uiActions.TryDequeue(out var act))
-                    try { act(); } catch (Exception ex) { Perf($"uiaction ex: {ex.Message}"); }
+                    try { act.RunIfQueued(); } catch (Exception ex) { Perf($"uiaction ex: {ex.Message}"); }
                 return IntPtr.Zero;
 
             case WM_APP_SYNC:
