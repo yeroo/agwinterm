@@ -114,13 +114,13 @@ public class SessionSplitTests
         {
             var r = Op(server, bad);
             Assert.False(Ok(r), bad);
-            Assert.Contains("unknown op", Error(r));
+            Assert.Contains($"unknown op '{bad}'", Error(r));                  // quoted, so "" reads as '' (#239)
             Assert.Equal(2, PaneCount(server));                               // the split stood
             Assert.Equal(split, PaneIds(server)[1]);                          // with the same pane
         }
         var nonString = Split(server, null, "{\"op\":1}");
         Assert.False(Ok(nonString));
-        Assert.Contains("unknown op", Error(nonString));
+        Assert.Contains("unknown op 1 ", Error(nonString));                   // raw JSON, unquoted
         Assert.Equal(2, PaneCount(server));
     }
 

@@ -239,7 +239,8 @@ public static class AgentSkill
         ## Splits, font, sidebar, theme
         A session has at most TWO panes. Each pane has its own id (`tree --json` lists them as `paneIds`). THE SESSION-ID
         RULE, by condition and not by verb: a session id names the pane that carries it while one does — pane 0 of a fresh or
-        reopened session; after a `swap`, either side — and names the session's FOCUSED pane while none does. None does once
+        reopened session; after a `swap`, either side (a restore keeps the order it saved) — and names the session's FOCUSED
+        pane while none does. None does once
         the carrier was closed, however it was closed: `split close` on it, Ctrl+Shift+W on it, `split off` after a `swap`
         (that collapses onto the other pane), or its shell exiting. A later `split` mints a fresh id, so the state persists
         until the session is closed and reopened (a reopened session's pane 0 carries the id again). In a split session,

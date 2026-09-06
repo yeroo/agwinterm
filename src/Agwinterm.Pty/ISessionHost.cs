@@ -213,7 +213,11 @@ public interface ISessionHost
 
     /// <summary>
     /// <c>session.split</c>: split or collapse the targeted session (null/"active" = the active one):
-    /// op = on|off|toggle. The axis names the ARRANGEMENT, agterm's words: vertical = left/right panes
+    /// op = on|off|toggle — exactly those three, lowercase, already checked by the server against
+    /// <see cref="SplitAxes.IsOp"/> (absent = toggle; anything else, <c>"Close"</c> or <c>""</c> or a
+    /// number, is refused with <see cref="SplitAxes.OpRefusal"/> before this is called, because the
+    /// host's switch treats an unknown op as toggle and a toggle on a split session closes a pane).
+    /// The axis names the ARRANGEMENT, agterm's words: vertical = left/right panes
     /// (the default of a session never split), horizontal = top/bottom panes. <paramref name="axis"/> is
     /// <see cref="SplitAxes.Vertical"/> or <see cref="SplitAxes.Horizontal"/>, already parsed by the
     /// server through <see cref="SplitAxes.TryParse"/>; null keeps the session's current orientation. The axis is PER SESSION and survives <c>off</c> (agterm:
@@ -226,7 +230,8 @@ public interface ISessionHost
     /// was already split (the caller that does not know whether it split gets something addressable
     /// either way, and nothing changes); <c>off</c> → the survivor's id (pane 0), also when already
     /// single; <c>toggle</c> → whichever it produced. Or <see cref="RefusePrefix"/> + a refusal —
-    /// <c>session not found</c>, the axis refusal — and nothing split.</para>
+    /// <c>session not found</c>, the only one the host owes — and nothing split (the axis and the op
+    /// refusals are both the server's, above, and neither reaches here).</para>
     /// <para><b>Invariants (#230)</b>: the target is resolved on the caller's thread so an unknown
     /// target answers a refusal with nothing queued; the split lands on THAT session, not on whichever
     /// is active; splitting a session that is not the active one does not move focus to it (the
@@ -245,8 +250,9 @@ public interface ISessionHost
     /// <para><b>Target</b>: null / "" / "active" = the active session's focused pane (what Ctrl+Shift+W
     /// closes); else the content verbs' resolver (exact pane, exact session → its focused pane, pane
     /// prefix, session prefix / name → its focused pane). THE SESSION-ID RULE, by condition: while a
-    /// pane carries the session id (pane 0 of a fresh or reopened session; either side after a swap) it
-    /// names THAT pane through the exact-pane arm; while none does — the carrier was closed by this
+    /// pane carries the session id (pane 0 of a fresh or reopened session; either side after a swap;
+    /// slot 1 of a session restored from a file saved after a swap — the pane list comes back
+    /// verbatim, no swap having happened in this process) it names THAT pane through the exact-pane arm; while none does — the carrier was closed by this
     /// verb, by Ctrl+Shift+W, by <c>split off</c> after a swap, or by its shell exiting — the id falls
     /// through to the exact-session arm and names the FOCUSED pane, like a name does. A later split
     /// mints a fresh id; a reopen puts the id back on pane 0. <see cref="SplitCloseReply"/> has the
