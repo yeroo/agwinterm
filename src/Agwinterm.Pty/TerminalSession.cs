@@ -168,10 +168,28 @@ public sealed class TerminalSession : ISession
 
     /// <summary>Spawn an interactive shell and pump its output in the background until it exits or is disposed.
     /// When <paramref name="deElevate"/> is set, the shell runs at the interactive user's Medium integrity
-    /// (only valid from an elevated agwinterm) so an elevated window can host a normal session.</summary>
-    public async Task StartAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
+    /// (only valid from an elevated agwinterm) so an elevated window can host a normal session.
+    /// A spawn that FAILS (the cwd gone, the app missing) is painted into this pane and ends it as
+    /// exit 1 with <see cref="HasExited"/> set and <see cref="Exited"/> NOT raised — the surface
+    /// stays to show the reason (#227 r2). The pty-host calls <see cref="StartOrThrowAsync"/>
+    /// instead, so the failure travels back to its client as the create's error.</summary>
+    public Task StartAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
         IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null, bool deElevate = false,
         bool freshEnv = true, CancellationToken ct = default)
+        => StartCoreAsync(app, commandLine, verbatimCommandLine, extraEnv, cwd, deElevate, freshEnv, ct, paintFailure: true);
+
+    /// <summary>The <see cref="StartAsync"/> form for a host that owns the failure: a spawn that fails
+    /// THROWS to the caller (PtyHostServer turns it into the create's error and rolls the session
+    /// back) instead of being painted here, where no client could read it — the host's emulator is
+    /// not what the client shows, and the client's own start catch is what paints the reason.</summary>
+    public Task StartOrThrowAsync(string app, string[] commandLine, bool verbatimCommandLine = false,
+        IReadOnlyDictionary<string, string>? extraEnv = null, string? cwd = null, bool deElevate = false,
+        bool freshEnv = true, CancellationToken ct = default)
+        => StartCoreAsync(app, commandLine, verbatimCommandLine, extraEnv, cwd, deElevate, freshEnv, ct, paintFailure: false);
+
+    private async Task StartCoreAsync(string app, string[] commandLine, bool verbatimCommandLine,
+        IReadOnlyDictionary<string, string>? extraEnv, string? cwd, bool deElevate,
+        bool freshEnv, CancellationToken ct, bool paintFailure)
     {
         if (deElevate)
         {
@@ -181,9 +199,10 @@ public sealed class TerminalSession : ISession
                 : QuoteArg(app);
             IPtyConnection dc;
             try { dc = DeElevatedPty.Spawn(cmd, string.IsNullOrEmpty(cwd) ? Environment.CurrentDirectory : cwd, Cols, Rows); }
-            catch (Exception ex)
+            catch (Exception ex) when (paintFailure)
             {
                 // Surface the failure in the pane instead of leaving it dead (or crashing on the unobserved task).
+                // The pty-host's form (StartOrThrowAsync) lets it throw, the same as the ordinary spawn below.
                 var msg = $"\r\n\x1b[31m[agwinterm] could not start a non-elevated session:\x1b[0m\r\n  {ex.Message}\r\n";
                 lock (_sync) Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(msg));
                 OutputReceived?.Invoke();
@@ -230,8 +249,23 @@ public sealed class TerminalSession : ISession
             options.Environment = env;
         }
 
-        _connection = await PtyProvider.SpawnAsync(options, ct).ConfigureAwait(false);
-        var conn = _connection;
+        IPtyConnection conn;
+        try { conn = await PtyProvider.SpawnAsync(options, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (paintFailure && ex is not OperationCanceledException)
+        {
+            // Same shape as the de-elevate branch above and ServerSession.StartAsync: a spawn that
+            // fails (the cwd gone, the app missing) surfaces IN the pane and ends as exit 1, with
+            // HasExited set and Exited NOT raised (the surface stays to show the reason). Before,
+            // the failure escaped as a faulted fire-and-forget task: a dead blank pane, and an
+            // overlay watcher keyed on HasExited never saw an end (#227 r2). Not for the pty-host
+            // (StartOrThrowAsync): there the throw IS the client's diagnostic.
+            var msg = $"\r\n\x1b[31m[agwinterm] could not start the session:\x1b[0m\r\n  {ex.Message}\r\n";
+            lock (_sync) Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(msg));
+            OutputReceived?.Invoke();
+            ExitCode = 1; HasExited = true;
+            return;
+        }
+        _connection = conn;
         _ = StartPump(conn.ReaderStream);
         // Watch for the child exiting so overlays (and anyone else) get the real ConPTY exit code,
         // reliably even for programs that finish faster than a PID poll could catch them.

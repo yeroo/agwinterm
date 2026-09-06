@@ -175,10 +175,12 @@ public sealed class PtyHostServer : IDisposable
             }
         };
         session.Exited += _ => CloseData(hosted);
-        // Await the spawn so a failure (bad exe, bad cwd) travels back as the create's error.
+        // Await the spawn so a failure (bad exe, bad cwd) travels back as the create's error — the
+        // throwing form: StartAsync would paint the reason into THIS process's emulator, which no
+        // client sees, and answer ok for a session that never ran (#227 r3).
         try
         {
-            session.StartAsync(c.App, c.Args.ToArray(), verbatimCommandLine: c.Verbatim,
+            session.StartOrThrowAsync(c.App, c.Args.ToArray(), verbatimCommandLine: c.Verbatim,
                     extraEnv: env, cwd: c.Cwd.Length > 0 ? c.Cwd : null, deElevate: c.DeElevate,
                     freshEnv: !c.FreshEnvOff)
                 .GetAwaiter().GetResult();

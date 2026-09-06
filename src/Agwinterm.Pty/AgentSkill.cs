@@ -179,11 +179,31 @@ public static class AgentSkill
           reply `resized N%` is always the N you asked for.
         - `--wait` keeps the panel after the program exits (shows "press any key to close") instead of auto-dismissing.
         - `--block` waits for the program to exit and returns `exit N` (its exit code). Good for `lazygit`, `htop`, an editor, or any pick-a-thing helper you want to run and read the result of.
+          The reply is the outcome of the overlay THIS call opened: `closed` when it was closed or replaced before its
+          program exited. `exit 1` also covers a program that could not be started at all (the session's cwd gone,
+          the pty-host down), and a blocking open closes its pane as it replies, so AFTER the call `exit 1` cannot be
+          told from a program that ran and failed. When that distinction matters, do not block: open with `--wait`
+          (the pane stays after the exit and the reply is its id), poll `overlay result` until it says `exit N`,
+          `session text --target <that id>` for the output or the start failure (`exit N` is written when the process
+          ends, not when its output is drained — the last lines can still be landing; read again if the text looks
+          cut off), then `overlay close --target <that id>` (a bare `close` closes the ACTIVE session's overlay, which
+          need not be yours; that close answers `ok:false` when the overlay is already gone — a key pressed on the
+          `--wait` prompt, a later open replacing it — which means closed, not failed; `tree` settles it). `overlay result` is ONE value
+          per window — reset to `no overlay` by any open in the window, written by any session's overlay exit — so
+          the poll is trustworthy only while yours is the only overlay in the window; `tree` shows which sessions
+          have one.
+          The window closing under a blocking open answers `ok:false` with the status unknown.
         - `agwintermctl session overlay close [--target <id>]`   — dismiss the overlay now.
-        - `agwintermctl session overlay result`                 — the last overlay's `exit N` (or `no overlay`).
+        - `agwintermctl session overlay result`                 — the last overlay's `exit N` (or `no overlay`): one value per
+          window, not per session — reset by any open in the window, written by whichever session's overlay exits
+          next; it ignores `--target`. Two overlays in one window make it name either one's exit.
         - What is REFUSED (`ok:false`, nothing happened): `open` with no command; `open` and `resize` whenever no
           session resolves (a `--target` that matches nothing, or no target while no session is active); a `close`
-          whose `--target` names something that does not exist; and `resize` on a session with no overlay open.
+          whose `--target` names something that does not exist; `open`, `close` and `resize` whose `--target` names
+          one pane of a split session (an overlay covers the whole session — the refusal names the session id to
+          pass instead); and `resize` on a session with no overlay open.
+          One `resize` `ok:false` is NOT "nothing happened": the reply that says the window did not run the request
+          within 15 s — that resize is still queued and may land when the window's loop resumes; read `tree`.
           `close` answers `ok` ("no overlay") when the session resolves and has no overlay, or when the target is
           absent, empty or `active` while nothing is active — closing nothing leaves "no overlay open" true. These used to
           answer `ok:true` with the failure as the result text; branch on `ok`.

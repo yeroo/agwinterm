@@ -141,21 +141,21 @@ internal partial class Program
             // --wait: run the command, then hold on "press any key" so a build/test/deploy's final
             // output (or an early failure) stays readable before the session closes (agterm #255 —
             // the session-surface counterpart of `overlay open --wait`).
-            _ = session.StartAsync("cmd.exe", new[] { "/c", command! + " & echo. & pause" }, verbatimCommandLine: true, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
+            pane.Start = session.StartAsync("cmd.exe", new[] { "/c", command! + " & echo. & pause" }, verbatimCommandLine: true, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
         else if (!string.IsNullOrWhiteSpace(command) && interactive)
             // Run the command in a fresh shell that STAYS OPEN afterwards (custom-command "new" mode):
             // the user's profile loads (oh-my-posh etc.), the command runs, then it's an interactive shell.
-            _ = session.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoExit", "-Command", command! }, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
+            pane.Start = session.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoExit", "-Command", command! }, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
         else if (!string.IsNullOrWhiteSpace(command) && shellWrap)
             // Run the whole command line through cmd so shell syntax works AND the child's exit code
             // propagates. Verbatim so it becomes exactly `cmd.exe /c <command>` (no extra quoting,
             // which cmd's /c quote-stripping rules would otherwise mangle).
-            _ = session.StartAsync("cmd.exe", new[] { "/c", command! }, verbatimCommandLine: true, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
+            pane.Start = session.StartAsync("cmd.exe", new[] { "/c", command! }, verbatimCommandLine: true, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
         else if (!string.IsNullOrWhiteSpace(command))
         {
             var argv = ParseArgv(command);
             if (argv.Length > 0)
-                _ = session.StartAsync(argv[0], argv[1..], extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
+                pane.Start = session.StartAsync(argv[0], argv[1..], extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
             else
                 LaunchShell(session, profileName, env, cwd, deElevate);
         }
@@ -766,14 +766,17 @@ internal partial class Program
     private string OverlayOpen(Ses ses, string command, int sizePercent, bool wait, Dictionary<string, string>? extraEnv = null)
     {
         CloseOverlayOf(ses);                    // one overlay per session; replace any existing one
-        _overlayDone.Reset();
-        _lastOverlayExit = "no overlay"; _overlayExitCode = 0;
         string id = ses.Id + ":overlay:" + Guid.NewGuid().ToString("N")[..6];
         var pane = CreatePane(id, ses.Ws, CwdOf(ses), ses.FontSize, command, shellWrap: true, extraEnv: extraEnv);
-        ses.Overlay = pane;
+        pane.OverlayDone = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The window-wide LAST exit (`overlay result`) is reset by every open, and the new pane
+        // becomes the session's overlay in the same locked step: an exit that lands on the pty
+        // thread either wrote before this (and is reset here) or sees the replacement and skips —
+        // never writes a replaced pane's code over the reset (WatchOverlayExit takes the lock).
+        lock (_overlayExitLock) { _lastOverlayExit = "no overlay"; ses.Overlay = pane; }
         ses.OverlaySizePercent = sizePercent;   // validated at the control API (TryOverlaySize); in-app callers pass literals
         ses.OverlayWait = wait;
-        ses.OverlayExited = false;
+        ses.OverlayExited = false; ses.OverlayExitCode = 0;
         if (ReferenceEquals(ses, _active)) { _cover = pane; _coverKind = 3; _ovlOwner = ses; SyncSession(); RegridCover(); }
         RequestRedraw();
         WatchOverlayExit(ses, pane);
@@ -786,7 +789,12 @@ internal partial class Program
         var pane = ses.Overlay;
         if (pane is null) return;
         if (_coverKind == 3 && ReferenceEquals(_cover, pane)) { _cover = null; _coverKind = 0; _ovlOwner = null; SyncSession(); if (_active is not null) RegridSession(_active); }
-        ses.Overlay = null; ses.OverlayExited = false; ses.OverlaySizePercent = 0; ses.OverlayWait = false;
+        lock (_overlayExitLock) ses.Overlay = null;   // the exit's guard reads this under the same lock
+        ses.OverlayExited = false; ses.OverlaySizePercent = 0; ses.OverlayWait = false;
+        // Closed (or replaced) before its program exited: release a `--block` caller with "closed"
+        // rather than parking it — Dispose ends the pty without raising Exited (ServerSession
+        // suppresses the event on its own teardown), so nothing else would. A no-op after an exit.
+        pane.OverlayDone?.TrySetResult("closed");
         try { pane.S.Dispose(); } catch { }
         RequestRedraw();
     }
@@ -797,20 +805,39 @@ internal partial class Program
     /// <summary>When an overlay's program exits, record its code and either close the overlay or (with --wait) mark it exited.</summary>
     private void WatchOverlayExit(Ses ses, Pane pane)
     {
+        int fired = 0;   // one-shot: the event, the already-exited check and the start watch can all see the end
         void OnExit(int code)
         {
-            _overlayExitCode = code;
-            _lastOverlayExit = $"exit {code}";
-            _overlayDone.Set();
+            if (Interlocked.Exchange(ref fired, 1) != 0) return;
+            // This pane's own outcome first: a `--block` caller is released with its OWN program's
+            // status (#227), whatever other overlays in the window did meanwhile.
+            pane.OverlayDone?.TrySetResult($"exit {code}");
+            // The window-wide last exit is written only while this pane is still its session's
+            // overlay: a pane an open has since replaced (or a close disposed) must not stamp its
+            // code over the one `overlay result` now describes. Guard and write are one locked
+            // step against OverlayOpen's reset-and-assign and CloseOverlayOf's null-out, so there
+            // is no gap in which a replaced pane's exit lands after the replacement's reset. The
+            // post below is unconditional as before: its own guard runs on the UI thread.
+            lock (_overlayExitLock) { if (ReferenceEquals(ses.Overlay, pane)) _lastOverlayExit = $"exit {code}"; }
             Post(() =>
             {
                 if (!ReferenceEquals(ses.Overlay, pane)) return;   // already replaced/closed
-                if (ses.OverlayWait) { ses.OverlayExited = true; RequestRedraw(); }
+                if (ses.OverlayWait) { ses.OverlayExited = true; ses.OverlayExitCode = code; RequestRedraw(); }
                 else CloseOverlayOf(ses);
             });
         }
         pane.S.Exited += OnExit;
         if (pane.S.HasExited) OnExit(pane.S.ExitCode ?? 0);        // already gone before we subscribed
+        // A start that FAILS (pty-host down, cwd gone) sets HasExited without raising Exited —
+        // the session keeps its surface to show the failure — so nothing above would end this
+        // overlay and a `--block` caller would wait forever (revmux r1). The start task completes
+        // after that catch: an overlay whose program never ran ends like one that exited 1. A
+        // start task that FAULTS instead (a failure a backend let escape) is the same end;
+        // reading t.Exception marks the fault observed. A CANCELLED start is NOT an end here
+        // (an async method that throws OperationCanceledException completes Canceled, with
+        // t.Exception null) — no call site passes a cancellable token, so none can happen today;
+        // whoever wires one through CreatePane must widen this guard or a --block waits forever.
+        else pane.Start?.ContinueWith(t => { if (t.Exception is not null || pane.S.HasExited) OnExit(pane.S.ExitCode ?? 1); }, TaskScheduler.Default);
     }
 
     /// <summary>App version for TERM_PROGRAM_VERSION — the entry assembly's informational version

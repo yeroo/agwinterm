@@ -808,7 +808,7 @@ internal partial class Program
     {
         if (_coverKind != 3 || _ovlOwner is not { OverlayExited: true }) return;
         var (fx, fy, fw, fh) = CoverRect();
-        string msg = $"  exited ({_overlayExitCode}) — press any key to close  ";
+        string msg = $"  exited ({_ovlOwner.OverlayExitCode}) — press any key to close  ";
         float bh = 22f;
         brush.Color = WithA(ChromeAccent, 0.95f);
         rt.FillRectangle(new Rect(fx, fy + fh - bh, fw, bh), brush);
