@@ -145,8 +145,11 @@ public interface ISessionHost
     /// <summary>Rename a session: sets its custom name (shown in the sidebar and title bar). Resolves
     /// the target the way every content verb does (exact pane, exact session, pane prefix, session
     /// prefix / name — a scratch or overlay cover id lands on the session it covers). False when no
-    /// session resolves, the name is blank, or the window is closing and the rename could not be
-    /// queued (#228 item 5: the post's result is the reply, not a constant true).</summary>
+    /// session resolves or the name is blank. A rename the window could not queue (it is closing, or
+    /// its message queue refused the wake-up) is a throw, not a false — the server reads false as
+    /// "session not found", and Dispatch turns the
+    /// throw into ok:false with the real reason (#228 item 5: every verb that posts to the UI thread
+    /// answers with the post's outcome, never a constant true; nothing was applied when it says so).</summary>
     bool SessionRename(string? target, string name);
 
     /// <summary>
@@ -170,8 +173,9 @@ public interface ISessionHost
     /// <para><b>Threading</b>: the write is applied on the UI thread through the FIFO queued hop (the
     /// same queue every posted action travels), and the calling pipe thread waits for it, so the
     /// reply describes a state that exists. A hop that cannot be queued or run (the window is
-    /// closing, or a message loop that never pumps within the bound) throws, which the server turns
-    /// into ok:false — never ok:true for a write that did not land. The session is resolved INSIDE
+    /// closing, its message queue refused the wake-up, or a message loop that never pumps within the
+    /// bound) throws, which the server turns into ok:false — never ok:true for a write that did not
+    /// land. The session is resolved INSIDE
     /// the hop so a session closed between the request and the write is refused, not written to.</para>
     /// </summary>
     string SessionContext(string? target, string? context);
@@ -354,14 +358,26 @@ public interface ISessionHost
     /// Overlay control. action = open|close|resize|result. For open: run <paramref name="command"/> in
     /// an ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
     /// floating panel; wait = keep it after the program exits (press a key to close); block = wait for
-    /// the program to exit and return its status. Returns the session id (open), "exit N"
-    /// (block/result), "closed", "resized N%", or "no overlay" (deliberately ok, two states: close on
-    /// a session that resolves and has no overlay, and an untargeted close that resolves no session).
+    /// the program to exit and return its status. Returns the overlay pane id (open), "exit N" (block;
+    /// result), "closed", "resized N%", or "no overlay" (deliberately ok for close: a session that
+    /// resolves and has no overlay, or a target that is absent, empty or the word "active" while
+    /// nothing is active — the guard is the app's `target != "active"`, so those three targets are one
+    /// case). The value `result` reads is ONE PER WINDOW, not per session or per overlay: it is "no
+    /// overlay" until the first open in that window, every open resets it to "no overlay", and the
+    /// exit of ANY overlay in the window — whichever session's, including one an open has since
+    /// replaced — writes "exit N" over it, so a caller that runs overlays on two sessions at once
+    /// reads the last exit in the window, not its own; `--block` waits on the same per-window signal
+    /// and then reads the same value, so it can return on another session's exit, answer "no overlay"
+    /// when an open lands between its wake-up and its read, or stay parked past its own program's
+    /// exit when that open's reset lands first (agwinterm #246 tracks keying value and signal to the
+    /// open that produced them). `result` skips the target check entirely.
     /// A FAILURE is signalled by prefixing <see cref="RefusePrefix"/>, which the server turns into
     /// ok:false: open with no command; open or resize whenever NO session resolves (a named target
-    /// that matches nothing, or no target and no active session); close only when a non-empty,
-    /// non-"active" target resolves to nothing; resize with no overlay open. A second host that
-    /// returns those as plain strings reproduces the ok:true-on-failure P2 removed.
+    /// that matches nothing, or no target and no active session); close when a target other than
+    /// absent, empty or "active" resolves to nothing; open, close and resize whenever the target names
+    /// one pane of a multi-pane session (the overlay covers the whole session; the app's
+    /// OverlayTargetRefusal); resize with no overlay open. A second host that returns those as plain
+    /// strings reproduces the ok:true-on-failure P2 removed.
     /// </summary>
     string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block);
 
@@ -467,7 +483,11 @@ public interface ISessionHost
 
     /// <summary>Apply an oh-my-posh theme (by name or .omp.json path) live to the active session's shell
     /// (re-inits oh-my-posh and re-applies the OSC-7 prompt wrap). When <paramref name="persist"/>, also
-    /// save it to config so new sessions launch with it. Returns an ack / "not found".</summary>
+    /// save it to config so new sessions launch with it. Returns an ack, or "oh-my-posh theme not
+    /// found: NAME" — a plain string the server sends as ok:true, so a caller must match the text
+    /// (agwinterm #246 tracks making it a refusal). A change the window could not queue (it is
+    /// closing, or its message queue refused the wake-up) is a throw the server turns into ok:false
+    /// with the reason, never the ack (#228 item 5).</summary>
     string OmpSet(string nameOrPath, bool persist);
 }
 

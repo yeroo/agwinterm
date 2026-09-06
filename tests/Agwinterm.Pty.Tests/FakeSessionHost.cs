@@ -539,10 +539,16 @@ internal sealed class FakeSessionHost : ISessionHost
     public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
     {
         // As the app, in the app's ORDER and WORDING (the suite asserts wording, so the two hosts
-        // must not drift): open checks the command before the session; a named target that resolves
-        // to no session is refused by open, resize and close alike; close on a session that exists
-        // and has no overlay is idempotent ok ("no overlay" — the conformance contract closes with
-        // nothing open); resize with no overlay open is a refusal.
+        // must not drift), for open, close and resize — the cases ISessionHost.SessionOverlay's
+        // refusal list names: open checks the command before the session; open and resize are
+        // refused whenever NO session resolves; close is refused only when a target other than
+        // absent, empty or "active" resolves to nothing (`named`), and is ok ("no overlay") for those
+        // three with nothing active, or on a session that exists and has no overlay — idempotent,
+        // the conformance contract closes with nothing open; resize with no overlay open is a
+        // refusal. NOT mirrored: open's reply (the fake answers the SESSION id; the app answers the
+        // overlay pane id, `<session>:overlay:<hex>`), `result` (no arm — it falls into open's "needs
+        // a command" refusal, where the app answers its last exit), and the app's refusal of a target
+        // that names one pane of a split session (OverlayTargetRefusal); a test of any needs the app.
         const string noSession = ISessionHost.RefusePrefix + "no session matches that target; nothing opened, resized or closed";
         var s = FindSes(target);
         bool named = !string.IsNullOrEmpty(target) && target != "active";

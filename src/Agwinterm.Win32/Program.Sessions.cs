@@ -761,7 +761,8 @@ internal partial class Program
     // ---- Overlays (Wave B3): an ephemeral program run over a session ----
 
     /// <summary>Open an overlay on a session: run <paramref name="command"/> in an ephemeral terminal over it.
-    /// sizePercent 0 = full content region; 1..100 = a centered floating panel. Returns "id PID".</summary>
+    /// sizePercent 0 = full content region; 1..100 = a centered floating panel. Returns the overlay
+    /// pane id.</summary>
     private string OverlayOpen(Ses ses, string command, int sizePercent, bool wait, Dictionary<string, string>? extraEnv = null)
     {
         CloseOverlayOf(ses);                    // one overlay per session; replace any existing one
@@ -1813,13 +1814,47 @@ internal partial class Program
     }
 
     /// <summary>Run an action on the UI thread (pipe callbacks arrive on a background thread).
-    /// Returns whether the wake-up message was posted — false once the window is gone, when the
-    /// action sits in the queue and nothing will ever run it.</summary>
+    /// False is authoritative: the wake-up message could not be posted — the window is gone, or a
+    /// live window's posted-message quota refused it — AND the action was withdrawn from the queue
+    /// before any drain could reach it, so nothing will ever run it (#228 item 4; before, a quota
+    /// failure left it queued for the next successful post to run after the caller had been told
+    /// nothing was applied). The same withdrawal covers a window that is INSIDE its WM_DESTROY when
+    /// the post lands: the hwnd is still valid, so PostMessageW says yes, but no message posted to it
+    /// is dispatched again — <see cref="_uiGone"/> (cancelled on WM_DESTROY's first line) is the
+    /// tell. True is best-effort: the wake-up was accepted by a window that was not closing when the
+    /// poster looked, which a WM_DESTROY landing right after (or a WM_CLOSE already queued ahead of
+    /// the wake-up) can still strand — the poster has answered by then and no poster-side check can
+    /// close that gap; a verb that must KNOW its action ran goes through
+    /// <see cref="InvokeOnUiQueued{T}"/>, which waits for it. True on a failed post only when a drain
+    /// woken by an earlier post had already taken the action, in which case it did run. The pty
+    /// callbacks (bell, notify, progress, clipboard, exit) discard the value on purpose: they have no
+    /// reply to give and a window that is going away has nothing left to show. A control verb never
+    /// discards it — see <see cref="PostVerb"/>.</summary>
     private bool Post(Action a)
     {
-        _uiActions.Enqueue(a);
-        return PostMessageW(_hwnd, WM_APP_ACTION, IntPtr.Zero, IntPtr.Zero);
+        var slot = new UiAction(a);
+        _uiActions.Enqueue(slot);
+        bool posted = PostMessageW(_hwnd, WM_APP_ACTION, IntPtr.Zero, IntPtr.Zero);
+        if (posted && !_uiGone.IsCancellationRequested) return true;
+        return !slot.TryWithdraw();   // withdrawn: nothing will run it; not withdrawable: the drain has it
     }
+
+    /// <summary>A control verb's <see cref="Post"/>: a wake-up that could not be posted IS the reply
+    /// (#228 item 5). The throw is what Dispatch turns into ok:false, worded by what the poster knows
+    /// (<see cref="NothingApplied"/>), and it is true — the action was withdrawn. Before, every verb
+    /// that posted ran <c>Post(...); return true;</c> and a <c>session.close</c> racing the window's
+    /// WM_DESTROY answered ok with the action stranded.</summary>
+    private void PostVerb(Action a)
+    {
+        if (!Post(a)) throw new InvalidOperationException(NothingApplied());
+    }
+    /// <summary>Why a post was withdrawn, as far as this side can tell: the window is closing
+    /// (<see cref="_uiGone"/> cancelled), or a live window's message queue refused the wake-up — the
+    /// posted-message quota, which a caller may retry once the queue drains. Both end "nothing was
+    /// applied", which is what the withdrawal guarantees.</summary>
+    private string NothingApplied() => _uiGone.IsCancellationRequested
+        ? "the window is closing; nothing was applied"
+        : "the window's message queue refused the request (posted-message quota); nothing was applied";
 
     // Synchronous UI-thread invoke that is FIFO with everything already Post()ed. InvokeOnUi below
     // rides SendMessageW, and Windows dispatches a sent message AHEAD of messages already posted, so
@@ -1843,7 +1878,7 @@ internal partial class Program
             try { tcs.TrySetResult(fn()); }
             catch (Exception ex) { tcs.TrySetException(ex); }
         });
-        if (!posted) throw new InvalidOperationException("the window is closing; nothing was applied");
+        if (!posted) throw new InvalidOperationException(NothingApplied());
         try
         {
             if (!tcs.Task.Wait((int)UiQueuedTimeout.TotalMilliseconds, _uiGone.Token))

@@ -272,9 +272,11 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   full content region. `resized N%` is always the N that was asked for. The verb's other failures
   are refusals too: `open` with no command; `open` and `resize` whenever no session resolves (a
   `--target` that matches nothing, or no target and no active session); a `close` whose `--target`
-  names nothing; and `resize` with no overlay open. `close` stays `ok` when the session resolves and
-  has no overlay, or when no target was given — there is nothing to close, and nothing is what you
-  asked for.
+  names nothing; `open`, `close` and `resize` whose `--target` names one pane of a split session (an
+  overlay covers the whole session — the refusal names the session id to pass instead); and `resize`
+  with no overlay open. `close` stays `ok` when the session resolves and
+  has no overlay, or when the target is absent, empty or `active` while nothing is active — there is
+  nothing to close, and nothing is what you asked for.
 - `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
   the target resolved to (a session name lands on its focused pane, a session id on the pane that
   carries that id while one does — pane 0 of a fresh session, either side after a `session swap` —

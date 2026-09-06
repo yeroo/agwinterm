@@ -127,8 +127,22 @@ internal partial class Program : ISessionHost, IWindowHost
     private const float DividerW = 6f;                       // THICKNESS of the gutter between panes, along the session's axis (a column gap on a vertical split, a row gap on a horizontal one)
     private bool _divDragging;                        // dragging a pane divider
     private int _divLeft;                             // index of the pane BEFORE the divider being dragged (the left pane on a vertical split, the top pane on a horizontal one)
-    // Actions queued from the pipe (background) thread to run on the UI thread.
-    private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
+    // Actions queued from the pipe (background) thread to run on the UI thread. Each sits in a slot
+    // the poster can WITHDRAW when its wake-up message could not be posted (#228 item 4): the drain
+    // takes a slot or the poster withdraws it, never both, so "nothing was applied" is true whenever
+    // Post says so — also on a live window whose posted-message quota refused the wake-up, where a
+    // later drain used to run the stranded action after the caller had been told nothing did.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<UiAction> _uiActions = new();
+    private sealed class UiAction
+    {
+        private readonly Action _run; private int _state;   // 0 queued, 1 taken by the drain, 2 withdrawn
+        public UiAction(Action run) => _run = run;
+        /// <summary>The drain's side: runs the action unless it was withdrawn. Exceptions are the caller's.</summary>
+        public void RunIfQueued() { if (Interlocked.CompareExchange(ref _state, 1, 0) == 0) _run(); }
+        /// <summary>The poster's side: true when the action was still queued and will now never run;
+        /// false when the drain already took it (an earlier wake-up reached it first).</summary>
+        public bool TryWithdraw() => Interlocked.CompareExchange(ref _state, 2, 0) == 0;
+    }
     /// <summary>Cancelled in WM_DESTROY: every pipe thread parked in InvokeOnUiQueued wakes and
     /// answers "window closed" instead of waiting for a message loop that will never run its action.</summary>
     private readonly CancellationTokenSource _uiGone = new();
