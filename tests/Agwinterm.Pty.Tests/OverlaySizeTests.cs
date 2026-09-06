@@ -115,7 +115,7 @@ public class OverlaySizeTests
     }
 
     [Fact]
-    public void Open_RepliesWithTheOverlayId_ShapeUnchanged()
+    public void Open_RepliesWithTheFakesSessionId_ShapeUnchanged()
     {
         var (server, host) = New();
         var r = Open(server, "40");

@@ -367,11 +367,13 @@ public interface ISessionHost
     /// exit of ANY overlay in the window — whichever session's, including one an open has since
     /// replaced — writes "exit N" over it, so a caller that runs overlays on two sessions at once
     /// reads the last exit in the window, not its own; `--block` waits on the same per-window signal
-    /// and can return on another session's exit (agwinterm #246 tracks keying both to the open that
-    /// produced them). `result` skips the target check entirely.
+    /// and then reads the same value, so it can return on another session's exit, answer "no overlay"
+    /// when an open lands between its wake-up and its read, or stay parked past its own program's
+    /// exit when that open's reset lands first (agwinterm #246 tracks keying value and signal to the
+    /// open that produced them). `result` skips the target check entirely.
     /// A FAILURE is signalled by prefixing <see cref="RefusePrefix"/>, which the server turns into
     /// ok:false: open with no command; open or resize whenever NO session resolves (a named target
-    /// that matches nothing, or no target and no active session); close only when a target other than
+    /// that matches nothing, or no target and no active session); close when a target other than
     /// absent, empty or "active" resolves to nothing; open, close and resize whenever the target names
     /// one pane of a multi-pane session (the overlay covers the whole session; the app's
     /// OverlayTargetRefusal); resize with no overlay open. A second host that returns those as plain
@@ -481,9 +483,11 @@ public interface ISessionHost
 
     /// <summary>Apply an oh-my-posh theme (by name or .omp.json path) live to the active session's shell
     /// (re-inits oh-my-posh and re-applies the OSC-7 prompt wrap). When <paramref name="persist"/>, also
-    /// save it to config so new sessions launch with it. Returns an ack / "not found". A change the
-    /// window could not queue (it is closing, or its message queue refused the wake-up) is a throw the
-    /// server turns into ok:false with the reason, never the ack (#228 item 5).</summary>
+    /// save it to config so new sessions launch with it. Returns an ack, or "oh-my-posh theme not
+    /// found: NAME" — a plain string the server sends as ok:true, so a caller must match the text
+    /// (agwinterm #246 tracks making it a refusal). A change the window could not queue (it is
+    /// closing, or its message queue refused the wake-up) is a throw the server turns into ok:false
+    /// with the reason, never the ack (#228 item 5).</summary>
     string OmpSet(string nameOrPath, bool persist);
 }
 

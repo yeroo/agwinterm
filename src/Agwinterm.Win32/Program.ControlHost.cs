@@ -36,9 +36,12 @@ internal partial class Program
     // window while Frontmost sits inside its WM_DESTROY (it is reassigned only near the end of it).
     // Every window shares the one UI thread, so any live one runs the action; one queue keeps the
     // verbs FIFO across windows (`window select A`, `select B`, `select A` on per-window queues could
-    // drain A's two before B's one); and a refusal is raised only when NO window is live, so "the
-    // window is closing" is true of every window, where posting on Frontmost refused `window close
-    // --target B` as "closing" about a healthy B.
+    // drain A's two before B's one), at the price Post's doc names: the queue belongs to the window
+    // it was posted on, so a verb about a healthy B is stranded if that window is torn down first
+    // (true is best-effort; a verb that must know goes through InvokeOnUiQueued). A refusal is the
+    // withdrawn post's reason (NothingApplied): no window live — "the window is closing", true of
+    // every window then, where posting on Frontmost refused `window close --target B` as "closing"
+    // about a healthy B — or a live window's message queue refusing the wake-up.
     private static Program LiveWindow()
     {
         var f = Frontmost;

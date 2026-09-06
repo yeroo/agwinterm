@@ -20,6 +20,10 @@ public interface IWindowHost
     /// <summary>Create a new (seeded) window; returns its id.</summary>
     string WindowNew(string? name);
 
+    // Every window verb below applies its change on the UI thread through a posted action. False
+    // means the selector named no window (the server replies "window not found"); a change the app
+    // could not queue — the window is closing, or its message queue refused the wake-up — is a THROW,
+    // which the server turns into ok:false with that reason, never the ack (#228 item 5).
     /// <summary>Raise/focus a window (restoring it if minimized). False if not found.</summary>
     bool WindowSelect(string? selector);
     /// <summary>Close a window (its entry + per-window file are kept, marked not-open). False if not found.</summary>
