@@ -398,9 +398,12 @@ try {
         "typed=$scTyped byPane=$($scText.ok) bySession=$($scViaSession.ok)"
     # The CLI-side refusals of the split family (revmux r1-r3 of P4). The proof is the exit code and the
     # message: exit 2 with "Nothing sent" means the CLI refused before opening the pipe. Before they were
-    # refused, these shapes acted with exit 0 — the ones with no --target (a positional where an option
-    # was meant) on the ACTIVE session, the rest on the p4-split-guards fixture below — so both nodes
-    # are read before the loop and asserted unchanged after it, belt and braces over the exit code.
+    # refused, these shapes acted with exit 0 — seven of the eight on the ACTIVE session, by one of
+    # three routes: no --target at all (a positional where an option was meant), a misspelt `--targt`
+    # that swallows the id so no target reaches the request, or an empty `--target` that the request
+    # builder drops; only `session split clos --target <id>` carries a target that resolves, and it
+    # alone would have landed on the p4-split-guards fixture below. So both nodes are read before the
+    # loop and asserted unchanged after it, belt and braces over the exit code.
     # Run BEFORE the close below, on the split.
     $scGuardMade = Invoke-Ctl @('session', 'new', '--name', 'p4-split-guards', '--no-select')
     $scGuardId = [string]$scGuardMade.result

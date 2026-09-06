@@ -913,7 +913,8 @@ internal partial class Program
     // prefix step is the same predicate in the same order. Two things changed. A
     // session NAME now reaches that session's focused pane instead of being refused. And once NO pane
     // carries the session id — the carrier was closed, however it was closed (ISessionHost.SplitClose
-    // states the rule by condition; split panes get fresh ids, so nothing re-mints it), a session id
+    // states the rule by condition; split panes get fresh ids, so nothing re-mints it until the session
+    // is closed and reopened, which puts the id back on pane 0), a session id
     // or id-prefix that the old resolver either refused or steered onto a scratch/overlay cover pane
     // ("<id>:scratch:…" matched the prefix step) now resolves to the session's active pane — the
     // better answer in both cases. The empty / "active" refusal and the

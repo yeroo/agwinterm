@@ -230,8 +230,8 @@ public interface ISessionHost
     /// was already split (the caller that does not know whether it split gets something addressable
     /// either way, and nothing changes); <c>off</c> → the survivor's id (pane 0), also when already
     /// single; <c>toggle</c> → whichever it produced. Or <see cref="RefusePrefix"/> + a refusal —
-    /// <c>session not found</c>, the axis refusal — and nothing split (the op refusal is the server's,
-    /// above, and never reaches here).</para>
+    /// <c>session not found</c>, the only one the host owes — and nothing split (the axis and the op
+    /// refusals are both the server's, above, and neither reaches here).</para>
     /// <para><b>Invariants (#230)</b>: the target is resolved on the caller's thread so an unknown
     /// target answers a refusal with nothing queued; the split lands on THAT session, not on whichever
     /// is active; splitting a session that is not the active one does not move focus to it (the

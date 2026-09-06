@@ -163,7 +163,8 @@ internal sealed class FakeSessionHost : ISessionHost
 
     // A pane, not a session, and in the app's order: active surface, then ANY pane by id or id
     // prefix, then a session by name -> its FOCUSED pane. While a pane carries the session id (pane
-    // 0 until a swap moves it), an id target lands on THAT pane and never on the focused pane; that
+    // 0 until a swap moves it; a restore keeps the order it saved), an id target lands on THAT pane
+    // and never on the focused pane; that
     // is deliberate, and it is the guarantee session.text / session.type rely on (the pane you CHECK
     // is the pane you then type into). While no pane carries the id — the carrier was closed, by any
     // path — it resolves like a name, to the focused pane (P4, the session-id rule by condition).
@@ -182,7 +183,8 @@ internal sealed class FakeSessionHost : ISessionHost
     {
         // The app's FindControlPane, arm for arm: exact pane, exact SESSION → its focused pane, pane
         // prefix, session prefix / unique name → its focused pane. While a pane carries the session id
-        // (always, until P4's `split close` removes that pane), the exact-pane arm takes the session id
+        // (until the carrier was closed, by any path — `split close` on it, or `split off` on a swapped
+        // session, whose collapse removes slot 1), the exact-pane arm takes the session id
         // first and the exact-session arm is never reached for it; once that pane is gone the session
         // id still resolves — to the survivor, the focused pane — exactly as win32-control.ps1's
         // "exact session id resolves content verbs to the surviving regular pane" pins for the app.
