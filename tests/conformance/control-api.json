@@ -298,6 +298,24 @@
       "note": "P4: the reply is the PANE ID the op produced or found (a bare string) — the only handle on the shell it just created. `--axis` in agterm's words: vertical = left/right panes (the default of a session never split), horizontal = top/bottom. `on` when already split answers the existing split pane's id; anything but the two axis words is refused (see errors). The tree carries `axis` beside `paneIds` on a split session."
     },
     {
+      "verb": "session.swap",
+      "args": [
+        "session",
+        "swap",
+        "--target",
+        "{beta}"
+      ],
+      "result": "object",
+      "fields": [
+        "session",
+        "paneIds",
+        "focusedPane",
+        "axis"
+      ],
+      "settle": 1,
+      "note": "P4: exchanges the two panes of a split session — the order reversed, the focus following the pane it was on, the axis kept — and answers the session's split block AFTER the swap (the tree's `paneIds` / `focusedPane` / `axis`), so a caller reads the new order without a second round trip. A swap moves panes, never ids: every id keeps naming the shell it named, now in the other slot, which is why the `split close` below still reaches the pane it captured. A one-pane session is refused (see errors)."
+    },
+    {
       "verb": "session.split.close",
       "args": [
         "session",
@@ -691,6 +709,15 @@
         "session",
         "split",
         "close",
+        "--target",
+        "{alpha}"
+      ]
+    },
+    {
+      "note": "P4: `session swap` on a one-pane session is refused naming `session split on`, and nothing moves — there is no other pane to exchange with, and a swap that quietly did nothing would be the silent-success class one verb over.",
+      "args": [
+        "session",
+        "swap",
         "--target",
         "{alpha}"
       ]
