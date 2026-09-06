@@ -267,7 +267,11 @@ public class ServerSessionTests : IDisposable
         await s.StartAsync("cmd.exe", new[] { "/c", "exit 0" }, verbatimCommandLine: true, cwd: cwd, deElevate: true);
         Assert.True(s.HasExited);
         Assert.Equal(1, s.ExitCode);
-        Assert.Contains("failed to start", GridText(s));
+        string grid = GridText(s);
+        Assert.Contains("failed to start", grid);
+        // Only DeElevatedPty.Fail stamps this prefix: proves the flag reached the host's de-elevate branch
+        // (the ordinary spawn fails a missing cwd too, with a different message).
+        Assert.Contains("de-elevation", grid);
         await Task.Delay(300);
         Assert.False(exitedRaised);
     }

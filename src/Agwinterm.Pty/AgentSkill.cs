@@ -184,8 +184,11 @@ public static class AgentSkill
           the pty-host down), and a blocking open closes its pane as it replies, so AFTER the call `exit 1` cannot be
           told from a program that ran and failed. When that distinction matters, do not block: open with `--wait`
           (the pane stays after the exit and the reply is its id), poll `overlay result` until it says `exit N`,
-          `session text --target <that id>` for the output or the start failure, then `overlay close --target <that id>`
-          (a bare `close` closes the ACTIVE session's overlay, which need not be yours). `overlay result` is ONE value
+          `session text --target <that id>` for the output or the start failure (`exit N` is written when the process
+          ends, not when its output is drained — the last lines can still be landing; read again if the text looks
+          cut off), then `overlay close --target <that id>` (a bare `close` closes the ACTIVE session's overlay, which
+          need not be yours; that close answers `ok:false` when the overlay is already gone — a key pressed on the
+          `--wait` prompt, a later open replacing it — which means closed, not failed; `tree` settles it). `overlay result` is ONE value
           per window — reset to `no overlay` by any open in the window, written by any session's overlay exit — so
           the poll is trustworthy only while yours is the only overlay in the window; `tree` shows which sessions
           have one.
@@ -196,7 +199,9 @@ public static class AgentSkill
           next; it ignores `--target`. Two overlays in one window make it name either one's exit.
         - What is REFUSED (`ok:false`, nothing happened): `open` with no command; `open` and `resize` whenever no
           session resolves (a `--target` that matches nothing, or no target while no session is active); a `close`
-          whose `--target` names something that does not exist; and `resize` on a session with no overlay open.
+          whose `--target` names something that does not exist; `open`, `close` and `resize` whose `--target` names
+          one pane of a split session (an overlay covers the whole session — the refusal names the session id to
+          pass instead); and `resize` on a session with no overlay open.
           One `resize` `ok:false` is NOT "nothing happened": the reply that says the window did not run the request
           within 15 s — that resize is still queued and may land when the window's loop resumes; read `tree`.
           `close` answers `ok` ("no overlay") when the session resolves and has no overlay, or when the target is

@@ -797,10 +797,22 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         }
         Check 'recipe: overlay result reaches "exit 7" while the --wait overlay stays' ($recipeResult.ok -and $recipeResult.result -eq 'exit 7') "$($recipeResult | ConvertTo-Json -Compress)"
         $recipeNode = Get-SessionSnapshot $recipeId
-        $recipeText = Invoke-Ctl @('session', 'text', '--target', $recipeOvl)
+        # "exit N" is written on process exit, not on output drain: poll the text like the skill says to.
+        $recipeText = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $recipeText = Invoke-Ctl @('session', 'text', '--target', $recipeOvl)
+            if ($recipeText.ok -and ("$($recipeText.result)" -match 'recipe-marker')) { break }
+            Start-Sleep -Milliseconds 200
+        }
         Check 'recipe: session text --target <overlay id> reads the overlay pane after its exit' ($recipeNode.overlay -and $recipeText.ok -and ("$($recipeText.result)" -match 'recipe-marker')) "overlay=$($recipeNode.overlay) $($recipeText | ConvertTo-Json -Compress)"
         $recipeClose = Invoke-Ctl @('session', 'overlay', 'close', '--target', $recipeOvl)
-        $recipeAfter = Get-SessionSnapshot $recipeId
+        # "closed" means queued (PostVerb); tree reads the state directly, so poll for it like the resize block.
+        $recipeAfter = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $recipeAfter = Get-SessionSnapshot $recipeId
+            if ($recipeAfter -and -not $recipeAfter.overlay) { break }
+            Start-Sleep -Milliseconds 200
+        }
         Check 'recipe: overlay close --target <overlay id> closes that session''s overlay' ($recipeClose.ok -and $recipeClose.result -eq 'closed' -and $recipeAfter -and -not $recipeAfter.overlay) "$($recipeClose | ConvertTo-Json -Compress) overlay=$($recipeAfter.overlay)"
         try { Invoke-Ctl @('session', 'close', $recipeId) | Out-Null } catch { }
 

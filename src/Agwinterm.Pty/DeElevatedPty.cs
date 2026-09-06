@@ -8,9 +8,11 @@ namespace Agwinterm.Pty;
 /// A ConPTY connection whose child shell runs at the interactive user's <b>Medium</b> integrity,
 /// spawned from an <b>elevated</b> agwinterm (de-elevation). This is the one direction Windows allows
 /// — dropping privileges, never raising them — so an elevated window can host both admin and normal
-/// sessions. It grabs explorer.exe's token and launches via <c>CreateProcessWithTokenW</c>
-/// (needs SeImpersonatePrivilege, which admins hold); Porta.Pty can't do this because it only calls
-/// plain <c>CreateProcess</c>.
+/// sessions. It derives a Medium-integrity primary token from THIS process's own token (SAFER:
+/// SaferCreateLevel + SaferComputeTokenFromLevel, then the integrity label) and launches via
+/// <c>CreateProcessAsUserW</c> — <c>CreateProcessWithTokenW</c> rejects the pseudoconsole attribute
+/// (error 87) — so no extra privilege is needed: the token is a restricted copy of the caller's.
+/// Porta.Pty can't do this because it only calls plain <c>CreateProcess</c>.
 /// </summary>
 internal sealed class DeElevatedPty : IPtyConnection
 {
@@ -61,7 +63,8 @@ internal sealed class DeElevatedPty : IPtyConnection
     }
 
     /// <summary>Spawn <paramref name="commandLine"/> de-elevated inside a fresh pseudoconsole. Throws on
-    /// failure (e.g. the caller isn't actually elevated, or explorer's token is unavailable).</summary>
+    /// failure (e.g. the SAFER token derivation fails, or <c>CreateProcessAsUserW</c> does — a missing
+    /// cwd, a command that does not exist); every such failure is prefixed "de-elevation:".</summary>
     public static DeElevatedPty Spawn(string commandLine, string? cwd, int cols, int rows)
     {
         IntPtr inPipeRead = IntPtr.Zero, inPipeWrite = IntPtr.Zero;

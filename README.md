@@ -281,7 +281,9 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   `open --block` answers the outcome of the overlay it opened — `closed` when that overlay was closed
   or replaced first, `exit 1` also when its program could not be started at all (a blocking open
   closes its pane as it replies, so to tell that from a program that ran and failed, open with
-  `--wait` instead, read the pane by the id the open returned, and close it by that id), and
+  `--wait` instead, poll `overlay result` for its `exit N`, read the pane by the id the open
+  returned, and close it by that id — a close whose overlay is already gone is refused, which is
+  the same end state), and
   `ok:false` with the status unknown when the window closed under it. `overlay result` stays one
   value per window, written by whichever session's overlay exits next.
 - `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
