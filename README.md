@@ -276,7 +276,11 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   overlay covers the whole session — the refusal names the session id to pass instead); and `resize`
   with no overlay open. `close` stays `ok` when the session resolves and
   has no overlay, or when the target is absent, empty or `active` while nothing is active — there is
-  nothing to close, and nothing is what you asked for.
+  nothing to close, and nothing is what you asked for. Two replies are not refusals: a `resize` whose
+  reply says the window did not run it within 15 s is still queued and may land later; and
+  `open --block` answers the outcome of the overlay it opened — `closed` when that overlay was closed
+  or replaced first, `exit 1` also when its program could not be started at all (the reason is in the
+  pane), and `ok:false` with the status unknown when the window closed under it.
 - `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
   the target resolved to (a session name lands on its focused pane, a session id on the pane that
   carries that id while one does — pane 0 of a fresh session, either side after a `session swap` —

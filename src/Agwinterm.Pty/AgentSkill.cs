@@ -179,11 +179,17 @@ public static class AgentSkill
           reply `resized N%` is always the N you asked for.
         - `--wait` keeps the panel after the program exits (shows "press any key to close") instead of auto-dismissing.
         - `--block` waits for the program to exit and returns `exit N` (its exit code). Good for `lazygit`, `htop`, an editor, or any pick-a-thing helper you want to run and read the result of.
+          The reply is the outcome of the overlay THIS call opened: `closed` when it was closed or replaced before its
+          program exited. `exit 1` also covers a program that could not be started at all (the session's cwd gone,
+          the pty-host down) — the pane shows the reason; if `exit 1` matters to you, read the pane before branching.
+          The window closing under a blocking open answers `ok:false` with the status unknown.
         - `agwintermctl session overlay close [--target <id>]`   — dismiss the overlay now.
         - `agwintermctl session overlay result`                 — the last overlay's `exit N` (or `no overlay`).
         - What is REFUSED (`ok:false`, nothing happened): `open` with no command; `open` and `resize` whenever no
           session resolves (a `--target` that matches nothing, or no target while no session is active); a `close`
           whose `--target` names something that does not exist; and `resize` on a session with no overlay open.
+          One `resize` `ok:false` is NOT "nothing happened": the reply that says the window did not run the request
+          within 15 s — that resize is still queued and may land when the window's loop resumes; read `tree`.
           `close` answers `ok` ("no overlay") when the session resolves and has no overlay, or when the target is
           absent, empty or `active` while nothing is active — closing nothing leaves "no overlay open" true. These used to
           answer `ok:true` with the failure as the result text; branch on `ok`.

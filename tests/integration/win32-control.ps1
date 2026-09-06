@@ -696,13 +696,14 @@ try {
         # #227 (2): resize resolves, checks and writes in ONE queued UI action. Fired against an
         # overlay whose program exits under it: two hammer processes resize without pause for the
         # program's whole life while this loop resizes and reads the tree between calls. The
-        # discriminating assertion is the one #227 names — once the tree has shown the overlay
-        # gone, no LATER resize may answer "resized" — and the persistent one: the node carries no
-        # `overlaySize` once the overlay is gone. The old code's lie needed a resize to straddle
-        # the exit's close (its pipe-thread check passing, its posted write landing after the
-        # close cleared the size); the hammers make that straddle likely, not certain — the
-        # stale-size state it leaves is what the last check catches. Every reply must still be
-        # "resized N%" or the "open one first" refusal.
+        # regression guard is the LAST check: the node carries no `overlaySize` once the overlay
+        # is gone. The old code's lie needed a resize to straddle the exit's close (its pipe-thread
+        # check passing while the close was posted but not yet run, its posted write landing after
+        # the close cleared the size); the hammers make that straddle likely, not certain, and the
+        # stale size it leaves is what that check catches. The middle check is a LIVENESS check,
+        # not a guard: the old code refused after the tree showed no overlay too (both read the
+        # same field), so it proves only that this loop outlived the overlay and that the shape
+        # held to the end. Every reply must be "resized N%" or the "open one first" refusal.
         $resizeTarget = $blockIds[1]
         Invoke-Ctl @('session', 'overlay', 'open', 'ping -n 3 127.0.0.1 >nul & exit 0', '--size-percent', '40', '--target', $resizeTarget) | Out-Null
         $hammerScript = @'
@@ -748,10 +749,35 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         $refusedCount = @($resizeReplies | Where-Object { -not $_.ok }).Count
         Check 'resize under an exiting overlay answers resized-or-refused only, and both happened' `
             ($resizeBad.Count -eq 0 -and $resizedCount -gt 0 -and $refusedCount -gt 0) "resized=$resizedCount refused=$refusedCount bad=$($resizeBad -join ' | ')"
-        Check 'and no resize after the tree showed the overlay gone answered resized' ($seenGone -and $resizeAfterGone.Count -eq 0) "seenGone=$seenGone after=$($resizeAfterGone -join ' | ')"
+        Check 'and the loop outlived the overlay (liveness; every resize after the tree showed it gone was refused)' ($seenGone -and $resizeAfterGone.Count -eq 0) "seenGone=$seenGone after=$($resizeAfterGone -join ' | ')"
         Check 'and once the overlay is gone the session carries no overlaySize' `
             ($resizeNode -and -not $resizeNode.overlay -and -not $resizeNode.PSObject.Properties['overlaySize']) "$($resizeNode | ConvertTo-Json -Compress -Depth 3)"
         foreach ($id in $blockIds) { try { Invoke-Ctl @('session', 'close', $id) | Out-Null } catch { } }
+
+        # #227 r2: an overlay whose program cannot be STARTED ends a blocking open as "exit 1" on
+        # the in-process backend too (the default), not a wait without end. The fixture is a
+        # session whose launch dir is deleted under it: its own process moved to C:\ first so the
+        # directory can go, it reports no OSC 7 (cmd), so the overlay is spawned in the dead dir.
+        $goneDir = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-gone-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $goneDir | Out-Null
+        $goneMade = Invoke-Ctl @('session', 'new', '--name', 'p2-227-gone', '--cwd', $goneDir, '--command', 'cmd.exe /c cd /d C:\ & ping -n 60 127.0.0.1 >nul', '--no-select')
+        $goneId = [string]$goneMade.result
+        for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $goneId); $i++) { Start-Sleep -Milliseconds 200 }
+        $goneRemoved = $false
+        for ($i = 0; $i -lt 25 -and -not $goneRemoved; $i++) {
+            try { Remove-Item -LiteralPath $goneDir -Recurse -Force -ErrorAction Stop; $goneRemoved = $true } catch { Start-Sleep -Milliseconds 200 }
+        }
+        Check 'fixture: the launch dir of the p2-227-gone session could be deleted' $goneRemoved "$goneDir"
+        $goneFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-block-gone-" + [guid]::NewGuid().ToString('N') + '.json')
+        $goneProc = Start-Process $ctl -ArgumentList @('session', 'overlay', 'open', '"cmd /c exit 0"', '--block', '--target', $goneId, '--pipe', $pipe, '--json') -NoNewWindow -PassThru -RedirectStandardOutput $goneFile
+        $goneEnded = $goneProc.WaitForExit(15000)
+        if (-not $goneEnded) { try { $goneProc.Kill() } catch { } }
+        $goneReply = $null
+        try { $goneReply = (Get-Content -LiteralPath $goneFile -Raw) | ConvertFrom-Json } catch { }
+        try { Remove-Item -LiteralPath $goneFile -Force -ErrorAction SilentlyContinue } catch { }
+        Check 'a blocking open whose program cannot start (cwd gone) answers "exit 1" instead of waiting forever' `
+            ($goneEnded -and $goneReply -and $goneReply.ok -and $goneReply.result -eq 'exit 1') "ended=$goneEnded reply=$($goneReply | ConvertTo-Json -Compress)"
+        try { Invoke-Ctl @('session', 'close', $goneId) | Out-Null } catch { }
 
         # sidebar.width must move the divider, not just a number. The unit tests see the fake host
         # only; here the proof is live geometry: the active session's measured width (session.metrics,

@@ -323,8 +323,9 @@ internal partial class Program : ISessionHost, IWindowHost
         // their own program's status; the window-wide last exit (`overlay result`) stays separate.
         public TaskCompletionSource<string>? OverlayDone;
         // The pane's StartAsync task (CreatePane's command branches). A start that FAILS sets
-        // HasExited without raising Exited — both session kinds keep the surface to show the
-        // failure — so a watcher that needs an end (WatchOverlayExit) observes this instead.
+        // HasExited without raising Exited — both session kinds catch the spawn failure and keep
+        // the surface to show it — so a watcher that needs an end (WatchOverlayExit) observes this
+        // instead, and treats a task that faulted anyway as the same end.
         public Task? Start;
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // this pane's OWN share of the session's extent along its axis (width when vertical, height when horizontal); PaneLayout normalises by the sum

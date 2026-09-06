@@ -230,8 +230,22 @@ public sealed class TerminalSession : ISession
             options.Environment = env;
         }
 
-        _connection = await PtyProvider.SpawnAsync(options, ct).ConfigureAwait(false);
-        var conn = _connection;
+        IPtyConnection conn;
+        try { conn = await PtyProvider.SpawnAsync(options, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Same shape as the de-elevate branch above and ServerSession.StartAsync: a spawn that
+            // fails (the cwd gone, the app missing) surfaces IN the pane and ends as exit 1, with
+            // HasExited set and Exited NOT raised (the surface stays to show the reason). Before,
+            // the failure escaped as a faulted fire-and-forget task: a dead blank pane, and an
+            // overlay watcher keyed on HasExited never saw an end (#227 r2).
+            var msg = $"\r\n\x1b[31m[agwinterm] could not start the session:\x1b[0m\r\n  {ex.Message}\r\n";
+            lock (_sync) Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(msg));
+            OutputReceived?.Invoke();
+            ExitCode = 1; HasExited = true;
+            return;
+        }
+        _connection = conn;
         _ = StartPump(conn.ReaderStream);
         // Watch for the child exiting so overlays (and anyone else) get the real ConPTY exit code,
         // reliably even for programs that finish faster than a PID poll could catch them.

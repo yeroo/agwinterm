@@ -831,8 +831,10 @@ internal partial class Program
         // A start that FAILS (pty-host down, cwd gone) sets HasExited without raising Exited —
         // the session keeps its surface to show the failure — so nothing above would end this
         // overlay and a `--block` caller would wait forever (revmux r1). The start task completes
-        // after that catch: an overlay whose program never ran ends like one that exited 1.
-        else pane.Start?.ContinueWith(_ => { if (pane.S.HasExited) OnExit(pane.S.ExitCode ?? 1); }, TaskScheduler.Default);
+        // after that catch: an overlay whose program never ran ends like one that exited 1. A
+        // start task that FAULTS instead (a failure a backend let escape — cancellation is the
+        // one left today) is the same end; reading t.Exception marks the fault observed.
+        else pane.Start?.ContinueWith(t => { if (t.Exception is not null || pane.S.HasExited) OnExit(pane.S.ExitCode ?? 1); }, TaskScheduler.Default);
     }
 
     /// <summary>App version for TERM_PROGRAM_VERSION — the entry assembly's informational version

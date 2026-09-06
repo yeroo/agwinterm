@@ -902,20 +902,27 @@ internal partial class Program
                         // reset, or stay parked past its own program's exit. The source is taken
                         // inside the same UI hop as the open, so it is this open's pane and no other.
                         TaskCompletionSource<string>? done = null;
+                        bool ran = false;
                         string opened = InvokeOnUi(() =>
                         {
+                            ran = true;
                             var s = FindSesForTarget(target);
                             if (s is null) return NoSessionRefusal;
                             string id = OverlayOpen(s, command!, sizePercent, false);
                             done = s.Overlay!.OverlayDone;
                             return id;
                         });
-                        if (opened.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) return opened;
                         // InvokeOnUi does not say whether its lambda ran: a SendMessage to a window
-                        // already destroyed returns at once with the previous caller's result, and a
-                        // lambda that threw leaves "". Neither is a refusal, so `done` is the proof
-                        // the open happened; without it the reply is the same throw as below.
-                        if (done is null) throw new InvalidOperationException(OverlayWindowGone);
+                        // already destroyed returns at once with the PREVIOUS caller's result on this
+                        // window — which may itself be a refusal, so the reply text is no proof of
+                        // anything. `ran` is: unset, the window was gone before the open, the same
+                        // throw as below. Set, the result is this call's own: a refusal is returned as
+                        // one; otherwise `done` is the pane's source, and its absence means OverlayOpen
+                        // threw midway (InvokeOnUi turns a throw into ""), which is not the window
+                        // going away and says so.
+                        if (!ran) throw new InvalidOperationException(OverlayWindowGone);
+                        if (opened.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) return opened;
+                        if (done is null) throw new InvalidOperationException("the open did not complete on the UI thread; whether an overlay opened is unknown — read tree");
                         // The wait ends with the pane's own outcome — "exit N", or "closed" when the
                         // overlay was closed or replaced before its program exited — or with the
                         // window going away (Dispose closes each pane without raising Exited, so the
