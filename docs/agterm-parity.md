@@ -42,7 +42,7 @@ named as such rather than left to look like a backlog nobody is working on.
 | `session.split` replies with the **pane id** (the split pane's on `on`, also when already split; the survivor's on `off`) | — | agwinterm *(P4, #238)*; lite had it (#13) |
 | Horizontal splits — `--axis vertical\|horizontal` on `session.split` (agterm's words: vertical = left/right, horizontal = top/bottom), per session, re-orients live, survives restore, `axis` in `tree`; `session.focus` takes `primary\|split\|left\|right\|top\|bottom\|other`, `session.resize` gains `--grow-top` / `--grow-bottom` | 0.23.0 | agwinterm *(P4, #238)*, lite: P4-lite |
 | `session.split.close` — closes **either** pane, the survivor's id as the reply; a one-pane session refused | 0.23.0 | agwinterm *(P4, #238)*, lite: P4-lite |
-| `session.swap` — the panes exchanged; axis, ratio sequence, focus's pane, overlays, status and **every id** kept | 0.26.0 | agwinterm *(P4, #238)*, lite: P4-lite *(expensive there — see [lite-parity.md](lite-parity.md))* |
+| `session.swap` — the panes exchanged; axis, ratio sequence, focus's pane, overlays, status and **every id** kept | 0.26.0 | agwinterm *(P4, #238)*, lite: P4-lite *(agliteterm #30 — one flag read in its hidden-session model; see [lite-parity.md](lite-parity.md))* |
 
 The overlay entry is the *honesty* half only: a pane id is now refused rather than silently widened.
 Pane-scoped overlays themselves are still open, below.

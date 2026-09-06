@@ -112,9 +112,11 @@ moves panes, never ids — the one divergence P4 adds to agterm's swap, recorded
 `docs/agterm-parity.md` together with what it costs a downgrade to 0.17.12 (a swapped session's
 two panes both carry the session id there; checked once, no `.bad`). Pane ids are durable across
 split, close, swap and restore (`CreateSession` takes pane 0's id separately). Mirror: P4-lite —
-the axis and `split close` are cheap in lite's model, `swap` is not (`docs/lite-parity.md`); the
-P4-lite plan decides whether the swap defers the way `session.restore` went to P9. Review rounds
-and the release (0.17.13, the next number — Boris tags) follow the PR.
+**shipped** as agliteterm #30 (2026-09-06; plan `docs/plans/completed/2026-09-06-p4-lite-mirror.md`
+there), swap included (Boris's call; the hidden session is drawn in the owner's other slot, so a
+swap is one flag read — no tree identity moves). The contract pins the swap in #241. Four revmux
+rounds, no Major after r1; the divergences P4-lite records are in `docs/lite-parity.md` ("Splits as
+sessions"). The release (0.17.13, the next number — Boris tags) follows.
 
 ### P5 · agwinterm · overlays stop being session-wide
 `--pane left|right` on the overlay verbs, flag omitted keeping today's session-wide behaviour ·
