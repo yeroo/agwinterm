@@ -181,7 +181,10 @@ public static class AgentSkill
         - `--block` waits for the program to exit and returns `exit N` (its exit code). Good for `lazygit`, `htop`, an editor, or any pick-a-thing helper you want to run and read the result of.
           The reply is the outcome of the overlay THIS call opened: `closed` when it was closed or replaced before its
           program exited. `exit 1` also covers a program that could not be started at all (the session's cwd gone,
-          the pty-host down) — the pane shows the reason; if `exit 1` matters to you, read the pane before branching.
+          the pty-host down), and a blocking open closes its pane as it replies, so AFTER the call `exit 1` cannot be
+          told from a program that ran and failed. When that distinction matters, do not block: open with `--wait`
+          (the pane stays after the exit and the reply is its id), poll `overlay result` until it says `exit N`,
+          `session text --target <that id>` for the output or the start failure, then `overlay close`.
           The window closing under a blocking open answers `ok:false` with the status unknown.
         - `agwintermctl session overlay close [--target <id>]`   — dismiss the overlay now.
         - `agwintermctl session overlay result`                 — the last overlay's `exit N` (or `no overlay`).

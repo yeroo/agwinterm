@@ -279,8 +279,10 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   nothing to close, and nothing is what you asked for. Two replies are not refusals: a `resize` whose
   reply says the window did not run it within 15 s is still queued and may land later; and
   `open --block` answers the outcome of the overlay it opened — `closed` when that overlay was closed
-  or replaced first, `exit 1` also when its program could not be started at all (the reason is in the
-  pane), and `ok:false` with the status unknown when the window closed under it.
+  or replaced first, `exit 1` also when its program could not be started at all (a blocking open
+  closes its pane as it replies, so to tell that from a program that ran and failed, open with
+  `--wait` instead and read the pane), and `ok:false` with the status unknown when the window closed
+  under it.
 - `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
   the target resolved to (a session name lands on its focused pane, a session id on the pane that
   carries that id while one does — pane 0 of a fresh session, either side after a `session swap` —

@@ -1,3 +1,4 @@
+using System.Text;
 using Agwinterm.Core;
 using Agwinterm.Pty;
 
@@ -232,5 +233,27 @@ public class ServerSessionTests : IDisposable
         await s.StartAsync("definitely-not-a-real-exe-agw.exe", Array.Empty<string>());
         Assert.True(WaitFor(() => s.HasExited, 10000));
         Assert.Equal(1, s.ExitCode);
+    }
+
+    /// <summary>The failure must travel back over the wire as the create's ERROR (#227 r3): the
+    /// host's own spawn catch would paint into an emulator no client sees and answer ok for a
+    /// session that never ran. The proof is the reason in the REPLICA's grid — only the client's
+    /// start catch writes it, and that runs only when create errs — with Exited not raised (the
+    /// surface stays, as in-process).</summary>
+    [Fact]
+    public async Task StartFailure_IntoAMissingCwd_ReachesTheClientAsTheReason()
+    {
+        string cwd = Path.Combine(Path.GetTempPath(), "agwinterm-gone-" + Guid.NewGuid().ToString("N"));
+        using var s = _backend.Create(Guid.NewGuid().ToString(), 80, 24);
+        bool exitedRaised = false;
+        s.Exited += _ => exitedRaised = true;
+        await s.StartAsync("cmd.exe", new[] { "/c", "exit 0" }, verbatimCommandLine: true, cwd: cwd);
+        Assert.True(s.HasExited);
+        Assert.Equal(1, s.ExitCode);
+        var sb = new StringBuilder();
+        for (int r = 0; r < s.Rows; r++) sb.AppendLine(s.SnapshotRow(r));
+        Assert.Contains("failed to start", sb.ToString());
+        await Task.Delay(300);   // an Exited via the data pipe's EOF would arrive after the create reply
+        Assert.False(exitedRaised);
     }
 }

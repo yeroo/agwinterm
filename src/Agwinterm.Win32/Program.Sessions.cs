@@ -832,8 +832,11 @@ internal partial class Program
         // the session keeps its surface to show the failure — so nothing above would end this
         // overlay and a `--block` caller would wait forever (revmux r1). The start task completes
         // after that catch: an overlay whose program never ran ends like one that exited 1. A
-        // start task that FAULTS instead (a failure a backend let escape — cancellation is the
-        // one left today) is the same end; reading t.Exception marks the fault observed.
+        // start task that FAULTS instead (a failure a backend let escape) is the same end;
+        // reading t.Exception marks the fault observed. A CANCELLED start is NOT an end here
+        // (an async method that throws OperationCanceledException completes Canceled, with
+        // t.Exception null) — no call site passes a cancellable token, so none can happen today;
+        // whoever wires one through CreatePane must widen this guard or a --block waits forever.
         else pane.Start?.ContinueWith(t => { if (t.Exception is not null || pane.S.HasExited) OnExit(pane.S.ExitCode ?? 1); }, TaskScheduler.Default);
     }
 
