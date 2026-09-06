@@ -1068,7 +1068,12 @@ internal partial class Program
                     pane.CapturedCommand = pid > 0 && byPid.TryGetValue(pid, out var cmd) ? cmd : null;
                     landed.Add(new CapturedPane(pane.Id, ses.Id, pane.CapturedCommand));
                 }
-            if (landed.Count > 0) SaveState();
+            // The reply claims a checkpoint ON DISK. A save that did not land is a refusal that says
+            // what did happen: the slots are in memory (tree shows them) and are left as captured —
+            // rolling them back would make the tree disagree with a query that read the processes
+            // correctly (#246; lite's restore.capture refuses the same way).
+            if (landed.Count > 0 && !TrySaveState(out string? why))
+                return RestoreCaptureResult.Refuse(RestoreCaptureReply.NotSaved(landed.Count, why));
             return new RestoreCaptureResult(landed, _config.RestoreCommands);
         });
     }

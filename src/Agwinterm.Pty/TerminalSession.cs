@@ -13,6 +13,7 @@ public sealed class TerminalSession : ISession
 {
     private readonly object _sync = new();
     private IPtyConnection? _connection;
+    private long _pumpBytes;   // bytes the pump has fed so far; the exit watchers' settle window reads it
 
     public ITerminalCore Emulator { get; }
     public int Cols { get; private set; }
@@ -215,6 +216,7 @@ public sealed class TerminalSession : ISession
             {
                 try { dc.WaitForExit(Timeout.Infinite); } catch { }
                 int code = 0; try { code = dc.ExitCode; } catch { }
+                SettleOutput();
                 ExitCode = code; HasExited = true;
                 try { Exited?.Invoke(code); } catch { }
             }, ct);
@@ -273,9 +275,30 @@ public sealed class TerminalSession : ISession
         {
             try { conn.WaitForExit(Timeout.Infinite); } catch { }
             int code = 0; try { code = conn.ExitCode; } catch { }
+            SettleOutput();
             ExitCode = code; HasExited = true;
             try { Exited?.Invoke(code); } catch { }
         }, ct);
+    }
+
+    /// <summary>The child is gone, but what it wrote last may still be in flight: conhost flushes the
+    /// pseudoconsole's output after the process exits and the pipe never hits EOF, so "the process has
+    /// exited" is not "the pane is complete". Wait until one 50 ms window passes with no new bytes
+    /// from the pump, at most 500 ms, BEFORE <see cref="HasExited"/> and <see cref="Exited"/> say the
+    /// session ended — an overlay's `exit N`, the pty-host's data-pipe close (the client's EOF), and
+    /// any handler that reads the grid then see the whole output (#246; <see cref="RunAsync"/> waited
+    /// a fixed 250 ms for the same reason). A pump that has already stopped (Dispose closed the
+    /// stream) costs one window.</summary>
+    private void SettleOutput()
+    {
+        long seen = Interlocked.Read(ref _pumpBytes);
+        for (int i = 0; i < 10; i++)
+        {
+            Thread.Sleep(50);
+            long now = Interlocked.Read(ref _pumpBytes);
+            if (now == seen) return;
+            seen = now;
+        }
     }
 
     /// <summary>Attach to an <b>externally-created</b> pseudoconsole (the Windows default-terminal handoff,
@@ -290,8 +313,8 @@ public sealed class TerminalSession : ISession
         var pump = StartPump(conn.ReaderStream);
         _ = Task.Run(async () =>
         {
-            if (clientProcess != IntPtr.Zero) await Task.Run(() => conn.WaitForExit(Timeout.Infinite)).ConfigureAwait(false);
-            else await pump.ConfigureAwait(false);   // no client handle → exit when the output pipe hits EOF
+            if (clientProcess != IntPtr.Zero) { await Task.Run(() => conn.WaitForExit(Timeout.Infinite)).ConfigureAwait(false); SettleOutput(); }
+            else await pump.ConfigureAwait(false);   // no client handle → exit when the output pipe hits EOF (already drained)
             int code = 0; try { code = conn.ExitCode; } catch { }
             ExitCode = code; HasExited = true;
             try { Exited?.Invoke(code); } catch { }
@@ -329,6 +352,7 @@ public sealed class TerminalSession : ISession
                     lock (_sync) System.IO.File.AppendAllBytes(DumpPath, buffer.AsSpan(0, n).ToArray());
                 lock (_sync) Emulator.Feed(buffer.AsSpan(0, n));
                 if (RawOutput is { } tap) tap(buffer[..n]);
+                Interlocked.Add(ref _pumpBytes, n);   // after the feed and the tap: "settled" means both have it
                 OutputReceived?.Invoke();
             }
         }

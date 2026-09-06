@@ -36,6 +36,8 @@ struct Hosted {
     term: Mutex<Terminal>,
     data: Mutex<Option<Arc<OvStream>>>,
     exited: AtomicBool,
+    /// Bytes the pump has fed so far; the exit watcher's settle window reads it (#246).
+    pump_bytes: AtomicU64,
     exit_code: AtomicI32,
 }
 
@@ -218,6 +220,19 @@ fn with_session(host: &Arc<Host>, id: &str, act: impl FnOnce(&Arc<Hosted>) -> Re
     }
 }
 
+/// One 50 ms window with no new pump bytes, at most ten windows. A pump that already stopped costs one.
+fn settle_output(h: &Arc<Hosted>) {
+    let mut seen = h.pump_bytes.load(Ordering::SeqCst);
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let now = h.pump_bytes.load(Ordering::SeqCst);
+        if now == seen {
+            return;
+        }
+        seen = now;
+    }
+}
+
 fn detach(h: &Arc<Hosted>) {
     let mut data = h.data.lock().unwrap();
     if let Some(d) = data.take() {
@@ -287,6 +302,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         pty: Mutex::new(pty),
         data: Mutex::new(None),
         exited: AtomicBool::new(false),
+        pump_bytes: AtomicU64::new(0),
         exit_code: AtomicI32::new(0),
     });
     host.sessions
@@ -312,6 +328,9 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
             {
                 *data = None; // client vanished mid-write -> plain detach
             }
+            drop(data);
+            // After the feed and the forward: "settled" means the emulator and the client both have it.
+            hosted.pump_bytes.fetch_add(n as u64, Ordering::SeqCst);
         }
     });
 
@@ -320,6 +339,12 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
     let child_h = hosted2.pty.lock().unwrap().child as usize;
     std::thread::spawn(move || {
         let code = conpty::wait_child(child_h);
+        // The child is gone, but what it wrote last may still be in flight: conhost flushes the
+        // pseudoconsole's output after the process exits and the pipe never hits EOF, so "exited"
+        // is not "complete". Wait until one 50 ms window passes with no new bytes from the pump,
+        // at most 500 ms, BEFORE the client's EOF (the detach) and `has_exited` say the session
+        // ended — the same window as TerminalSession's SettleOutput (#246).
+        settle_output(&hosted2);
         hosted2.exit_code.store(code, Ordering::SeqCst);
         hosted2.exited.store(true, Ordering::SeqCst);
         detach(&hosted2); // data-pipe EOF = the client's exit signal

@@ -97,7 +97,9 @@ for (int i = 0; i < args.Length; i++)
         bool takes = i + 1 < args.Length && !args[i + 1].StartsWith("--");
         string val = takes ? args[++i] : "true";
         options[key] = val;
-        if (takes) valued.Add(key);
+        // The LAST occurrence wins for the value (above) and so for whether one was consumed:
+        // `--target victim --target` is a bare flag, not "victim" (#246).
+        if (takes) valued.Add(key); else valued.Remove(key);
     }
     else positionals.Add(a);
 }

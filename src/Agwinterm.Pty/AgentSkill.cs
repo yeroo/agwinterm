@@ -330,10 +330,15 @@ public static class AgentSkill
           true — check it, or `config set restore-commands true`, or the checkpoint is kept and never replayed. Read the
           slots back in `tree --json` as `capturedCommands`, keyed by pane id like `restoreCommands`. An unknown target,
           or a scratch/overlay/quick pane (never restored, so no slot), is refused and nothing is captured or saved; a
-          process query that fails or times out is a refusal too, never an empty answer for every pane.
+          process query that fails or times out is a refusal too, never an empty answer for every pane. ONE refusal
+          leaves something behind and says so: "captured into memory but the state file could not be written" — the
+          slots are filled (`tree` shows them) but the checkpoint is not on disk and will not survive a restart; fix
+          the state directory and capture again. `session context` / `session rename` replies describe the value in
+          memory the same way — their save is best-effort and silent.
         - `agwintermctl install hooks|skill|shell`               — install agent-status hooks / this skill / shell-integration (live cwd)
         - `agwintermctl install cli [--remove]`                  — add (or remove) agwintermctl on the user PATH
-        - `agwintermctl omp list` / `omp set <name> [--persist]` — list / apply oh-my-posh themes (live; --persist keeps it for new sessions)
+        - `agwintermctl omp list` / `omp set <name> [--persist]` — list / apply oh-my-posh themes (live; --persist keeps it for new sessions).
+          A name that resolves to no theme is REFUSED (`ok:false`, the theme in effect unchanged) — it used to answer `ok:true` with the text.
 
         ## Show an image inline
         - `agwintermctl image show C:\path\pic.png --row 2 --col 4`

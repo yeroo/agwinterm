@@ -60,7 +60,15 @@ public interface ISession : IDisposable
     void Attach(SafeFileHandle conOut, SafeFileHandle conIn, SafeFileHandle signal, IntPtr clientProcess, int pid);
     int? ExitCode { get; }
     bool HasExited { get; }
-    /// <summary>Raised (background thread) when the child process exits, with its exit code.</summary>
+    /// <summary>Raised (background thread) when the child process exits, with its exit code — after
+    /// the output it wrote last has settled into the emulator, so a handler that reads the grid reads
+    /// a complete one (#246; see <see cref="TerminalSession"/>'s settle window). Not raised for a
+    /// start that failed (the pane keeps its surface to show the reason; watchers use
+    /// <see cref="HasExited"/>). After a LOCAL <see cref="IDisposable.Dispose"/> the backends differ:
+    /// the in-process session raises it once with the kill's exit code, the server session does not
+    /// (it left; it did not see the child die) — every listener guards on tree membership, and the
+    /// overlay path waits on the pane's own completion source, which a close completes as "closed"
+    /// on both.</summary>
     event Action<int>? Exited;
 
     // ---- I/O ----

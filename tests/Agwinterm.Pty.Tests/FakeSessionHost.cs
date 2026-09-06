@@ -582,5 +582,9 @@ internal sealed class FakeSessionHost : ISessionHost
     public string CommandRun(string nameOrCommand, string? mode) => $"{mode ?? "new"}: {nameOrCommand}";
     public string CommandList() => "";
     public string CommandLeader(string op) => "idle";
-    public string OmpSet(string nameOrPath, bool persist) => "ok";
+    /// <summary>The fake knows one theme, "fake-theme"; every other name is the app's not-found refusal.</summary>
+    public string OmpSet(string nameOrPath, bool persist)
+        => string.Equals(nameOrPath, "fake-theme", StringComparison.OrdinalIgnoreCase)
+            ? "oh-my-posh theme set: " + nameOrPath
+            : ISessionHost.RefusePrefix + OmpThemes.NotFound(nameOrPath);
 }

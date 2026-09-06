@@ -1062,10 +1062,15 @@ internal partial class Program
                 if (ovl is null) { _claudeUpdating = false; return; }
                 ShowToast(latest is null ? $"running claude update (you have {installed})…"
                                          : $"updating Claude Code {installed} → {latest}…", 4000);
-                int fired = 0;   // one-shot: the event and the already-exited fallback can race
-                void Once(int code) { if (Interlocked.Exchange(ref fired, 1) == 0) OnClaudeUpdateExited(code, installed); }
-                ovl.S.Exited += Once;
-                if (ovl.S.HasExited) Once(ovl.S.ExitCode ?? 0);
+                // The pane's own completion source (#227): "exit N" once the program ended, on every
+                // backend, or "closed" when the user dismissed the overlay first — which S.Exited does
+                // not report on the server backend, and then left _claudeUpdating latched (#246).
+                ovl.OverlayDone!.Task.ContinueWith(t =>
+                {
+                    string r = t.Result;
+                    if (r.StartsWith("exit ", StringComparison.Ordinal) && int.TryParse(r.AsSpan(5), out int code)) OnClaudeUpdateExited(code, installed);
+                    else Post(() => { _claudeUpdating = false; ShowToast("claude update overlay closed before it finished — sessions not restarted", 5000); });
+                }, TaskScheduler.Default);
             });
         });
         return "updating Claude Code…";

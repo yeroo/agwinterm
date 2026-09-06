@@ -262,6 +262,19 @@ public class ControlApiTests
         Assert.Contains("no overlay", r.GetProperty("error").GetString());
     }
 
+    [Fact]
+    public void OmpSet_UnknownTheme_IsRefused()
+    {
+        // ok:false since #246 - it answered ok:true "oh-my-posh theme not found: X", and a script
+        // branching on ok carried on with the old theme in place.
+        var (server, _) = New();
+        var r = Dispatch(server, "omp.set", new { name = "no-such-theme" });
+        Assert.False(Ok(r));
+        Assert.Equal(OmpThemes.NotFound("no-such-theme"), r.GetProperty("error").GetString());
+        var ok = Dispatch(server, "omp.set", new { name = "fake-theme" });
+        Assert.True(Ok(ok));
+    }
+
     // ---- toggles ----
 
     [Fact]

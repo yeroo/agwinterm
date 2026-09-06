@@ -424,7 +424,10 @@ public interface ISessionHost
     /// exact session → its active pane, pane prefix, session prefix / unique name). An unknown target
     /// is refused with <see cref="RestoreCaptureReply.UnknownTarget"/>; a scratch / overlay / quick
     /// cover (never in the saved tree, so no slot) with <see cref="RestoreCaptureReply.CoverPane"/>.
-    /// A refusal captures nothing for anyone and saves nothing.</para>
+    /// A refusal captures nothing for anyone and saves nothing — except the one whose text says
+    /// otherwise, <see cref="RestoreCaptureReply.NotSaved"/>: the slots were written in memory
+    /// (<c>tree</c> shows them) and the state file could not be, so the checkpoint the reply would
+    /// have claimed does not exist on disk (#246).</para>
     /// <para><b>Null captured</b> = the shell had no non-denylisted child: the honest answer, written
     /// into the slot (a fresh capture overrides an earlier checkpoint, including to empty). A process
     /// query that fails or times out is a refusal (<see cref="RestoreCaptureReply.QueryFailed"/>),
@@ -492,11 +495,11 @@ public interface ISessionHost
 
     /// <summary>Apply an oh-my-posh theme (by name or .omp.json path) live to the active session's shell
     /// (re-inits oh-my-posh and re-applies the OSC-7 prompt wrap). When <paramref name="persist"/>, also
-    /// save it to config so new sessions launch with it. Returns an ack, or "oh-my-posh theme not
-    /// found: NAME" — a plain string the server sends as ok:true, so a caller must match the text
-    /// (agwinterm #246 tracks making it a refusal). A change the window could not queue (it is
-    /// closing, or its message queue refused the wake-up) is a throw the server turns into ok:false
-    /// with the reason, never the ack (#228 item 5).</summary>
+    /// save it to config so new sessions launch with it. Returns an ack, or <see cref="RefusePrefix"/>
+    /// + <see cref="OmpThemes.NotFound"/> for a name that resolves to no theme — ok:false, and the
+    /// theme in effect is unchanged (it answered ok:true with the text until #246). A change the
+    /// window could not queue (it is closing, or its message queue refused the wake-up) is a throw
+    /// the server turns into ok:false with the reason, never the ack (#228 item 5).</summary>
     string OmpSet(string nameOrPath, bool persist);
 }
 

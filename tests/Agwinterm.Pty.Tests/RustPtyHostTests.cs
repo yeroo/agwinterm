@@ -194,6 +194,21 @@ public class RustPtyHostTests : IDisposable
         client.Kill(id);
     }
 
+    /// <summary>#246: the Rust host settles the pump before the exit watcher closes the data pipe
+    /// (the client's exit signal), the same 50 ms window as TerminalSession — so everything the
+    /// program wrote is on the stream before its EOF. Read to EOF, then look for the last line.</summary>
+    [Fact]
+    public void DataEof_ComesAfterTheLastOutput()
+    {
+        if (ExePath is null) return;
+        using var client = Start();
+        string id = client.Create(Guid.NewGuid().ToString(), 100, 24, "cmd.exe", new[] { "/q", "/c", "echo settle-marker-246 & exit 3" }, verbatim: true);
+        using var att = client.Attach(id);
+        string all = ReadUntil(att.Data, "\u0001never-appears", 15000);   // returns at EOF
+        Assert.Contains("settle-marker-246", all);
+        Assert.True(WaitFor(() => client.List().Any(i => i.Id == id && i.HasExited)), "the session must report exited after its EOF");
+    }
+
     [Fact]
     public void Resize_And_DuplicateCreate()
     {

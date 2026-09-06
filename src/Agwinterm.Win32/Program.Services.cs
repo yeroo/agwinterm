@@ -296,7 +296,10 @@ internal partial class Program
         bool showBell = _config.AttentionButton;
         float titleX = _sidebarW > 0 ? _sidebarW + 10f : togX + togW + 8f;
         float bellW = showBell ? 34f : 0f, bellGap = showBell ? 8f : 0f;
-        float titleAvail = rgLeft - 14f - bellW - bellGap - titleX;
+        // The recents clock (drawn after the bell while the sidebar is hidden) is reserved HERE like the
+        // bell, so an ellipsized title cannot push it over the right group (#246): bellW wide + its 2 px gap.
+        float clockW = showBell && _sidebarW <= 0 ? bellW + 2f : 0f;
+        float titleAvail = rgLeft - 14f - bellW - clockW - bellGap - titleX;
         float titleMeasured = MeasureText(title, _uiFont);
         // session.context (P3): a dimmed, smaller run AFTER the title and after the pill strip. It is
         // a suffix and not a second caption line because TitleBarH is 40/30/0 by toolbar mode — there
@@ -311,8 +314,9 @@ internal partial class Program
         // full and its pills stay put, whatever the context (qa/persistence.md states the same bound;
         // the earlier "never depends on the context" was more than the layout does — #234). The bell
         // follows the run (title, pills, then the context) and clamps on its own at `rgLeft - bellW -
-        // 14`, the same edge the budget was cut from, so a run that fills the budget puts it exactly
-        // there and the right button group never moves (revmux r1).
+        // clockW - 14`, the same edge the budget was cut from, so a run that fills the budget puts it
+        // exactly there and the right button group never moves (revmux r1; the clock joined the
+        // reservation in #246).
         var pills = new List<(string label, Color4 bg, float w)>();
         void Pill(string label, Color4 bg) => pills.Add((label, bg, MeasureText(label, _uiSmall) + 14f));   // small status pill after the title
         if (_broadcast) Pill("BROADCAST", new Color4(0.85f, 0.25f, 0.25f, 0.95f));  // typing fans out to the workspace
@@ -358,7 +362,7 @@ internal partial class Program
         // dim = nothing, plain = active/completed, blocked-color = any blocked (uses the configured status color).
         if (showBell)
         {
-            float bellX = MathF.Min(runEnd + bellGap, rgLeft - bellW - 14f);
+            float bellX = MathF.Min(runEnd + bellGap, rgLeft - bellW - clockW - 14f);
             var (bellBlocked, bellActive) = AttentionState();
             var bellBase = bellBlocked ? StatusDot(AgentStatus.Blocked) : (bellActive ? ChromeText : ChromeDim);
             if ((bellBlocked || bellActive) && !_cursorOn && AnyBlinkAttention())
@@ -704,7 +708,7 @@ internal partial class Program
     public string OmpSet(string nameOrPath, bool persist)
     {
         string? path = Agwinterm.Pty.OmpThemes.Resolve(nameOrPath);
-        if (path is null) return "oh-my-posh theme not found: " + nameOrPath;
+        if (path is null) return Agwinterm.Pty.ISessionHost.RefusePrefix + OmpThemes.NotFound(nameOrPath);   // ok:false: nothing changed (#246)
         PostVerb(() => ApplyOmp(path, persist));   // a control verb: the post's outcome is the reply (#228 item 5)
         return "oh-my-posh theme set: " + nameOrPath;
     }
@@ -1391,13 +1395,21 @@ internal partial class Program
         return true;
     }
 
-    /// <summary>Snapshot the tree/selection/sidebar to disk atomically. No-op while restoring; ignores IO errors.
+    /// <summary>Snapshot the tree/selection/sidebar to disk atomically. No-op while restoring. Returns
+    /// whether THIS call put the snapshot on disk; every failure (no state directory, an unwritable
+    /// one, a full disk) is swallowed here and reported only through the return value, which the
+    /// UI-thread callers ignore as they always have and <see cref="RestoreCapture"/> refuses on (#246).
     /// <paramref name="captureCommands"/> (quit only) first captures each pane's foreground command into its
     /// <see cref="Pane.CapturedCommand"/> when restore-commands is on; every save then writes that field —
     /// one slot, one reader, so a `restore capture` checkpoint survives the ordinary saves in between (P3).</summary>
-    private void SaveState(bool captureCommands = false)
+    private bool SaveState(bool captureCommands = false) => TrySaveState(out _, captureCommands);
+
+    /// <summary><see cref="SaveState"/> with the reason a save did not land, for a caller whose reply
+    /// claims durability.</summary>
+    private bool TrySaveState(out string? why, bool captureCommands = false)
     {
-        if (_restoring) return;
+        why = null;
+        if (_restoring) { why = "the window is still restoring its saved state"; return false; }
         try
         {
             // Snapshot rows under the workspaces lock, then read each cwd (which locks the
@@ -1488,8 +1500,9 @@ internal partial class Program
                 }
             }
             SaveIndex();
+            return true;
         }
-        catch { /* persistence is best-effort */ }
+        catch (Exception ex) { why = ex.Message; return false; }   // persistence is best-effort for the UI callers
     }
 
     // Window geometry loaded from state.json at startup (applied at window creation).
