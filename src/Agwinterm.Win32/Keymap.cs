@@ -55,6 +55,12 @@ internal static class Keymap
     {
         "new_session", "duplicate_session", "new_workspace", "close_session", "close_pane", "split_pane",
         "focus_left_pane", "focus_right_pane", "next_session", "previous_session",
+        // P4: aliases of focus_left_pane / focus_right_pane for a horizontal split (top/bottom panes).
+        // The walk is the same either way (-1 / +1 along the axis), so the existing chords already
+        // cross a horizontal split; these exist so a keymap.conf can say what it means. No default
+        // chords: ctrl+alt+up / ctrl+alt+down are previous_attention / next_attention, and a
+        // second chord for a walk the first already makes would be a binding nobody asked for.
+        "focus_top_pane", "focus_bottom_pane",
         "toggle_sidebar", "rename_session", "delete_workspace", "session_palette", "action_palette",
         "attention_list", "custom_palette", "next_attention", "previous_attention", "reload_keymap",
         "toggle_search", "toggle_scratch", "quick_terminal", "close_cover", "toggle_fullscreen", "toggle_broadcast", "mark_mode", "toggle_read_only",

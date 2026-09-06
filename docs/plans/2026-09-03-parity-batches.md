@@ -95,11 +95,26 @@ hidden pane refusing `session context` (the three divergences are in `docs/lite-
 checks SKIP against the released `agwintermctl` until the release that carries #233 + #235 is tagged.
 
 ### P4 · agwinterm · splits get their full shape
-axis on `session.split` (`h|v`, surviving restore) · `session.split.close` · `session.split` **returns
+axis on `session.split` (`--axis vertical|horizontal`, agterm's words, surviving restore) · `session.split.close` · `session.split` **returns
 the pane id** · `session.swap`
 
 One subsystem, one restore-format change, one test area. The returned id is a gap inside our own
 family: lite already returns it, and a hidden split shell has no other handle.
+
+**Shipped:** #238 (2026-09-06) — plan at
+[completed/2026-09-06-p4-splits.md](completed/2026-09-06-p4-splits.md); contract steps in the
+sibling PR that follows, as #235 followed #233. Every `session split` reply is a pane id (a string,
+so the shipped `split off` conformance step is untouched); the axis is agterm's words (vertical =
+left/right, horizontal = top/bottom), per session, live re-orient, `axis` in the tree, and the
+second additive restore key under P3's rule (`SessionState.Axis`, written only for a split
+horizontal session, validated on load); `session.split.close` closes either pane; `session.swap`
+moves panes, never ids — the one divergence P4 adds to agterm's swap, recorded in
+`docs/agterm-parity.md` together with what it costs a downgrade to 0.17.12 (a swapped session's
+two panes both carry the session id there; checked once, no `.bad`). Pane ids are durable across
+split, close, swap and restore (`CreateSession` takes pane 0's id separately). Mirror: P4-lite —
+the axis and `split close` are cheap in lite's model, `swap` is not (`docs/lite-parity.md`); the
+P4-lite plan decides whether the swap defers the way `session.restore` went to P9. Review rounds
+and the release (0.17.13, the next number — Boris tags) follow the PR.
 
 ### P5 · agwinterm · overlays stop being session-wide
 `--pane left|right` on the overlay verbs, flag omitted keeping today's session-wide behaviour ·

@@ -124,9 +124,9 @@ internal partial class Program : ISessionHost, IWindowHost
     private readonly List<Workspace> _workspaces = new(); // source of truth; guarded by lock(_workspaces)
     private bool _restoring;                              // suppress SaveState while rebuilding from disk
     private Ses? _active;
-    private const float DividerW = 6f;                       // gutter between panes
+    private const float DividerW = 6f;                       // THICKNESS of the gutter between panes, along the session's axis (a column gap on a vertical split, a row gap on a horizontal one)
     private bool _divDragging;                        // dragging a pane divider
-    private int _divLeft;                             // left-pane index of the divider being dragged
+    private int _divLeft;                             // index of the pane BEFORE the divider being dragged (the left pane on a vertical split, the top pane on a horizontal one)
     // Actions queued from the pipe (background) thread to run on the UI thread.
     private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
     /// <summary>Cancelled in WM_DESTROY: every pipe thread parked in InvokeOnUiQueued wakes and
@@ -289,7 +289,8 @@ internal partial class Program : ISessionHost, IWindowHost
     private static IDWriteTextFormat _iconFont = null!;
     private static IDWriteTextFormat _iconSmall = null!;   // small Fluent glyphs (e.g. the row flag marker)
 
-    /// <summary>One terminal surface within a session. A session is a left→right row of panes.</summary>
+    /// <summary>One terminal surface within a session. A session is a row of panes along its
+    /// <see cref="Ses.Axis"/>: left→right when vertical, top→bottom when horizontal.</summary>
     private sealed class Pane
     {
         public required string Id;
@@ -304,7 +305,7 @@ internal partial class Program : ISessionHost, IWindowHost
         // crash / Stop-Process never filled it; one field, one writer per capture, one reader.
         public string? CapturedCommand;
         public float FontSize;     // per-pane font zoom (pt)
-        public float Ratio = 1f;   // fraction of the session's content width (ratios in a session sum to 1)
+        public float Ratio = 1f;   // this pane's OWN share of the session's extent along its axis (width when vertical, height when horizontal); PaneLayout normalises by the sum
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
         public long LastScrollGen; // emulator ScrollGeneration last seen on output (detects real scroll vs in-place repaint)
         public int Unread;         // unread desktop-notification count (OSC 9/777 / notify) since last visit
@@ -334,6 +335,12 @@ internal partial class Program : ISessionHost, IWindowHost
         public required Workspace Ws;
         public readonly List<Pane> Panes = new();
         public int Active;         // index of the focused pane
+        // The split's orientation, one of SplitAxes' words: vertical = left/right panes (the default of
+        // a session never split), horizontal = top/bottom. PER SESSION (agterm's model; a per-pane axis
+        // would be a tree layout, which is not the item), kept across `split off` so the next `on`
+        // without --axis splits the way the session was last split. PaneLayout is the ONE place that
+        // turns it into geometry; every hit-test and the renderer go through the layout tuples.
+        public string Axis = SplitAxes.Vertical;
         public bool Flagged;       // durable working-set flag (survives moves; persisted; drives flagged sidebar mode)
         public bool Elevated;      // shell runs at High integrity (admin) — shown with a ⚡; false for de-elevated sessions
         public string? CustomName; // user-renamed title (null = show the cwd/OSC title in the title bar, agterm-style)

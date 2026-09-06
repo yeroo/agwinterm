@@ -167,6 +167,7 @@ function Send-TestClick([IntPtr]$hwnd, [int]$x, [int]$y) {
 # A real window is required: the assertions compare the renderer's live client-area geometry.
 $process = $null
 $sessionId = $null
+$scId = $null
 try {
     $process = Start-Process $Exe -ArgumentList @('--app-id', $appId, '--pipe', $pipe, '--no-restore') -PassThru
     $up = $false
@@ -207,7 +208,7 @@ try {
     Invoke-Ctl @('session', 'scratch', 'on', '--target', $sessionId) | Out-Null
     Start-Sleep -Milliseconds 500
     Invoke-Ctl @('session', 'scratch', 'off', '--target', $sessionId) | Out-Null
-    Invoke-Ctl @('session', 'split', 'on') | Out-Null
+    $splitReply = Invoke-Ctl @('session', 'split', 'on')
 
     $survivorId = $null
     for ($i = 0; $i -lt 30; $i++) {
@@ -220,6 +221,212 @@ try {
         Start-Sleep -Milliseconds 200
     }
     Check 'the fixture has a second pane' (-not [string]::IsNullOrEmpty($survivorId))
+    # P4: `session split` answers the pane id it produced, read back off the session inside the UI
+    # hop — so it must be exactly the new entry the tree lists, not a constant and not a stale guess.
+    Check 'session split on replies with the new pane id the tree lists' `
+        ($splitReply.ok -and $survivorId -and ([string]$splitReply.result -eq $survivorId)) `
+        "reply=$($splitReply.result) tree=$survivorId"
+    # `on` when already split: the same id again, and still two panes (the P2 no-op class, now honest).
+    $splitAgain = Invoke-Ctl @('session', 'split', 'on')
+    $paneCountAgain = @((Get-SessionSnapshot $sessionId).paneIds).Count
+    Check 'session split on when already split replies with the existing split pane id' `
+        ($splitAgain.ok -and ([string]$splitAgain.result -eq $survivorId) -and $paneCountAgain -eq 2) `
+        "reply=$($splitAgain.result) panes=$paneCountAgain"
+
+    # P4: the axis. `--axis horizontal` on the already-split session re-orients it live and still
+    # answers the existing split pane's id. The proof is the GRID, read through each pane's metrics:
+    # stacked panes have their rows roughly halved and their columns back at the full width — the
+    # axis is provable from cols x rows without a pixel. The tree carries it as `axis`.
+    if ($survivorId) {
+        $vertPrimary = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+        $horizReply = Invoke-Ctl @('session', 'split', 'on', '--axis', 'horizontal')
+        $horizPrimary = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.rows -lt [int]$vertPrimary.result.rows) { $horizPrimary = $candidate; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $horizSplit = Invoke-Ctl @('session', 'metrics', '--target', $survivorId)
+        $axisNode = Get-SessionSnapshot $sessionId
+        Check 'session split on --axis horizontal re-orients the live split and answers the same pane id' `
+            ($horizReply.ok -and ([string]$horizReply.result -eq $survivorId) -and
+             $axisNode.axis -eq 'horizontal' -and @($axisNode.paneIds).Count -eq 2) `
+            "reply=$($horizReply.result) axis=$($axisNode.axis)"
+        Check 'a horizontal split stacks the panes: rows halved and columns the full width, on both panes' `
+            ($vertPrimary.ok -and $null -ne $horizPrimary -and $horizSplit.ok -and
+             [int]$horizPrimary.result.rows -lt [int]$vertPrimary.result.rows -and
+             [int]$horizPrimary.result.cols -gt [int]$vertPrimary.result.cols -and
+             [int]$horizSplit.result.cols -eq [int]$horizPrimary.result.cols -and
+             [int]$horizSplit.result.rows -lt [int]$vertPrimary.result.rows) `
+            "vertical primary=$($vertPrimary.result.cols)x$($vertPrimary.result.rows) horizontal primary=$($horizPrimary.result.cols)x$($horizPrimary.result.rows) split=$($horizSplit.result.cols)x$($horizSplit.result.rows)"
+        # The words of the other axis are refused naming this one; this axis's words work.
+        $focusLeft = Invoke-Ctl @('session', 'focus', 'left')
+        $focusBottom = Invoke-Ctl @('session', 'focus', 'bottom')
+        Check 'session focus left is refused on a horizontal split (naming the axis) and bottom is accepted' `
+            ((-not $focusLeft.ok) -and ([string]$focusLeft.error).Contains('horizontal') -and $focusBottom.ok) `
+            "left=$($focusLeft.error) bottom=$($focusBottom.result)"
+        $growLeft = Invoke-Ctl @('session', 'resize', '--grow-left', '3')
+        Check 'session resize --grow-left is refused on a horizontal split and points at --grow-top' `
+            ((-not $growLeft.ok) -and ([string]$growLeft.error).Contains('grow-top')) "reply=$($growLeft.error)"
+        # Back to vertical for the rest of the script, which was written against columns.
+        $backReply = Invoke-Ctl @('session', 'split', 'on', '--axis', 'vertical')
+        $restored = $false
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.rows -eq [int]$vertPrimary.result.rows -and
+                [int]$candidate.result.cols -eq [int]$vertPrimary.result.cols) { $restored = $true; break }
+            Start-Sleep -Milliseconds 200
+        }
+        Check 'session split on --axis vertical restores the side-by-side grid exactly' `
+            ($backReply.ok -and $restored -and (Get-SessionSnapshot $sessionId).axis -eq 'vertical')
+
+        # P4: `session swap` exchanges the two panes. The proof is per-pane geometry: with the divider at
+        # 30/70 each pane's box is distinct, and after the swap each pane's metrics are the OTHER pane's
+        # old metrics — the boxes stayed where they were, the shells changed places, and every id still
+        # names the shell it named (the session id's pane is slot 1 now, so the tree lists it second).
+        # The ratio sequence is what keeps the boxes: reversing the panes alone would have jumped the
+        # divider to 70/30. Swapped back, then the divider returned to 50/50, so the checks below — written
+        # against pane 0 = the session id — see the fixture exactly as they did.
+        $swapResize = Invoke-Ctl @('session', 'resize', '--split-ratio', '0.3')
+        $narrow = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.cols -lt [int]$vertPrimary.result.cols) { $narrow = $candidate; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $wide = Invoke-Ctl @('session', 'metrics', '--target', $survivorId)
+        Check 'a 30/70 divider gives the two panes distinct boxes (the swap fixture)' `
+            ($swapResize.ok -and $null -ne $narrow -and $wide.ok -and [int]$narrow.result.cols -lt [int]$wide.result.cols) `
+            "primary=$($narrow.result.cols)x$($narrow.result.rows) split=$($wide.result.cols)x$($wide.result.rows)"
+        $swapNode0 = Get-SessionSnapshot $sessionId
+        $swapReply = Invoke-Ctl @('session', 'swap')
+        $swappedPrimary = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.cols -eq [int]$wide.result.cols) { $swappedPrimary = $candidate; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $swappedSplit = Invoke-Ctl @('session', 'metrics', '--target', $survivorId)
+        $swapNode = Get-SessionSnapshot $sessionId
+        Check 'session swap replies with the split block after the swap: the same session, the pane ids reversed, the axis kept' `
+            ($swapReply.ok -and $swapReply.result.session -eq $sessionId -and
+             (@($swapReply.result.paneIds) -join ',') -eq "$survivorId,$sessionId" -and $swapReply.result.axis -eq 'vertical' -and
+             $swapNode -and (@($swapNode.paneIds) -join ',') -eq "$survivorId,$sessionId" -and $swapNode.axis -eq 'vertical') `
+            "reply=$($swapReply | ConvertTo-Json -Compress) node=$($swapNode | ConvertTo-Json -Compress)"
+        Check 'after the swap each pane measures the other pane''s old box (the boxes stayed, the shells moved, the ids did not)' `
+            ($null -ne $swappedPrimary -and $swappedSplit.ok -and
+             [int]$swappedPrimary.result.cols -eq [int]$wide.result.cols -and [int]$swappedPrimary.result.rows -eq [int]$wide.result.rows -and
+             [int]$swappedSplit.result.cols -eq [int]$narrow.result.cols -and [int]$swappedSplit.result.rows -eq [int]$narrow.result.rows) `
+            "session-id pane=$($swappedPrimary.result.cols)x$($swappedPrimary.result.rows) (was $($narrow.result.cols)x$($narrow.result.rows)) split pane=$($swappedSplit.result.cols)x$($swappedSplit.result.rows) (was $($wide.result.cols)x$($wide.result.rows))"
+        Check 'the ratio sequence is kept and the focus followed the pane' `
+            ($swapNode -and ((@($swapNode.splitRatios) -join ',') -eq (@($swapNode0.splitRatios) -join ',')) -and
+             [int]$swapNode.focusedPane -eq (1 - [int]$swapNode0.focusedPane)) `
+            "ratios before=$(@($swapNode0.splitRatios) -join ',') after=$(@($swapNode.splitRatios) -join ',') focus before=$($swapNode0.focusedPane) after=$($swapNode.focusedPane)"
+        $swapBack = Invoke-Ctl @('session', 'swap')
+        $identity = $false
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.cols -eq [int]$narrow.result.cols) { $identity = $true; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $swapNode2 = Get-SessionSnapshot $sessionId
+        Check 'swap twice is the identity: the ids, the order, the ratios and the focus are back' `
+            ($swapBack.ok -and $identity -and $swapNode2 -and ($swapNode2 | ConvertTo-Json -Compress) -eq ($swapNode0 | ConvertTo-Json -Compress)) `
+            "before=$($swapNode0 | ConvertTo-Json -Compress) after=$($swapNode2 | ConvertTo-Json -Compress)"
+        Invoke-Ctl @('session', 'resize', '--split-ratio', '0.5') | Out-Null
+        for ($i = 0; $i -lt 30; $i++) {
+            $candidate = Invoke-Ctl @('session', 'metrics', '--target', $sessionId)
+            if ($candidate.ok -and [int]$candidate.result.cols -eq [int]$vertPrimary.result.cols) { break }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+
+    # P4: `session split close` closes EITHER side and answers the survivor's id. Pane 0 carries the
+    # session id, so closing it by that id is the case no verb could do before (`off` hard-codes pane 0
+    # as the survivor); the old pane 1 must survive as the session's only pane, under its old id and
+    # with its shell — proved by typing a marker into it before the close and reading it back after,
+    # both by its own id and by the session id (the exact-session arm now reaches it as the focused
+    # pane, the promotion case pinned further down). A second close on the now single-pane session is
+    # refused naming `session close`. On its own --no-select fixture, so the active session — and every
+    # check below that reads it — is untouched.
+    $scMade = Invoke-Ctl @('session', 'new', '--name', 'p4-split-close', '--no-select')
+    $scId = [string]$scMade.result
+    for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $scId); $i++) { Start-Sleep -Milliseconds 200 }
+    $scSplit = Invoke-Ctl @('session', 'split', 'on', '--target', $scId)
+    $scPane1 = [string]$scSplit.result
+    $scNode = $null
+    for ($i = 0; $i -lt 30; $i++) {
+        $scNode = Get-SessionSnapshot $scId
+        if ($scNode -and @($scNode.paneIds).Count -eq 2) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    Check 'the split-close fixture is split, with the reply naming its pane 1' `
+        ($scMade.ok -and $scSplit.ok -and $scNode -and @($scNode.paneIds).Count -eq 2 -and @($scNode.paneIds)[1] -eq $scPane1) `
+        "made=$($scMade | ConvertTo-Json -Compress) split=$($scSplit | ConvertTo-Json -Compress)"
+    $scMarker = 'split-close-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $scTyped = $false
+    foreach ($attempt in 1, 2, 3) {   # typed input can be dropped while the shell starts (the ConPTY early-discard class): type again
+        Invoke-Ctl @('session', 'type', "Write-Output '$scMarker'`r", '--target', $scPane1) | Out-Null
+        for ($i = 0; $i -lt 16; $i++) {
+            Start-Sleep -Milliseconds 250
+            if (([string](Invoke-Ctl @('session', 'text', '--target', $scPane1)).result).Contains($scMarker)) { $scTyped = $true; break }
+        }
+        if ($scTyped) { break }
+    }
+    $scClose = Invoke-Ctl @('session', 'split', 'close', '--target', $scId)
+    Start-Sleep -Milliseconds 400
+    $scAfter = Get-SessionSnapshot $scId
+    $scText = Invoke-Ctl @('session', 'text', '--target', $scPane1)
+    $scViaSession = Invoke-Ctl @('session', 'text', '--target', $scId)
+    Check 'session split close on pane 0 (by the session id it carries) answers the old pane 1 id as the survivor, and the node is single' `
+        ($scClose.ok -and $scPane1 -and ([string]$scClose.result -eq $scPane1) -and $scAfter -and -not $scAfter.PSObject.Properties['paneCount']) `
+        "close=$($scClose | ConvertTo-Json -Compress) node=$($scAfter | ConvertTo-Json -Compress)"
+    Check 'the survivor keeps its id and its shell: session text by the old pane 1 id, and by the session id, still shows what was typed there' `
+        ($scTyped -and $scText.ok -and ([string]$scText.result).Contains($scMarker) -and $scViaSession.ok -and ([string]$scViaSession.result).Contains($scMarker)) `
+        "typed=$scTyped byPane=$($scText.ok) bySession=$($scViaSession.ok)"
+    # The CLI-side refusals of the split family (revmux r1-r3 of P4), each proved twice: exit 2 with the
+    # message, and the ORACLE — the split-close fixture still has two panes. Every one of these acted on
+    # the caller's own pane with exit 0 before it was refused. Run BEFORE the close below, on the split.
+    $scGuardMade = Invoke-Ctl @('session', 'new', '--name', 'p4-split-guards', '--no-select')
+    $scGuardId = [string]$scGuardMade.result
+    for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $scGuardId); $i++) { Start-Sleep -Milliseconds 200 }
+    $scGuardSplit = Invoke-Ctl @('session', 'split', 'on', '--target', $scGuardId)
+    $scGuardPane1 = [string]$scGuardSplit.result
+    for ($i = 0; $i -lt 30; $i++) { $n = Get-SessionSnapshot $scGuardId; if ($n -and @($n.paneIds).Count -eq 2) { break }; Start-Sleep -Milliseconds 200 }
+    foreach ($shape in @(
+            @(@('session', 'split', 'off', $scGuardPane1), 'unexpected argument'),
+            @(@('session', 'split', 'close', $scGuardPane1), 'unexpected argument'),
+            @(@('session', 'split', 'clos', '--target', $scGuardId), 'unknown op'),
+            @(@('session', 'split', 'close', '--targt', $scGuardId), 'unknown option'),
+            @(@('session', 'split', 'off', '--target', ''), 'is empty'),
+            @(@('session', 'swap', $scGuardId), 'unexpected argument'),
+            @(@('session', 'swap', '--targt', $scGuardId), 'unknown option'),
+            @(@('session', 'swap', '--target', ''), 'is empty'))) {
+        $argv = $shape[0]; $want = $shape[1]
+        $out = & $ctl @argv --pipe $pipe 2>&1
+        $code = $LASTEXITCODE
+        Check "the CLI refuses '$($argv -join ' ')' before sending anything ($want)" ($code -eq 2 -and ("$out" -match $want) -and ("$out" -match 'Nothing sent')) "exit $code, output: $out"
+    }
+    $scGuardStill = Get-SessionSnapshot $scGuardId
+    Check 'and none of the refused shapes touched the fixture: still two panes, the same two' `
+        ($scGuardStill -and @($scGuardStill.paneIds).Count -eq 2 -and @($scGuardStill.paneIds)[1] -eq $scGuardPane1) "node=$($scGuardStill | ConvertTo-Json -Compress)"
+    # And the case fix: `Close` is `close` (it used to fall through to toggle and collapse the split —
+    # pane 1 gone, ok:true). Closing pane 1 by its id leaves pane 0 (the session id) as the survivor.
+    $scCase = Invoke-Ctl @('session', 'split', 'Close', '--target', $scGuardPane1)
+    Start-Sleep -Milliseconds 400
+    $scGuardAfter = Get-SessionSnapshot $scGuardId
+    Check 'session split Close (capitalised) closes the NAMED pane and answers the survivor, rather than toggling' `
+        ($scCase.ok -and ([string]$scCase.result -eq $scGuardId) -and $scGuardAfter -and -not $scGuardAfter.PSObject.Properties['paneCount']) `
+        "reply=$($scCase | ConvertTo-Json -Compress) node=$($scGuardAfter | ConvertTo-Json -Compress)"
+    Invoke-Ctl @('session', 'close', $scGuardId) | Out-Null
+
+    $scRefused = Invoke-Ctl @('session', 'split', 'close', '--target', $scId)
+    $scStill = Get-SessionSnapshot $scId
+    Check 'session split close on a single-pane session is refused naming session close, and the session stands' `
+        ((-not $scRefused.ok) -and ([string]$scRefused.error).Contains('session close') -and $null -ne $scStill) `
+        "reply=$($scRefused | ConvertTo-Json -Compress)"
+    Invoke-Ctl @('session', 'close', $scId) | Out-Null
+    $scId = $null
 
     if ($survivorId) {
         # While both meanings exist, an exact pane id has priority over the same exact session id.
@@ -799,6 +1006,9 @@ finally {
     }
     if ($sessionId) {
         try { Invoke-Ctl @('session', 'close', $sessionId) | Out-Null } catch { }
+    }
+    if ($scId) {
+        try { Invoke-Ctl @('session', 'close', $scId) | Out-Null } catch { }
     }
     # Every step here is guarded: $ErrorActionPreference is Stop, and a terminating error inside a
     # finally abandons the rest of the block - the environment restore at the end included.

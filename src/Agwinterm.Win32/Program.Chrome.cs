@@ -815,8 +815,10 @@ internal partial class Program
                     A("Rename Active Session", "F2", () => { if (_active is not null) StartRename(_active); });
                     A("Close Pane / Session", "Ctrl+Shift+W", CloseActivePane);
                     A("Split Pane", "Ctrl+D", () => SplitOp("toggle"));
-                    A("Focus Left Pane", "Ctrl+Alt+Left", () => FocusPane(-1));
-                    A("Focus Right Pane", "Ctrl+Alt+Right", () => FocusPane(1));
+                    // Labelled for the active session's axis: the walk is the same, the words are not.
+                    bool stacked = _active is { Axis: SplitAxes.Horizontal };
+                    A(stacked ? "Focus Top Pane" : "Focus Left Pane", "Ctrl+Alt+Left", () => FocusPane(-1));
+                    A(stacked ? "Focus Bottom Pane" : "Focus Right Pane", "Ctrl+Alt+Right", () => FocusPane(1));
                     A("Delete Active Workspace", "", () => { if (_active is not null) DeleteWorkspace(_active.Ws); });
                     A("Flag / Unflag Session", "Ctrl+Shift+F", () => { if (_active is not null) FlagOp(_active, "toggle"); });
                     A("Show Flagged / All Sessions", "", ToggleFlaggedView);

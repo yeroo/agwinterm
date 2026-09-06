@@ -372,12 +372,12 @@ internal partial class Program
             var c = ChromeBtnBg(rt, brush, scratchX, 0, bw, TitleBarH, "scratch", _titleButtons, scratchOn ? ChromeAccent : ChromeDim);
             DrawScratchGlyph(rt, brush, scratchX + bw / 2f, TitleBarH / 2f, c, scratchOn);
         }
-        // split (two panes, reflects split state)
+        // split (two panes, reflects split state and, while split, the session's axis)
         bool splitOn = _active is not null && _active.Panes.Count > 1;
         if (_config.ShowSplitButton)
         {
             var c = ChromeBtnBg(rt, brush, splitX, 0, bw, TitleBarH, "split", _titleButtons, splitOn ? ChromeAccent : ChromeDim);
-            DrawSplitGlyph(rt, brush, splitX + bw / 2f, TitleBarH / 2f, c, splitOn);
+            DrawSplitGlyph(rt, brush, splitX + bw / 2f, TitleBarH / 2f, c, splitOn, splitOn && _active!.Axis == SplitAxes.Horizontal);
         }
         // hairline divider between per-session toggles and the window-level dashboard/quick group
         if (anyPerSession && (_config.ShowDashboardButton || _config.ShowQuickButton))
@@ -477,13 +477,23 @@ internal partial class Program
         rt.DrawLine(new System.Numerics.Vector2(cx, cy), new System.Numerics.Vector2(cx + 2.8f, cy + 1.4f), brush, 1.3f); // minute hand
     }
 
-    /// <summary>Split glyph: two side-by-side panes (right pane filled when split is active).</summary>
-    private void DrawSplitGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool active)
+    /// <summary>Split glyph: two side-by-side panes when the session is vertical or unsplit (the split
+    /// pane — right — filled when split is active); two stacked panes, the bottom one filled, when
+    /// <paramref name="horizontal"/>. The icon shows the session's axis, not a generic split (P4).</summary>
+    private void DrawSplitGlyph(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float cx, float cy, Color4 color, bool active, bool horizontal)
     {
         brush.Color = color;
         rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(cx - 7f, cy - 5.5f, 14f, 11f), RadiusX = 2.5f, RadiusY = 2.5f }, brush, 1.4f);
-        rt.DrawLine(new System.Numerics.Vector2(cx, cy - 5.5f), new System.Numerics.Vector2(cx, cy + 5.5f), brush, 1.2f);
-        if (active) rt.FillRectangle(new Rect(cx + 1f, cy - 4f, 5f, 8f), brush);
+        if (horizontal)
+        {
+            rt.DrawLine(new System.Numerics.Vector2(cx - 7f, cy), new System.Numerics.Vector2(cx + 7f, cy), brush, 1.2f);
+            if (active) rt.FillRectangle(new Rect(cx - 5.5f, cy + 1f, 11f, 3f), brush);
+        }
+        else
+        {
+            rt.DrawLine(new System.Numerics.Vector2(cx, cy - 5.5f), new System.Numerics.Vector2(cx, cy + 5.5f), brush, 1.2f);
+            if (active) rt.FillRectangle(new Rect(cx + 1f, cy - 4f, 5f, 8f), brush);
+        }
     }
 
     /// <summary>New-workspace glyph: a card with a plus.</summary>
@@ -1440,6 +1450,9 @@ internal partial class Program
                             catch { }
                         ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, RestoreCommand = p.RestoreCommand, Buffer = buf, BufferBlob = blob });
                     }
+                    // P4: the axis, written only for a split horizontal session (StoreAxis) — a vertical or
+                    // single-pane session writes no key, so its bytes are what 0.17.12 wrote.
+                    ss.Axis = RestoreState.StoreAxis(panes.Count, s.Axis);
                     wss.Sessions.Add(ss);
                 }
                 st.Workspaces.Add(wss);
@@ -1555,17 +1568,40 @@ internal partial class Program
                     var pl = (s.Panes is { Count: > 0 })
                         ? s.Panes
                         : new List<PaneState> { new() { Id = s.Id, Cwd = s.Cwd, FontSize = s.FontSize, Ratio = 1f } };
+                    // Two panes per session (P4): the model is primary + split and the axis is per session.
+                    // A hand-edited or foreign file with more restores the first two; the rest are dropped
+                    // and said so — the loop below being written for N was never a feature.
+                    if (pl.Count > 2)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"restore: session {s.Id} lists {pl.Count} panes; the first two were restored and {pl.Count - 2} dropped (two panes per session)");
+                        pl = pl.Take(2).ToList();
+                    }
                     var first = pl[0];
+                    // Durable ids (P4): pane 0 is created under its SAVED id, not the session id. After a
+                    // `session swap` the pane carrying the session id sits in slot 1, and re-minting pane 0 as
+                    // the session id would duplicate it and rename the other shell; StablePaneId folds only
+                    // an empty id, the file's session id (which follows StableSessionId) and a live duplicate.
+                    string sid = StableSessionId(s.Id);
                     var ses = CreateSession(
-                        StableSessionId(s.Id),
+                        sid,
                         string.IsNullOrWhiteSpace(s.Name) ? null : s.Name,
                         string.IsNullOrWhiteSpace(first.Cwd) ? null : first.Cwd,
                         ws, makeActive: s.Id == st.ActiveId,
                         fontSize: first.FontSize > 0 ? first.FontSize : (float?)null,
-                        profileName: string.IsNullOrWhiteSpace(s.Profile) ? null : s.Profile);
+                        profileName: string.IsNullOrWhiteSpace(s.Profile) ? null : s.Profile,
+                        paneId: StablePaneId(first.Id, s.Id, sid, first: true));
+                    // The axis BEFORE the second pane exists (P4). Every pty is spawned at the full content
+                    // grid (CreatePane → GridSizeFor) and then RegridSession below sizes each one from
+                    // PaneLayout, which reads ses.Axis: a horizontal session must get its rows halved, not
+                    // its columns, the first time its grids are set — the grid a restored pane is given is
+                    // the axis's grid (#209's surface: an ADOPTED split pane's box always differs from the
+                    // full grid on either axis, so its Resize is sent as before; a single pane is unchanged).
+                    // Only a split session carries an axis: a single-pane file's key is ignored and, since
+                    // StoreAxis writes none for one pane, never written back.
+                    if (pl.Count > 1) ses.Axis = RestoreState.LoadAxis(s.Axis);
                     for (int i = 1; i < pl.Count; i++)
                         AppendPane(ses,
-                            string.IsNullOrEmpty(pl[i].Id) ? Guid.NewGuid().ToString() : pl[i].Id,
+                            StablePaneId(pl[i].Id, s.Id, sid, first: false),   // verbatim: after a swap this is the pane that carries the session id
                             string.IsNullOrWhiteSpace(pl[i].Cwd) ? null : pl[i].Cwd,
                             pl[i].FontSize > 0 ? pl[i].FontSize : (float)_config.FontSize);
                     lock (_workspaces)

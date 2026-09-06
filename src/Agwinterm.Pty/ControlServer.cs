@@ -251,14 +251,32 @@ public sealed class ControlServer : IDisposable
                 case "workspace.move": return host.WorkspaceReorder(target, GetString(args, "dir") ?? "down") ? Ok("moved") : Err("workspace not found");
                 case "workspace.collapse": return host.WorkspaceCollapse(target, expand: false) ? Ok("collapsed") : Err("workspace not found");
                 case "workspace.expand": return host.WorkspaceCollapse(target, expand: true) ? Ok("expanded") : Err("workspace not found");
-                case "session.split": return host.Split(target, GetString(args, "op") ?? "toggle") ? Ok("split") : Err("session not found");
-                case "session.focus": host.FocusPaneDir(GetString(args, "dir") ?? "right"); return Ok("focus");
+                case "session.split": return HandleSessionSplit(host, target, args);
+                // session.split.close (P4): close the targeted pane, either side; the reply is the
+                // survivor's id (a string, like every session.split reply). Every refusal is the
+                // host's, from SplitCloseReply's wordings, and each closes nothing. No arg to read:
+                // the verb takes only a target (null/"active" = the active session's focused pane).
+                case "session.split.close": return HostReply(host.SplitClose(target));
+                // session.swap (P4): exchange the two panes — order reversed, focus follows, axis and
+                // ratio sequence kept, every id kept. The reply is the session's split block AFTER the
+                // swap, as an object (SwapReply.Build, OkRaw — the read-back is the tree's paneIds /
+                // focusedPane / axis). Every refusal is the host's, from SwapReply's wordings, and each
+                // moves nothing. No arg to read: the verb takes only a target (null/"active" = the
+                // active session).
+                case "session.swap":
+                    {
+                        var swapped = host.Swap(target);
+                        return swapped.Refusal is not null ? Err(swapped.Refusal) : OkRaw(SwapReply.Build(swapped));
+                    }
+                // The default direction is `other` — the one word that names a pane on either axis
+                // (P4: `right` would be refused on a horizontal split).
+                case "session.focus": return HostReply(host.FocusPaneDir(GetString(args, "dir") ?? "other"));
                 case "session.resize":
                     {
                         double? ratio = null;
                         if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("ratio", out var rv) && rv.TryGetDouble(out var rd)) ratio = rd;
-                        host.ResizeSplit(ratio, GetInt(args, "grow-left", 0), GetInt(args, "grow-right", 0));
-                        return Ok("resized");
+                        return HostReply(host.ResizeSplit(ratio, GetInt(args, "grow-left", 0), GetInt(args, "grow-right", 0),
+                            GetInt(args, "grow-top", 0), GetInt(args, "grow-bottom", 0)));
                     }
                 case "theme.list": return Ok(string.Join("\n", host.ThemeList()));
                 case "theme.set": return host.ThemeSet(GetString(args, "name") ?? "") ? Ok("theme set") : Err("theme not found");
@@ -361,9 +379,13 @@ public sealed class ControlServer : IDisposable
                 // asks). Targeting follows Resolve, exactly as session.text/session.type do, so the
                 // pane you CHECK is the pane you then type into: a pane id reports that pane, and a
                 // session NAME reports its focused pane — a cursor is a per-pane thing, and focus is
-                // the only non-arbitrary answer for a session-wide target. Note a session's id is
-                // also its first pane's id, so an id target reports pane 0 regardless of focus
-                // (pre-existing Resolve behaviour, verified in qa/control-read.md).
+                // the only non-arbitrary answer for a session-wide target. The session-id rule, by
+                // condition (P4): while a pane carries the session's id — pane 0 of a fresh session,
+                // either side after a session.swap — the id reports THAT pane wherever it sits,
+                // regardless of focus (Resolve's exact-pane-first order); while none does — the
+                // carrier was closed, by split.close, Ctrl+Shift+W, split off after a swap, or its
+                // shell exiting — the id falls through to the exact-session arm and reports the
+                // FOCUSED pane, like a name (verified in qa/control-read.md).
                 "surface.cursor" => OkRaw(s.SnapshotCursor().Col.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 "image.show" => HandleImageShow(s, args),
                 "image.sixel" => HandleImageSixel(s, args),
@@ -448,6 +470,10 @@ public sealed class ControlServer : IDisposable
                         { if (r > 0) sb.Append(','); sb.Append(JsonSerializer.Serialize(n.PaneIds[r])); }
                         sb.Append(']');
                     }
+                    // axis: ALWAYS while split, like focusedPane — absence would mean "this build has
+                    // no axis", which tells a caller nothing (P4). Never for a single pane: the
+                    // orientation of a split that does not exist is not a fact about the session.
+                    sb.Append(",\"").Append(SplitAxes.Key).Append("\":").Append(JsonSerializer.Serialize(n.Axis ?? SplitAxes.Vertical));
                 }
                 sb.Append('}');
             }
@@ -497,6 +523,41 @@ public sealed class ControlServer : IDisposable
     }
 
     /// <summary>
+    /// session.split: the reply is the PANE ID the op produced or found (a bare string — the shipped
+    /// conformance step on <c>split off</c> is a string type check, and a pane id is a string), see
+    /// <see cref="ISessionHost.Split"/> for the per-op rule. <c>axis</c> is read STRICTLY: absent is
+    /// "keep the session's orientation", a string must be one of <see cref="SplitAxes"/>' two words,
+    /// and a non-string (a number, an object) is refused with the same wording rather than defaulted —
+    /// a caller that sent <c>"axis": 1</c> meant something, and a vertical split with ok:true would
+    /// be the silent-success class. Every refusal splits nothing.
+    /// </summary>
+    private static string HandleSessionSplit(ISessionHost host, string? target, JsonElement args)
+    {
+        string? axis = null;
+        if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty(SplitAxes.Key, out var av))
+        {
+            if (av.ValueKind != JsonValueKind.String) return Err(SplitAxes.Refusal(av.GetRawText()));
+            if (!SplitAxes.TryParse(av.GetString(), out axis, out string? axisRefusal)) return Err(axisRefusal!);
+        }
+        // The op is validated HERE too, not only in the CLI: the host treats an unknown op as toggle,
+        // so a raw client sending op "Close" or "clos" would collapse a split — pane 1's shell gone —
+        // with ok:true (revmux r2/r3 of P4). Absent = toggle; anything else must be one of the three.
+        if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("op", out var ov))
+        {
+            if (ov.ValueKind != JsonValueKind.String) return Err(SplitAxes.OpRefusal(ov.GetRawText()));
+            if (!SplitAxes.IsOp(ov.GetString()!)) return Err(SplitAxes.OpRefusal(ov.GetString()!));
+        }
+        return HostReply(host.Split(target, GetString(args, "op") ?? "toggle", axis));
+    }
+
+    /// <summary>A host reply that is either a result string or <see cref="ISessionHost.RefusePrefix"/>
+    /// + a refusal, turned into the wire's ok:true / ok:false.</summary>
+    private static string HostReply(string reply)
+        => reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+            ? Err(reply[ISessionHost.RefusePrefix.Length..])
+            : Ok(reply);
+
+    /// <summary>
     /// session.context: set or clear a session's one-line context and reply with the value IN EFFECT,
     /// as an object (<c>{session, context}</c>, OkRaw) — the read-back is <c>tree</c>'s <c>context</c>.
     /// Every refusal happens HERE, before the host is reached, through <see cref="SessionContexts"/>
@@ -528,8 +589,10 @@ public sealed class ControlServer : IDisposable
     /// used, and the tree never emitted the field the skill file promised — so which pane took the pin
     /// was unknowable from the caller's side. Now the reply is
     /// <c>{action:"pinned"|"cleared", pane, session[, command]}</c>: <c>pane</c> is the pane the target
-    /// resolved to (a session NAME lands on that session's focused pane, a session ID on its first pane,
-    /// exactly as session.type does), <c>session</c> its owner. ""/"none" clear, and are reported as a
+    /// resolved to (a session NAME lands on that session's focused pane, a session ID on the pane that
+    /// carries that id while one does, and on the focused pane while none does — the session-id rule
+    /// by condition, see <see cref="ISessionHost.SplitClose"/>; exactly as session.type does),
+    /// <c>session</c> its owner. ""/"none" clear, and are reported as a
     /// clear rather than a pin of nothing. The target is mandatory: a pin outlives whatever pane
     /// happens to be active now, so "active" is not a sensible default and is refused rather than
     /// guessed. Every refusal pins nothing.

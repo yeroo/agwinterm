@@ -13,6 +13,25 @@ using System.Text.Json;
 //   agwintermctl session select <target>
 //   agwintermctl session close [target]
 //   agwintermctl session rename <new-name...> [--target ID]
+//   agwintermctl session split [on|off|toggle] [--axis vertical|horizontal] [--target ID]
+//       (replies with a PANE ID: on/toggle-on = the split pane's, also when the session was already split;
+//       off/toggle-off = the survivor's. Default op = toggle. The axis names the ARRANGEMENT, agterm's words:
+//       vertical = left/right panes (the default of a session never split), horizontal = top/bottom panes.
+//       Omitted = keep the session's orientation; given on an already-split session = re-orient it live)
+//   agwintermctl session split close [--target ID]   (close ONE pane, EITHER side: a pane id = that pane; a session
+//       name or no target = the session's focused pane, what Ctrl+Shift+W closes; from a pane's own CLI, that pane.
+//       Replies with the SURVIVOR's id. A one-pane session is refused — `session close` closes a session)
+//   agwintermctl session swap [--target ID]           (exchange the two panes: order reversed, focus follows the pane,
+//       axis and ratio sequence kept — the left/top box keeps its size, the contents change places — and EVERY ID
+//       kept: a swap moves panes, never ids, so the session id keeps naming the shell it named, now on the other
+//       side. Target = a session, either of its panes, or nothing — from a pane's own CLI, that pane's
+//       session; otherwise the active one. Replies
+//       {session,paneIds,focusedPane,axis} — the tree's split block after the swap. A one-pane session is refused)
+//   agwintermctl session focus [primary|split|left|right|top|bottom|other]   (default other; left/right exist on a
+//       vertical split only, top/bottom on a horizontal one — the wrong pair is refused naming the axis)
+//   agwintermctl session resize [--split-ratio R] [--grow-left N|--grow-right N|--grow-top N|--grow-bottom N]
+//       (left/right move a vertical split's divider by N columns, top/bottom a horizontal one's by N rows;
+//       the other axis's flags are refused, and the divider does not move)
 //   agwintermctl session context <text...> [--target ID]   (one line of "what is this pane for", shown dimmed
 //       beside the name and read back in `tree --json` as context; survives a restart. Blank, a control
 //       character or more than 200 characters is refused; replies {session,context})
@@ -273,7 +292,55 @@ switch (area)
                 else if (Opt("prev") is not null) cargs["action"] = "prev";
                 else if (rest.Count > 0) cargs["query"] = string.Join(' ', rest);
                 break;
-            case "split": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break;
+            case "split":
+            {
+                // Every split op is destructive or structural, and every one defaults its TARGET to the
+                // caller's own pane — so anything that looks like a failed attempt to name a target is
+                // refused before a request is built, rather than acted on against the caller's shell
+                // with exit 0 (revmux r1 and r2 of P4, the `restore capture` lesson before them):
+                //   - a second positional (`session split off <pane-id>` — `session close <id>` and
+                //     `session metrics <id>` take one, so the shape is a natural mistake);
+                //   - an option outside this verb's set (`--targt X` — the splitter hands any flag the
+                //     next word, so the misspelt target vanishes and the caller's pane is used);
+                //   - an explicitly empty `--target ""` (the request builder drops an empty target,
+                //     which the server reads as the active pane).
+                // The op is lowercased like `area` and `sub`, and an op that is not one of the four is
+                // refused here: the host treats an unknown op as toggle, so `Close` or `clos` would
+                // collapse the split — pane 1's shell gone — with a success reply.
+                string op = rest.Count > 0 ? rest[0].ToLowerInvariant() : "toggle";
+                if (op is not ("on" or "off" or "toggle" or "close"))
+                { Console.Error.WriteLine($"session split: unknown op '{rest[0]}' — on, off, toggle or close (an unknown op is not a toggle: the wrong pane would be closed with exit 0). Nothing sent."); return 2; }
+                if (rest.Count > 1)
+                { Console.Error.WriteLine($"session split {op}: unexpected argument '{rest[1]}' — the pane or session is `--target <id>`; with no --target this acts on the caller's own pane, so a stray word is refused rather than ignored. Nothing sent."); return 2; }
+                var splitAllowed = new HashSet<string>(Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions, StringComparer.OrdinalIgnoreCase) { "axis" };
+                var badSplitOpt = options.Keys.FirstOrDefault(k => !splitAllowed.Contains(k));
+                if (badSplitOpt is not null)
+                { Console.Error.WriteLine($"session split {op}: unknown option --{badSplitOpt} (it takes --axis and --target). Nothing sent."); return 2; }
+                if (options.TryGetValue("target", out var splitTarget) && (splitTarget.Length == 0 || !valued.Contains("target")))
+                { Console.Error.WriteLine("session split: --target is empty — omit it to act on the caller's own pane, or name a pane or session. Nothing sent."); return 2; }
+                cargs["op"] = op;
+                if (Opt("axis") is { } axisWord) cargs["axis"] = axisWord;   // passed through as typed; the server refuses anything but the two words
+                // `close` is a sub-op with its own verb (P4): `session split close [--target ID]` closes the
+                // targeted pane — either side — and replies with the survivor's id. It takes no op and no
+                // axis, so neither travels: an `--axis` beside `close` is dropped here rather than refused
+                // by a verb that never reads it.
+                if (op == "close") { cmd = "session.split.close"; cargs.Remove("op"); cargs.Remove("axis"); }
+                break;
+            }
+            // session swap [--target ID] (P4): no args of its own — the target is a session, either of its
+            // panes, or nothing: from a pane's own CLI that pane's session, otherwise the active one; the
+            // reply is an object, printed raw by --json and plain. A positional, an unknown option or an
+            // empty --target is refused for the reason `split` refuses them: each would swap the caller's
+            // own session and answer ok.
+            case "swap":
+            {
+                if (rest.Count > 0) { Console.Error.WriteLine($"session swap: unexpected argument '{rest[0]}' — the session (or either of its panes) is `--target <id>`; with no --target this swaps the caller's own session, so a stray word is refused rather than ignored. Nothing sent."); return 2; }
+                var badSwapOpt = options.Keys.FirstOrDefault(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
+                if (badSwapOpt is not null) { Console.Error.WriteLine($"session swap: unknown option --{badSwapOpt} (it takes only --target). Nothing sent."); return 2; }
+                if (options.TryGetValue("target", out var swapTarget) && (swapTarget.Length == 0 || !valued.Contains("target")))
+                { Console.Error.WriteLine("session swap: --target is empty — omit it to swap the caller's own session, or name a session or pane. Nothing sent."); return 2; }
+                break;
+            }
             case "readonly": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|state; block input to the pane
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
             case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay resize --size-percent N | overlay result
@@ -295,7 +362,7 @@ switch (area)
                 if (options.ContainsKey("wait")) cargs["wait"] = true;
                 if (options.ContainsKey("block")) cargs["block"] = true;
                 break;
-            case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "right"; break;
+            case "focus": cargs["dir"] = rest.Count > 0 ? rest[0] : "other"; break; // primary|split|left|right|top|bottom|other — `other` is the one word valid on either axis
             case "flag": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|clear
             case "bind": cargs["agent"] = rest.Count > 0 ? rest[0] : "claude"; break; // bind a resumable agent (claude) | none to clear
             case "restore": cargs["command"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("command") ?? ""); break; // pin a per-pane restore command | none to clear
@@ -311,6 +378,8 @@ switch (area)
                 if (double.TryParse(Opt("split-ratio"), System.Globalization.CultureInfo.InvariantCulture, out var sr)) cargs["ratio"] = sr;
                 if (int.TryParse(Opt("grow-left"), out var gl)) cargs["grow-left"] = gl;
                 if (int.TryParse(Opt("grow-right"), out var gr)) cargs["grow-right"] = gr;
+                if (int.TryParse(Opt("grow-top"), out var gt)) cargs["grow-top"] = gt;         // a horizontal split's divider, in rows (P4)
+                if (int.TryParse(Opt("grow-bottom"), out var gb)) cargs["grow-bottom"] = gb;
                 break;
             default:
                 Console.Error.WriteLine($"unknown session command '{sub}'"); return 2;
@@ -383,8 +452,9 @@ switch (area)
     case "settings": cmd = "settings.open"; break;
     case "surface":
         // agwintermctl surface cursor [--target ID] — the caret column of a pane, as a bare integer.
-        // A pane id selects that pane — and the session id IS pane 0's id, so it selects pane 0
-        // regardless of focus; only a unique session NAME resolves to the focused pane.
+        // A pane id selects that pane; a session id selects the pane that carries it while one does
+        // (regardless of focus) and the focused pane while none does — the session-id rule by
+        // condition (P4); a unique session NAME always resolves to the focused pane.
         if (sub != "cursor")
         { Console.Error.WriteLine("usage: agwintermctl surface cursor [--target ID]"); return 2; }
         cmd = "surface.cursor";

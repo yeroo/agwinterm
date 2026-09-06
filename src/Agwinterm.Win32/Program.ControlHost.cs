@@ -184,7 +184,8 @@ internal partial class Program
                         RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList(),
                         StatusChangedAt: statusChangedAt,
                         Context: s.Context,
-                        CapturedCommands: s.Panes.Select(p => p.CapturedCommand ?? "").ToList());
+                        CapturedCommands: s.Panes.Select(p => p.CapturedCommand ?? "").ToList(),
+                        Axis: s.Axis);
                 }).ToList()
             )).ToList();
     }
@@ -488,30 +489,141 @@ internal partial class Program
         return true;
     }
 
-    public bool Split(string? target, string op)
-    {
-        // Resolved here, on the caller's thread, so a bad target answers false instead of being
-        // dropped on the UI queue. Same order as SessionScratch: null/"active" is the active
-        // session; otherwise a session id, a pane id, or a prefix of either.
-        var ses = FindSesForTarget(target);
-        if (ses is null) return false;
-        Post(() => SplitOp(op, ses));
-        return true;
-    }
+    private const string SplitNotFound = ISessionHost.RefusePrefix + "session not found";
 
-    public void FocusPaneDir(string dir)
+    // session.split (P4): the reply is the pane id the op produced or found, read back off the session
+    // INSIDE the FIFO queued hop (SessionContext's threading) — the old Post(...); return true answered
+    // the constant "split" for a request that had merely been dropped on the queue, so the caller
+    // could not address the shell it asked for, and `on` when already split said ok having done
+    // nothing. Resolution stays on the caller's thread first (#230): a bad target answers a refusal
+    // with nothing queued; the hop re-resolves so a session closed in between is refused, not split.
+    // Same order as SessionScratch: null/"active" is the active session; otherwise a session id, a
+    // pane id, or a prefix of either. A hop that cannot be queued or run throws, which Dispatch
+    // turns into ok:false (after a timeout the action stays queued and the reply says so — #234).
+    public string Split(string? target, string op, string? axis)
     {
-        int delta = dir switch
+        if (FindSesForTarget(target) is null) return SplitNotFound;
+        // The axis word is the server's to validate (SplitAxes.TryParse); SplitOp applies it — a set
+        // on `on`/a splitting toggle, a live re-orientation of an already-split session, ignored by off.
+        return InvokeOnUiQueued(() =>
         {
-            "left" => -1,
-            "right" => 1,
-            _ => (_active is not null && _active.Active == 0) ? 1 : -1, // "other"
-        };
-        Post(() => FocusPane(delta));
+            var ses = FindSesForTarget(target);
+            if (ses is null) return SplitNotFound;
+            SplitOp(op, ses, axis);
+            // By position, not history: while split, the split pane is the one in slot 1 (SplitPane
+            // inserts it after the single pane it split); after a collapse the survivor is slot 0.
+            // So `on` when already split names the existing split pane, `off` when already single
+            // names the only pane, and toggle names whichever it produced.
+            return ses.Panes.Count > 1 ? ses.Panes[1].Id : ses.Panes[0].Id;
+        });
     }
 
-    public void ResizeSplit(double? ratio, int growLeft, int growRight)
-        => Post(() => ResizeActiveSplitInternal(ratio, growLeft, growRight));
+    // session.split.close (P4): close the targeted pane — either side — and answer the survivor's id.
+    // The same two-step shape as Split: resolve on the caller's thread so an unknown target, a cover or
+    // a one-pane session answers a refusal with nothing queued (#230), then ONE FIFO queued hop that
+    // re-resolves (a pane that exited or was closed by another client in between is refused, not
+    // double-closed — its removal is ahead of us in the same queue), closes through ClosePane (the
+    // primitive Ctrl+Shift+W, `split off` and a split shell's exit share) and reads the survivor back off
+    // ses.Panes[0]. Resolution: null/"active" is the active session's focused pane (what Ctrl+Shift+W
+    // closes); else FindControlPane's order, so the session id names the pane that carries it (exact
+    // pane wins — the order win32-control.ps1 pins) and a session NAME names the focused pane. A hop that
+    // cannot be queued or run throws, which Dispatch turns into ok:false (#234 wording).
+    public string SplitClose(string? target)
+    {
+        if (ResolveSplitClose(target, out var early) is null) return ISessionHost.RefusePrefix + early;
+        return InvokeOnUiQueued(() =>
+        {
+            var hit = ResolveSplitClose(target, out var refusal);
+            if (hit is null) return ISessionHost.RefusePrefix + refusal;
+            ClosePane(hit.Value.ses, hit.Value.pane);
+            return hit.Value.ses.Panes[0].Id;   // the survivor: ClosePane leaves exactly one pane, in slot 0
+        });
+    }
+
+    /// <summary>The pane <c>session split close</c> would close, or null with the refusal (SplitCloseReply's
+    /// wording) — nothing is touched here, so it is safe to run on the pipe thread first and again inside
+    /// the hop.</summary>
+    private (Pane pane, Ses ses)? ResolveSplitClose(string? target, out string? refusal)
+    {
+        refusal = null;
+        if (string.IsNullOrEmpty(target) || target == "active")
+        {
+            var a = _active;
+            if (a is null) { refusal = SplitCloseReply.NoActiveSession; return null; }
+            if (a.Panes.Count <= 1) { refusal = SplitCloseReply.SinglePane(a.Id); return null; }
+            return (a.ActivePane, a);
+        }
+        var hit = FindControlPane(target);   // the content verbs' resolver: exact pane, exact session, pane prefix, session prefix / name
+        if (hit is null) { refusal = SplitCloseReply.UnknownTarget(target); return null; }
+        if (hit.Value.cover || hit.Value.ses is null) { refusal = SplitCloseReply.CoverPane(hit.Value.pane.Id); return null; }
+        if (hit.Value.ses.Panes.Count <= 1) { refusal = SplitCloseReply.SinglePane(hit.Value.ses.Id); return null; }
+        return (hit.Value.pane, hit.Value.ses);
+    }
+
+    // session.swap (P4): exchange the two panes of the targeted session and answer its split block after
+    // the swap. The Split / SplitClose two-step: resolve on the caller's thread so an unknown target, a
+    // cover or a one-pane session answers a refusal with nothing queued (#230), then ONE FIFO queued hop
+    // that re-resolves (a session collapsed or closed by another client in between is refused, not
+    // swapped from a stale view), swaps through SwapPanes and reads the order, focus and axis back off
+    // the session. Resolution: null/"active" is the active session; else FindControlPane's order — a
+    // session id, either pane's id, a prefix, or a name — and the session the hit belongs to is the one
+    // swapped (a pane id names its session here; the verb acts on the pair, never on one side). A hop
+    // that cannot be queued or run throws, which Dispatch turns into ok:false (#234 wording).
+    public SwapResult Swap(string? target)
+    {
+        if (ResolveSwap(target, out var early) is null) return SwapResult.Refuse(early!);
+        return InvokeOnUiQueued(() =>
+        {
+            var ses = ResolveSwap(target, out var refusal);
+            if (ses is null) return SwapResult.Refuse(refusal!);
+            SwapPanes(ses);
+            List<string> ids;
+            lock (_workspaces) ids = ses.Panes.Select(p => p.Id).ToList();
+            return new SwapResult(ses.Id, ids, ses.Active, ses.Axis);
+        });
+    }
+
+    /// <summary>The session <c>session swap</c> would act on, or null with the refusal (SwapReply's wording)
+    /// — nothing is touched here, so it is safe to run on the pipe thread first and again inside the hop.</summary>
+    private Ses? ResolveSwap(string? target, out string? refusal)
+    {
+        refusal = null;
+        Ses? ses;
+        if (string.IsNullOrEmpty(target) || target == "active")
+        {
+            ses = _active;
+            if (ses is null) { refusal = SwapReply.NoActiveSession; return null; }
+        }
+        else
+        {
+            var hit = FindControlPane(target);   // the content verbs' resolver: exact pane, exact session, pane prefix, session prefix / name
+            if (hit is null) { refusal = SwapReply.UnknownTarget(target); return null; }
+            if (hit.Value.cover || hit.Value.ses is null) { refusal = SwapReply.CoverPane(hit.Value.pane.Id); return null; }
+            ses = hit.Value.ses;
+        }
+        if (ses.Panes.Count <= 1) { refusal = SwapReply.SinglePane(ses.Id); return null; }
+        return ses;
+    }
+
+    // Both answer with state (a refusal must mean nothing moved), so they run in the FIFO UI hop and
+    // read the active session INSIDE it — the axis a direction is judged against is the one the
+    // session has when the move happens, not the one the pipe thread saw a moment earlier (P4).
+    public string FocusPaneDir(string dir)
+        => InvokeOnUiQueued(() =>
+        {
+            var ses = _active;
+            if (ses is null || ses.Panes.Count < 2) return ISessionHost.RefusePrefix + SplitAxes.NotSplit;
+            if (!SplitAxes.TryFocusIndex(dir, ses.Axis, ses.Active, out int index, out string? refusal)) return ISessionHost.RefusePrefix + refusal;
+            ses.Active = Math.Clamp(index, 0, ses.Panes.Count - 1);
+            _session = ses.S;
+            RequestRedraw();
+            return "focus";
+        });
+
+    public string ResizeSplit(double? ratio, int growLeft, int growRight, int growTop, int growBottom)
+        => InvokeOnUiQueued(() => ResizeActiveSplitInternal(ratio, growLeft, growRight, growTop, growBottom) is { } refusal
+            ? ISessionHost.RefusePrefix + refusal
+            : "resized");
 
     public IReadOnlyList<string> ThemeList() => _allThemes.Select(t => t.Name).ToList();
 
@@ -794,9 +906,10 @@ internal partial class Program
     // Pin (or clear, command = null) a restore command on a specific pane (agterm #271). Persisted so
     // restart always re-runs it. Resolves through FindControlPane, the path every other content verb
     // uses (exact pane, exact session, pane prefix, session prefix/name) rather than the FindPaneById
-    // it used before P2. While pane 0 still exists the two agree for every target the old resolver
-    // accepted: pane 0 shares its session's id, so the exact-session step only repeats the exact-
-    // pane hit, and the prefix step is the same predicate in the same order. Two things changed. A
+    // it used before P2. While the pane carrying the session id still exists the two agree for every
+    // target the old resolver accepted: exactly one pane carries its session's id (pane 0 until a
+    // session.swap moves it — P4), so the exact-session step only repeats the exact-pane hit, and the
+    // prefix step is the same predicate in the same order. Two things changed. A
     // session NAME now reaches that session's focused pane instead of being refused. And once pane 0
     // has been CLOSED in a split (split panes get fresh ids, and closing the focused pane can remove
     // index 0), a session id or id-prefix that the old resolver either refused or steered onto a

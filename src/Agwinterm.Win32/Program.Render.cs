@@ -748,15 +748,34 @@ internal partial class Program
         }
         if (layout.Count > 1)
         {
+            bool horizontal = ses.Axis == SplitAxes.Horizontal;
+            // The divider hairline runs down the middle of the gutter, along the axis: a vertical
+            // line between columns, a horizontal line between rows.
+            brush.Color = ChromeBorder;
             for (int i = 0; i < layout.Count - 1; i++)
             {
-                float dx = layout[i].x + layout[i].w + DividerW / 2f;
-                brush.Color = ChromeBorder;
-                rt.FillRectangle(new Rect(dx - 0.5f, layout[i].y, 1f, layout[i].h), brush);
+                if (horizontal)
+                {
+                    float dy = layout[i].y + layout[i].h + DividerW / 2f;
+                    rt.FillRectangle(new Rect(layout[i].x, dy - 0.5f, layout[i].w, 1f), brush);
+                }
+                else
+                {
+                    float dx = layout[i].x + layout[i].w + DividerW / 2f;
+                    rt.FillRectangle(new Rect(dx - 0.5f, layout[i].y, 1f, layout[i].h), brush);
+                }
             }
-            var ap = layout.First(l => ReferenceEquals(l.pane, ses.ActivePane));
+            // The focused-pane accent: a 2 DIP bar along the pane's TOP boundary line. On a vertical
+            // split that line is the title bar's bottom edge for both panes — the pixels every
+            // capture and screenshot so far were taken of, kept exactly. On a horizontal split the
+            // title bar's edge belongs to the top pane only, so a bar pinned there would mark the wrong
+            // pane half the time; the bottom pane's top boundary is the divider, and the bar sits on
+            // it (over the hairline) instead. Same rule either way: the line above the focused pane.
+            int ai = layout.FindIndex(l => ReferenceEquals(l.pane, ses.ActivePane));
+            var ap = layout[ai];
             brush.Color = ChromeAccent;
-            rt.FillRectangle(new Rect(ap.x, TitleBarH + 1f, ap.w, 2f), brush); // accent marks the focused pane
+            float accentY = horizontal && ai > 0 ? layout[ai - 1].y + layout[ai - 1].h + DividerW / 2f - 1f : TitleBarH + 1f;
+            rt.FillRectangle(new Rect(ap.x, accentY, ap.w, 2f), brush); // accent marks the focused pane
         }
     }
 
