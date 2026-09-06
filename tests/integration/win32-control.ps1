@@ -779,6 +779,31 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
             ($goneEnded -and $goneReply -and $goneReply.ok -and $goneReply.result -eq 'exit 1') "ended=$goneEnded reply=$($goneReply | ConvertTo-Json -Compress)"
         try { Invoke-Ctl @('session', 'close', $goneId) | Out-Null } catch { }
 
+        # #227 r4: the skill's recipe for telling a start failure from a failed program, step by
+        # step against the code: open --wait (reply = the overlay pane id, the pane survives the
+        # exit), overlay result becomes "exit N", session text by that id reaches the overlay pane,
+        # overlay close --target <that id> closes THAT session's overlay (not the active one).
+        $recipeMade = Invoke-Ctl @('session', 'new', '--name', 'p2-227-recipe', '--no-select')
+        $recipeId = [string]$recipeMade.result
+        for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $recipeId); $i++) { Start-Sleep -Milliseconds 200 }
+        $recipeOpen = Invoke-Ctl @('session', 'overlay', 'open', 'echo recipe-marker & exit 7', '--wait', '--target', $recipeId)
+        $recipeOvl = [string]$recipeOpen.result
+        Check 'recipe: overlay open --wait replies the overlay pane id' ($recipeOpen.ok -and $recipeOvl -like "$recipeId*overlay*") "$($recipeOpen | ConvertTo-Json -Compress)"
+        $recipeResult = $null
+        for ($i = 0; $i -lt 50; $i++) {
+            $recipeResult = Invoke-Ctl @('session', 'overlay', 'result')
+            if ($recipeResult.ok -and $recipeResult.result -eq 'exit 7') { break }
+            Start-Sleep -Milliseconds 200
+        }
+        Check 'recipe: overlay result reaches "exit 7" while the --wait overlay stays' ($recipeResult.ok -and $recipeResult.result -eq 'exit 7') "$($recipeResult | ConvertTo-Json -Compress)"
+        $recipeNode = Get-SessionSnapshot $recipeId
+        $recipeText = Invoke-Ctl @('session', 'text', '--target', $recipeOvl)
+        Check 'recipe: session text --target <overlay id> reads the overlay pane after its exit' ($recipeNode.overlay -and $recipeText.ok -and ("$($recipeText.result)" -match 'recipe-marker')) "overlay=$($recipeNode.overlay) $($recipeText | ConvertTo-Json -Compress)"
+        $recipeClose = Invoke-Ctl @('session', 'overlay', 'close', '--target', $recipeOvl)
+        $recipeAfter = Get-SessionSnapshot $recipeId
+        Check 'recipe: overlay close --target <overlay id> closes that session''s overlay' ($recipeClose.ok -and $recipeClose.result -eq 'closed' -and $recipeAfter -and -not $recipeAfter.overlay) "$($recipeClose | ConvertTo-Json -Compress) overlay=$($recipeAfter.overlay)"
+        try { Invoke-Ctl @('session', 'close', $recipeId) | Out-Null } catch { }
+
         # sidebar.width must move the divider, not just a number. The unit tests see the fake host
         # only; here the proof is live geometry: the active session's measured width (session.metrics,
         # columns x cell width) shrinks when the sidebar widens, because the grid derives from the

@@ -1,4 +1,3 @@
-using System.Text;
 using Agwinterm.Core;
 using Agwinterm.Pty;
 
@@ -250,10 +249,26 @@ public class ServerSessionTests : IDisposable
         await s.StartAsync("cmd.exe", new[] { "/c", "exit 0" }, verbatimCommandLine: true, cwd: cwd);
         Assert.True(s.HasExited);
         Assert.Equal(1, s.ExitCode);
-        var sb = new StringBuilder();
-        for (int r = 0; r < s.Rows; r++) sb.AppendLine(s.SnapshotRow(r));
-        Assert.Contains("failed to start", sb.ToString());
+        Assert.Contains("failed to start", GridText(s));
         await Task.Delay(300);   // an Exited via the data pipe's EOF would arrive after the create reply
+        Assert.False(exitedRaised);
+    }
+
+    /// <summary>The de-elevate spawn (its own branch, its own catch) must keep the same host
+    /// contract (#227 r4): a failed DeElevatedPty.Spawn — the missing cwd fails CreateProcessAsUserW
+    /// whether or not this test process is elevated — is the create's error, not an ok.</summary>
+    [Fact]
+    public async Task StartFailure_DeElevatedIntoAMissingCwd_ReachesTheClientAsTheReason()
+    {
+        string cwd = Path.Combine(Path.GetTempPath(), "agwinterm-gone-" + Guid.NewGuid().ToString("N"));
+        using var s = _backend.Create(Guid.NewGuid().ToString(), 80, 24);
+        bool exitedRaised = false;
+        s.Exited += _ => exitedRaised = true;
+        await s.StartAsync("cmd.exe", new[] { "/c", "exit 0" }, verbatimCommandLine: true, cwd: cwd, deElevate: true);
+        Assert.True(s.HasExited);
+        Assert.Equal(1, s.ExitCode);
+        Assert.Contains("failed to start", GridText(s));
+        await Task.Delay(300);
         Assert.False(exitedRaised);
     }
 }

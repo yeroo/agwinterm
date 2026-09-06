@@ -199,9 +199,10 @@ public sealed class TerminalSession : ISession
                 : QuoteArg(app);
             IPtyConnection dc;
             try { dc = DeElevatedPty.Spawn(cmd, string.IsNullOrEmpty(cwd) ? Environment.CurrentDirectory : cwd, Cols, Rows); }
-            catch (Exception ex)
+            catch (Exception ex) when (paintFailure)
             {
                 // Surface the failure in the pane instead of leaving it dead (or crashing on the unobserved task).
+                // The pty-host's form (StartOrThrowAsync) lets it throw, the same as the ordinary spawn below.
                 var msg = $"\r\n\x1b[31m[agwinterm] could not start a non-elevated session:\x1b[0m\r\n  {ex.Message}\r\n";
                 lock (_sync) Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(msg));
                 OutputReceived?.Invoke();
