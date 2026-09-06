@@ -371,10 +371,15 @@ public interface ISessionHost
     /// overlay (one an open has since replaced, or a close disposed, does not write it); a caller
     /// that runs overlays on two sessions at once reads the last such exit in the window, not its
     /// own. `result` skips the target check entirely. A blocking open whose window closes before the
-    /// program exits is a throw the server turns into ok:false (the status is unknown).
+    /// program exits — or before the open itself ran — is a throw the server turns into ok:false
+    /// (the status is unknown); an overlay whose program could not be started at all (the pty-host
+    /// down, the cwd gone) ends as "exit 1", not a wait without end.
     /// Resize resolves the target, checks for the overlay and writes the size in one queued UI action
     /// and replies from its result (#227), so the reply names a size that landed on an overlay that
-    /// existed when it did.
+    /// existed when it did; a hop that cannot be queued or run is a refusal. A hop that TIMES OUT
+    /// (a message loop that is alive but not pumping, 15 s) is ok:false too, but the action stays
+    /// queued and may still land when the loop resumes, and the reply says so rather than claiming
+    /// the size is unchanged.
     /// A FAILURE is signalled by prefixing <see cref="RefusePrefix"/>, which the server turns into
     /// ok:false: open with no command; open or resize whenever NO session resolves (a named target
     /// that matches nothing, or no target and no active session); close when a target other than

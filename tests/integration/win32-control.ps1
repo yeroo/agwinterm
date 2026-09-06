@@ -693,20 +693,50 @@ try {
         Check 'and the replacing blocking open returns its own exit (55)' `
             ($replacer.ok -and $replacer.result -eq 'exit 55') "$($replacer | ConvertTo-Json -Compress)"
 
-        # #227 (2): resize resolves, checks and writes in ONE queued UI action. Fired in a loop
-        # against an overlay whose program exits under it, each reply is either "resized N%" (the
-        # overlay existed when the size landed) or the "open one first" refusal — never a reply that
-        # says resized while the write went to a session with no overlay. The proof afterwards: the
-        # session's tree node carries no `overlaySize` once the overlay is gone.
+        # #227 (2): resize resolves, checks and writes in ONE queued UI action. Fired against an
+        # overlay whose program exits under it: two hammer processes resize without pause for the
+        # program's whole life while this loop resizes and reads the tree between calls. The
+        # discriminating assertion is the one #227 names — once the tree has shown the overlay
+        # gone, no LATER resize may answer "resized" — and the persistent one: the node carries no
+        # `overlaySize` once the overlay is gone. The old code's lie needed a resize to straddle
+        # the exit's close (its pipe-thread check passing, its posted write landing after the
+        # close cleared the size); the hammers make that straddle likely, not certain — the
+        # stale-size state it leaves is what the last check catches. Every reply must still be
+        # "resized N%" or the "open one first" refusal.
         $resizeTarget = $blockIds[1]
-        Invoke-Ctl @('session', 'overlay', 'open', 'ping -n 2 127.0.0.1 >nul & exit 0', '--size-percent', '40', '--target', $resizeTarget) | Out-Null
-        $resizeReplies = @(); $resizeBad = @()
-        for ($i = 0; $i -lt 60; $i++) {
+        Invoke-Ctl @('session', 'overlay', 'open', 'ping -n 3 127.0.0.1 >nul & exit 0', '--size-percent', '40', '--target', $resizeTarget) | Out-Null
+        $hammerScript = @'
+for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percent (30 + ($i % 50)) --target '__TARGET__' --pipe '__PIPE__' --json }
+'@
+        $hammerScript = $hammerScript.Replace('__CTL__', $ctl.Replace("'", "''")).Replace('__TARGET__', $resizeTarget).Replace('__PIPE__', $pipe)
+        $hammerEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($hammerScript))
+        $hammers = @()
+        foreach ($h in 1, 2) {
+            $hFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-hammer-" + [guid]::NewGuid().ToString('N') + '.txt')
+            $hammers += @{ File = $hFile; Proc = Start-Process pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-EncodedCommand', $hammerEncoded) -NoNewWindow -PassThru -RedirectStandardOutput $hFile }
+        }
+        $resizeReplies = @(); $resizeBad = @(); $resizeAfterGone = @(); $seenGone = $false
+        for ($i = 0; $i -lt 40; $i++) {
             $r = Invoke-Ctl @('session', 'overlay', 'resize', '--size-percent', (30 + ($i % 50)), '--target', $resizeTarget)
             $resizeReplies += $r
             $okShape = ($r.ok -and ("$($r.result)" -match '^resized \d+%$')) -or ((-not $r.ok) -and ("$($r.error)" -match 'open one first'))
             if (-not $okShape) { $resizeBad += ($r | ConvertTo-Json -Compress) }
-            Start-Sleep -Milliseconds 30
+            if ($seenGone -and $r.ok) { $resizeAfterGone += ($r | ConvertTo-Json -Compress) }
+            $node = Get-SessionSnapshot $resizeTarget
+            if ($node -and -not $node.overlay) { $seenGone = $true }
+        }
+        foreach ($h in $hammers) {
+            if (-not $h.Proc.WaitForExit(60000)) { try { $h.Proc.Kill() } catch { } }
+            try {
+                foreach ($line in [IO.File]::ReadAllLines($h.File)) {
+                    if (-not $line.Trim()) { continue }
+                    try { $hr = $line | ConvertFrom-Json } catch { $resizeBad += $line; continue }
+                    $resizeReplies += $hr
+                    $okShape = ($hr.ok -and ("$($hr.result)" -match '^resized \d+%$')) -or ((-not $hr.ok) -and ("$($hr.error)" -match 'open one first'))
+                    if (-not $okShape) { $resizeBad += $line }
+                }
+            } catch { }
+            try { Remove-Item -LiteralPath $h.File -Force -ErrorAction SilentlyContinue } catch { }
         }
         $resizeNode = $null
         for ($i = 0; $i -lt 30; $i++) {
@@ -715,7 +745,10 @@ try {
             Start-Sleep -Milliseconds 200
         }
         $resizedCount = @($resizeReplies | Where-Object { $_.ok }).Count
-        Check 'resize under an exiting overlay answers resized-or-refused only' ($resizeBad.Count -eq 0 -and $resizedCount -gt 0) "resized=$resizedCount bad=$($resizeBad -join ' | ')"
+        $refusedCount = @($resizeReplies | Where-Object { -not $_.ok }).Count
+        Check 'resize under an exiting overlay answers resized-or-refused only, and both happened' `
+            ($resizeBad.Count -eq 0 -and $resizedCount -gt 0 -and $refusedCount -gt 0) "resized=$resizedCount refused=$refusedCount bad=$($resizeBad -join ' | ')"
+        Check 'and no resize after the tree showed the overlay gone answered resized' ($seenGone -and $resizeAfterGone.Count -eq 0) "seenGone=$seenGone after=$($resizeAfterGone -join ' | ')"
         Check 'and once the overlay is gone the session carries no overlaySize' `
             ($resizeNode -and -not $resizeNode.overlay -and -not $resizeNode.PSObject.Properties['overlaySize']) "$($resizeNode | ConvertTo-Json -Compress -Depth 3)"
         foreach ($id in $blockIds) { try { Invoke-Ctl @('session', 'close', $id) | Out-Null } catch { } }

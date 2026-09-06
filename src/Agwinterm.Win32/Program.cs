@@ -106,7 +106,7 @@ internal partial class Program : ISessionHost, IWindowHost
     // Overlays (Wave B3): an ephemeral program run over a session; vanishes when the program exits.
     private Ses? _ovlOwner;              // the session whose overlay is the current cover (kind 3)
     private string _lastOverlayExit = "no overlay"; // "exit N" once an overlay's program has exited (`overlay result`, one per window)
-    private int _overlayExitCode;        // the last overlay program's exit code (the --wait banner)
+    private readonly object _overlayExitLock = new(); // orders an exit's write of _lastOverlayExit against an open's reset (see WatchOverlayExit)
     private static ControlServer? _control;
     // Update Claude Code workflow: one run at a time + the newest version the background check saw.
     private volatile bool _claudeUpdating;
@@ -322,6 +322,10 @@ internal partial class Program : ISessionHost, IWindowHost
         // waits on the source of the pane it opened, so two blocking opens in one window each get
         // their own program's status; the window-wide last exit (`overlay result`) stays separate.
         public TaskCompletionSource<string>? OverlayDone;
+        // The pane's StartAsync task (CreatePane's command branches). A start that FAILS sets
+        // HasExited without raising Exited — both session kinds keep the surface to show the
+        // failure — so a watcher that needs an end (WatchOverlayExit) observes this instead.
+        public Task? Start;
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // this pane's OWN share of the session's extent along its axis (width when vertical, height when horizontal); PaneLayout normalises by the sum
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
@@ -369,6 +373,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public int OverlaySizePercent; // 0 = full content region; 1..100 = centered floating panel
         public bool OverlayWait;   // keep the overlay after its program exits (press a key to close)
         public bool OverlayExited; // the overlay's program has exited and it's awaiting a key
+        public int OverlayExitCode;   // that program's exit code (the --wait banner) — per session, so another session's open cannot reset it
         // Wave F2: per-session background watermark (a faint image drawn behind the terminal of every pane).
         public string? BgPath;      // absolute path to the copied image under AppDir\backgrounds (null = none)
         public int BgOpacity = 15;  // 0..100 (drawn opacity of the watermark)

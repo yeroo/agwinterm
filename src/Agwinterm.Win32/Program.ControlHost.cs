@@ -911,18 +911,25 @@ internal partial class Program
                             return id;
                         });
                         if (opened.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) return opened;
+                        // InvokeOnUi does not say whether its lambda ran: a SendMessage to a window
+                        // already destroyed returns at once with the previous caller's result, and a
+                        // lambda that threw leaves "". Neither is a refusal, so `done` is the proof
+                        // the open happened; without it the reply is the same throw as below.
+                        if (done is null) throw new InvalidOperationException(OverlayWindowGone);
                         // The wait ends with the pane's own outcome — "exit N", or "closed" when the
                         // overlay was closed or replaced before its program exited — or with the
                         // window going away (Dispose closes each pane without raising Exited, so the
                         // source would never complete; _uiGone is cancelled on WM_DESTROY's first line).
-                        try { done!.Task.Wait(Timeout.Infinite, _uiGone.Token); }
-                        catch (OperationCanceledException) { throw new InvalidOperationException("the window closed before the overlay's program exited; its exit status is unknown"); }
+                        try { done.Task.Wait(Timeout.Infinite, _uiGone.Token); }
+                        catch (OperationCanceledException) { throw new InvalidOperationException(OverlayWindowGone); }
                         return done.Task.Result;
                     }
                     return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, command!, sizePercent, wait); });
                 }
         }
     }
+
+    private const string OverlayWindowGone = "the window closed before the overlay's program exited; its exit status is unknown";
 
     public bool Notify(string? target, string? title, string body)
     {
