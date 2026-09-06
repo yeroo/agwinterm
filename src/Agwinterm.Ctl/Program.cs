@@ -431,7 +431,7 @@ switch (area)
         if (rest.Count > 0) { Console.Error.WriteLine($"restore capture: unexpected argument '{rest[0]}' — the target is `--target <pane or session>`; with no --target EVERY real pane is captured, so a stray word is refused rather than widened. Nothing sent."); return 2; }
         var unknown = options.Keys.FirstOrDefault(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
         if (unknown is not null) { Console.Error.WriteLine($"restore capture: unknown option --{unknown} (it takes only --target). Nothing sent."); return 2; }
-        if (options.TryGetValue("target", out var capTarget) && (capTarget.Length == 0 || capTarget == "true"))
+        if (options.TryGetValue("target", out var capTarget) && (capTarget.Length == 0 || !valued.Contains("target")))   // a valueless flag, not the WORD true — a session may be named that
         { Console.Error.WriteLine("restore capture: --target is empty — omit it to capture every real pane, or name one pane or session. Nothing sent."); return 2; }
         target = Opt("target");
         break;

@@ -292,7 +292,8 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   `restore-commands` setting, off by default: the capture always happens, the typing-back at restart
   only happens when that is on, and a script that wants the replay checks the flag rather than
   assuming. It takes one process query for all panes, so allow seconds, not milliseconds. An unknown
-  target, a scratch/overlay/quick pane, or a query that fails is refused and nothing is written;
+  target, an empty one (`--target ''` — only an OMITTED target means every pane), a
+  scratch/overlay/quick pane, or a query that fails is refused and nothing is written;
   `tree --json` reads the slots back as `capturedCommands`, keyed by pane id like `restoreCommands`.
 - `session context "<text>"` sets one line of **what a session is for**, shown dimmed after the name
   in the title bar and the sidebar row and on the session palette's second line, where a name has to

@@ -330,7 +330,9 @@ Server and tests:
       through `InvokeOnUi`. `--target` resolves with the resolver `session.restore` uses (a pane; a
       session id is its first pane); an unknown target is a verb-specific refusal, not `"no session"`
   - `"active"` (only reachable as an explicit `--target active`) = the active session's active pane in
-    both hosts; null / `""` = every real pane. A pane closed between the snapshot and the hop is
+    both hosts; null (omitted) = every real pane, and a present but empty target is refused in the
+    server with `EmptyTarget` before either host is asked (the r1 fix; the hosts' `""` arms are
+    unreachable through the wire). A pane closed between the snapshot and the hop is
     dropped from the reply, not written to; the save runs only when something landed
 - [x] the verb ignores the `restore-commands` toggle for the **capture** — the pin ignores it too,
       and a no-op verb on a default install is the silent-success class — but the reply carries

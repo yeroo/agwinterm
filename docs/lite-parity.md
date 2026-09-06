@@ -188,9 +188,10 @@ Both products' P3 checks run for real since agwinterm **0.17.12** (2026-09-05). 
   a port of agwinterm's CIM query. The reply is `{captured, replayOnRestore, panes:[{pane, session,
   captured|null}]}`: `null` = the shell had no non-denylisted child, and null is written too (a
   fresh capture replaces an older checkpoint); `replayOnRestore` reports the restore-commands
-  toggle, which gates the replay at restart and never the capture. An unknown target or a pane
-  that is never restored is refused with nothing written; a process query that fails is a refusal,
-  not an empty answer for every pane. `tree --json` reads the slots back as `capturedCommands`,
+  toggle, which gates the replay at restart and never the capture. An unknown target, a present
+  but empty one (only an OMITTED `--target` means every real pane) or a pane that is never restored
+  is refused with nothing written; a process query that fails is a refusal, not an empty answer for
+  every pane. `tree --json` reads the slots back as `capturedCommands`,
   keyed by pane id like `restoreCommands`. Lite has no `session.restore` yet (that is **P9**), so
   this lands the slot and the verb first and the pin later.
 

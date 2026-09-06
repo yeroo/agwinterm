@@ -16,6 +16,9 @@
 #   replay     restore-commands = true in the sandbox's own agwinterm.conf, killed: after the
 #              relaunch the captured command is typed back into the pane (`session text` shows it
 #              with the `& ` prefix the replay adds, which the original typed line never had)
+#   quit-capture  restore-commands = true, a child running, NO `restore capture` for its pane, WM_CLOSE:
+#              after the relaunch `capturedCommands` names the child — the slot WM_DESTROY's own
+#              capture filled (the one path SaveState(captureCommands: true) is reached from; #234)
 #
 # P4 (docs/plans/completed/2026-09-06-p4-splits.md, task 3) adds the split axis to the file, and two cells:
 #
@@ -48,7 +51,7 @@
 param(
     [string]$Exe,
     [switch]$Strict,
-    [string]$Only = ''          # run a single cell by name: graceful | killed | refusal | replay | axis-graceful | axis-killed | swap-killed
+    [string]$Only = ''          # run a single cell by name: graceful | killed | refusal | replay | quit-capture | axis-graceful | axis-killed | swap-killed
 )
 
 $ErrorActionPreference = 'Stop'
@@ -256,6 +259,46 @@ Cell -Name 'replay' -Kill -Conf @('restore-commands = true') -Setup {
         Start-Sleep -Milliseconds 500
     }
     Check 'replay: the captured command was typed back into the pane (with the `& ` prefix the replay adds)' $typed "text=$text"
+}
+
+# The QUIT-TIME capture: SaveState(captureCommands: true) is reached from WM_DESTROY alone and runs
+# only with restore-commands on. The graceful cell above runs with it off and the replay cell is
+# killed, so the code the P3 round-1 fix rewrote was run by no cell (#234). This one: the toggle on,
+# a child running, NO `restore capture` for its pane, a clean close — the checkpoint the relaunch
+# reads must be the one WM_DESTROY wrote. CIM is warmed first by a capture aimed at the IDLE pane
+# (it writes null into that pane's slot and never touches the first pane's), so the quit path's 4 s
+# budget is not what this cell measures on a cold provider.
+Cell -Name 'quit-capture' -Conf @('restore-commands = true') -Setup {
+    param($s)
+    $sid = Sid $s
+    if (-not (Wait-Prompt $s $sid)) { throw 'the first shell never drew a prompt' }
+    $ctxText = 'quit-capture: WM_DESTROY fills the slot'
+    $set = Reply $s @('session', 'context', $ctxText, '--target', $sid)
+    Check 'quit-capture: session context replies with the value in effect' ($set.ok -and $set.result.context -eq $ctxText) ($set | ConvertTo-Json -Compress)
+    $idle = [string](Reply $s @('session', 'new', '--name', 'idle', '--no-select')).result
+    for ($i = 0; $i -lt 30 -and -not (Node $s $idle); $i++) { Start-Sleep -Milliseconds 200 }
+    if (-not (Start-Child $s $sid)) { throw 'the ping child never echoed in the first pane' }
+    $warm = Reply $s @('restore', 'capture', '--target', $idle)
+    $warmMine = @($warm.result.panes) | Where-Object { $_.pane -eq $sid }
+    Check 'quit-capture: the warming capture is scoped to the idle pane (the first pane is not in its reply)' `
+        ($warm.ok -and -not $warmMine -and @($warm.result.panes).Count -eq 1) ($warm | ConvertTo-Json -Compress -Depth 5)
+    Start-Sleep -Milliseconds 600
+    $raw = Get-Content -LiteralPath (StateFile $s).FullName -Raw
+    Check 'quit-capture: before the close the state file carries the context and NO ping command (nothing captured the first pane yet)' `
+        (($raw -match ('"Context":\s*"' + [regex]::Escape($ctxText) + '"')) -and ($raw -notmatch '(?i)"Command":\s*"[^"]*ping')) "file=$((StateFile $s).FullName)"
+    return @{ Sid = $sid; Idle = $idle; Context = $ctxText }
+} -Assert {
+    param($s, $ctx)
+    Start-Sleep -Seconds 3   # the restored shells come up; the tree is readable before they do
+    $n = Node $s $ctx.Sid
+    Check 'quit-capture: the context is back on the same session id' ($n -and $n.context -eq $ctx.Context) "node=$($n | ConvertTo-Json -Compress)"
+    Check 'quit-capture: capturedCommands names the child — the slot WM_DESTROY filled, with no restore capture having named that pane' `
+        ($n -and $n.PSObject.Properties['capturedCommands'] -and ("$($n.capturedCommands.($ctx.Sid))" -match $ChildPattern)) `
+        "capturedCommands=$($n.capturedCommands | ConvertTo-Json -Compress)"
+    $idle = Node $s $ctx.Idle
+    Check 'quit-capture: the idle session is back with no capture (its shell ran nothing, at the warm-up and at the quit)' `
+        ($idle -and -not ($idle.PSObject.Properties['capturedCommands'] -and $idle.capturedCommands.PSObject.Properties[$ctx.Idle])) `
+        "node=$($idle | ConvertTo-Json -Compress)"
 }
 
 # ---- P4: the split axis survives the restart ----

@@ -79,8 +79,10 @@ as `$sid = Sid $s` and confirm `Node $s $sid` has no `context`.
 - step 5: `Compare-Capture $t0 $t3` is **true** — clearing puts the title bar back exactly.
 
 **Fails when:** `DrawTitleBar` draws the context outside the `titleAvail` budget, drops the trimming
-sign, or the pill strip origin (`pillX`) starts depending on the context's width — it is anchored on
-the title alone, and the context is drawn AFTER the pills for exactly that reason.
+sign, reserves room for a context it then does not draw (a title cut short for nothing), or moves the
+pill strip for a title that FITS — the strip (`pillX`) is anchored on the title's right edge, the
+context is drawn after the pills, and the only way a context reaches a pill is by shortening a title
+longer than its share, which is the one case where the strip legitimately moves left (#234).
 
 *Seen (2026-09-05, task 2 smoke): `~  build the persistence batch` dimmed before the bell at 150%
 DPI; the row read `session 1  build the persistence…`.*
