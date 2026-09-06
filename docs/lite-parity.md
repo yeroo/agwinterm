@@ -255,14 +255,35 @@ and the list should grow as more turn up.
   registry and a `%LOCALAPPDATA%` override. That is why the two QA adapters isolate differently, and
   it is not worth unifying.
 - **Splits as sessions.** lite models a split as a hidden session; agwinterm models panes inside a
-  session. Behaviour matches now (a split belongs to its session, closes with it, restores with it),
-  and the internal shape can stay different. **P4's `session swap` is the first item this model makes
-  expensive**: agwinterm reverses two panes inside one session and no id moves, while lite would have
-  to exchange the visible session's tree identity with its hidden split's (name, context, flag,
-  workspace position, the `D`/`C`/`K` lines) or invert `splitId` and both `hidden` flags — the P4-lite
-  plan should decide whether to defer the swap the way `session.restore` went to P9 rather than let
-  the batch discover it. The axis (a fifth field on the `P` line) and `split close` (promote the hidden
-  session when pane 0 closes) are cheap there.
+  session. Behaviour matches — a split belongs to its session, closes with it, restores with it, axis
+  and order included (an `L` line beside the `P`) — and the internal shape stays different. P4-lite
+  (agliteterm #30) implemented `session swap` after all: the hidden session is drawn in the owner's
+  other slot, so a swap is one flag read where the two panes are laid out and hit-tested; no tree
+  identity moves, no id moves, the `K` line stays by role. `session split close` on the session's own
+  shell promotes the hidden session's object into the session's place (same id, name, workspace,
+  flag, context, sidebar row; its own pane id kept — `Session::paneId`, set once and never written),
+  with a `tree` event and no `session closed` — agwinterm's `[B]` picture. What differs, all recorded
+  in the P4-lite plan (`docs/plans/completed/2026-09-06-p4-lite-mirror.md` there):
+  - **One node shape agwinterm never emits.** That promoted session's node carries `paneIds` alone
+    (`[<its shell's id>]`, no `paneCount`), so in lite the presence of `paneIds` does not imply a
+    split — `paneCount` is the split discriminator in both products. agwinterm reaches the same
+    state (its env vars are per pane too; closing the pane that carries the session id keeps the
+    session) and emits nothing for it (`ControlServer` writes `paneIds` only under `paneCount > 1`);
+    lite's key exists so the survivor's own agent, whose `AGWINTERM_SESSION_ID` is no node's `id`,
+    can find its session's node — a gap agwinterm's own skill has no recipe for.
+  - **The session-id rule differs by one sentence.** agwinterm's session id names the FOCUSED pane
+    while no pane carries it; lite's always names the session's own shell, and the split's shell is
+    reached only by its own id (no per-session pane resolution). One exception: after a kill-restart
+    a promoted session is adopted by its shell's id and comes back under it.
+  - **`session close <split shell's id>`** is a pre-P4 divergence in lite's favour: it closes that
+    shell (an unsplit) where agwinterm answers `session not found` for a pane id.
+  - **Restore.** Split shells are recreated, never adopted, so their ids are fresh after a graceful
+    restart; the `L` line puts the axis and order back onto the recreated pair.
+  - **`tree`.** A lite node is `active` when the displayed session is it, whichever pane has focus;
+    the split's shell has no node. A split side whose shell exits collapses to the survivor in both
+    products; a one-pane session's exit stays on screen as `(exited)` in lite.
+  Not a divergence, checked both ways: `session select` never moves the active workspace in either
+  product.
 - **The native core is shared.** Both load `agwinterm_core.dll` across the same C ABI, so emulator
   behaviour — widths, scrollback, alt screen — is common by construction. A difference there is a
   bug in one of the clients, not a parity gap.
