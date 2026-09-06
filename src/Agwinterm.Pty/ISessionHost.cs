@@ -391,7 +391,10 @@ public interface ISessionHost
     /// ordinary save wrote "" into the slot because the captured command had no in-memory field. The
     /// slot is durable now (the app's <c>Pane.CapturedCommand</c>, written by this verb and by the
     /// quit-time capture, read by every save), so a checkpoint survives until the next capture.
-    /// <para><b>Target</b>: null / "" = every real pane of every session, in tree order; "active" =
+    /// <para><b>Target</b>: null (omitted) = every real pane of every session, in tree order; a
+    /// present but EMPTY target is refused by the server with <see cref="RestoreCaptureReply.EmptyTarget"/>
+    /// before the host is asked (a caller that built the request wrong must not clear every idle
+    /// pane's checkpoint on a typo; the hosts' "" arms are unreachable through the wire); "active" =
     /// the active session's active pane; else the resolver <c>session.restore</c> uses (exact pane,
     /// exact session → its active pane, pane prefix, session prefix / unique name). An unknown target
     /// is refused with <see cref="RestoreCaptureReply.UnknownTarget"/>; a scratch / overlay / quick
@@ -407,9 +410,12 @@ public interface ISessionHost
     /// carries it so the caller knows.</para>
     /// <para><b>Threading</b> (the app): the pane + pid snapshot and the CIM query run on the calling
     /// pipe thread with the 15 s timeout the non-quit callers use — never on the UI thread — and
-    /// every slot write plus one save land in a single FIFO queued hop; a hop that cannot run throws,
-    /// which the server turns into ok:false with nothing written. A pane closed between the snapshot
-    /// and the hop is dropped from the reply rather than written to.</para>
+    /// every slot write plus one save land in a single FIFO queued hop. A hop that cannot be queued,
+    /// or that the window closes under, throws — ok:false, nothing written, nothing saved. A hop that
+    /// TIMES OUT (a message loop that is alive but not pumping) is ok:false too, but the action stays
+    /// queued and may still land when the loop resumes, and the reply says so rather than claiming
+    /// nothing was written. A pane closed between the snapshot and the hop is dropped from the reply
+    /// rather than written to.</para>
     /// </summary>
     RestoreCaptureResult RestoreCapture(string? target);
     /// <summary>Poll the event log for events after <paramref name="since"/> (0 = all buffered), up to

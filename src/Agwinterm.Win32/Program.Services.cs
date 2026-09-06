@@ -301,41 +301,51 @@ internal partial class Program
         // session.context (P3): a dimmed, smaller run AFTER the title and after the pill strip. It is
         // a suffix and not a second caption line because TitleBarH is 40/30/0 by toolbar mode — there
         // is no room for a second row at 30 and no row at all at 0. Title and context share the ONE
-        // titleAvail budget: a long title yields at most 40% of it to the context, both are ellipsized
-        // inside their share, and the run never grows past titleAvail — so the bell (which follows the
-        // run) is clamped exactly where it was without a context, and the right button group never
-        // moves. The pills sit between them, anchored on the TITLE alone, so their origin does not
-        // depend on the context either (qa/persistence.md names that as the failure; revmux r1).
+        // titleAvail budget, in this order of claim: the pills (measured FIRST, below) are taken off
+        // the top, the context reserves at most 40% of what is left and only when that reserve can
+        // actually be drawn (a context under 20 px reserves nothing, so a title is never cut for a
+        // run that then does not appear), and the title takes the rest, ellipsized. The pill strip is
+        // anchored on the TITLE: it starts where the title ends, so a context moves it only through
+        // the title — only when the title is longer than what is left of the shared budget after the
+        // pills and the context's reserve (at least 60% of `titleShare`); a shorter title is drawn in
+        // full and its pills stay put, whatever the context (qa/persistence.md states the same bound;
+        // the earlier "never depends on the context" was more than the layout does — #234). The bell
+        // follows the run (title, pills, then the context) and clamps on its own at `rgLeft - bellW -
+        // 14`, the same edge the budget was cut from, so a run that fills the budget puts it exactly
+        // there and the right button group never moves (revmux r1).
+        var pills = new List<(string label, Color4 bg, float w)>();
+        void Pill(string label, Color4 bg) => pills.Add((label, bg, MeasureText(label, _uiSmall) + 14f));   // small status pill after the title
+        if (_broadcast) Pill("BROADCAST", new Color4(0.85f, 0.25f, 0.25f, 0.95f));  // typing fans out to the workspace
+        if (ActiveSurface() is { ReadOnly: true }) Pill("READ-ONLY", new Color4(0.45f, 0.45f, 0.5f, 0.95f));
+        float pillsW = pills.Count == 0 ? 0f : 10f + pills.Sum(p => p.w + 6f) - 6f;   // leading gap, the pills, the gaps between them
+        float titleShare = titleAvail - pillsW;   // what the title and the context divide
         string? ctx = _active?.Context;
         float ctxGap = 8f, ctxMeasured = 0f, ctxReserve = 0f;
         if (ctx is not null)
         {
             ctxMeasured = MeasureText(ctx, _uiSmall);
-            ctxReserve = MathF.Min(ctxMeasured + ctxGap, titleAvail * 0.4f);
+            ctxReserve = MathF.Min(ctxMeasured + ctxGap, titleShare * 0.4f);
+            if (ctxReserve - ctxGap < 20f) ctxReserve = 0f;   // would not be drawn (the 20 px floor below): reserve nothing, shorten no title
         }
-        float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleAvail - ctxReserve));
+        float titleW = MathF.Max(30f, MathF.Min(titleMeasured, titleShare - ctxReserve));
         brush.Color = ChromeText;
         rt.DrawText(title, _uiTitle, new Rect(titleX, 0f, titleW, TitleBarH), brush);  // one vertically-centered, ellipsized row
         float runEnd = titleX + titleW;   // right edge of the title run (title, pills, then the context suffix when set)
         float pillX = runEnd + 10f;       // anchored on the title alone — never on the context
-        bool anyPill = false;
-        void Pill(string label, Color4 bg)   // small status pill after the title
+        foreach (var (label, bg, w) in pills)
         {
-            float w = MeasureText(label, _uiSmall) + 14f;
             brush.Color = bg;
             rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(pillX, (TitleBarH - 20f) / 2f, w, 20f), RadiusX = 5f, RadiusY = 5f }, brush);
             brush.Color = new Color4(1f, 1f, 1f, 1f);
             rt.DrawText(label, _uiSmall, new Rect(pillX + 7f, (TitleBarH - 20f) / 2f + 2f, w, 16f), brush);
             pillX += w + 6f;
-            anyPill = true;
         }
-        if (_broadcast) Pill("BROADCAST", new Color4(0.85f, 0.25f, 0.25f, 0.95f));  // typing fans out to the workspace
-        if (ActiveSurface() is { ReadOnly: true }) Pill("READ-ONLY", new Color4(0.45f, 0.45f, 0.5f, 0.95f));
-        if (anyPill) runEnd = pillX - 6f;   // the strip's right edge (its last inter-pill gap removed)
+        if (pills.Count > 0) runEnd = pillX - 6f;   // the strip's right edge (its last inter-pill gap removed)
         if (ctx is not null)
         {
-            // The context takes what is left of the title budget after the title and the pills, so a
-            // pill can shorten it but it can never move a pill.
+            // The context takes what is left of the title budget after the title and the pills: at
+            // least its reserve when the title was cut for it (the pills were off the top before the
+            // reserve was taken), more when the title is short. A pill can shorten it, never move.
             float ctxW = MathF.Min(ctxMeasured, titleX + titleAvail - runEnd - ctxGap);
             if (ctxW >= 20f)   // nothing drawn when the title (and pills) fill the budget — the palette line carries the long form
             {
@@ -1318,8 +1328,10 @@ internal partial class Program
             // only consulted after the child has already closed stdout — a powershell wedged inside
             // the CIM query keeps the handle open, so neither the 4 s nor the 15 s bound ever fired
             // and the caller (a control-pipe thread, for restore.capture) hung with it (revmux r1).
-            // On expiry the whole tree goes (powershell + the WMI provider host it may have spawned),
-            // which also completes the pending read, and the partial output is never parsed.
+            // On expiry powershell is killed (the tree flag for any child it did spawn — the WMI
+            // provider host is the WMI service's child, not ours, and never held our pipe), which
+            // closes the last write handle on its stdout so the pending read completes with EOF, and
+            // the partial output is never parsed.
             var read = proc.StandardOutput.ReadToEndAsync();
             if (!proc.WaitForExit(timeoutMs))
             {

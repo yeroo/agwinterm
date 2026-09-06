@@ -511,10 +511,12 @@ public sealed class ControlServer : IDisposable
     /// restore.capture: capture every real pane's foreground command (or one pane's, with a target)
     /// into its durable restore slot now, and report per pane what was captured (P3). The reply is
     /// <see cref="RestoreCaptureReply"/>'s object, OkRaw; the read-back is <c>tree</c>'s
-    /// <c>capturedCommands</c>. Every refusal — an unknown target, a cover pane, a failed process
-    /// query, a UI hop that could not run — is the host's, behind <see cref="RestoreCaptureResult.Refusal"/>
-    /// or a throw, and each captures nothing for anyone. There is no server-side rule to apply: the
-    /// verb takes no value, only a target.
+    /// <c>capturedCommands</c>. One refusal is the server's own, taken before the host is asked: a
+    /// present but EMPTY target (<see cref="RestoreCaptureReply.EmptyTarget"/> — only an OMITTED
+    /// target means every real pane; the hosts' "" arms are unreachable through the wire). Every
+    /// other refusal — an unknown target, a cover pane, a failed process query, a UI hop that could
+    /// not run — is the host's, behind <see cref="RestoreCaptureResult.Refusal"/> or a throw, and each
+    /// captures nothing for anyone. The verb takes no value, only the target.
     /// </summary>
     private static string HandleRestoreCapture(ISessionHost host, string? target)
     {

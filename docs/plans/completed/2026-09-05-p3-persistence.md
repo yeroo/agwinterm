@@ -232,8 +232,9 @@ Server and tests:
 
 ### Task 2: the context on every surface
 - [x] `Ses.Context` (`Program.cs:320-346`), beside `CustomName` (added in Task 1 — the host needs the field)
-- [x] title bar: a dimmed run in `_uiSmall` / `ChromeDim` after the title, **before** the pill strip
-      (`Program.Services.cs:306-317`), ellipsized within the same `titleAvail` budget so the bell and
+- [x] title bar: a dimmed run in `_uiSmall` / `ChromeDim` after the title and **after** the pill strip
+      (as shipped by the round-1 fix — the strip is anchored on the title, see the round record below;
+      `Program.Services.cs:301-355`), ellipsized within the same `titleAvail` budget so the bell and
       the right button group never move; drawn only when set. Say in a comment why it is a suffix
       and not a second line (`TitleBarH` 40/30/0)
 - [x] sidebar row (`DrawSessionRow`, `Chrome.cs:143-206`): the same dimmed suffix after the name in
@@ -330,7 +331,9 @@ Server and tests:
       through `InvokeOnUi`. `--target` resolves with the resolver `session.restore` uses (a pane; a
       session id is its first pane); an unknown target is a verb-specific refusal, not `"no session"`
   - `"active"` (only reachable as an explicit `--target active`) = the active session's active pane in
-    both hosts; null / `""` = every real pane. A pane closed between the snapshot and the hop is
+    both hosts; null (omitted) = every real pane, and a present but empty target is refused in the
+    server with `EmptyTarget` before either host is asked (the r1 fix; the hosts' `""` arms are
+    unreachable through the wire). A pane closed between the snapshot and the hop is
     dropped from the reply, not written to; the save runs only when something landed
 - [x] the verb ignores the `restore-commands` toggle for the **capture** — the pin ignores it too,
       and a no-op verb on a default install is the silent-success class — but the reply carries
