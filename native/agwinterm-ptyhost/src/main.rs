@@ -38,6 +38,8 @@ struct Hosted {
     exited: AtomicBool,
     /// Bytes the pump has fed so far; the exit watcher's settle window reads it (#246).
     pump_bytes: AtomicU64,
+    /// True while a chunk is read but not yet fed + forwarded (the feed can block on `term`).
+    pump_in_flight: AtomicBool,
     exit_code: AtomicI32,
 }
 
@@ -220,13 +222,14 @@ fn with_session(host: &Arc<Host>, id: &str, act: impl FnOnce(&Arc<Hosted>) -> Re
     }
 }
 
-/// One 50 ms window with no new pump bytes, at most ten windows. A pump that already stopped costs one.
+/// One 50 ms window with no new pump bytes and no chunk in flight, at most ten windows. A pump that
+/// already stopped costs one; the cap bounds an exit, never a hang. Holds no lock.
 fn settle_output(h: &Arc<Hosted>) {
     let mut seen = h.pump_bytes.load(Ordering::SeqCst);
     for _ in 0..10 {
         std::thread::sleep(std::time::Duration::from_millis(50));
         let now = h.pump_bytes.load(Ordering::SeqCst);
-        if now == seen {
+        if now == seen && !h.pump_in_flight.load(Ordering::SeqCst) {
             return;
         }
         seen = now;
@@ -303,6 +306,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         data: Mutex::new(None),
         exited: AtomicBool::new(false),
         pump_bytes: AtomicU64::new(0),
+        pump_in_flight: AtomicBool::new(false),
         exit_code: AtomicI32::new(0),
     });
     host.sessions
@@ -321,6 +325,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
             if n == 0 {
                 break;
             }
+            hosted.pump_in_flight.store(true, Ordering::SeqCst);
             hosted.term.lock().unwrap().feed(&buf[..n]);
             let mut data = hosted.data.lock().unwrap();
             if let Some(d) = data.as_ref()
@@ -331,6 +336,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
             drop(data);
             // After the feed and the forward: "settled" means the emulator and the client both have it.
             hosted.pump_bytes.fetch_add(n as u64, Ordering::SeqCst);
+            hosted.pump_in_flight.store(false, Ordering::SeqCst);
         }
     });
 

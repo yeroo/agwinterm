@@ -82,10 +82,15 @@ if (args.Length == 0)
 // Split into positionals and --options.
 var positionals = new List<string>();
 var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-// Which options CONSUMED the token after them. The splitter cannot tell a flag from a valued option,
-// so `--wait "text"` gives --wait the text; verbs that must know whether a bare word was swallowed
-// (session type --stdin) ask this set rather than guessing from the value ("true" is also a word).
+// Which options EVER consumed the token after them. The splitter cannot tell a flag from a valued
+// option, so `--wait "text"` gives --wait the text; verbs that must know whether a bare word was
+// swallowed (session type --stdin) ask this set rather than guessing from the value ("true" is also
+// a word). Cumulative: `--stdin hello --stdin` still swallowed "hello".
 var valued = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+// Which options' LAST occurrence was bare. The value is the last occurrence's (below), so whether
+// that occurrence consumed one is a separate question from `valued`: `--target victim --target` is
+// an empty target, not "victim" (#246); `--target --target x` is "x".
+var bareLast = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 bool jsonOut = false;
 for (int i = 0; i < args.Length; i++)
 {
@@ -97,9 +102,7 @@ for (int i = 0; i < args.Length; i++)
         bool takes = i + 1 < args.Length && !args[i + 1].StartsWith("--");
         string val = takes ? args[++i] : "true";
         options[key] = val;
-        // The LAST occurrence wins for the value (above) and so for whether one was consumed:
-        // `--target victim --target` is a bare flag, not "victim" (#246).
-        if (takes) valued.Add(key); else valued.Remove(key);
+        if (takes) { valued.Add(key); bareLast.Remove(key); } else bareLast.Add(key);
     }
     else positionals.Add(a);
 }
@@ -318,7 +321,7 @@ switch (area)
                 var badSplitOpt = options.Keys.FirstOrDefault(k => !splitAllowed.Contains(k));
                 if (badSplitOpt is not null)
                 { Console.Error.WriteLine($"session split {op}: unknown option --{badSplitOpt} (it takes --axis and --target). Nothing sent."); return 2; }
-                if (options.TryGetValue("target", out var splitTarget) && (splitTarget.Length == 0 || !valued.Contains("target")))
+                if (options.TryGetValue("target", out var splitTarget) && (splitTarget.Length == 0 || bareLast.Contains("target")))
                 { Console.Error.WriteLine("session split: --target is empty — omit it to act on the caller's own pane, or name a pane or session. Nothing sent."); return 2; }
                 cargs["op"] = op;
                 if (Opt("axis") is { } axisWord) cargs["axis"] = axisWord;   // passed through as typed; the server refuses anything but the two words
@@ -339,7 +342,7 @@ switch (area)
                 if (rest.Count > 0) { Console.Error.WriteLine($"session swap: unexpected argument '{rest[0]}' — the session (or either of its panes) is `--target <id>`; with no --target this swaps the caller's own session, so a stray word is refused rather than ignored. Nothing sent."); return 2; }
                 var badSwapOpt = options.Keys.FirstOrDefault(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
                 if (badSwapOpt is not null) { Console.Error.WriteLine($"session swap: unknown option --{badSwapOpt} (it takes only --target). Nothing sent."); return 2; }
-                if (options.TryGetValue("target", out var swapTarget) && (swapTarget.Length == 0 || !valued.Contains("target")))
+                if (options.TryGetValue("target", out var swapTarget) && (swapTarget.Length == 0 || bareLast.Contains("target")))
                 { Console.Error.WriteLine("session swap: --target is empty — omit it to swap the caller's own session, or name a session or pane. Nothing sent."); return 2; }
                 break;
             }
@@ -433,7 +436,7 @@ switch (area)
         if (rest.Count > 0) { Console.Error.WriteLine($"restore capture: unexpected argument '{rest[0]}' — the target is `--target <pane or session>`; with no --target EVERY real pane is captured, so a stray word is refused rather than widened. Nothing sent."); return 2; }
         var unknown = options.Keys.FirstOrDefault(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
         if (unknown is not null) { Console.Error.WriteLine($"restore capture: unknown option --{unknown} (it takes only --target). Nothing sent."); return 2; }
-        if (options.TryGetValue("target", out var capTarget) && (capTarget.Length == 0 || !valued.Contains("target")))   // a valueless flag, not the WORD true — a session may be named that
+        if (options.TryGetValue("target", out var capTarget) && (capTarget.Length == 0 || bareLast.Contains("target")))   // a valueless flag, not the WORD true — a session may be named that
         { Console.Error.WriteLine("restore capture: --target is empty — omit it to capture every real pane, or name one pane or session. Nothing sent."); return 2; }
         target = Opt("target");
         break;

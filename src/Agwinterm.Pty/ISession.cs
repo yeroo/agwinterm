@@ -65,7 +65,8 @@ public interface ISession : IDisposable
     /// a complete one (#246; see <see cref="TerminalSession"/>'s settle window). Not raised for a
     /// start that failed (the pane keeps its surface to show the reason; watchers use
     /// <see cref="HasExited"/>). After a LOCAL <see cref="IDisposable.Dispose"/> the backends differ:
-    /// the in-process session raises it once with the kill's exit code, the server session does not
+    /// the in-process session raises it once, with a best-effort code (the kill and the handle close
+    /// are adjacent, so the watcher usually reads 0, not the kill's 1), the server session does not
     /// (it left; it did not see the child die) — every listener guards on tree membership, and the
     /// overlay path waits on the pane's own completion source, which a close completes as "closed"
     /// on both.</summary>

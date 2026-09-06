@@ -14,6 +14,7 @@ public sealed class TerminalSession : ISession
     private readonly object _sync = new();
     private IPtyConnection? _connection;
     private long _pumpBytes;   // bytes the pump has fed so far; the exit watchers' settle window reads it
+    private int _pumpInFlight; // 1 while a chunk is read but not yet fed + tapped (the feed can block on _sync)
 
     public ITerminalCore Emulator { get; }
     public int Cols { get; private set; }
@@ -287,8 +288,10 @@ public sealed class TerminalSession : ISession
     /// from the pump, at most 500 ms, BEFORE <see cref="HasExited"/> and <see cref="Exited"/> say the
     /// session ended — an overlay's `exit N`, the pty-host's data-pipe close (the client's EOF), and
     /// any handler that reads the grid then see the whole output (#246; <see cref="RunAsync"/> waited
-    /// a fixed 250 ms for the same reason). A pump that has already stopped (Dispose closed the
-    /// stream) costs one window.</summary>
+    /// a fixed 250 ms for the same reason). A chunk the pump has read but not yet fed (the feed waits
+    /// on <see cref="_sync"/> — a reattach snapshot can hold it) is not settled either, whatever the
+    /// count says. A pump that has already stopped (Dispose closed the stream) costs one window; the
+    /// cap bounds an exit, never a hang — a chunk still in flight at the cap is cut off.</summary>
     private void SettleOutput()
     {
         long seen = Interlocked.Read(ref _pumpBytes);
@@ -296,7 +299,7 @@ public sealed class TerminalSession : ISession
         {
             Thread.Sleep(50);
             long now = Interlocked.Read(ref _pumpBytes);
-            if (now == seen) return;
+            if (now == seen && Volatile.Read(ref _pumpInFlight) == 0) return;
             seen = now;
         }
     }
@@ -348,11 +351,13 @@ public sealed class TerminalSession : ISession
             {
                 int n = stream.Read(buffer, 0, buffer.Length);
                 if (n <= 0) break;
+                Volatile.Write(ref _pumpInFlight, 1);
                 if (DumpPath is not null)
                     lock (_sync) System.IO.File.AppendAllBytes(DumpPath, buffer.AsSpan(0, n).ToArray());
                 lock (_sync) Emulator.Feed(buffer.AsSpan(0, n));
                 if (RawOutput is { } tap) tap(buffer[..n]);
                 Interlocked.Add(ref _pumpBytes, n);   // after the feed and the tap: "settled" means both have it
+                Volatile.Write(ref _pumpInFlight, 0);
                 OutputReceived?.Invoke();
             }
         }

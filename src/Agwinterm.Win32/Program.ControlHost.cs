@@ -1017,7 +1017,8 @@ internal partial class Program
     // durable slot NOW, and say per pane what was captured. Three steps on two threads:
     //   1. PIPE THREAD: resolve the target and snapshot (pane, session, shell pid) under the
     //      workspaces lock, the way Tree() reads. An unknown target or a cover is refused here,
-    //      before any process is queried — a refusal captures nothing for anyone.
+    //      before any process is queried — a refusal at this step captures nothing for anyone (the
+    //      one refusal that does leave slots behind is step 3's NotSaved, below).
     //   2. PIPE THREAD: the CIM query, with the 15 s timeout the non-quit callers use (a cold CIM
     //      start can exceed 4 s). RestartAllClaudeSessions is the precedent; AdoptClaudeSessions,
     //      which blocks the UI thread on it through InvokeOnUi, is the one not to copy — a verb that

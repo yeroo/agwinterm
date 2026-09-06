@@ -50,11 +50,11 @@ public static class OmpThemes
                      .Select(kv => (kv.Key, kv.Value)).ToList();
     }
 
-    /// <summary>Resolve a theme name (or a direct .omp.json path) to a full file path, or null if not found.</summary>
     /// <summary>The <c>omp.set</c> refusal for a name that resolves to no theme: one spelling for the
     /// app host, the fake host and the tests. A refusal changes nothing — the old theme stays.</summary>
     public static string NotFound(string nameOrPath) => "oh-my-posh theme not found: " + nameOrPath;
 
+    /// <summary>Resolve a theme name (or a direct .omp.json path) to a full file path, or null if not found.</summary>
     public static string? Resolve(string nameOrPath)
     {
         if (string.IsNullOrWhiteSpace(nameOrPath)) return null;

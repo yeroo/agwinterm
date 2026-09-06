@@ -598,7 +598,8 @@ try {
                 @('--stdin', '--allow-control', 'from argv'),
                 @('--stdin', '--wait', 'from argv'),
                 @('--stdin', '--allow-controll', 'from argv'),
-                @('--stdin', 'true'))) {
+                @('--stdin', 'true'),
+                @('--stdin', 'from argv', '--stdin'))) {   # #246 r1: a later BARE --stdin must not erase the swallow
             $out = 'from pipe' | & $ctl session type @shape --target $survivorId --pipe $pipe 2>&1
             $code = $LASTEXITCODE
             Check "session type --stdin refuses a swallowed positional ($($shape -join ' '))" ($code -eq 2 -and ("$out" -match 'one source')) "exit $code, output: $out"
