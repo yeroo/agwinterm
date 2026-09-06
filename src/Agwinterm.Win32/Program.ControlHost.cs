@@ -864,18 +864,29 @@ internal partial class Program
                 }
             case "resize":
                 {
-                    var ses = FindSesForTarget(target);
-                    // Refusals, not strings: before P2's review both came back as ok:true "no
-                    // overlay", and a script branching on ok proceeded as if the resize had happened.
-                    // Same split as close: no session at all is not "open one first".
-                    if (ses is null) return NoSessionRefusal;
-                    if (ses.Overlay is null) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
                     // No clamp: ControlServer.TryOverlaySize refused anything outside 0..100 before
                     // this ran, so the N reported is always the N the caller asked for. A clamp here
                     // could only hide a bug upstream now. 0 = full content region; 1..100 = centered panel.
                     int sp = sizePercent;
-                    PostVerb(() => { ses.OverlaySizePercent = sp; if (ReferenceEquals(_ovlOwner, ses)) RegridCover(); RequestRedraw(); });
-                    return $"resized {sp}%";
+                    // Resolve, check and write in ONE queued UI action and reply from its result
+                    // (#227): resolved on the pipe thread and written by a posted action, the check
+                    // and the write could straddle the overlay's exit — the exit's close (a posted
+                    // action ahead in the same queue) cleared OverlaySizePercent, the resize then
+                    // wrote N over a session with no overlay, and the tree showed `overlaySize` on
+                    // nothing while the reply said "resized". The refusals are the same as before:
+                    // no session at all is not "open one first" (before P2's review both came back
+                    // as ok:true "no overlay", and a script branching on ok proceeded as if the
+                    // resize had happened).
+                    return InvokeOnUiQueued(() =>
+                    {
+                        var ses = FindSesForTarget(target);
+                        if (ses is null) return NoSessionRefusal;
+                        if (ses.Overlay is null) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
+                        ses.OverlaySizePercent = sp;
+                        if (ReferenceEquals(_ovlOwner, ses)) RegridCover();
+                        RequestRedraw();
+                        return $"resized {sp}%";
+                    });
                 }
             default: // "open"
                 {
@@ -884,11 +895,29 @@ internal partial class Program
                     if (string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened";
                     if (block)
                     {
-                        // Open on the UI thread, then wait (on this pipe thread) for the program to exit.
-                        string opened = InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, command!, sizePercent, false); });
+                        // Open on the UI thread, then wait (on this pipe thread) on the completion
+                        // source of THE PANE THIS CALL OPENED (#227): before, every blocking open in
+                        // the window waited on one event and then read one field, so a caller could
+                        // return on another session's exit, read "no overlay" after a later open's
+                        // reset, or stay parked past its own program's exit. The source is taken
+                        // inside the same UI hop as the open, so it is this open's pane and no other.
+                        TaskCompletionSource<string>? done = null;
+                        string opened = InvokeOnUi(() =>
+                        {
+                            var s = FindSesForTarget(target);
+                            if (s is null) return NoSessionRefusal;
+                            string id = OverlayOpen(s, command!, sizePercent, false);
+                            done = s.Overlay!.OverlayDone;
+                            return id;
+                        });
                         if (opened.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) return opened;
-                        _overlayDone.Wait();
-                        return _lastOverlayExit;   // "exit N"
+                        // The wait ends with the pane's own outcome — "exit N", or "closed" when the
+                        // overlay was closed or replaced before its program exited — or with the
+                        // window going away (Dispose closes each pane without raising Exited, so the
+                        // source would never complete; _uiGone is cancelled on WM_DESTROY's first line).
+                        try { done!.Task.Wait(Timeout.Infinite, _uiGone.Token); }
+                        catch (OperationCanceledException) { throw new InvalidOperationException("the window closed before the overlay's program exited; its exit status is unknown"); }
+                        return done.Task.Result;
                     }
                     return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, command!, sizePercent, wait); });
                 }

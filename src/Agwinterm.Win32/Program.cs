@@ -105,9 +105,8 @@ internal partial class Program : ISessionHost, IWindowHost
     private Pane? _quick;                // the single per-app quick terminal (lazy; kept alive)
     // Overlays (Wave B3): an ephemeral program run over a session; vanishes when the program exits.
     private Ses? _ovlOwner;              // the session whose overlay is the current cover (kind 3)
-    private string _lastOverlayExit = "no overlay"; // "exit N" once an overlay's program has exited
-    private int _overlayExitCode;        // the last overlay program's exit code
-    private readonly System.Threading.ManualResetEventSlim _overlayDone = new(false); // signalled on overlay exit (for --block)
+    private string _lastOverlayExit = "no overlay"; // "exit N" once an overlay's program has exited (`overlay result`, one per window)
+    private int _overlayExitCode;        // the last overlay program's exit code (the --wait banner)
     private static ControlServer? _control;
     // Update Claude Code workflow: one run at a time + the newest version the background check saw.
     private volatile bool _claudeUpdating;
@@ -318,6 +317,11 @@ internal partial class Program : ISessionHost, IWindowHost
         // local dictionary inside SaveState at quit, so every ordinary save wrote "" over the slot and a
         // crash / Stop-Process never filled it; one field, one writer per capture, one reader.
         public string? CapturedCommand;
+        // Overlay panes only (#227): completed once, with the outcome of THIS pane — "exit N" when its
+        // program exits, "closed" when the overlay is closed or replaced first. `overlay open --block`
+        // waits on the source of the pane it opened, so two blocking opens in one window each get
+        // their own program's status; the window-wide last exit (`overlay result`) stays separate.
+        public TaskCompletionSource<string>? OverlayDone;
         public float FontSize;     // per-pane font zoom (pt)
         public float Ratio = 1f;   // this pane's OWN share of the session's extent along its axis (width when vertical, height when horizontal); PaneLayout normalises by the sum
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)

@@ -359,18 +359,22 @@ public interface ISessionHost
     /// an ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
     /// floating panel; wait = keep it after the program exits (press a key to close); block = wait for
     /// the program to exit and return its status. Returns the overlay pane id (open), "exit N" (block;
-    /// result), "closed", "resized N%", or "no overlay" (deliberately ok for close: a session that
-    /// resolves and has no overlay, or a target that is absent, empty or the word "active" while
+    /// result), "closed" (close; and block, when the overlay this call opened was closed or replaced
+    /// before its program exited), "resized N%", or "no overlay" (deliberately ok for close: a session
+    /// that resolves and has no overlay, or a target that is absent, empty or the word "active" while
     /// nothing is active — the guard is the app's `target != "active"`, so those three targets are one
-    /// case). The value `result` reads is ONE PER WINDOW, not per session or per overlay: it is "no
-    /// overlay" until the first open in that window, every open resets it to "no overlay", and the
-    /// exit of ANY overlay in the window — whichever session's, including one an open has since
-    /// replaced — writes "exit N" over it, so a caller that runs overlays on two sessions at once
-    /// reads the last exit in the window, not its own; `--block` waits on the same per-window signal
-    /// and then reads the same value, so it can return on another session's exit, answer "no overlay"
-    /// when an open lands between its wake-up and its read, or stay parked past its own program's
-    /// exit when that open's reset lands first (agwinterm #246 tracks keying value and signal to the
-    /// open that produced them). `result` skips the target check entirely.
+    /// case). A blocking open's reply is the outcome of THE OVERLAY THAT CALL OPENED and no other
+    /// (#227): two blocking opens in one window each get their own program's status. The value
+    /// `result` reads is different — ONE PER WINDOW, not per session or per overlay: "no overlay"
+    /// until the first open in that window, reset to "no overlay" by every open, and written with
+    /// "exit N" by the exit of whichever session's overlay exits while it is still that session's
+    /// overlay (one an open has since replaced, or a close disposed, does not write it); a caller
+    /// that runs overlays on two sessions at once reads the last such exit in the window, not its
+    /// own. `result` skips the target check entirely. A blocking open whose window closes before the
+    /// program exits is a throw the server turns into ok:false (the status is unknown).
+    /// Resize resolves the target, checks for the overlay and writes the size in one queued UI action
+    /// and replies from its result (#227), so the reply names a size that landed on an overlay that
+    /// existed when it did.
     /// A FAILURE is signalled by prefixing <see cref="RefusePrefix"/>, which the server turns into
     /// ok:false: open with no command; open or resize whenever NO session resolves (a named target
     /// that matches nothing, or no target and no active session); close when a target other than

@@ -628,6 +628,98 @@ try {
         $bareClose = Invoke-Ctl @('session', 'overlay', 'close')
         Check 'an untargeted overlay close with nothing open stays ok' ($bareClose.ok -and $bareClose.result -eq 'no overlay') "$($bareClose | ConvertTo-Json -Compress)"
 
+        # #227 (1): `overlay open --block` answers the exit of THE OVERLAY IT OPENED. Before, every
+        # blocking open in the window waited on one event and read one field, so concurrent blocks
+        # on different sessions could return each other's code, "no overlay", or never. Three
+        # --no-select fixtures (one overlay per session), three blocking opens in flight at once,
+        # each running `exit <n>` with its own n, each reply must carry its own n. The opens are
+        # separate ctl processes so the pipe threads really overlap; --json replies land in files.
+        $blockIds = @()
+        foreach ($n in 1, 2, 3) {
+            $made = Invoke-Ctl @('session', 'new', '--name', "p2-227-$n", '--no-select')
+            $blockIds += [string]$made.result
+        }
+        foreach ($id in $blockIds) { for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $id); $i++) { Start-Sleep -Milliseconds 200 } }
+        $blockCodes = @{ }; $blockCodes[$blockIds[0]] = 11; $blockCodes[$blockIds[1]] = 22; $blockCodes[$blockIds[2]] = 33
+        $blockProcs = @{ }
+        foreach ($id in $blockIds) {
+            $outFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-block-" + [guid]::NewGuid().ToString('N') + '.json')
+            # Each program waits ~1.5 s before exiting so all three opens are parked at the same time.
+            $blockProcs[$id] = @{
+                File = $outFile
+                Proc = Start-Process $ctl -ArgumentList @('session', 'overlay', 'open', "`"ping -n 3 127.0.0.1 >nul & exit $($blockCodes[$id])`"",
+                    '--block', '--target', $id, '--pipe', $pipe, '--json') -NoNewWindow -PassThru -RedirectStandardOutput $outFile
+            }
+        }
+        $blockReplies = @{ }
+        foreach ($id in $blockIds) {
+            $p = $blockProcs[$id].Proc
+            if (-not $p.WaitForExit(30000)) { try { $p.Kill() } catch { } }
+            $raw = ''
+            try { $raw = [IO.File]::ReadAllText($blockProcs[$id].File) } catch { }
+            try { $blockReplies[$id] = $raw | ConvertFrom-Json } catch { $blockReplies[$id] = [pscustomobject]@{ __raw = $raw } }
+            try { Remove-Item -LiteralPath $blockProcs[$id].File -Force -ErrorAction SilentlyContinue } catch { }
+        }
+        foreach ($id in $blockIds) {
+            $r = $blockReplies[$id]
+            Check "overlay open --block on $id answers its OWN program's exit ($($blockCodes[$id]))" `
+                ($r.ok -and $r.result -eq "exit $($blockCodes[$id])") "$($r | ConvertTo-Json -Compress)"
+        }
+        $lastExit = Invoke-Ctl @('session', 'overlay', 'result')
+        Check 'and overlay result (the window-wide last exit) names one of the three' `
+            ($lastExit.ok -and ($lastExit.result -in @('exit 11', 'exit 22', 'exit 33'))) "$($lastExit | ConvertTo-Json -Compress)"
+
+        # A blocking open whose overlay is REPLACED before its program exits is released with
+        # "closed" — its own outcome — not parked, and not handed the replacement's code. Dispose
+        # ends the pty without raising Exited, so before #227 nothing released it at all.
+        $replacedFile = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-block-" + [guid]::NewGuid().ToString('N') + '.json')
+        $replacedProc = Start-Process $ctl -ArgumentList @('session', 'overlay', 'open', "`"ping -n 60 127.0.0.1 >nul & exit 44`"",
+            '--block', '--target', $blockIds[0], '--pipe', $pipe, '--json') -NoNewWindow -PassThru -RedirectStandardOutput $replacedFile
+        $replacedUp = $false
+        for ($i = 0; $i -lt 30 -and -not $replacedUp; $i++) {
+            $node = Get-SessionSnapshot $blockIds[0]
+            $replacedUp = $node -and $node.overlay
+            if (-not $replacedUp) { Start-Sleep -Milliseconds 200 }
+        }
+        $replacer = Invoke-Ctl @('session', 'overlay', 'open', 'exit 55', '--block', '--target', $blockIds[0])
+        $replacedDone = $replacedProc.WaitForExit(10000)
+        if (-not $replacedDone) { try { $replacedProc.Kill() } catch { } }
+        $replacedRaw = ''
+        try { $replacedRaw = [IO.File]::ReadAllText($replacedFile) } catch { }
+        try { $replaced = $replacedRaw | ConvertFrom-Json } catch { $replaced = [pscustomobject]@{ __raw = $replacedRaw } }
+        try { Remove-Item -LiteralPath $replacedFile -Force -ErrorAction SilentlyContinue } catch { }
+        Check 'a blocking open whose overlay was replaced returns "closed" (released, its own outcome)' `
+            ($replacedUp -and $replacedDone -and $replaced.ok -and $replaced.result -eq 'closed') "up=$replacedUp done=$replacedDone reply=$($replaced | ConvertTo-Json -Compress)"
+        Check 'and the replacing blocking open returns its own exit (55)' `
+            ($replacer.ok -and $replacer.result -eq 'exit 55') "$($replacer | ConvertTo-Json -Compress)"
+
+        # #227 (2): resize resolves, checks and writes in ONE queued UI action. Fired in a loop
+        # against an overlay whose program exits under it, each reply is either "resized N%" (the
+        # overlay existed when the size landed) or the "open one first" refusal — never a reply that
+        # says resized while the write went to a session with no overlay. The proof afterwards: the
+        # session's tree node carries no `overlaySize` once the overlay is gone.
+        $resizeTarget = $blockIds[1]
+        Invoke-Ctl @('session', 'overlay', 'open', 'ping -n 2 127.0.0.1 >nul & exit 0', '--size-percent', '40', '--target', $resizeTarget) | Out-Null
+        $resizeReplies = @(); $resizeBad = @()
+        for ($i = 0; $i -lt 60; $i++) {
+            $r = Invoke-Ctl @('session', 'overlay', 'resize', '--size-percent', (30 + ($i % 50)), '--target', $resizeTarget)
+            $resizeReplies += $r
+            $okShape = ($r.ok -and ("$($r.result)" -match '^resized \d+%$')) -or ((-not $r.ok) -and ("$($r.error)" -match 'open one first'))
+            if (-not $okShape) { $resizeBad += ($r | ConvertTo-Json -Compress) }
+            Start-Sleep -Milliseconds 30
+        }
+        $resizeNode = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $resizeNode = Get-SessionSnapshot $resizeTarget
+            if ($resizeNode -and -not $resizeNode.overlay) { break }
+            Start-Sleep -Milliseconds 200
+        }
+        $resizedCount = @($resizeReplies | Where-Object { $_.ok }).Count
+        Check 'resize under an exiting overlay answers resized-or-refused only' ($resizeBad.Count -eq 0 -and $resizedCount -gt 0) "resized=$resizedCount bad=$($resizeBad -join ' | ')"
+        Check 'and once the overlay is gone the session carries no overlaySize' `
+            ($resizeNode -and -not $resizeNode.overlay -and -not $resizeNode.PSObject.Properties['overlaySize']) "$($resizeNode | ConvertTo-Json -Compress -Depth 3)"
+        foreach ($id in $blockIds) { try { Invoke-Ctl @('session', 'close', $id) | Out-Null } catch { } }
+
         # sidebar.width must move the divider, not just a number. The unit tests see the fake host
         # only; here the proof is live geometry: the active session's measured width (session.metrics,
         # columns x cell width) shrinks when the sidebar widens, because the grid derives from the

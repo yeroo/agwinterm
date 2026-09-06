@@ -766,10 +766,10 @@ internal partial class Program
     private string OverlayOpen(Ses ses, string command, int sizePercent, bool wait, Dictionary<string, string>? extraEnv = null)
     {
         CloseOverlayOf(ses);                    // one overlay per session; replace any existing one
-        _overlayDone.Reset();
-        _lastOverlayExit = "no overlay"; _overlayExitCode = 0;
+        _lastOverlayExit = "no overlay"; _overlayExitCode = 0;   // the window-wide LAST exit (`overlay result`), reset by every open
         string id = ses.Id + ":overlay:" + Guid.NewGuid().ToString("N")[..6];
         var pane = CreatePane(id, ses.Ws, CwdOf(ses), ses.FontSize, command, shellWrap: true, extraEnv: extraEnv);
+        pane.OverlayDone = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         ses.Overlay = pane;
         ses.OverlaySizePercent = sizePercent;   // validated at the control API (TryOverlaySize); in-app callers pass literals
         ses.OverlayWait = wait;
@@ -787,6 +787,10 @@ internal partial class Program
         if (pane is null) return;
         if (_coverKind == 3 && ReferenceEquals(_cover, pane)) { _cover = null; _coverKind = 0; _ovlOwner = null; SyncSession(); if (_active is not null) RegridSession(_active); }
         ses.Overlay = null; ses.OverlayExited = false; ses.OverlaySizePercent = 0; ses.OverlayWait = false;
+        // Closed (or replaced) before its program exited: release a `--block` caller with "closed"
+        // rather than parking it — Dispose ends the pty without raising Exited (ServerSession
+        // suppresses the event on its own teardown), so nothing else would. A no-op after an exit.
+        pane.OverlayDone?.TrySetResult("closed");
         try { pane.S.Dispose(); } catch { }
         RequestRedraw();
     }
@@ -799,9 +803,16 @@ internal partial class Program
     {
         void OnExit(int code)
         {
+            // This pane's own outcome first: a `--block` caller is released with its OWN program's
+            // status (#227), whatever other overlays in the window did meanwhile.
+            pane.OverlayDone?.TrySetResult($"exit {code}");
+            // The window-wide last exit is written only while this pane is still its session's
+            // overlay: a pane an open has since replaced (or a close disposed) must not stamp its
+            // code over the one `overlay result` now describes. Read here on the pty's thread and
+            // re-checked on the UI thread; a replacement landing between the two resets it anyway.
+            if (!ReferenceEquals(ses.Overlay, pane)) return;
             _overlayExitCode = code;
             _lastOverlayExit = $"exit {code}";
-            _overlayDone.Set();
             Post(() =>
             {
                 if (!ReferenceEquals(ses.Overlay, pane)) return;   // already replaced/closed
