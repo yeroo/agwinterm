@@ -381,7 +381,8 @@ public sealed class ControlServer : IDisposable
                 // session NAME reports its focused pane — a cursor is a per-pane thing, and focus is
                 // the only non-arbitrary answer for a session-wide target. The session-id rule, by
                 // condition (P4): while a pane carries the session's id — pane 0 of a fresh session,
-                // either side after a session.swap — the id reports THAT pane wherever it sits,
+                // either side after a session.swap, a restore keeping the order it saved — the id
+                // reports THAT pane wherever it sits,
                 // regardless of focus (Resolve's exact-pane-first order); while none does — the
                 // carrier was closed, by split.close, Ctrl+Shift+W, split off after a swap, or its
                 // shell exiting — the id falls through to the exact-session arm and reports the
@@ -529,7 +530,11 @@ public sealed class ControlServer : IDisposable
     /// "keep the session's orientation", a string must be one of <see cref="SplitAxes"/>' two words,
     /// and a non-string (a number, an object) is refused with the same wording rather than defaulted —
     /// a caller that sent <c>"axis": 1</c> meant something, and a vertical split with ok:true would
-    /// be the silent-success class. Every refusal splits nothing.
+    /// be the silent-success class. <c>op</c> is read the same way, here and not only in the CLI:
+    /// absent is toggle, a string must be one of <see cref="SplitAxes.IsOp"/>' three words, and
+    /// anything else — <c>"Close"</c>, <c>"clos"</c>, <c>""</c>, a number — is refused with
+    /// <see cref="SplitAxes.OpRefusal"/> before the host is reached, because the host treats an
+    /// unknown op as toggle and a toggle on a split session closes a pane. Every refusal splits nothing.
     /// </summary>
     private static string HandleSessionSplit(ISessionHost host, string? target, JsonElement args)
     {
@@ -544,7 +549,7 @@ public sealed class ControlServer : IDisposable
         // with ok:true (revmux r2/r3 of P4). Absent = toggle; anything else must be one of the three.
         if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("op", out var ov))
         {
-            if (ov.ValueKind != JsonValueKind.String) return Err(SplitAxes.OpRefusal(ov.GetRawText()));
+            if (ov.ValueKind != JsonValueKind.String) return Err(SplitAxes.OpRefusal(ov.GetRawText(), quoted: false));
             if (!SplitAxes.IsOp(ov.GetString()!)) return Err(SplitAxes.OpRefusal(ov.GetString()!));
         }
         return HostReply(host.Split(target, GetString(args, "op") ?? "toggle", axis));

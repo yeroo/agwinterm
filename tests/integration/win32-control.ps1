@@ -156,6 +156,18 @@ function Get-SessionSnapshot([string]$id) {
     return $null
 }
 
+# The ACTIVE session's node — the one a verb sent without --target acts on.
+function Get-ActiveSessionSnapshot {
+    $tree = Invoke-Ctl @('tree')
+    if (-not $tree.ok) { return $null }
+    foreach ($workspace in @($tree.result.workspaces)) {
+        foreach ($session in @($workspace.sessions)) {
+            if ($session.active) { return $session }
+        }
+    }
+    return $null
+}
+
 function Send-TestClick([IntPtr]$hwnd, [int]$x, [int]$y) {
     $packed = (($y -band 0xffff) -shl 16) -bor ($x -band 0xffff)
     [void][Agwinterm.Win32ControlTest.NativeMethods]::SendMessageW(
@@ -384,15 +396,25 @@ try {
     Check 'the survivor keeps its id and its shell: session text by the old pane 1 id, and by the session id, still shows what was typed there' `
         ($scTyped -and $scText.ok -and ([string]$scText.result).Contains($scMarker) -and $scViaSession.ok -and ([string]$scViaSession.result).Contains($scMarker)) `
         "typed=$scTyped byPane=$($scText.ok) bySession=$($scViaSession.ok)"
-    # The CLI-side refusals of the split family (revmux r1-r3 of P4), each proved twice: exit 2 with the
-    # message, and the ORACLE — the split-close fixture still has two panes. Every one of these acted on
-    # the caller's own pane with exit 0 before it was refused. Run BEFORE the close below, on the split.
+    # The CLI-side refusals of the split family (revmux r1-r3 of P4). The proof is the exit code and the
+    # message: exit 2 with "Nothing sent" means the CLI refused before opening the pipe. Before they were
+    # refused, these shapes acted with exit 0 — the ones with no --target (a positional where an option
+    # was meant) on the ACTIVE session, the rest on the p4-split-guards fixture below — so both nodes
+    # are read before the loop and asserted unchanged after it, belt and braces over the exit code.
+    # Run BEFORE the close below, on the split.
     $scGuardMade = Invoke-Ctl @('session', 'new', '--name', 'p4-split-guards', '--no-select')
     $scGuardId = [string]$scGuardMade.result
     for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $scGuardId); $i++) { Start-Sleep -Milliseconds 200 }
     $scGuardSplit = Invoke-Ctl @('session', 'split', 'on', '--target', $scGuardId)
     $scGuardPane1 = [string]$scGuardSplit.result
     for ($i = 0; $i -lt 30; $i++) { $n = Get-SessionSnapshot $scGuardId; if ($n -and @($n.paneIds).Count -eq 2) { break }; Start-Sleep -Milliseconds 200 }
+    $scActiveBefore = Get-ActiveSessionSnapshot
+    # The two `--target ''` shapes must SEND an empty target (the "is empty" arm), not a valueless
+    # `--target` (refused by the splitter's valued arm with the same words, so the message alone could
+    # not tell them apart). Legacy argument passing drops an empty native argument; Standard passes it
+    # as "" — pinned here rather than left to the shell's default mode (#239).
+    $scArgMode = $PSNativeCommandArgumentPassing
+    $PSNativeCommandArgumentPassing = 'Standard'
     foreach ($shape in @(
             @(@('session', 'split', 'off', $scGuardPane1), 'unexpected argument'),
             @(@('session', 'split', 'close', $scGuardPane1), 'unexpected argument'),
@@ -407,9 +429,15 @@ try {
         $code = $LASTEXITCODE
         Check "the CLI refuses '$($argv -join ' ')' before sending anything ($want)" ($code -eq 2 -and ("$out" -match $want) -and ("$out" -match 'Nothing sent')) "exit $code, output: $out"
     }
+    $PSNativeCommandArgumentPassing = $scArgMode
     $scGuardStill = Get-SessionSnapshot $scGuardId
-    Check 'and none of the refused shapes touched the fixture: still two panes, the same two' `
+    Check 'and none of the refused shapes touched the p4-split-guards fixture: still two panes, the same two' `
         ($scGuardStill -and @($scGuardStill.paneIds).Count -eq 2 -and @($scGuardStill.paneIds)[1] -eq $scGuardPane1) "node=$($scGuardStill | ConvertTo-Json -Compress)"
+    $scActiveAfter = Get-ActiveSessionSnapshot
+    Check 'nor the active session, where the shapes without --target would have landed: same id, same panes' `
+        ($scActiveBefore -and $scActiveAfter -and $scActiveAfter.id -eq $scActiveBefore.id -and
+         ((@($scActiveAfter.paneIds) -join ',') -eq (@($scActiveBefore.paneIds) -join ','))) `
+        "before=$($scActiveBefore | ConvertTo-Json -Compress) after=$($scActiveAfter | ConvertTo-Json -Compress)"
     # And the case fix: `Close` is `close` (it used to fall through to toggle and collapse the split —
     # pane 1 gone, ok:true). Closing pane 1 by its id leaves pane 0 (the session id) as the survivor.
     $scCase = Invoke-Ctl @('session', 'split', 'Close', '--target', $scGuardPane1)

@@ -22,8 +22,12 @@ public static class SplitAxes
     /// client sends what it means. Anything else is refused rather than treated as toggle.</summary>
     public static bool IsOp(string op) => op is "on" or "off" or "toggle";
 
-    public static string OpRefusal(string raw) =>
-        $"session split: unknown op {raw} — on, off or toggle (close is `session split close`); an unknown op is not a toggle, because a toggle on a split session closes a pane. Nothing was split or closed.";
+    /// <summary>The wire refusal for an op <see cref="IsOp"/> rejects. A string op is QUOTED, as
+    /// <see cref="Refusal"/> and the CLI quote theirs — an empty op reads "unknown op ''" rather than
+    /// two spaces (#239); a non-string op arrives as its raw JSON (<c>quoted: false</c>), which is its
+    /// own delimiter.</summary>
+    public static string OpRefusal(string raw, bool quoted = true) =>
+        $"session split: unknown op {(quoted ? $"'{raw}'" : raw)} — on, off or toggle (close is `session split close`); an unknown op is not a toggle, because a toggle on a split session closes a pane. Nothing was split or closed.";
 
     /// <summary>Left/right panes. The default.</summary>
     public const string Vertical = "vertical";
