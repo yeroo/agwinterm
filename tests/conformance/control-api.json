@@ -311,7 +311,7 @@
       ],
       "result": "string",
       "settle": 1,
-      "note": "P5: a PANE overlay - `--pane left|right` names the slot (left = pane 0, right = pane 1 whatever the axis; on the horizontal split above, left is the TOP pane) and the flag omitted is the session-wide slot, byte for byte as before. The reply is a string (the full app: the overlay pane id `<pane id>:overlay:<hex>`; lite: its status word). The program stays up for the two reads below; `--pane right` on a one-pane session is refused (see errors); `--size-percent` beside `--pane`, and `resize --pane`, are refused by the client before anything is sent (a pane overlay is always full-pane)."
+      "note": "P5: a PANE overlay - `--pane left|right` names the slot (left = pane 0, right = pane 1 whatever the axis; on the horizontal split above, left is the TOP pane) and the flag omitted is the session-wide slot, byte for byte as before. The reply is a string (the full app: the overlay pane id `<pane id>:overlay:<hex>`; lite: the overlay's session id, `<prefix>-<seq>` - its popup keeps the status word). The program stays up for the two reads below; `--pane right` on a one-pane session is refused (see errors); `--size-percent` beside `--pane`, and `resize --pane`, are refused by the client before anything is sent (a pane overlay is always full-pane)."
     },
     {
       "verb": "session.overlay",
