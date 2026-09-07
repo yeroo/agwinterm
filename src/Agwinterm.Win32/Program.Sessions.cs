@@ -667,8 +667,36 @@ internal partial class Program
 
     // ---- Cover terminals (scratch / quick) ----
 
-    /// <summary>The surface that receives input/render focus: a shown cover, else the active pane.</summary>
-    private Pane? ActiveSurface() => _cover ?? _active?.ActivePane;
+    /// <summary>The surface that receives input/render focus: a shown cover, else the SURFACE of the
+    /// active session's focused pane (<see cref="SurfaceOf"/>: its pane overlay while that slot is open,
+    /// else the pane itself). The one seam the ~40 callers share — keys, the mouse, selection, links,
+    /// paste, the UIA text, <c>--target active</c> — so a pane overlay becomes the focused surface by
+    /// this line alone (the rule is on ISessionHost.SessionOverlay: "a pane overlay is that pane's
+    /// surface while it is open").</summary>
+    private Pane? ActiveSurface() => _cover ?? (_active is { } a ? SurfaceOf(a.ActivePane) : null);
+
+    /// <summary>A pane's surface (P5): the overlay term drawn over its box while its slot is open, else
+    /// the pane. Used by <see cref="ActiveSurface"/>, <c>PaneAt</c> / <c>PaneBox</c> / <c>ActivePaneView</c>
+    /// (the hit-tests: the box is the PANE's, the metrics are the surface's) and the wheel — so the
+    /// pane-to-surface step lives once and no caller branches on the slot itself.</summary>
+    private static Pane SurfaceOf(Pane pane) => pane.Overlay.Term ?? pane;
+
+    /// <summary>The active session's focused pane when its overlay slot is open and no cover is over it —
+    /// the slot the keyboard's close chords (Ctrl+Shift+W, Esc) and the any-key close act on, in that
+    /// order: a cover first (it is over everything), then this slot, then the pane. Null otherwise.</summary>
+    private Pane? FocusedPaneWithOverlay()
+        => _cover is null && _active is { } a && a.ActivePane.Overlay.Term is not null ? a.ActivePane : null;
+
+    /// <summary>The any-key close of a <c>--wait</c> overlay whose program has exited (WM_KEYDOWN and
+    /// WM_CHAR both ask): the kind-3 cover if it has exited, else the focused pane's slot if IT has
+    /// (the banner sits in that pane's box; a key in the OTHER pane goes to that pane's shell, because
+    /// only the focused pane's surface is asked). True = the key closed an overlay and is consumed.</summary>
+    private bool CloseExitedOverlayOnKey()
+    {
+        if (_coverKind == 3 && _ovlOwner is { Overlay.Exited: true }) { CloseActiveOverlay(); return true; }
+        if (FocusedPaneWithOverlay() is { Overlay.Exited: true } fp) { ClosePaneOverlay(_active!, fp); return true; }
+        return false;
+    }
 
     /// <summary>Whether a pane is currently on screen — i.e. whether its output warrants a repaint.
     /// Called on session pump threads: field reads are benignly racy (a stale answer costs one
@@ -712,11 +740,13 @@ internal partial class Program
     }
 
     /// <summary>Dismiss whatever cover is up (the "close_cover" keymap action): overlays close
-    /// (their program is ephemeral), scratch/quick just hide (their shells stay alive).</summary>
+    /// (their program is ephemeral), scratch/quick just hide (their shells stay alive). With no cover
+    /// up, the focused pane's overlay (P5) closes instead; with neither, nothing — the keybinding gate
+    /// lets the chord (a bare Escape) fall through to the pane, as before.</summary>
     private void CloseCover()
     {
-        if (_cover is null) return;
-        if (_coverKind == 3) CloseActiveOverlay(); else HideCover();
+        if (_cover is not null) { if (_coverKind == 3) CloseActiveOverlay(); else HideCover(); return; }
+        if (FocusedPaneWithOverlay() is { } fp) ClosePaneOverlay(_active!, fp);
     }
 
     /// <summary>The rect (px) the current cover occupies: the full content region, or — for a floating overlay — a centered panel sized by percent.</summary>
@@ -1396,8 +1426,8 @@ internal partial class Program
         ses.Active = idx + 1;            // focus the new pane, within its session
         // Only the active session's focused pane is the window's focused surface. Pointing
         // `_session` at a pane of some other session would leave the window focused on a
-        // surface that is not on screen.
-        if (ReferenceEquals(ses, _active)) _session = ses.S;
+        // surface that is not on screen. SyncSession: the new pane's surface, under a cover if one is up.
+        if (ReferenceEquals(ses, _active)) SyncSession();
         RegridSession(ses);
         RequestRedraw();
         SaveState();
@@ -1409,7 +1439,7 @@ internal partial class Program
         var ses = _active;
         if (ses is null || ses.Panes.Count < 2) return;
         ses.Active = Math.Clamp(ses.Active + dir, 0, ses.Panes.Count - 1);
-        _session = ses.S;
+        SyncSession();   // the focused pane's SURFACE (its overlay while one is open — P5), not its shell
         RequestRedraw();
     }
 
@@ -1462,7 +1492,8 @@ internal partial class Program
         try { pane.S.Dispose(); } catch { }
         // Only the active session's focused pane is the window's focused surface. Pointing `_session`
         // at a pane of some other session would leave the window focused on a surface not on screen.
-        if (ReferenceEquals(ses, _active)) _session = ses.S;
+        // SyncSession: the survivor's SURFACE — its own overlay if it holds one (P5) — under a cover if up.
+        if (ReferenceEquals(ses, _active)) SyncSession();
         RegridSession(ses);
         if (ReferenceEquals(ses, _active)) RequestRedraw();
         SaveState();
@@ -1841,7 +1872,7 @@ internal partial class Program
         if (ReferenceEquals(ses, _active) && _divDragging) { _divDragging = false; ReleaseCapture(); }
         _divLeft = 0;
         RegridSession(ses);   // both panes AND their pane overlays (the slot travelled with the pane; the box did not)
-        if (ReferenceEquals(ses, _active)) { _session = ses.S; RequestRedraw(); }
+        if (ReferenceEquals(ses, _active)) { SyncSession(); RequestRedraw(); }   // the focused pane's surface followed its pane
         SaveState();
         EmitEvent("tree");   // control-API event log (#273): paneIds and focusedPane changed
     }

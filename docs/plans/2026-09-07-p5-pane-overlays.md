@@ -282,37 +282,44 @@ Docs: `docs/agterm-parity.md:47-48` (the honesty half only) and `:91-99` (the it
 - [x] run the .NET suite (nothing observable changes yet; the build must be clean)
 
 ### Task 3: render, focus, mouse
-- [ ] `ActiveSurface()` = `_cover ?? FocusedSurface(_active)` where a pane's surface is its
+- [x] `ActiveSurface()` = `_cover ?? FocusedSurface(_active)` where a pane's surface is its
       overlay term while the slot is open, else the pane. One helper, used by `PaneAt` /
       `PaneBox` / `ActivePaneView` / `Resolve(active)` — the 40 callers do not change
-- [ ] `RenderPanes`: after a pane's own render, if `pane.Overlay` is open, `RenderTerminal` the
+- [x] `RenderPanes`: after a pane's own render, if `pane.Overlay` is open, `RenderTerminal` the
       overlay term over the same box with the overlay's metrics (opaque fill first — the
       program's screen, not a blend), the `overlay` badge at the box's top-right, and the
       `--wait` footer inside the box (`DrawOverlayFooter` takes a rect + slot; the session-wide
       call passes `CoverRect()` + the session slot). Inactive-pane dim applies over the overlay
       as over the pane (it is the pane's surface). A session-wide cover / scratch / quick draws
       on top of everything, as today
-- [ ] `PaneAt` / `PaneBox`: `_cover` short-circuits as today; else the pane under the point,
+- [x] `PaneAt` / `PaneBox`: `_cover` short-circuits as today; else the pane under the point,
       **then its overlay term if the slot is open** (origin = the pane's box, metrics = the
       overlay's). `ActivePaneView` the same for the focused pane. Selection, links, right-click
       paste, drag-and-drop and the double-click path then work inside a pane overlay for free —
       say so in a comment rather than adding branches
-- [ ] focus: `FocusPaneAt` unchanged (it focuses the PANE; the surface follows); `WM_SETCURSOR`
+- [x] focus: `FocusPaneAt` unchanged (it focuses the PANE; the surface follows); `WM_SETCURSOR`
       / `DividerAt` / `WM_LBUTTONDOWN` divider gate: `_cover is null` stays the condition (pane
       overlays do not block the divider); the wheel (`WndProc.cs:562-572`): under a cover as
       today, else the surface under the pointer (`PaneAt`)
-- [ ] keys: `close_session`/`close_pane` (`Input.cs:131`): kind-3 cover → `CloseActiveOverlay()`
+- [x] keys: `close_session`/`close_pane` (`Input.cs:131`): kind-3 cover → `CloseActiveOverlay()`
       (today), else the focused pane's open slot → `ClosePaneOverlay`, else the pane; `close_cover`
       (`:163`, `:1228`): a cover, else the focused pane's slot, else fall through (the keybinding
       gate at `:1228-1230` must let the chord reach the pane when neither is up — today's
       behaviour); the any-key close (`:1122`, `WndProc.cs:312`): the focused pane's exited slot
       too; `AgwValues`: `AGW_PANE = overlay` and `AGW_PANE_ID` = the term id when the surface is
       a pane overlay (the program under it keeps `left`/`right`)
-- [ ] `SetActive`: pane overlays need nothing (they live on panes); the cover logic unchanged.
+- [x] `SetActive`: pane overlays need nothing (they live on panes); the cover logic unchanged.
       `RegridSession` regrids open pane overlays (Task 2) — check `RebuildFont`, `WM_SIZE`,
       `SidebarWidthChanged`, toolbar height each reach it
-- [ ] `.NET` suite + a live smoke in a sandbox (`--pipe`/`--app-id`): split, open on the right,
+- [x] `.NET` suite + a live smoke in a sandbox (`--pipe`/`--app-id`): split, open on the right,
       type into the left, PrintWindow — keep the capture for the QA case
+- ➕ [x] the host's pane arm for `open` / `close` only (`PaneOverlayAction`, `Program.ControlHost.cs`)
+      so the smoke could drive a pane overlay live (the CLI has no `--pane` yet, so the smoke
+      speaks raw JSON to the pipe); task 4 adds the agreement check, `--block`, `result`, `copy`,
+      `text` and the CLI. Smoke: `.ralphex/p5-t3-smoke.ps1` (untracked, 30 checks: open/refusals/
+      type-into-left/text by overlay id vs pane id/`session text` active/metrics/Esc/Ctrl+Shift+W/
+      `--wait` banner keyed from the other pane/split close survivor/`pane not visible`); capture
+      kept as `docs/plans/2026-09-07-p5-pane-overlay.png` for the QA case (task 5)
 
 ### Task 4: the host and the CLI
 - [ ] `Program.ControlHost.cs` `SessionOverlay`: `pane` parsed via `OverlayPanes` first (a bad

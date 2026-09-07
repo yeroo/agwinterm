@@ -267,8 +267,10 @@ internal partial class Program
         else
         {
             laidOut = false;
+            // A pane overlay term (P5) is laid out as ITS pane's box: `session metrics --target
+            // <overlay id>` answers the box the term was regridded to (RegridSession), with its own metrics.
             foreach (var (p, _, _, w, h) in PaneLayout(ses!))
-                if (ReferenceEquals(p, pane)) { laidOut = w > 0 && h > 0; break; }
+                if (ReferenceEquals(p, pane) || ReferenceEquals(p.Overlay.Term, pane)) { laidOut = w > 0 && h > 0; break; }
         }
         return laidOut
             ? PaneMetricsSnapshot.FromDipGrid(pane.S.Cols, pane.S.Rows, cwDip, chDip, Scale)
@@ -641,7 +643,7 @@ internal partial class Program
             if (ses is null || ses.Panes.Count < 2) return ISessionHost.RefusePrefix + SplitAxes.NotSplit;
             if (!SplitAxes.TryFocusIndex(dir, ses.Axis, ses.Active, out int index, out string? refusal)) return ISessionHost.RefusePrefix + refusal;
             ses.Active = Math.Clamp(index, 0, ses.Panes.Count - 1);
-            _session = ses.S;
+            SyncSession();   // the focused pane's SURFACE (its overlay while one is open — P5)
             RequestRedraw();
             return "focus";
         });
@@ -847,14 +849,15 @@ internal partial class Program
     public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block,
         string? pane, OverlayTextArgs text)
     {
-        // P5 task 1: the vocabulary exists, the pane slot does not yet (tasks 2-4 add the slot, the
-        // render and this host's pane arm). Until then a pane, and the two read actions, are refused
-        // honestly rather than falling into the open arm below — an action this switch does not know
-        // used to open an overlay.
+        // The pane arm (P5): the word is parsed first, so a bad one is refused before any resolve.
+        // Task 3 wires `open` and `close` (the slot, its render and its input paths are live); task 4
+        // adds the agreement check on --target, --block, `result`, `copy` and `text`. Until then the
+        // rest is refused honestly rather than falling into the session-wide arm below — an action
+        // this switch does not know used to open an overlay.
         if (pane is not null)
         {
-            if (!OverlayPanes.TryParse(pane, out _, out string? paneRefusal)) return ISessionHost.RefusePrefix + paneRefusal;
-            return ISessionHost.RefusePrefix + OverlayPanes.NotVisible + ": pane overlays are not wired in this build yet; omit --pane";
+            if (!OverlayPanes.TryParse(pane, out int paneIndex, out string? paneRefusal)) return ISessionHost.RefusePrefix + paneRefusal;
+            return PaneOverlayAction(target, action, command, wait, paneIndex);
         }
         if (action is "copy" or "text") return ISessionHost.RefusePrefix + OverlayPanes.NoOverlay + ": overlay " + action + " is not wired in this build yet";
         if (action != "result" && OverlayTargetRefusal(target) is { } refusal) return refusal;
@@ -953,6 +956,42 @@ internal partial class Program
     }
 
     private const string OverlayWindowGone = "the window closed before the overlay's program exited; its exit status is unknown";
+
+    /// <summary>The pane arm of <see cref="SessionOverlay"/> (P5): <paramref name="index"/> is the parsed
+    /// <c>--pane</c> word (0 = left, 1 = right, whatever the axis). Each action resolves the session AND
+    /// the pane by index inside its UI hop (InvokeOnUiQueued: the split the session has when the verb
+    /// runs, not the one the pipe thread saw), so a refusal leaves the world untouched. <c>open</c>:
+    /// <c>pane not visible</c> when the index is past the pane count (a single-pane session accepts
+    /// <c>left</c> only), the held-slot refusal from <see cref="OverlayOpen"/>, else the overlay pane id.
+    /// <c>close</c>: <c>closed</c>, or <c>no overlay</c> with the slot empty (the session-wide arm's
+    /// shape; a target that resolves to nothing is the same refusal as there). The remaining actions
+    /// are task 4's.</summary>
+    private string PaneOverlayAction(string? target, string action, string? command, bool wait, int index)
+    {
+        switch (action)
+        {
+            case "open":
+                if (string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened";
+                return InvokeOnUiQueued(() =>
+                {
+                    var s = FindSesForTarget(target);
+                    if (s is null) return NoSessionRefusal;
+                    if (index >= s.Panes.Count) return ISessionHost.RefusePrefix + OverlayPanes.NotVisibleRefusal(s.Id);
+                    return OverlayOpen(s, s.Panes[index], command!, 0, wait);
+                });
+            case "close":
+                return InvokeOnUiQueued(() =>
+                {
+                    var s = FindSesForTarget(target);
+                    if (s is null && !string.IsNullOrEmpty(target) && target != "active") return NoSessionRefusal;
+                    if (s is null || index >= s.Panes.Count || s.Panes[index].Overlay.Term is null) return OverlayPanes.NoOverlay;
+                    ClosePaneOverlay(s, s.Panes[index]);
+                    return "closed";
+                });
+            default:
+                return ISessionHost.RefusePrefix + OverlayPanes.NotVisible + ": overlay " + action + " --pane is not wired in this build yet";
+        }
+    }
 
     public bool Notify(string? target, string? title, string body)
     {

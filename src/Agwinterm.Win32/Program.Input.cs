@@ -128,7 +128,15 @@ internal partial class Program
             case "duplicate_session": DuplicateSession(_active); break;
             case "reopen_session": ReopenMostRecent(); break;
             case "new_workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
-            case "close_session": case "close_pane": if (_coverKind == 3) CloseActiveOverlay(); else if (_cover is not null) HideCover(); else CloseActivePane(); break;
+            // Ctrl+Shift+W: the cover first (an overlay closes, scratch/quick hide), then the focused
+            // pane's own overlay (P5 — agterm's Cmd+W closes the overlay before it would close the pane),
+            // then the pane.
+            case "close_session": case "close_pane":
+                if (_coverKind == 3) CloseActiveOverlay();
+                else if (_cover is not null) HideCover();
+                else if (FocusedPaneWithOverlay() is { } fpo) ClosePaneOverlay(_active!, fpo);
+                else CloseActivePane();
+                break;
             case "split_pane": SplitOp("toggle"); break;   // toggle 1<->2 panes (agterm-style), not add
             case "toggle_scratch": if (_active is not null) ScratchOp(_active, "toggle"); break;
             case "quick_terminal": QuickOp("toggle"); break;
@@ -248,6 +256,10 @@ internal partial class Program
             if (_coverKind == 1 && ReferenceEquals(surface, ses.Scratch)) paneName = "scratch";
             else if (_coverKind == 3 && ReferenceEquals(surface, ses.Overlay.Term)) paneName = "overlay";
             else if (_coverKind == 2 && ReferenceEquals(surface, _quick)) paneName = "quick";
+            // A pane overlay is its pane's surface (P5): the command fired from the overlay, so
+            // AGW_PANE is "overlay" and AGW_PANE_ID (below: surface.Id) is the overlay term's id. The
+            // program under it keeps left/right — it is the pane, and it is not the surface.
+            else if (ses.Panes.Any(p => ReferenceEquals(p.Overlay.Term, surface))) paneName = "overlay";
             else
             {
                 int idx = ses.Panes.IndexOf(surface);
@@ -409,9 +421,11 @@ internal partial class Program
             var (_, cw, ch) = Metrics(cover.FontSize);
             return (x, y, cw, ch);
         }
+        // The focused pane's box with its SURFACE's metrics (P5: the overlay's font while its slot is
+        // open) — the same pair PaneAt hands out, so a mouse report lands on the surface the keys go to.
         if (_active is not null)
             foreach (var (pane, x, y, _, _) in PaneLayout(_active))
-                if (ReferenceEquals(pane, _active.ActivePane)) { var (_, cw, ch) = Metrics(pane.FontSize); return (x, y, cw, ch); }
+                if (ReferenceEquals(pane, _active.ActivePane)) { var (_, cw, ch) = Metrics(SurfaceOf(pane).FontSize); return (x, y, cw, ch); }
         var (_, c2, h2) = CurrentMetrics();
         return (ContentX, ContentY, c2, h2);
     }
@@ -421,7 +435,7 @@ internal partial class Program
     {
         if (_active is null || _active.Panes.Count < 2) return;
         if (PaneAlongAxisAt(_active, px, py) is { } hit)
-        { _active.Active = _active.Panes.IndexOf(hit.pane); _session = _active.S; RequestRedraw(); return; }
+        { _active.Active = _active.Panes.IndexOf(hit.pane); SyncSession(); RequestRedraw(); return; }   // focuses the PANE; the surface follows (its overlay, P5)
     }
 
     /// <summary>Index of the pane BEFORE the divider gutter under a client point (the left pane on a
@@ -557,7 +571,13 @@ internal partial class Program
 
     // ---- Text selection + clipboard ----
 
-    /// <summary>Pane of the active session under a client point + its origin/metrics, or null.</summary>
+    /// <summary>The SURFACE of the active session under a client point + its origin/metrics, or null:
+    /// a shown cover (it takes the whole content region), else the pane under the point — and, while
+    /// that pane's overlay slot is open, the overlay term (P5): origin = the pane's box, metrics = the
+    /// overlay's. Every mouse path that starts here — selection (click, drag, double/triple click,
+    /// autoscroll through PaneBox), link hover and Ctrl+click, right-click paste, drag-and-drop — then
+    /// works inside a pane overlay with no branch of its own: it receives the surface and never asks
+    /// which kind it is.</summary>
     private (Pane pane, float ox, float oy, float cw, float ch)? PaneAt(int px, int py)
     {
         if (px < (int)_sidebarW || py < (int)TitleBarH || py >= ClientH() - (int)FooterH) return null;
@@ -565,13 +585,16 @@ internal partial class Program
         if (_active is null) return null;
         if (PaneAlongAxisAt(_active, px, py) is { } hit)
         {
-            var (_, cw, ch) = Metrics(hit.pane.FontSize);
-            return (hit.pane, hit.x, hit.y, cw, ch);
+            var surface = SurfaceOf(hit.pane);
+            var (_, cw, ch) = Metrics(surface.FontSize);
+            return (surface, hit.x, hit.y, cw, ch);
         }
         return null;
     }
 
-    /// <summary>Origin/cell-size/row-count of a specific pane (for drag-autoscroll), or null if not laid out.</summary>
+    /// <summary>Origin/cell-size/row-count of a specific surface (for drag-autoscroll), or null if not
+    /// laid out: the cover's rect, a pane's box, or — for a pane overlay term (P5) — ITS pane's box
+    /// with the term's own metrics (the surface PaneAt handed out is found by the pane it covers).</summary>
     private (float ox, float oy, float cw, float ch, int rows)? PaneBox(Pane pane)
     {
         if (_cover is not null && ReferenceEquals(pane, _cover))
@@ -582,7 +605,7 @@ internal partial class Program
         }
         if (_active is null) return null;
         foreach (var (p, x, y, _, h) in PaneLayout(_active))
-            if (ReferenceEquals(p, pane))
+            if (ReferenceEquals(p, pane) || ReferenceEquals(p.Overlay.Term, pane))
             {
                 var (_, cw, ch) = Metrics(pane.FontSize);
                 return (x, y, cw, ch, Math.Max(1, (int)(h / ch)));
@@ -1118,8 +1141,9 @@ internal partial class Program
         // copies, Esc exits. Owns the keyboard while active.
         if (_markMode && MarkModeKey(vk, ctrl)) return true;
 
-        // A --wait overlay whose program has exited hangs around; any key dismisses it.
-        if (_coverKind == 3 && _ovlOwner is { Overlay.Exited: true }) { CloseActiveOverlay(); return true; }
+        // A --wait overlay whose program has exited hangs around; any key dismisses it — the cover,
+        // else the focused pane's own overlay (P5).
+        if (CloseExitedOverlayOnKey()) return true;
 
         // Escape during an MRU walk cancels back to where the walk began.
         if (_mruWalking && vk == VK_ESCAPE) { MruCancel(); return true; }
@@ -1225,9 +1249,10 @@ internal partial class Program
         string? chord = Keymap.ChordFor(vk, ctrl, alt, shift);
         if (chord is not null && _keymap.TryGetValue(chord, out var action))
         {
-            // close_cover only applies while a cover is up — otherwise its chord (typically a bare
-            // Escape) falls through so the key still reaches the terminal.
-            if (action is not "close_cover" || _cover is not null) { RunAction(action); return true; }
+            // close_cover only applies while a cover is up, or the focused pane holds an overlay (P5)
+            // — otherwise its chord (typically a bare Escape) falls through so the key still reaches
+            // the terminal.
+            if (action is not "close_cover" || _cover is not null || FocusedPaneWithOverlay() is not null) { RunAction(action); return true; }
         }
 
         if (_session is null) return false;
