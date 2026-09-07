@@ -407,7 +407,7 @@ public interface ISessionHost
     /// ok:false: open with no command; open or resize whenever NO session resolves (a named target
     /// that matches nothing, or no target and no active session); close when a target other than
     /// absent, empty or "active" resolves to nothing; open, close and resize whenever the target names
-    /// one pane of a multi-pane session (the overlay covers the whole session; the app's
+    /// one pane of a multi-pane session (a session-wide overlay covers the whole session — --pane is how one pane is named; the app's
     /// OverlayTargetRefusal); resize with no overlay open. A second host that returns those as plain
     /// strings reproduces the ok:true-on-failure P2 removed.
     ///

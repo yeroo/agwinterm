@@ -167,6 +167,69 @@ unparseable value, or `OverlayOpen` / `resize` regain a `Math.Clamp`.
 
 ---
 
+## `overlay text` reads the overlay; `session text --target <pane>` reads the shell under it
+
+**Guards:** the honesty pair P5 adds (`docs/plans/completed/2026-09-07-p5-pane-overlays.md`). Before
+it an overlay's own output could not be read at all — `session text` addressed the pane underneath —
+and a caller reading "the right pane" while a review TUI covered it got the TUI or the shell
+depending on nothing it had said. The rule, from `ISessionHost.SessionOverlay`: a pane overlay is
+that pane's **surface** while it is open; `--target` with a **pane id** reaches the shell
+**underneath** (agterm: "`session text` reads the surface underneath"), `--target` with the
+**overlay's id** — or `session overlay text --pane X` — reaches the overlay from anywhere, and no
+target while the focused pane holds one reaches the overlay. Two ids, two answers, and each names
+which it is; a reader that quietly answered the other one would be this file's defect class.
+`overlay copy` is the same pair for the selection: the overlay's own, and the clipboard untouched.
+
+**Setup:** a session split vertically (`$r = Reply $s @('session','split','on','--target',(Sid $s)); $pid1 = [string]$r.result`;
+wait ~2s); `$sid = Sid $s` is pane 0, `$pid1` pane 1 and the focused one. Both at a prompt. Put a
+known string on the clipboard: `Set-Clipboard 'CLIP-UNTOUCHED'`.
+
+**Steps:**
+1. `$o = Reply $s @('session','overlay','open','cmd /k echo OVL-MARKER','--pane','right','--target',$sid); $ovl = [string]$o.result`;
+   wait ~2s.
+2. `$byOvl = (Reply $s @('session','text','--target',$ovl)).result`;
+   `$byVerb = (Reply $s @('session','overlay','text','--pane','right','--target',$sid)).result`;
+   `$byPane = (Reply $s @('session','text','--target',$pid1)).result`;
+   `$active = (Reply $s @('session','text')).result`.
+3. `$all = (Reply $s @('session','overlay','text','--all','--pane','right','--target',$sid)).result`;
+   `$both = Reply $s @('session','overlay','text','--all','--lines','3','--pane','right','--target',$sid)` — the
+   last one called **directly** too, so the exit code is kept:
+
+   ```powershell
+   $out  = & $ctl session overlay text --all --lines 3 --pane right --target $sid --pipe $s.Pipe --json 2>&1 | Out-String
+   $code = $LASTEXITCODE
+   ```
+
+4. `$none = Reply $s @('session','overlay','copy','--pane','right','--target',$sid)`.
+5. `Reply $s @('session','selection','all','--target',$ovl)`;
+   `$copy = Reply $s @('session','overlay','copy','--pane','right','--target',$sid)`;
+   `$under = (Reply $s @('session','copy','--target',$pid1)).result`; `$clip = Get-Clipboard`.
+6. `$empty = Reply $s @('session','overlay','text','--pane','left','--target',$sid)`.
+7. Cleanup: `Reply $s @('session','overlay','close','--pane','right','--target',$sid)`.
+
+**Expect:**
+- 2: `$byOvl` and `$byVerb.text` both contain `OVL-MARKER` and are the **same buffer**; `$byPane`
+  does **not** contain `OVL-MARKER` and is not empty — the pane id reads the shell underneath, and
+  the shell is still there; `$active` contains `OVL-MARKER` (the focused pane's surface is the
+  overlay). The two ids answering differently is the assertion the case exists for;
+- 3: `$all.text` contains `OVL-MARKER` and at least as many lines as `$byVerb.text` (the whole
+  buffer, screen + scrollback); `$both` is `ok:false` with the error naming `--all and --lines`, and
+  `$code -eq 2` with `$out` naming the pair and `Nothing sent` — the CLI refused it before the pipe;
+- 4: `ok:false`, the error exactly `no selection` — nothing selected inside the overlay yet;
+- 5: `$copy.ok` and `$copy.result.text` contains `OVL-MARKER` (the selection made INSIDE the
+  overlay), `$under` is `""` (the pane underneath has no selection — `session copy` still reads the
+  pane, not the overlay), and `$clip -eq 'CLIP-UNTOUCHED'`: `overlay copy` returns text, it does not
+  copy;
+- 6: `ok:false`, the error starting `no overlay: --pane left` — the refusal names the slot that was
+  asked for, not the one that is open.
+
+**Fails when:** `Resolve` widens an overlay id to its pane (2: `$byOvl` reads the shell),
+`PaneForTarget` / `FindPaneBy` stop finding a pane overlay by id (2: refused), `SessionOverlay`'s
+`copy` arm calls `CopySelection` instead of reading `SelectionText` (5: the clipboard changes), or the
+server stops refusing `all` with `lines` before the host (3: a buffer comes back).
+
+---
+
 ## `session restore` names the pane it pinned, and `tree` reads it back
 
 **Guards:** the reply was the constant `"pinned"`, the target went through a resolver no other verb

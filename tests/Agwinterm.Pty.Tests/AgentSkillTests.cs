@@ -68,4 +68,37 @@ public class AgentSkillTests
         int resize = md.IndexOf("agwintermctl session resize [", StringComparison.Ordinal);
         Assert.True(split < close && close < swap && swap < focus && focus < resize);
     }
+
+    /// <summary>P5: the overlay section quotes the rule (its first and last sentence, in the plain-text
+    /// spelling <c>ISessionHost.SessionOverlay</c> and the CLI header carry, so the three copies diff
+    /// clean), advertises <c>--pane</c> on the verbs and the two read verbs with <c>--all</c> on both
+    /// readers, names every refusal phrase from <see cref="OverlayPanes"/> (one definition, quoted
+    /// here — a skill that spells a refusal its own way is the drift #248 closed), and the swap line
+    /// says a PANE overlay moves while the session-wide one stays — the old "overlays / scratch /
+    /// quick" clause is gone.</summary>
+    [Fact]
+    public void OverlayVerbsAreAdvertisedWithTheRuleAndTheirRefusals()
+    {
+        var md = AgentSkill.SkillMarkdown;
+        Assert.Contains("A session has three overlay slots: one session-wide and one per pane. A session-wide overlay", md);
+        Assert.Contains("session close, the window closing).", md);
+        Assert.Contains("left is pane 0 and right is pane 1", md);
+        Assert.Contains("agwintermctl session overlay open \"<command>\" [--pane left|right] [--size-percent N] [--wait] [--block] [--target <id>]", md);
+        Assert.Contains("agwintermctl session overlay close [--pane left|right] [--target <id>]", md);
+        Assert.Contains("agwintermctl session overlay result [--pane left|right]", md);
+        Assert.Contains("agwintermctl session overlay copy [--pane left|right] [--target <id>]", md);
+        Assert.Contains("agwintermctl session overlay text [--all|--lines N] [--pane left|right] [--target <id>]", md);
+        Assert.Contains("agwintermctl session text [--all|--lines N] [--target <id>]", md);
+        Assert.Contains("\"paneOverlays\":[\"left\"]", md);
+        foreach (var phrase in new[]
+                 {
+                     OverlayPanes.NotVisible, OverlayPanes.AlreadyOpen, OverlayPanes.NoOverlay, OverlayPanes.NotRealized,
+                     OverlayPanes.NoSelection, OverlayPanes.ReadFailed, OverlayPanes.StillRunning, OverlayPanes.NoResult,
+                 })
+            Assert.Contains($"`{phrase}`", md);
+        Assert.Contains("The clipboard is NOT touched", md);
+        Assert.Contains("PANE OVERLAY (the slot is on", md);
+        Assert.DoesNotContain("overlays / scratch / quick", md);
+        Assert.DoesNotContain("an overlay covers the whole session", md);
+    }
 }

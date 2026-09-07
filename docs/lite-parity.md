@@ -204,6 +204,19 @@ restore` answers a usage line on a post-#233 build) and SKIP against the release
 until the release that carries #233 + #235 is tagged — red under `-Strict`, the release gate
 (**0.17.12**, tagged 2026-09-05, closed it).
 
+### To be mirrored: what P5 (agwinterm, pane-scoped overlays) owes lite — P5-lite pending
+
+P5 gives agwinterm's `session.overlay` a **per-pane slot**: `--pane left|right` on `open` / `close`
+/ `result` (`left` = pane 0, `right` = pane 1, whatever the axis; the flag omitted = the session-wide
+slot, unchanged), `session.overlay.copy` and `session.overlay.text [--all|--lines N]` reading the
+overlay's own selection and buffer, `session.text --all`, and `paneOverlays` in `tree`. The rule is
+stated once on `ISessionHost.SessionOverlay` and quoted by the skill and the CLI header. **lite has
+no pane overlays**: its overlay is ONE popup window over the active session (`src/main.cpp`,
+"one at a time; opening a new overlay replaces the previous"), so a pane slot there is either a
+popup sized to the pane rect or a recorded divergence — the P5-lite plan decides, as P4-lite did for
+swap. Until it lands, the contract's P5 steps (the sibling contract PR after P5 merges) leave
+agliteterm's `check-contract` red by design, as #235's did before P3-lite.
+
 ---
 
 ## Where agliteterm is AHEAD

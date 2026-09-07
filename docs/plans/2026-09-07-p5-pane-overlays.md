@@ -350,26 +350,26 @@ Docs: `docs/agterm-parity.md:47-48` (the honesty half only) and `:91-99` (the it
 - [x] run the .NET suite and `win32-control.ps1 -Strict` against a sandbox
 
 ### Task 5: docs, trackers, QA
-- [ ] `AgentSkill.cs:172-208`: the rule sentence quoted; `--pane` on `open`/`close`/`result`;
+- [x] `AgentSkill.cs:172-208`: the rule sentence quoted; `--pane` on `open`/`close`/`result`;
       `copy` and `text` entries with their errors; `session text --all`; `:126/:129` updated;
       `:286` (swap) rewritten — a pane overlay MOVES, the session-wide one stays; `:298/:332`
       checked; grep the OLD wording (`covers the whole session`, `session-wide`, `overlays /
       scratch / quick` in the swap line) across `src/`, `README.md`, `docs/`, `qa/`
-- [ ] `README.md:91, 217, 231, 269-288`: the pane form in the examples, the refusal paragraph
+- [x] `README.md:91, 217, 231, 269-288`: the pane form in the examples, the refusal paragraph
       grows the pane refusals, `tree` line names `paneOverlays`
-- [ ] `docs/agterm-parity.md`: item 1 → a Closed row (`--pane left|right`, `session.overlay.copy`,
+- [x] `docs/agterm-parity.md`: item 1 → a Closed row (`--pane left|right`, `session.overlay.copy`,
       `session.overlay.text`, `session.text --all` | agterm 0.24.0 / 2026-08-01 | agwinterm
       *(P5, #PR)*, lite: P5-lite); the two divergences above under the Closed table's notes;
       `:47-48` updated (the capability half is closed now)
-- [ ] `qa/panes.md`: the pane-overlay case with the PrintWindow capture; `qa/control-read.md` (or
+- [x] `qa/panes.md`: the pane-overlay case with the PrintWindow capture; `qa/control-read.md` (or
       `control-honesty.md`): `overlay text` reads the overlay, `session text --target <pane>` the
       shell under it — the honesty pair
-- [ ] batch index `docs/plans/2026-09-03-parity-batches.md`: P5's **Shipped** line (PR number,
+- [x] batch index `docs/plans/2026-09-03-parity-batches.md`: P5's **Shipped** line (PR number,
       plan path under `completed/`, the two divergences in one clause, contract sibling PR to
       follow, release 0.17.14, mirror P5-lite); P4's line gains "released as **v0.17.13**" and
       the leftovers record (#239 → #244; P2/P3 leftovers #227/#228/#234/#246 closed by
       #248/#247/#245/#249; lite #29/#22/#25 → lite #35/#37/#38)
-- [ ] `docs/lite-parity.md` (if it lists overlays): P5-lite pending — lite has no pane overlays
+- [x] `docs/lite-parity.md` (if it lists overlays): P5-lite pending — lite has no pane overlays
 
 ### Task 6: [Final] Verify acceptance criteria
 - [ ] every Overview item implemented; the rule sentence byte-identical (comment markers
