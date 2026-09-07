@@ -757,15 +757,17 @@ internal partial class Program
     });
 
     // Selection/clipboard control API. Clipboard + selection are UI-thread concepts, so hop on-thread.
+    // No pane for the target is the shared refusal (ISessionHost.RefusePrefix + SessionContexts.NoSession,
+    // ok:false at the server) — it used to be the bare string "no session" under ok:true.
     public string SelectionAll(string? target) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         SelectAll(p); return HasLiveSel(p) ? "selected all" : "empty";
     });
 
     public string SelectionCopy(string? target) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         if (!HasLiveSel(p)) return "no selection";
         // Report what actually happened: a live selection over cells a TUI has blanked copies
         // nothing and leaves the clipboard alone, and an agent acting on this reply must not be
@@ -776,14 +778,14 @@ internal partial class Program
 
     public string SelectionClear(string? target) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         p.ClearSel(); RequestRedraw(); return "cleared";
     });
 
     // Test/observability hook: run the same finalize path a mouse-up runs (honors copy-on-select).
     public string SelectionFinalize(string? target) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         // Ask the copy what happened rather than inferring it from a surviving selection: since
         // FinalizeSelection passes clear:false, the selection survives either way, so the
         // "(empty)" arm was unreachable and a declined copy was reported as a copy.
@@ -793,7 +795,7 @@ internal partial class Program
 
     public string SessionPaste(string? target, string? text) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         PasteTextInto(p, text ?? ClipboardGet(), interactive: false);   // scripted: never prompt (agents)
         return "pasted";
     });

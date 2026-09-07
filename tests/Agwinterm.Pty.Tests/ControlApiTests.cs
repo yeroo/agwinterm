@@ -365,4 +365,39 @@ public class ControlApiTests
         Assert.Contains("session not found", r.GetProperty("error").GetString());
         Assert.Equal(1, host.ActiveSess!.PaneCount);        // and nothing was split as a fallback
     }
+
+    // ---- selection verbs and paste: a target with no pane is a refusal, not an ok:true string ----
+
+    // The five verbs the P6 contract steps pin. Before this, ControlServer wrapped their host
+    // replies in Ok(), so a target that resolved to nothing came back {ok:true,result:"no session"}
+    // - a refusal every script reads as done. Same wording as session.rename / session.context.
+    [Theory]
+    [InlineData("selection.all")]
+    [InlineData("selection.copy")]
+    [InlineData("selection.clear")]
+    [InlineData("selection.finalize")]
+    [InlineData("session.paste")]
+    public void SelectionVerbs_AndPaste_NoPaneForTarget_IsRefused(string verb)
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, verb, verb == "session.paste" ? new { text = "x" } : null, target: "no-such-session-id");
+        Assert.False(Ok(r));
+        Assert.Equal(SessionContexts.NoSession, r.GetProperty("error").GetString());
+        Assert.False(r.TryGetProperty("result", out _));
+        Assert.Equal("", Result(Dispatch(server, "session.copy", target: host.ActiveSess!.Id)));   // nothing selected anywhere
+    }
+
+    [Theory]
+    [InlineData("selection.all", "selected")]
+    [InlineData("selection.copy", "no selection")]
+    [InlineData("selection.clear", "cleared")]
+    [InlineData("selection.finalize", "finalized (empty)")]
+    [InlineData("session.paste", "pasted")]
+    public void SelectionVerbs_AndPaste_OnTheActiveSession_AnswerOk(string verb, string reply)
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, verb, verb == "session.paste" ? new { text = "x" } : null, target: host.ActiveSess!.Id);
+        Assert.True(Ok(r));
+        Assert.Equal(reply, Result(r));
+    }
 }

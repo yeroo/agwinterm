@@ -334,17 +334,22 @@ public interface ISessionHost
     /// <summary>Current text selection of the target session's active pane ("" if none).</summary>
     string SessionCopy(string? target);
 
-    /// <summary>Select the target pane's whole buffer (scrollback + live grid).</summary>
+    /// <summary>Select the target pane's whole buffer (scrollback + live grid). Like the three
+    /// selection verbs below and <see cref="SessionPaste"/>: a target that resolves to no pane is
+    /// <see cref="RefusePrefix"/> + <see cref="SessionContexts.NoSession"/> and nothing changes —
+    /// the server turns it into ok:false, never an ok:true string a script would read as done.</summary>
     string SelectionAll(string? target);
     /// <summary>Copy the target pane's current selection to the Windows clipboard. A live selection
     /// whose cells hold no text — a full-screen app repainted over them — copies nothing and leaves
-    /// the clipboard untouched, answering "nothing to copy".</summary>
+    /// the clipboard untouched, answering "nothing to copy". No pane: the refusal above.</summary>
     string SelectionCopy(string? target);
-    /// <summary>Clear the target pane's selection.</summary>
+    /// <summary>Clear the target pane's selection. No pane: the refusal above.</summary>
     string SelectionClear(string? target);
-    /// <summary>Run the selection-finalize path (honors copy-on-select) — for scripting/testing.</summary>
+    /// <summary>Run the selection-finalize path (honors copy-on-select) — for scripting/testing.
+    /// No pane: the refusal above.</summary>
     string SelectionFinalize(string? target);
-    /// <summary>Paste text (or the clipboard when text is null/empty) into the target pane, honoring bracketed paste.</summary>
+    /// <summary>Paste text (or the clipboard when text is null/empty) into the target pane, honoring
+    /// bracketed paste. No pane: the refusal above.</summary>
     string SessionPaste(string? target, string? text);
 
     /// <summary>Open/drive the find bar over the active session; returns "N of M" / "no matches" / "closed".</summary>

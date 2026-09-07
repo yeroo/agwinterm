@@ -168,6 +168,18 @@ finalise one, so the lite QA cases that drive selection through the API silently
 exact failure mode `qa/product.md` exists to prevent. The model already exists behind `session.copy`.
 *Needs decision 2.*
 
+**Shipped:** agliteterm **#45** (2026-09-07, three revmux rounds — round 1's two Majors were one
+mechanism: the popup guard named only the overlay while quick and scratch share `paintPopup`; round
+2's outside re-review caught the plan itself, `copy` clears even a blank selection; plan
+`docs/plans/2026-09-07-p6-lite-selection.md` there), with decision 2 (pin to row 0). The
+agwinterm half is the **contract PR** (the sibling of #235 / #252, merged AFTER #45 so lite's
+`check-contract` stays green until it runs `-Update`): the four `selection.*` steps plus a
+`session copy` read-back, two refusals — and the defect lite's plan found here, the four selection
+verbs and `session.paste` answering `ok:true` `no session` on a target that resolves to no pane,
+fixed in the same PR (`HostReply` + `RefusePrefix`). Five recorded differences in
+`docs/lite-parity.md`, "Mirrored: what P6 owed lite". Left for their own issue: `session.readonly`
+and `session.search` still answer `ok:true` on no session.
+
 ### P7 · lite · selection by keyboard and mouse
 mark mode (Ctrl+Shift+M, arrows, Enter copies) · Select All · drag-autoscroll past the pane edge ·
 the posted `WM_MOUSEWHEEL` that never reaches lite's handler (harness finding, 0.17.11)

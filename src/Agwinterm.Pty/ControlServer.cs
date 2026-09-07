@@ -302,11 +302,14 @@ public sealed class ControlServer : IDisposable
                         host.SidebarOp(op); return Ok("sidebar");
                     }
                 case "session.copy": return Ok(host.SessionCopy(target)); // selection text (host-side), "" if none
-                case "selection.all": return Ok(host.SelectionAll(target));
-                case "selection.copy": return Ok(host.SelectionCopy(target));      // -> Windows clipboard
-                case "selection.clear": return Ok(host.SelectionClear(target));
-                case "selection.finalize": return Ok(host.SelectionFinalize(target)); // copy-on-select path (testing)
-                case "session.paste": return Ok(host.SessionPaste(target, GetString(args, "text")));
+                // HostReply, not Ok: a target that resolves to no pane is a REFUSAL (ok:false,
+                // SessionContexts.NoSession). These five answered ok:true "no session" — a setup step
+                // that silently did not happen, the failure mode the lite contract steps pin (P6).
+                case "selection.all": return HostReply(host.SelectionAll(target));
+                case "selection.copy": return HostReply(host.SelectionCopy(target));      // -> Windows clipboard
+                case "selection.clear": return HostReply(host.SelectionClear(target));
+                case "selection.finalize": return HostReply(host.SelectionFinalize(target)); // copy-on-select path (testing)
+                case "session.paste": return HostReply(host.SessionPaste(target, GetString(args, "text")));
                 case "session.search": return Ok(host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
                 case "session.scratch": return host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
                 case "quick": host.Quick(GetString(args, "op") ?? "toggle"); return Ok("quick");

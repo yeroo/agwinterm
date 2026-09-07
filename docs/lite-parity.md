@@ -15,26 +15,21 @@ says otherwise and gives the reason.
   [plans/2026-09-03-parity-batches.md](plans/2026-09-03-parity-batches.md).
 
 The control API is the half that has to match exactly: `tests/conformance/control-api.json` in this
-repo is the canonical contract, agliteterm's CI checks its copy against it, and an agent written
-against one product should work against the other. The UI half can differ where the platform or the
-product's purpose justifies it.
+repo is the canonical contract, agliteterm's CI checks its copy against it (`tools/check-contract.ps1`
+fetches this repo's `main` copy and exits 1 on ANY drift; `-Update` overwrites lite's copy), and an
+agent written against one product should work against the other. So a contract change lands here
+first and lite is red until it runs `-Update` (P3, P5) — unless the lite batch is the one that
+teaches lite the verbs, in which case the contract PR waits for that lite PR to merge, so its steps
+never turn a mergeable lite PR red (P6). The UI half can differ where the platform or the product's
+purpose justifies it.
 
 ---
 
-## Control API: 45 verbs agliteterm does not answer
+## Control API: 41 verbs agliteterm does not answer
 
-Grouped by what they cost an agent, not alphabetically.
-
-### Selection — the sharpest gap
-`selection.all` · `selection.clear` · `selection.copy` · `selection.finalize`
-
-lite has `session.copy` (the selection's text) but no way to **make**, clear or finalise one. So
-copy tooling, anything reading a user's selection, and the QA cases that drive selection through the
-API all stop at the door. A step that calls `selection clear` there does nothing and returns an
-error most callers ignore — a setup that silently did not happen, which is the failure mode the QA
-cases exist to prevent (`qa/product.md` in that repo says so).
-
-**Size:** small. lite already has the selection model behind `session.copy`.
+Grouped by what they cost an agent, not alphabetically. The four `selection.*` verbs — the
+sharpest gap, the one where a QA setup step silently did nothing — closed in P6-lite (see
+"Mirrored: what P6 owed lite" below).
 
 ### Reading and driving a pane
 `session.search` · `session.focus` · `session.switch` · `session.resize` · `session.background` ·
@@ -258,6 +253,44 @@ Lite has no `--wait` / `--block` (the overlay stays up until closed, P2-lite) an
 returns; the slot's verbs run inline under one lock — documented, not emitted). The contract's
 P5 steps (#252) are the gate: agliteterm's `check-contract` is red until #252 is on `main` and
 lite's copy is updated, as #235's were before P3-lite.
+
+### Mirrored: what P6 owed lite — P6-lite shipped, and what lite found here
+
+Batch **P6-lite** — agliteterm **#45** (2026-09-07, three revmux rounds; plan
+`docs/plans/2026-09-07-p6-lite-selection.md` there). lite answers `selection all` / `copy` /
+`clear` / `finalize` with agwinterm's sentences (`selected all` / `empty`, `no selection` /
+`copied N chars`, `cleared`, `finalized (copied)` / `finalized (empty)`), on the selection's OWNER
+(the surface `g_sel.sess` names: a verb with a target reads or writes the selection only when it is
+that pane's, and `all` replaces the owner), through a swap (the highlight follows its shell), and
+`copy` clears even a blank selection where `finalize` alone keeps one — agwinterm's
+`CopySelection(clear: true)` rule, which lite's second round caught the plan getting wrong.
+Decision 2 landed with it: on the alt screen `selection all` is the app's screen only, in both
+products. What differs, each recorded in the P6-lite plan:
+
+- **(a)** an unresolved target is refused `ok:false` (`session not found`) on all four, as on
+  every lite verb — and agwinterm answered `ok:true` with the string `no session` on the four
+  selection verbs AND on `session.paste`, a refusal a script reads as success. **Fixed here in the
+  P6 contract PR** (`ControlServer` wraps the five in `HostReply`, the hosts return
+  `RefusePrefix + SessionContexts.NoSession`); the contract's two new refusals pin `ok:false`
+  on both products. Not a difference any more.
+- **(b)** `selection finalize` never answers `finalized (copy-on-select off)`: lite's
+  release-copies rule has no off switch (a `CopyOnSelect` knob is P10's, the configuration surface).
+- **(c)** `selection all` on any popup (overlay, quick or scratch — all three share `paintPopup`)
+  is refused `the popup paints no selection`; agwinterm's covers take a selection. P7-lite paints
+  one and lifts this.
+- **(d)** `selection copy`'s clipboard write is posted to the UI thread; the reply counts the text
+  posted. A caller reading the clipboard right after waits for the window's next message (the
+  suites' 300 ms). When that enqueue fails, `copy` and `finalize` refuse `the clipboard write could
+  not be queued; selection unchanged` — the selection is kept for a retry.
+- **(e)** the alt-screen pin covers the VERB; the wheel and the drag still reach main-screen
+  history until P7-lite.
+- and `copied N chars` counts differently on non-ASCII text: lite counts UTF-8 bytes, agwinterm
+  UTF-16 code units (`string.Length`). Same N for ASCII.
+
+The contract's P6 steps (this PR) are shape-only and run on the no-selection arm of `copy` and
+`finalize` on purpose: the Windows clipboard is shared with the user and with every other sandbox on
+the machine, so the contract never writes it — `selection all` is proven by a `session copy`
+read-back instead, and the copy itself (`copied N chars`) is each product's own honesty suite's.
 
 ---
 

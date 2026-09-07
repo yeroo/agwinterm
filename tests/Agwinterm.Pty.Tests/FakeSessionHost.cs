@@ -597,16 +597,19 @@ internal sealed class FakeSessionHost : ISessionHost
     public string SelectionAll(string? target)
     {
         if (CoverTarget(target) is { } cover) { cover.s.Selections[cover.id] = SurfaceText.Dump(cover.pane, new OverlayTextArgs(All: true, Lines: 0)); return "selected"; }
-        return FindSes(target) is not null ? "selected" : "no session";
+        return FindSes(target) is not null ? "selected" : NoPane;
     }
-    public string SelectionCopy(string? target) => "";
-    public string SelectionClear(string? target) { if (CoverTarget(target) is { } cover) cover.s.Selections.Remove(cover.id); return "cleared"; }
+    // A target that resolves to no pane (and is not a cover) is the app's refusal on all five
+    // (ISessionHost.SelectionAll), so a test against the fake asserts the app's ok:false.
+    private const string NoPane = ISessionHost.RefusePrefix + SessionContexts.NoSession;
+    public string SelectionCopy(string? target) => CoverTarget(target) is not null || FindSes(target) is not null ? "no selection" : NoPane;
+    public string SelectionClear(string? target) { if (CoverTarget(target) is { } cover) { cover.s.Selections.Remove(cover.id); return "cleared"; } return FindSes(target) is not null ? "cleared" : NoPane; }
     /// <summary>A NAMED target that is a cover — null / "" / "active" never is (an empty prefix would
     /// match every cover), and a real pane's id resolves before a cover's, as in FindPaneBy.</summary>
     private (Sess s, string id, ISession pane)? CoverTarget(string? target)
         => string.IsNullOrEmpty(target) || target == "active" || FindPane(target) is not null ? null : FindCover(target);
-    public string SelectionFinalize(string? target) => "";
-    public string SessionPaste(string? target, string? text) => FindSes(target) is not null ? "pasted" : "no session";
+    public string SelectionFinalize(string? target) => CoverTarget(target) is not null || FindSes(target) is not null ? "finalized (empty)" : NoPane;
+    public string SessionPaste(string? target, string? text) => FindSes(target) is not null ? "pasted" : NoPane;
     public string SessionSearch(string? target, string? query, string? action) => "no matches";
     public bool SessionScratch(string? target, string op) => FindSes(target) is not null;
     public void Quick(string op) { QuickVisible = op switch { "on" => true, "off" => false, "toggle" => !QuickVisible, _ => QuickVisible }; }
