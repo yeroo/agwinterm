@@ -372,10 +372,10 @@ Docs: `docs/agterm-parity.md:47-48` (the honesty half only) and `:91-99` (the it
 - [x] `docs/lite-parity.md` (if it lists overlays): P5-lite pending — lite has no pane overlays
 
 ### Task 6: [Final] Verify acceptance criteria
-- [ ] every Overview item implemented; the rule sentence byte-identical (comment markers
+- [x] every Overview item implemented; the rule sentence byte-identical (comment markers
       stripped) in `ISessionHost.SessionOverlay`, `AgentSkill.cs` and the CLI header; every
       refusal string in the table reachable from exactly one definition (`OverlayPanes`)
-- [ ] edge cases, probed live against sandboxes (an untracked `.ralphex/p5-edge-cases.ps1`, as
+- [x] edge cases, probed live against sandboxes (an untracked `.ralphex/p5-edge-cases.ps1`, as
       P4's): a pane overlay on BOTH panes then `swap` (both move, both ids still resolve); a
       session-wide overlay opened OVER two pane overlays (covers both; closing it reveals both
       still running); `split off` while the split pane holds an overlay (disposed, survivor's
@@ -389,10 +389,24 @@ Docs: `docs/agterm-parity.md:47-48` (the honesty half only) and `:91-99` (the it
       survivor promoted; the tree clean); `open --pane left --target <right pane id>` refused
       with nothing opened; window resize with a pane overlay up (the overlay's pty told the new
       box — `session metrics --target <overlay id>`)
-- [ ] confirm `tests/conformance/control-api.json` is **unchanged** (`git diff main` on it empty)
+- [x] confirm `tests/conformance/control-api.json` is **unchanged** (`git diff main` on it empty)
       and `conformance.ps1 -Strict` passes
-- [ ] run the full .NET suite, the Rust suite, `tools/check-abi.ps1` (v18), `win32-control.ps1`
+- [x] run the full .NET suite, the Rust suite, `tools/check-abi.ps1` (v18), `win32-control.ps1`
       and `restore-roundtrip.ps1` end to end against a sandbox
+- ➕ verification record (2026-09-07, Release build, byte-probed fresh): rule sentence byte-identical
+      in the three copies (`.ralphex/p5-rule-check.py`, 1071 chars); every table phrase defined once
+      in `OverlayPanes` (the `"no selection"` literal at `Program.ControlHost.cs` `SelectionCopy` is
+      the pre-existing `session copy` refusal, not the overlay's); `overlay not realized` documented,
+      not emitted (no path). Edge cases 82/82 across two sandboxes (`.ralphex/p5-edge-cases.ps1`):
+      the plan's list plus `--split-ratio 0.3` before the swap so the regrid is visible in `metrics`,
+      `result --pane` in all three states, `copy` on the empty and the unselected slot, `overlay text
+      --lines`. One finding worth recording, by design: after `split off` removes the pane carrying
+      the session id, `session text --target <session id>` reaches the survivor's SHELL under its
+      overlay (the exact-session arm answers the focused PANE, the same arm a session-wide cover has
+      always had; only `active` and the overlay id reach the overlay). Suites: .NET 911 (246 Core +
+      665 Pty), Rust 36, ABI v18, `conformance.ps1 -Strict` all passed, `win32-control.ps1 -Strict`
+      144 PASS / 0 FAIL / 0 SKIP, `restore-roundtrip.ps1 -Strict` all passed, `control-api.json`
+      unchanged against main, no orphaned host process afterwards.
 - [ ] mark P5 **Shipped** in the batch index with the PR number; open the PR from this task so the
       trackers carry the number (P1–P4's practice), with the QA capture in the body
 
