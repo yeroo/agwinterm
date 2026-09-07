@@ -172,7 +172,7 @@ exact failure mode `qa/product.md` exists to prevent. The model already exists b
 mechanism: the popup guard named only the overlay while quick and scratch share `paintPopup`; round
 2's outside re-review caught the plan itself, `copy` clears even a blank selection; plan
 `docs/plans/2026-09-07-p6-lite-selection.md` there), with decision 2 (pin to row 0). The
-agwinterm half is the **contract PR** (the sibling of #235 / #252, merged AFTER #45 so lite's
+agwinterm half is the **contract PR #256** (the sibling of #235 / #252, merged AFTER #45 so lite's
 `check-contract` stays green until it runs `-Update`): the four `selection.*` steps plus a
 `session copy` read-back, two refusals — and the defect lite's plan found here, the four selection
 verbs and `session.paste` answering `ok:true` `no session` on a target that resolves to no pane,

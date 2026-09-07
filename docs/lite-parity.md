@@ -270,7 +270,7 @@ products. What differs, each recorded in the P6-lite plan:
 - **(a)** an unresolved target is refused `ok:false` (`session not found`) on all four, as on
   every lite verb — and agwinterm answered `ok:true` with the string `no session` on the four
   selection verbs AND on `session.paste`, a refusal a script reads as success. **Fixed here in the
-  P6 contract PR** (`ControlServer` wraps the five in `HostReply`, the hosts return
+  P6 contract PR, #256** (`ControlServer` wraps the five in `HostReply`, the hosts return
   `RefusePrefix + SessionContexts.NoSession`); the contract's two new refusals pin `ok:false`
   on both products. Not a difference any more.
 - **(b)** `selection finalize` never answers `finalized (copy-on-select off)`: lite's
@@ -287,7 +287,7 @@ products. What differs, each recorded in the P6-lite plan:
 - and `copied N chars` counts differently on non-ASCII text: lite counts UTF-8 bytes, agwinterm
   UTF-16 code units (`string.Length`). Same N for ASCII.
 
-The contract's P6 steps (this PR) are shape-only and run on the no-selection arm of `copy` and
+The contract's P6 steps (#256) are shape-only and run on the no-selection arm of `copy` and
 `finalize` on purpose: the Windows clipboard is shared with the user and with every other sandbox on
 the machine, so the contract never writes it — `selection all` is proven by a `session copy`
 read-back instead, and the copy itself (`copied N chars`) is each product's own honesty suite's.
