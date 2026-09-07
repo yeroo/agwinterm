@@ -593,16 +593,27 @@ public sealed class ControlServer : IDisposable
     }
 
     /// <summary>The reader for <c>text</c>'s two flags, on <c>session.text</c> and
-    /// <c>session.overlay text</c> alike: <c>all</c> (a bool) and <c>lines</c> (the old reader,
-    /// tolerant); both PRESENT — whatever the values — is refused naming both, because a caller who
+    /// <c>session.overlay text</c> alike: <c>all</c> (a bool: <c>true</c>, <c>"true"</c> or <c>"1"</c>
+    /// — any other value is the flag NOT asked for, as every bool arg here) and <c>lines</c> (a whole
+    /// number, 0 or more; anything else is refused in <see cref="OverlayPanes.LinesRefusal"/>'s words —
+    /// it used to be read as 0, so a typo dumped the screen and reported success). <c>all</c> asked for
+    /// with <c>lines</c> PRESENT — whatever its value — is refused naming both, because a caller who
     /// wrote both meant two different reads and must not get one of them in silence.</summary>
     internal static bool TryTextArgs(JsonElement args, out OverlayTextArgs text, out string? error)
     {
         text = OverlayTextArgs.Screen; error = null;
         if (args.ValueKind != JsonValueKind.Object) return true;
         bool all = GetBool(args, "all");
-        if (all && args.TryGetProperty("lines", out _)) { error = OverlayPanes.AllWithLines; return false; }
-        text = new OverlayTextArgs(all, GetInt(args, "lines", 0));
+        bool hasLines = args.TryGetProperty("lines", out var lv);
+        if (all && hasLines) { error = OverlayPanes.AllWithLines; return false; }
+        int lines = 0;
+        if (hasLines && (lv.ValueKind != JsonValueKind.Number || !lv.TryGetInt32(out lines) || lines < 0))
+        {
+            error = OverlayPanes.LinesRefusal(lv.ValueKind == JsonValueKind.String ? lv.GetString()! : lv.GetRawText(),
+                quoted: lv.ValueKind == JsonValueKind.String);
+            return false;
+        }
+        text = new OverlayTextArgs(all, lines);
         return true;
     }
 

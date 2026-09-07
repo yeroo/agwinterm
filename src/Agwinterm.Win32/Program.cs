@@ -424,7 +424,6 @@ internal partial class Program : ISessionHost, IWindowHost
         // WatchOverlayExit, read under it by the host. The session-wide slot does not use it: its
         // `result` stays the window-wide _lastOverlayExit (the divergence recorded in the P5 plan).
         public string LastResult = OverlayPanes.NoResult;
-        public bool IsOpen => Term is not null;
     }
 
     private float _cellW = 8, _cellH = 16;

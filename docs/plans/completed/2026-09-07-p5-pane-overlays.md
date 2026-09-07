@@ -26,9 +26,12 @@ agterm's reference (`session overlay`, read 2026-09-07), in our words:
 > today's behaviour, byte for byte. A pane overlay is that pane's **surface** while it is open:
 > keys typed into the focused pane, the mouse inside the pane's box and `--target active` reach
 > the overlay; `--target <pane id>` reaches the shell **underneath** (agterm: "`session text`
-> reads the surface underneath"); `--target <overlay id>` reaches the overlay from anywhere. The
-> slot moves with its pane (a swap, a `split close` of the other pane) and dies with it (`split
-> close`, `split off`, the shell exiting, `session close`, the window closing).
+> reads the surface underneath"); `--target <overlay id>` reaches the overlay from anywhere, and on
+> `session overlay` itself names that overlay's slot — the same as passing its `--pane` word; with
+> `--pane` naming the other side it is refused. The slot moves with its pane (a swap, a `split
+> close` of the other pane) and dies with it (`split close`, `split off`, the shell exiting when
+> that removes the pane — a single-pane session keeps an exited shell on screen, and its overlay
+> with it — `session close`, the window closing).
 
 This sentence lives in `ISessionHost.SessionOverlay`'s comment; `AgentSkill.cs` and the CLI
 header quote it (P4's lesson: state an invariant by CONDITION, once; every copy is a quote, and a
@@ -72,8 +75,9 @@ Two divergences from agterm, recorded here and in `docs/agterm-parity.md`, not s
   (the session-wide arm's shape; closing nothing is the P2 class only when something was asked
   for). `session overlay result --pane left|right` — that slot's `exit N`, or the two refusals.
 - **`session overlay copy [--pane left|right]`** — `result.text` = the selection made INSIDE the
-  overlay (the pane's own `SelectionText`); the clipboard is not touched; `session copy` keeps
-  reading the pane underneath. **`session overlay text [--all] [--lines N] [--pane left|right]`**
+  overlay (the pane's own `SelectionText`); the clipboard is not touched; `session copy --target
+  <pane id>` keeps reading the pane underneath (bare / `active` reads the focused surface, the
+  overlay, like `session text`). **`session overlay text [--all] [--lines N] [--pane left|right]`**
   — the overlay's drawn buffer, through `HandleText`'s walk; `--all` and `--lines` exclusive.
   `--all` is added to **`session text` too** (it is the same reader; agterm's `session text` has
   it and ours did not).

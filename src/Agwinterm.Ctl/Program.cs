@@ -64,9 +64,11 @@ using System.Text.Json;
 //       byte. A pane overlay is that pane's surface while it is open: keys typed into the focused pane,
 //       the mouse inside the pane's box and --target active reach the overlay; --target with a pane id
 //       reaches the shell underneath (agterm: "session text reads the surface underneath"); --target
-//       with the overlay's id reaches the overlay from anywhere. The slot moves with its pane (a swap,
-//       a split close of the other pane) and dies with it (split close, split off, the shell exiting,
-//       session close, the window closing).)
+//       with the overlay's id reaches the overlay from anywhere, and on session overlay itself names
+//       that overlay's slot - the same as passing its --pane word; with --pane naming the other side it
+//       is refused. The slot moves with its pane (a swap, a split close of the other pane) and dies with
+//       it (split close, split off, the shell exiting when that removes the pane - a single-pane session
+//       keeps an exited shell on screen, and its overlay with it - session close, the window closing).)
 //   agwintermctl session type <text...> [--allow-control] [--target ID]   (control bytes refused unless allowed)
 //   agwintermctl session type --stdin [--allow-control] [--target ID]     (text = stdin, as bytes: how quotes,
 //       newlines, a leading -- or runs of spaces are sent; invalid UTF-8 is refused, nothing sent; one
@@ -303,7 +305,12 @@ switch (area)
                 // text` refuses it the same way), so nothing is sent for a read that meant two things.
                 if (options.ContainsKey("all") && options.ContainsKey("lines")) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.AllWithLines); return 2; }
                 if (options.ContainsKey("all")) cargs["all"] = true;
-                if (int.TryParse(Opt("lines"), out var textLines)) cargs["lines"] = textLines;
+                // An unparseable --lines is refused, not dropped: `--lines 5O` used to read the screen and report success.
+                if (Opt("lines") is { } textLinesRaw)
+                {
+                    if (!int.TryParse(textLinesRaw, out var textLines) || textLines < 0) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.LinesRefusal(textLinesRaw)); return 2; }
+                    cargs["lines"] = textLines;
+                }
                 break;
             case "copy": break;  // return the target's selection text; target only
             case "seen": break;  // clear the unseen-notification badge; target only
@@ -399,7 +406,11 @@ switch (area)
                 {
                     if (options.ContainsKey("all") && options.ContainsKey("lines")) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.AllWithLines); return 2; }
                     if (options.ContainsKey("all")) cargs["all"] = true;
-                    if (int.TryParse(Opt("lines"), out var ovLines)) cargs["lines"] = ovLines;
+                    if (Opt("lines") is { } ovLinesRaw)   // refused, not dropped, as on session text
+                    {
+                        if (!int.TryParse(ovLinesRaw, out var ovLines) || ovLines < 0) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.LinesRefusal(ovLinesRaw)); return 2; }
+                        cargs["lines"] = ovLines;
+                    }
                 }
                 if (ovAction is "copy" or "text") printTextField = true;
                 // An unparseable --size-percent is refused, not dropped: `--size-percent sixty` used to

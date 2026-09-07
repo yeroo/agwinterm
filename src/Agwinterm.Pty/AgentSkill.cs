@@ -130,7 +130,9 @@ public static class AgentSkill
           reads the shell in that pane even while a pane overlay covers it; the overlay's own id, or no target while
           the focused pane holds one, reads the overlay (see Overlays)
         - `agwintermctl session copy [--target <id>]`            — return the session's current mouse text selection ("" if none);
-          a pane overlay's own selection is `session overlay copy`
+          resolved like `session text`: `--target <pane id>` reads the shell under a pane overlay, no target or
+          `--target active` reads the focused surface (the overlay while one is up), and `session overlay copy`
+          reads a pane overlay's own selection by slot
         - `agwintermctl surface cursor [--target <id>]`          — the caret COLUMN of a pane, as a bare integer.
           Use it before typing into ANOTHER agent's composer: an empty composer parks the caret at a known
           column, so a different column means a draft is sitting there and you should not send. The same
@@ -184,9 +186,11 @@ public static class AgentSkill
           byte. A pane overlay is that pane's surface while it is open: keys typed into the focused pane,
           the mouse inside the pane's box and --target active reach the overlay; --target with a pane id
           reaches the shell underneath (agterm: "session text reads the surface underneath"); --target
-          with the overlay's id reaches the overlay from anywhere. The slot moves with its pane (a swap,
-          a split close of the other pane) and dies with it (split close, split off, the shell exiting,
-          session close, the window closing).
+          with the overlay's id reaches the overlay from anywhere, and on session overlay itself names
+          that overlay's slot - the same as passing its --pane word; with --pane naming the other side it
+          is refused. The slot moves with its pane (a swap, a split close of the other pane) and dies with
+          it (split close, split off, the shell exiting when that removes the pane - a single-pane session
+          keeps an exited shell on screen, and its overlay with it - session close, the window closing).
         - `agwintermctl session overlay open "<command>" [--pane left|right] [--size-percent N] [--wait] [--block] [--target <id>]`
           — run `<command>` in a throwaway terminal over the session (or, with `--pane`, over that one pane's box); it vanishes when the program exits, leaving the session untouched. Returns the overlay id.
           `--size-percent N` (1..100) makes it a centered floating panel over a dimmed session (default = full content region). The session gets a `* (overlay)` tag in `tree`.
@@ -243,7 +247,8 @@ public static class AgentSkill
           divergence from agterm (recorded in `docs/agterm-parity.md`), because the bare form shipped that way.
         - `agwintermctl session overlay copy [--pane left|right] [--target <id>]` — the text of the selection made INSIDE
           the overlay (`selection all --target <overlay id>` makes one); `result.text`, printed bare without `--json`.
-          The clipboard is NOT touched, and `session copy` keeps reading the pane underneath. Refused: `no overlay`
+          The clipboard is NOT touched; `session copy --target <pane id>` keeps reading the pane underneath (bare, or
+          `--target active`, it reads the focused surface — the overlay — like `session text`). Refused: `no overlay`
           (with `--pane X`: `no overlay: --pane X names which slot, and nothing is open in it`), `no selection`.
         - `agwintermctl session overlay text [--all|--lines N] [--pane left|right] [--target <id>]` — the overlay's drawn
           buffer as `result.text`, the same reader as `session text` (`--lines N` reaches into its scrollback, `--all` is

@@ -903,7 +903,31 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         Check '--target <right pane id> with --pane left is refused (the caller named two panes) and the left slot stays empty' ((-not $p5Disagree.ok) -and ([string]$p5Disagree.error) -match 'is the right pane; --pane left names the other one' -and ((@((Get-SessionSnapshot $p5Id).paneOverlays) -join ',') -eq 'right')) "$($p5Disagree | ConvertTo-Json -Compress)"
         $p5Again = Invoke-Ctl @('session', 'overlay', 'open', 'cmd /c exit 0', '--pane', 'right', '--target', $p5Id)
         Check 'a second open --pane right is refused "pane overlay already open" and the first stays' ((-not $p5Again.ok) -and ([string]$p5Again.error) -like 'pane overlay already open*' -and ((@((Get-SessionSnapshot $p5Id).paneOverlays) -join ',') -eq 'right')) "$($p5Again | ConvertTo-Json -Compress)"
-        # The CLI refuses --pane with --size-percent, resize --pane, --all with --lines (both verbs) and a bare --pane; nothing is sent.
+        # The overlay's OWN id on --target (revmux r1 of P5): with --pane omitted it names ITS slot — the skill's
+        # --wait recipe closes with `overlay close --target <overlay id>`, which used to reach the session-wide
+        # slot (ok "no overlay" while the program ran on). A second overlay on the LEFT slot, so "that slot" is
+        # provable: its text is its own, --pane right beside it is refused naming the overlay, resize and a size
+        # are refused naming the overlay, and the bare close closes it and only it.
+        $p5Marker2 = 'p5-ovl2-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $p5Open2 = Invoke-Ctl @('session', 'overlay', 'open', "cmd /k echo $p5Marker2", '--pane', 'left', '--target', $p5Id)
+        $p5Ovl2 = [string]$p5Open2.result
+        $p5IdText = $null
+        for ($i = 0; $i -lt 30; $i++) { $p5IdText = Invoke-Ctl @('session', 'overlay', 'text', '--target', $p5Ovl2); if ($p5IdText.ok -and ("$($p5IdText.result.text)" -match $p5Marker2)) { break }; Start-Sleep -Milliseconds 200 }
+        Check 'overlay text --target <left overlay id> (no --pane) reads THAT overlay, not the right one' ($p5Open2.ok -and $p5Ovl2 -like "$p5Left`:overlay:*" -and $p5IdText.ok -and ("$($p5IdText.result.text)" -match $p5Marker2) -and ("$($p5IdText.result.text)" -notmatch $p5Marker)) "open=$($p5Open2 | ConvertTo-Json -Compress) text=$($p5IdText | ConvertTo-Json -Compress)"
+        $p5IdDisagree = Invoke-Ctl @('session', 'overlay', 'close', '--pane', 'right', '--target', $p5Ovl2)
+        Check '--target <left overlay id> with --pane right is refused naming the overlay, both slots stay' ((-not $p5IdDisagree.ok) -and ([string]$p5IdDisagree.error) -match "is the left pane's overlay; --pane right names the other one" -and ((@((Get-SessionSnapshot $p5Id).paneOverlays) -join ',') -eq 'left,right')) "$($p5IdDisagree | ConvertTo-Json -Compress)"
+        $p5IdResize = Invoke-Ctl @('session', 'overlay', 'resize', '--size-percent', '40', '--target', $p5Ovl2)
+        $p5IdSize = Invoke-Ctl @('session', 'overlay', 'open', 'cmd /c exit 0', '--size-percent', '40', '--target', $p5Ovl2)
+        Check 'resize / open --size-percent with --target <overlay id> are refused naming the overlay (always full-pane); nothing changed' ((-not $p5IdResize.ok) -and ([string]$p5IdResize.error) -match "is the left pane's overlay, which is always full-pane" -and (-not $p5IdSize.ok) -and ([string]$p5IdSize.error) -match "--size-percent does not apply" -and ((@((Get-SessionSnapshot $p5Id).paneOverlays) -join ',') -eq 'left,right') -and -not (Get-SessionSnapshot $p5Id).overlay) "resize=$($p5IdResize | ConvertTo-Json -Compress) size=$($p5IdSize | ConvertTo-Json -Compress)"
+        $p5IdStill = Invoke-Ctl @('session', 'overlay', 'result', '--target', $p5Ovl2)
+        $p5IdClose = Invoke-Ctl @('session', 'overlay', 'close', '--target', $p5Ovl2)
+        $p5IdNode = $null
+        for ($i = 0; $i -lt 30; $i++) { $p5IdNode = Get-SessionSnapshot $p5Id; if ($p5IdNode -and ((@($p5IdNode.paneOverlays) -join ',') -eq 'right')) { break }; Start-Sleep -Milliseconds 200 }
+        $p5IdGone = Invoke-Ctl @('session', 'text', '--target', $p5Ovl2)
+        $p5IdOther = Invoke-Ctl @('session', 'overlay', 'text', '--target', $p5Ovl)
+        Check 'overlay result --target <overlay id> is "overlay still running"; overlay close --target <overlay id> closes that slot and only it' ((-not $p5IdStill.ok) -and ([string]$p5IdStill.error) -eq 'overlay still running' -and $p5IdClose.ok -and [string]$p5IdClose.result -eq 'closed' -and $p5IdNode -and ((@($p5IdNode.paneOverlays) -join ',') -eq 'right') -and (-not $p5IdGone.ok) -and $p5IdOther.ok -and ("$($p5IdOther.result.text)" -match $p5Marker)) "result=$($p5IdStill | ConvertTo-Json -Compress) close=$($p5IdClose | ConvertTo-Json -Compress) node=$($p5IdNode | ConvertTo-Json -Compress) other=$($p5IdOther | ConvertTo-Json -Compress)"
+        # The CLI refuses --pane with --size-percent, resize --pane, --all with --lines (both verbs), --lines that is
+        # not a whole number (both verbs) and a bare --pane; nothing is sent.
         $p5Shape = { param($n) "$(@($n.paneOverlays) -join ',')|$($n.overlay)|$($n.overlaySize)" }
         $p5Before = & $p5Shape (Get-SessionSnapshot $p5Id)
         foreach ($shape in @(
@@ -911,6 +935,8 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
                 @(@('session', 'overlay', 'resize', '--size-percent', '40', '--pane', 'left', '--target', $p5Id), 'resize --pane'),
                 @(@('session', 'overlay', 'text', '--all', '--lines', '3', '--pane', 'right', '--target', $p5Id), '--all and --lines'),
                 @(@('session', 'text', '--all', '--lines', '3', '--target', $p5Left), '--all and --lines'),
+                @(@('session', 'overlay', 'text', '--lines', '5O', '--pane', 'right', '--target', $p5Id), 'whole number of lines'),
+                @(@('session', 'text', '--lines', '-1', '--target', $p5Left), 'whole number of lines'),
                 @(@('session', 'overlay', 'close', '--pane', '--target', $p5Id), 'needs a word'))) {
             $argv = [string[]]$shape[0]
             $out = (& $ctl @argv --pipe $pipe 2>&1) -join "`n"

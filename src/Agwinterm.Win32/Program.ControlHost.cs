@@ -862,6 +862,17 @@ internal partial class Program
             if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.SizeWithPaneRefusal;
             return PaneOverlayAction(target, action, command, wait, block, paneIndex, text);
         }
+        // A pane overlay's OWN id on --target, --pane omitted, names its slot (the rule: the id reaches
+        // the overlay from anywhere). Before this arm the id passed OverlayTargetRefusal (no pane id
+        // starts with it) and resolved to its SESSION, so `close --target <pane overlay id>` closed the
+        // session-wide slot or answered ok "no overlay" while the program ran on. The two usage
+        // refusals name the id the guard saw; open on a held slot is then "already open", as with the word.
+        if (PaneOverlayIndexOf(target) is >= 0 and var owned)
+        {
+            if (action == "resize") return ISessionHost.RefusePrefix + OverlayPanes.OverlayIdResizeRefusal(target!, owned);
+            if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.OverlayIdSizeRefusal(target!, owned);
+            return PaneOverlayAction(target, action, command, wait, block, owned, text);
+        }
         if (action != "result" && OverlayTargetRefusal(target) is { } refusal) return refusal;
         switch (action)
         {
@@ -1080,10 +1091,32 @@ internal partial class Program
         if (s is null) return (null, null, bareCloseOk && !named ? OverlayPanes.NoOverlay : NoSessionRefusal);
         if (named && !(s.Id == target || s.Id.StartsWith(target!, StringComparison.Ordinal)))
             for (int i = 0; i < s.Panes.Count; i++)
+            {
+                // The pane's id, then its overlay's own id (which starts with the pane's, so a prefix
+                // of the pane id matched above; a longer prefix, or the whole id, lands here): either
+                // on the other side than --pane is the caller naming two panes.
                 if ((s.Panes[i].Id == target || s.Panes[i].Id.StartsWith(target!, StringComparison.Ordinal)) && i != index)
                     return (s, null, ISessionHost.RefusePrefix + OverlayPanes.Disagree(target!, i, index));
+                if (s.Panes[i].Overlay.Term is { } po && (po.Id == target || po.Id.StartsWith(target!, StringComparison.Ordinal)) && i != index)
+                    return (s, null, ISessionHost.RefusePrefix + OverlayPanes.Disagree(target!, i, index, overlay: true));
+            }
         if (index >= s.Panes.Count) return (s, null, ISessionHost.RefusePrefix + OverlayPanes.NotVisibleRefusal(s.Id));
         return (s, s.Panes[index], null);
+    }
+
+    /// <summary>The pane whose OPEN overlay <paramref name="target"/> names (its id, or a prefix of it
+    /// longer than the pane's own id — FindControlPane's arms), as an index into its session's panes;
+    /// -1 for anything else (absent, "active", a session, a pane, a session-wide cover, a scratch, the
+    /// quick terminal, nothing). Read under the workspace lock on the caller's thread; the hop
+    /// re-resolves through LocatePaneSlot, whose agreement loop sees the same id on the same side.</summary>
+    private int PaneOverlayIndexOf(string? target)
+    {
+        if (string.IsNullOrEmpty(target) || target == "active") return -1;
+        if (FindControlPane(target) is not { cover: true, ses: { } s } hit) return -1;
+        lock (_workspaces)
+            for (int i = 0; i < s.Panes.Count; i++)
+                if (ReferenceEquals(s.Panes[i].Overlay.Term, hit.pane)) return i;
+        return -1;
     }
 
     /// <summary><c>copy</c> / <c>text</c> on one slot, either kind, on the UI thread (a selection is

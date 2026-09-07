@@ -374,9 +374,11 @@ public interface ISessionHost
     /// byte. A pane overlay is that pane's surface while it is open: keys typed into the focused pane,
     /// the mouse inside the pane's box and --target active reach the overlay; --target with a pane id
     /// reaches the shell underneath (agterm: "session text reads the surface underneath"); --target
-    /// with the overlay's id reaches the overlay from anywhere. The slot moves with its pane (a swap,
-    /// a split close of the other pane) and dies with it (split close, split off, the shell exiting,
-    /// session close, the window closing).
+    /// with the overlay's id reaches the overlay from anywhere, and on session overlay itself names
+    /// that overlay's slot - the same as passing its --pane word; with --pane naming the other side it
+    /// is refused. The slot moves with its pane (a swap, a split close of the other pane) and dies with
+    /// it (split close, split off, the shell exiting when that removes the pane - a single-pane session
+    /// keeps an exited shell on screen, and its overlay with it - session close, the window closing).
     ///
     /// <b>The session-wide slot (pane omitted), unchanged:</b> for open: run <paramref name="command"/> in
     /// an ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
@@ -428,8 +430,9 @@ public interface ISessionHost
     /// meaning for "the last pane overlay").
     ///
     /// <b>copy and text (either slot):</b> copy → the text of the selection made INSIDE the overlay
-    /// (the overlay pane's own selection; the clipboard is not touched, and <c>session copy</c> keeps
-    /// reading the pane underneath), refused <see cref="OverlayPanes.NoOverlay"/> with the slot empty,
+    /// (the overlay pane's own selection; the clipboard is not touched, and <c>session copy</c> with the
+    /// pane's id keeps reading the pane underneath — bare or <c>active</c> it reads the focused surface,
+    /// the overlay, as <c>session text</c> does), refused <see cref="OverlayPanes.NoOverlay"/> with the slot empty,
     /// <see cref="OverlayPanes.NotRealized"/> with no terminal to read yet, <see cref="OverlayPanes.NoSelection"/>
     /// with nothing selected. text → the overlay's drawn buffer through <see cref="SurfaceText.Dump"/>
     /// with <paramref name="text"/> (<c>--all</c> / <c>--lines</c>, exclusive — the server refuses the

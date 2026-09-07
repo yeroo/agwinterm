@@ -1259,9 +1259,11 @@ internal partial class Program
 
         // User interrupt: Ctrl+C or Escape to the shell clears an "active" agent-status glyph — the
         // user has taken over the running agent (agterm #185). Falls through so the key still reaches
-        // the terminal. Blocked/Completed keep clearing on select instead.
+        // the terminal. Blocked/Completed keep clearing on select instead. Only when the pane is the
+        // surface the key reaches: under a cover, or with the pane's own overlay up (P5), the key goes
+        // to the overlay and the hidden shell's agent is not the one being interrupted.
         if (_cover is null && (vk == VK_ESCAPE || (ctrl && !alt && vk == 0x43 /* C */))
-            && _active?.ActivePane?.S is { Status: AgentStatus.Active } asf)
+            && _active?.ActivePane is { Overlay.Term: null, S: { Status: AgentStatus.Active } asf })
         { asf.SetStatus(AgentStatus.Idle); RequestRedraw(); }
 
         // win32-input-mode (ConPTY DECSET ?9001): encode every key as a full Win32 KEY_EVENT so

@@ -127,10 +127,26 @@ public static class OverlayPanes
     public const string ResizeWithPane = "resize --pane: a pane overlay is always full-pane and cannot be resized; omit --pane to resize the session-wide overlay";
     public const string ResizeWithPaneRefusal = ResizeWithPane + ". Nothing resized.";
 
-    /// <summary>The agreement check: <c>--target</c> may be the session id or either pane id, but a
-    /// pane id that names the OTHER side than <c>--pane</c> is refused — the caller named two panes.</summary>
-    public static string Disagree(string target, int targetIndex, int paneIndex) =>
-        $"'{target}' is the {Word(targetIndex)} pane; --pane {Word(paneIndex)} names the other one. Nothing opened.";
+    /// <summary>The agreement check: <c>--target</c> may be the session id, either pane id, or a pane
+    /// overlay's own id, but one that names the OTHER side than <c>--pane</c> is refused — the caller
+    /// named two panes. <paramref name="overlay"/>: the target was the overlay's id, not the pane's.</summary>
+    public static string Disagree(string target, int targetIndex, int paneIndex, bool overlay = false) =>
+        $"'{target}' is the {Word(targetIndex)} pane{(overlay ? "'s overlay" : "")}; --pane {Word(paneIndex)} names the other one. Nothing opened.";
+
+    /// <summary>A pane overlay's own id on <c>--target</c> with <c>--pane</c> omitted names its slot (the
+    /// rule: the id reaches the overlay from anywhere), so the two usage refusals for that slot name
+    /// the id the guard saw, not a <c>--pane</c> the caller never passed.</summary>
+    public static string OverlayIdResizeRefusal(string target, int index) =>
+        $"'{target}' is the {Word(index)} pane's overlay, which is always full-pane and cannot be resized; pass the session id to resize the session-wide overlay. Nothing resized.";
+    public static string OverlayIdSizeRefusal(string target, int index) =>
+        $"'{target}' is the {Word(index)} pane's overlay, and a pane overlay is always full-pane: --size-percent does not apply. Nothing opened.";
+
+    /// <summary><c>--lines</c> on <c>session text</c> and <c>session overlay text</c> is a whole number of
+    /// lines, 0 or more; anything else is refused at the CLI (nothing sent) and at the server alike —
+    /// it used to be DROPPED, so <c>--lines 5O</c> read the screen and reported success. A string is
+    /// QUOTED; a non-string arrives as its raw JSON, as <see cref="Refusal"/> does it.</summary>
+    public static string LinesRefusal(string raw, bool quoted = true) =>
+        $"--lines needs a whole number of lines (0 = the visible screen), not {(quoted ? $"'{raw}'" : raw)}. Nothing read.";
 
     /// <summary><c>text</c>'s <c>--all</c> and <c>--lines</c> are exclusive, on <c>session text</c>
     /// and <c>session overlay text</c> alike (one reader, two verbs).</summary>

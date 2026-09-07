@@ -621,7 +621,22 @@ internal sealed class FakeSessionHost : ISessionHost
         // refused with nothing looked up. The server refused it already; this is the fake's own
         // guard, so a test that drives the host directly gets the same answer.
         if (!OverlayPanes.TryParse(pane, out int index, out string? paneRefusal)) return ISessionHost.RefusePrefix + paneRefusal;
-        if (index != OverlayPanes.SessionWide) return PaneOverlay(target, action, command, sizePercent, wait, index, text);
+        // Then, as the app: resize / a size with a pane, refused before any resolve (revmux r1 of P5:
+        // the fake checked them AFTER the pane count, so a size on a single-pane session answered
+        // "pane not visible" here and the size refusal in the app). A pane overlay's OWN id on the
+        // target with the word omitted names its slot, with the two refusals that name the id.
+        if (index != OverlayPanes.SessionWide)
+        {
+            if (action == "resize") return ISessionHost.RefusePrefix + OverlayPanes.ResizeWithPaneRefusal;
+            if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.SizeWithPaneRefusal;
+            return PaneOverlay(target, action, command, wait, index, text);
+        }
+        if (PaneOverlayIndexOf(target) is >= 0 and var owned)
+        {
+            if (action == "resize") return ISessionHost.RefusePrefix + OverlayPanes.OverlayIdResizeRefusal(target!, owned);
+            if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.OverlayIdSizeRefusal(target!, owned);
+            return PaneOverlay(target, action, command, wait, owned, text);
+        }
 
         // The SESSION-WIDE slot, as the app, in the app's ORDER and WORDING (the suite asserts
         // wording, so the two hosts must not drift), for open, close and resize — the cases
@@ -667,14 +682,14 @@ internal sealed class FakeSessionHost : ISessionHost
     /// session-wide arm; no session → the same "no session" refusal (a bare close with nothing active
     /// stays ok "no overlay"); a <c>--target</c> that is a PANE id on the other side than <c>--pane</c>
     /// is refused (the agreement check; the session id, a name, or the same side pass); an index past
-    /// the pane count is "pane not visible"; a size with a pane, or resize with a pane, is refused
-    /// (the server did already — the fake's tripwire). Then per action: open mints
+    /// the pane count is "pane not visible" (a size with a pane, or resize with a pane, was refused by
+    /// the caller before any resolve, as the app's SessionOverlay does). Then per action: open mints
     /// <c>&lt;pane id&gt;:overlay:&lt;hex&gt;</c> with a real term (a second open on a held slot is
     /// REFUSED — no silent replace), close answers "closed" / ok "no overlay", result answers the
     /// slot's last result or its two refusals, copy the cover's selection or its refusals, text the
     /// term's buffer. NOT mirrored: <c>block</c> (nothing runs here; the reply is the id as for a
     /// non-blocking open) — a test of it needs the app.</summary>
-    private string PaneOverlay(string? target, string action, string? command, int sizePercent, bool wait, int index, OverlayTextArgs text)
+    private string PaneOverlay(string? target, string action, string? command, bool wait, int index, OverlayTextArgs text)
     {
         bool named = !string.IsNullOrEmpty(target) && target != "active";
         if (action is "open" && string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened";
@@ -682,11 +697,15 @@ internal sealed class FakeSessionHost : ISessionHost
         if (s is null) return action == "close" && !named ? "no overlay" : NoOverlaySession;
         if (named && !(s.Id == target || s.Id.StartsWith(target!, StringComparison.Ordinal)))
             for (int i = 0; i < s.PaneIds.Count; i++)
+            {
                 if ((s.PaneIds[i] == target || s.PaneIds[i].StartsWith(target!, StringComparison.Ordinal)) && i != index)
                     return ISessionHost.RefusePrefix + OverlayPanes.Disagree(target!, i, index);
+                // The pane's overlay id too (the app's LocatePaneSlot): naming the other side's overlay is naming two panes.
+                if (s.PaneOverlays.TryGetValue(s.PaneIds[i], out var other) && other.Id is { } oid
+                    && (oid == target || oid.StartsWith(target!, StringComparison.Ordinal)) && i != index)
+                    return ISessionHost.RefusePrefix + OverlayPanes.Disagree(target!, i, index, overlay: true);
+            }
         if (index >= s.Panes.Count) return ISessionHost.RefusePrefix + OverlayPanes.NotVisibleRefusal(s.Id);
-        if (action == "resize") return ISessionHost.RefusePrefix + OverlayPanes.ResizeWithPaneRefusal;
-        if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.SizeWithPaneRefusal;
         var slot = s.SlotOf(index);
         switch (action)
         {
@@ -715,6 +734,18 @@ internal sealed class FakeSessionHost : ISessionHost
                 s.CoverPanes.Add((id, term));
                 return id;
         }
+    }
+
+    /// <summary>The app's PaneOverlayIndexOf: the pane whose OPEN overlay <paramref name="target"/>
+    /// names (its id or a prefix of it, through <see cref="CoverTarget"/> — a real pane's id resolves
+    /// first, so a pane id, itself a prefix of its overlay's id, still means the session-wide slot), or
+    /// -1 for anything else.</summary>
+    private int PaneOverlayIndexOf(string? target)
+    {
+        if (CoverTarget(target) is not { } hit) return -1;
+        for (int i = 0; i < hit.s.PaneIds.Count; i++)
+            if (hit.s.PaneOverlays.TryGetValue(hit.s.PaneIds[i], out var slot) && slot.Id == hit.id) return i;
+        return -1;
     }
 
     /// <summary>The fake's stand-in for the app's WatchOverlayExit on a pane slot (task 2): the

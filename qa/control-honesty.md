@@ -201,7 +201,7 @@ known string on the clipboard: `Set-Clipboard 'CLIP-UNTOUCHED'`.
    ```
 
 4. `$none = Reply $s @('session','overlay','copy','--pane','right','--target',$sid)`.
-5. `Reply $s @('session','selection','all','--target',$ovl)`;
+5. `Reply $s @('selection','all','--target',$ovl)`;
    `$copy = Reply $s @('session','overlay','copy','--pane','right','--target',$sid)`;
    `$under = (Reply $s @('session','copy','--target',$pid1)).result`; `$clip = Get-Clipboard`.
 6. `$empty = Reply $s @('session','overlay','text','--pane','left','--target',$sid)`.

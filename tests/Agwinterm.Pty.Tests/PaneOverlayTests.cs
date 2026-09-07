@@ -516,6 +516,115 @@ public class PaneOverlayTests
         Assert.StartsWith(left + ":overlay:", Result(Open(server, "left", target: left)));
     }
 
+    // ---- the overlay's own id on --target (revmux r1 Major) ----
+
+    /// <summary>The skill's <c>--wait</c> recipe closes with <c>--target &lt;overlay id&gt;</c> and no
+    /// <c>--pane</c>: that id names ITS slot, not the session-wide one. Before the fix the session-wide
+    /// arm answered "no overlay" (or closed the session-wide overlay) while the pane overlay ran on.</summary>
+    [Fact]
+    public void OverlayIdTarget_WithoutPane_NamesThatSlot_ForCloseTextResult_TheSessionWideOneUntouched()
+    {
+        var (server, host) = New();
+        var (left, right) = Split(server);
+        Assert.True(Ok(Overlay(server, "{\"action\":\"open\",\"command\":\"cmd\",\"size-percent\":25}")));
+        string id = Result(Open(server, "right"));
+        Write(server, id, "MARKER-IN-OVERLAY\r\n");
+
+        // text / result / open on the overlay's id, the pane word omitted: the right slot.
+        Assert.Contains("MARKER-IN-OVERLAY", Text(Act(server, "text", null, target: id)));
+        Assert.Equal(OverlayPanes.StillRunning, Error(Act(server, "result", null, target: id)));
+        Assert.StartsWith(OverlayPanes.AlreadyOpen, Error(Overlay(server, "{\"action\":\"open\",\"command\":\"cmd\"}", id)));
+        Assert.Equal(new[] { "right" }, PaneOverlays(server));
+        // A prefix of the overlay id, as any id on --target.
+        Assert.Contains("MARKER-IN-OVERLAY", Text(Act(server, "text", null, target: id[..(right.Length + 12)])));
+
+        Assert.Equal("closed", Result(Act(server, "close", null, target: id)));
+        Assert.Null(PaneOverlays(server));
+        Assert.Null(host.Resolve(id));
+        Assert.True(TreeOverlay(server));                                  // the session-wide slot is still up
+        Assert.Equal(25, TreeSession(server).GetProperty("overlaySize").GetInt32());
+        // Closed, the id resolves nowhere: the session-wide arm again, as for any unknown target.
+        Assert.False(Ok(Act(server, "close", null, target: id)));
+        // The slot's result survives the close under its pane word, and --wait keeps the id alive.
+        string id2 = Result(Open(server, "right", extra: ",\"wait\":true"));
+        host.ExitPaneOverlay(host.ActiveSess!, 1, 4);
+        Assert.Equal("exit 4", Result(Act(server, "result", null, target: id2)));
+        Assert.Equal("closed", Result(Act(server, "close", null, target: id2)));
+        Assert.Equal("exit 4", Result(Act(server, "result", "right")));
+    }
+
+    [Fact]
+    public void OverlayIdTarget_WithPane_SameSideAgrees_OtherSideIsRefused_NamingTheOverlay()
+    {
+        var (server, host) = New();
+        var (left, right) = Split(server);
+        string rightId = Result(Open(server, "right"));
+        string leftId = Result(Open(server, "left"));
+        Write(server, rightId, "RIGHT-OVL\r\n");
+        Write(server, leftId, "LEFT-OVL\r\n");
+
+        // Naming the other side's overlay is naming two panes: refused for every verb, nothing moves.
+        foreach (var action in new[] { "close", "text", "result", "copy" })
+        {
+            var r = Act(server, action, "left", target: rightId);
+            Assert.False(Ok(r));
+            Assert.Equal(OverlayPanes.Disagree(rightId, 1, 0, overlay: true), Error(r));
+            Assert.Contains("is the right pane's overlay; --pane left names the other one", Error(r));
+        }
+        var o = Open(server, "left", target: rightId);
+        Assert.False(Ok(o)); Assert.Equal(OverlayPanes.Disagree(rightId, 1, 0, overlay: true), Error(o));
+        Assert.Equal(new[] { "left", "right" }, PaneOverlays(server));
+        Assert.NotNull(host.Resolve(rightId)); Assert.NotNull(host.Resolve(leftId));
+        // The same side agrees, and reads that overlay — not the other one.
+        Assert.Contains("RIGHT-OVL", Text(Act(server, "text", "right", target: rightId)));
+        Assert.DoesNotContain("LEFT-OVL", Text(Act(server, "text", "right", target: rightId)));
+        Assert.Equal("closed", Result(Act(server, "close", "right", target: rightId)));
+        Assert.Equal(new[] { "left" }, PaneOverlays(server));
+        Assert.NotNull(host.Resolve(leftId));
+        // Before the fix: `close --pane left --target <right overlay id>` closed the LEFT one.
+        Assert.Equal("closed", Result(Act(server, "close", "left", target: leftId)));
+        Assert.Null(PaneOverlays(server));
+    }
+
+    [Fact]
+    public void OverlayIdTarget_ResizeAndSizePercent_AreRefused_NamingTheOverlay()
+    {
+        var (server, host) = New();
+        var (_, right) = Split(server);
+        Assert.True(Ok(Overlay(server, "{\"action\":\"open\",\"command\":\"cmd\",\"size-percent\":25}")));
+        string id = Result(Open(server, "right"));
+        var r = Overlay(server, "{\"action\":\"resize\",\"size-percent\":40}", id);
+        Assert.False(Ok(r)); Assert.Equal(OverlayPanes.OverlayIdResizeRefusal(id, 1), Error(r));
+        Assert.EndsWith("Nothing resized.", Error(r));
+        r = Overlay(server, "{\"action\":\"open\",\"command\":\"cmd\",\"size-percent\":40}", id);
+        Assert.False(Ok(r)); Assert.Equal(OverlayPanes.OverlayIdSizeRefusal(id, 1), Error(r));
+        Assert.EndsWith("Nothing opened.", Error(r));
+        Assert.Equal(25, TreeSession(server).GetProperty("overlaySize").GetInt32());   // the session-wide size untouched
+        Assert.Equal(new[] { "right" }, PaneOverlays(server));
+        Assert.NotNull(host.Resolve(id));
+        // The host too (the fake's tripwire for the app's arm).
+        Assert.Equal(ISessionHost.RefusePrefix + OverlayPanes.OverlayIdResizeRefusal(id, 1),
+            host.SessionOverlay(id, "resize", null, 40, false, false, null, OverlayTextArgs.Screen));
+        Assert.Equal(ISessionHost.RefusePrefix + OverlayPanes.OverlayIdSizeRefusal(id, 1),
+            host.SessionOverlay(id, "open", "cmd", 40, false, false, null, OverlayTextArgs.Screen));
+    }
+
+    /// <summary>The fake checks a size with a pane BEFORE the pane count, as the app does: on a
+    /// single-pane session <c>open --pane right --size-percent 40</c> is the size refusal at both ends
+    /// (revmux r1: the fake answered "pane not visible" here and the size refusal in the app).</summary>
+    [Fact]
+    public void SinglePane_SizeWithPaneRight_IsTheSizeRefusal_AtBothEnds()
+    {
+        var (server, host) = New();
+        Assert.Equal(OverlayPanes.SizeWithPaneRefusal, Error(Open(server, "right", extra: ",\"size-percent\":40")));
+        Assert.Equal(ISessionHost.RefusePrefix + OverlayPanes.SizeWithPaneRefusal,
+            host.SessionOverlay(null, "open", "cmd", 40, false, false, "right", OverlayTextArgs.Screen));
+        Assert.Equal(ISessionHost.RefusePrefix + OverlayPanes.ResizeWithPaneRefusal,
+            host.SessionOverlay(null, "resize", null, 40, false, false, "right", OverlayTextArgs.Screen));
+        Assert.Null(PaneOverlays(server));
+        Assert.Empty(host.ActiveSess!.CoverPanes);
+    }
+
     // ---- section 10: the slot moves with its pane, and dies with it ----
 
     [Fact]
