@@ -298,6 +298,66 @@
       "note": "P4: the reply is the PANE ID the op produced or found (a bare string) — the only handle on the shell it just created. `--axis` in agterm's words: vertical = left/right panes (the default of a session never split), horizontal = top/bottom. `on` when already split answers the existing split pane's id; anything but the two axis words is refused (see errors). The tree carries `axis` beside `paneIds` on a split session."
     },
     {
+      "verb": "session.overlay",
+      "args": [
+        "session",
+        "overlay",
+        "open",
+        "cmd /c ping -n 60 127.0.0.1",
+        "--pane",
+        "left",
+        "--target",
+        "{beta}"
+      ],
+      "result": "string",
+      "settle": 1,
+      "note": "P5: a PANE overlay - `--pane left|right` names the slot (left = pane 0, right = pane 1 whatever the axis; on the horizontal split above, left is the TOP pane) and the flag omitted is the session-wide slot, byte for byte as before. The reply is a string (the full app: the overlay pane id `<pane id>:overlay:<hex>`; lite: the overlay's session id, `<prefix>-<seq>` - its popup keeps the status word). The program stays up for the two reads below; `--pane right` on a one-pane session is refused (see errors); `--size-percent` beside `--pane`, and `resize --pane`, are refused by the client before anything is sent (a pane overlay is always full-pane)."
+    },
+    {
+      "verb": "session.overlay",
+      "args": [
+        "session",
+        "overlay",
+        "text",
+        "--pane",
+        "left",
+        "--target",
+        "{beta}"
+      ],
+      "result": "object",
+      "fields": [
+        "text"
+      ],
+      "note": "P5: the overlay program's screen as `{text}` (agterm's shape for `overlay copy` / `overlay text`; `--all` / `--lines N` narrow it). With no overlay in that slot it is refused `no overlay` (see errors)."
+    },
+    {
+      "verb": "session.overlay",
+      "args": [
+        "session",
+        "overlay",
+        "close",
+        "--pane",
+        "left",
+        "--target",
+        "{beta}"
+      ],
+      "result": "string",
+      "settle": 1,
+      "note": "P5: closes THAT slot only - the sibling pane and the session-wide slot are untouched - and answers `closed`, or `no overlay` (ok, the session-wide shape) when the slot was empty."
+    },
+    {
+      "verb": "session.text",
+      "args": [
+        "session",
+        "text",
+        "--all",
+        "--target",
+        "{beta}"
+      ],
+      "result": "string",
+      "note": "P5: `--all` is the scrollback plus the screen (the default is the screen only); `--all` together with `--lines` is refused by the client."
+    },
+    {
       "verb": "session.swap",
       "args": [
         "session",
@@ -730,6 +790,43 @@
         "on",
         "--axis",
         "diagonal",
+        "--target",
+        "{alpha}"
+      ]
+    },
+    {
+      "note": "P5: `--pane right` on a one-pane session is refused `pane not visible` (agterm's phrase) and nothing opens - a one-pane session accepts `--pane left` only.",
+      "args": [
+        "session",
+        "overlay",
+        "open",
+        "cmd /c exit 0",
+        "--pane",
+        "right",
+        "--target",
+        "{alpha}"
+      ]
+    },
+    {
+      "note": "P5: `overlay copy` (and `text`) on a slot with nothing open is refused `no overlay` - a read that answered an empty string for a program that is not there would be the silent-success class.",
+      "args": [
+        "session",
+        "overlay",
+        "copy",
+        "--pane",
+        "left",
+        "--target",
+        "{alpha}"
+      ]
+    },
+    {
+      "note": "P5: `overlay result --pane X` is per SLOT: nothing has run in this session's left slot since the window opened, so it is refused `no overlay result` (`overlay still running` while its program is up). The bare `overlay result` stays the window-wide value - a recorded divergence from agterm.",
+      "args": [
+        "session",
+        "overlay",
+        "result",
+        "--pane",
+        "left",
         "--target",
         "{alpha}"
       ]
