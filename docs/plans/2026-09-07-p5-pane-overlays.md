@@ -322,7 +322,7 @@ Docs: `docs/agterm-parity.md:47-48` (the honesty half only) and `:91-99` (the it
       kept as `docs/plans/2026-09-07-p5-pane-overlay.png` for the QA case (task 5)
 
 ### Task 4: the host and the CLI
-- [ ] `Program.ControlHost.cs` `SessionOverlay`: `pane` parsed via `OverlayPanes` first (a bad
+- [x] `Program.ControlHost.cs` `SessionOverlay`: `pane` parsed via `OverlayPanes` first (a bad
       word is refused before any resolve); with a pane: `OverlayTargetRefusal` is replaced by the
       **agreement check** — `--target` may be the session id or either pane id, but a pane id
       that names the OTHER side than `--pane` is refused (`'{target}' is the right pane; --pane
@@ -335,19 +335,19 @@ Docs: `docs/agterm-parity.md:47-48` (the honesty half only) and `:91-99` (the it
       and let the server walk it; decide once); `result --pane` → the slot's `LastResult`
       (`overlay still running` while `Term` is up, `no overlay result` when it never ran, else
       `exit N`); `close --pane` → `closed` / `no overlay`
-- [ ] `session.text` (`Resolve(active)`) reaches a focused pane overlay through `ActiveSurface()`
+- [x] `session.text` (`Resolve(active)`) reaches a focused pane overlay through `ActiveSurface()`
       — confirm and pin (`session text` with no target while the focused pane holds an overlay
       returns the overlay: the same rule as a cover today)
-- [ ] CLI (`Ctl/Program.cs:351-368`): `--pane` passed through as a string (the server validates
+- [x] CLI (`Ctl/Program.cs:351-368`): `--pane` passed through as a string (the server validates
       the word); `--pane` + `--size-percent` → exit 2 `"--pane and --size-percent cannot be
       combined: a pane overlay is always full-pane. Nothing sent."`; `resize --pane` → exit 2;
       `overlay copy` / `overlay text [--all] [--lines N]` sub-actions; `--all` + `--lines` → exit
       2; `session text --all`; the `--json` and plain forms print `result.text`; the usage header
       gains the overlay line (it has none today — `:49/:62` are the `text`/`copy` lines) quoting
       the rule sentence
-- [ ] `tests/integration/win32-control.ps1`: the pane-overlay block from Testing Strategy;
+- [x] `tests/integration/win32-control.ps1`: the pane-overlay block from Testing Strategy;
       `conformance.ps1 -Strict` still passes on the untouched file
-- [ ] run the .NET suite and `win32-control.ps1 -Strict` against a sandbox
+- [x] run the .NET suite and `win32-control.ps1 -Strict` against a sandbox
 
 ### Task 5: docs, trackers, QA
 - [ ] `AgentSkill.cs:172-208`: the rule sentence quoted; `--pane` on `open`/`close`/`result`;

@@ -223,9 +223,11 @@ public class PaneOverlayTests
         Split(server);
         Assert.True(Ok(Overlay(server, "{\"action\":\"open\",\"command\":\"cmd\",\"size-percent\":30}")));
         Result(Open(server, "left"));
-        var r = Act(server, "resize", "left");
+        // A resize always carries a size: the refusal still names the verb typed, not the size beside it.
+        var r = Act(server, "resize", "left", extra: ",\"size-percent\":40");
         Assert.False(Ok(r));
         Assert.Equal(OverlayPanes.ResizeWithPaneRefusal, Error(r));
+        Assert.Equal(OverlayPanes.ResizeWithPaneRefusal, Error(Act(server, "resize", "left")));
         Assert.Equal(30, host.ActiveSess!.OverlaySize);
         Assert.Equal(30, TreeSession(server).GetProperty("overlaySize").GetInt32());
     }
@@ -240,7 +242,7 @@ public class PaneOverlayTests
         Assert.Equal(ISessionHost.RefusePrefix + OverlayPanes.SizeWithPaneRefusal,
             host.SessionOverlay(null, "open", "cmd", 40, false, false, "left", OverlayTextArgs.Screen));
         Assert.Equal(ISessionHost.RefusePrefix + OverlayPanes.ResizeWithPaneRefusal,
-            host.SessionOverlay(null, "resize", null, 0, false, false, "left", OverlayTextArgs.Screen));
+            host.SessionOverlay(null, "resize", null, 40, false, false, "left", OverlayTextArgs.Screen));
         Assert.Empty(host.ActiveSess!.CoverPanes);
     }
 
@@ -421,6 +423,41 @@ public class PaneOverlayTests
         }
         // session text --all: the same reader, on the pane under the overlay too.
         Assert.StartsWith("L1\n", SessionText(server, id, "{\"all\":true}"));
+    }
+
+    /// <summary>The pin task 4 asks for: no target / "active" is the focused pane's SURFACE — the
+    /// overlay while that pane's slot is open (the rule a cover follows today), the pane's own id the
+    /// shell underneath, and the pane again once the slot closes.</summary>
+    [Fact]
+    public void SessionText_NoTarget_ReadsTheFocusedPanesOverlay_ItsPaneId_TheShellUnderneath()
+    {
+        var (server, _) = New();
+        var (left, right) = Split(server);   // the split focuses the new pane: right
+        Assert.Equal(1, TreeSession(server).GetProperty("focusedPane").GetInt32());
+        Write(server, right, "shell under it\r\n");
+        Assert.Contains("shell under it", SessionText(server, null));
+
+        string id = Result(Open(server, "right"));
+        Write(server, id, "MARKER-IN-OVERLAY\r\n");
+        foreach (var active in new string?[] { null, "active" })
+        {
+            Assert.Contains("MARKER-IN-OVERLAY", SessionText(server, active));
+            Assert.DoesNotContain("shell under it", SessionText(server, active));
+        }
+        Assert.Contains("shell under it", SessionText(server, right));          // the pane id: the shell underneath
+        Assert.DoesNotContain("MARKER-IN-OVERLAY", SessionText(server, right));
+        Assert.DoesNotContain("MARKER-IN-OVERLAY", SessionText(server, left));
+
+        // The OTHER pane's overlay is not the focused surface.
+        string leftId = Result(Open(server, "left"));
+        Write(server, leftId, "LEFT-OVERLAY\r\n");
+        Assert.DoesNotContain("LEFT-OVERLAY", SessionText(server, null));
+        Assert.Contains("MARKER-IN-OVERLAY", SessionText(server, null));
+
+        // Closed: the pane is the surface again.
+        Assert.Equal("closed", Result(Act(server, "close", "right")));
+        Assert.Contains("shell under it", SessionText(server, null));
+        Assert.DoesNotContain("MARKER-IN-OVERLAY", SessionText(server, null));
     }
 
     [Fact]

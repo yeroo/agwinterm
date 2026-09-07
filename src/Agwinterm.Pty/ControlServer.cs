@@ -580,8 +580,8 @@ public sealed class ControlServer : IDisposable
         }
         if (pane is not null)
         {
-            if (args.TryGetProperty(OverlaySizeKey, out _)) return Err(OverlayPanes.SizeWithPaneRefusal);
             if (action == "resize") return Err(OverlayPanes.ResizeWithPaneRefusal);
+            if (args.TryGetProperty(OverlaySizeKey, out _)) return Err(OverlayPanes.SizeWithPaneRefusal);
         }
         if (!TryOverlaySize(args, out int sizePercent, out string? sizeErr)) return Err(sizeErr!);
         var textArgs = OverlayTextArgs.Screen;

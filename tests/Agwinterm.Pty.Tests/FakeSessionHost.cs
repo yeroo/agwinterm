@@ -283,8 +283,17 @@ internal sealed class FakeSessionHost : ISessionHost
     /// <summary>The workspace a session lives in — what the app reads as <c>Ses.Ws</c>.</summary>
     internal Ws WorkspaceOf(Sess s) => Workspaces.First(w => w.Sessions.Contains(s));
 
-    private static ISession? Focused(Sess? s) =>
-        s is null ? null : s.Panes[Math.Clamp(s.FocusedPane, 0, s.Panes.Count - 1)];
+    /// <summary>The focused pane's SURFACE: its overlay term while that pane's slot is open, else the
+    /// pane — the app's ActiveSurface rule (P5), so no target / "active" reaches a pane overlay the way
+    /// it reaches a cover today, and the pane's own id reaches the shell underneath. (The session-wide
+    /// slot has no term in the fake, so it does not take part.)</summary>
+    private static ISession? Focused(Sess? s)
+    {
+        if (s is null) return null;
+        int i = Math.Clamp(s.FocusedPane, 0, s.Panes.Count - 1);
+        if (i < s.PaneIds.Count && s.PaneOverlays.TryGetValue(s.PaneIds[i], out var slot) && slot.Open) return slot.Term;
+        return s.Panes[i];
+    }
 
     public IReadOnlyList<WorkspaceSnapshot> Tree() => Workspaces.Select(w => new WorkspaceSnapshot(
         w.Id, w.Name, ReferenceEquals(w, ActiveWs),
@@ -676,8 +685,8 @@ internal sealed class FakeSessionHost : ISessionHost
                 if ((s.PaneIds[i] == target || s.PaneIds[i].StartsWith(target!, StringComparison.Ordinal)) && i != index)
                     return ISessionHost.RefusePrefix + OverlayPanes.Disagree(target!, i, index);
         if (index >= s.Panes.Count) return ISessionHost.RefusePrefix + OverlayPanes.NotVisibleRefusal(s.Id);
-        if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.SizeWithPaneRefusal;
         if (action == "resize") return ISessionHost.RefusePrefix + OverlayPanes.ResizeWithPaneRefusal;
+        if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.SizeWithPaneRefusal;
         var slot = s.SlotOf(index);
         switch (action)
         {

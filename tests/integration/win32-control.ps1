@@ -817,6 +817,158 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         Check 'recipe: overlay close --target <overlay id> closes that session''s overlay' ($recipeClose.ok -and $recipeClose.result -eq 'closed' -and $recipeAfter -and -not $recipeAfter.overlay) "$($recipeClose | ConvertTo-Json -Compress) overlay=$($recipeAfter.overlay)"
         try { Invoke-Ctl @('session', 'close', $recipeId) | Out-Null } catch { }
 
+        # P5: pane-scoped overlays against the app — the CLI's --pane, copy and text, and the host's pane
+        # arm (the unit suite drives the fake's copy of the rules; this is the verb against the app). A
+        # fresh two-pane session, SELECTED, so the no-target read below is the rule's "the focused pane's
+        # surface"; the resolver fixture is re-selected at the end, since the mouse block needs it active.
+        $p5Made = Invoke-Ctl @('session', 'new', '--name', 'p5-pane-overlay')
+        $p5Id = [string]$p5Made.result
+        for ($i = 0; $i -lt 30; $i++) { $n = Get-SessionSnapshot $p5Id; if ($n -and $n.active) { break }; Start-Sleep -Milliseconds 200 }
+        $p5Split = Invoke-Ctl @('session', 'split', 'on', '--target', $p5Id)
+        $p5Left = $null; $p5Right = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $n = Get-SessionSnapshot $p5Id
+            if ($n -and @($n.paneIds).Count -eq 2) { $p5Left = [string]$n.paneIds[0]; $p5Right = [string]$n.paneIds[1]; break }
+            Start-Sleep -Milliseconds 200
+        }
+        Check 'p5 fixture: a selected two-pane session' ($p5Made.ok -and $p5Split.ok -and $p5Left -and $p5Right -and (Get-ActiveSessionSnapshot).id -eq $p5Id) "$($p5Split | ConvertTo-Json -Compress)"
+        for ($i = 0; $i -lt 50; $i++) {   # both shells at a prompt before anything is typed or covered
+            $tl = Invoke-Ctl @('session', 'text', '--target', $p5Left); $tr = Invoke-Ctl @('session', 'text', '--target', $p5Right)
+            if ($tl.ok -and $tr.ok -and ("$($tl.result)" -match '>') -and ("$($tr.result)" -match '>')) { break }
+            Start-Sleep -Milliseconds 200
+        }
+
+        # open --pane right: the id names the right PANE; the tree lists the slot; the session-wide slot is empty.
+        $p5Marker = 'p5-ovl-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $p5Open = Invoke-Ctl @('session', 'overlay', 'open', "cmd /k echo $p5Marker", '--pane', 'right', '--target', $p5Id)
+        $p5Ovl = [string]$p5Open.result
+        $p5Node = Get-SessionSnapshot $p5Id
+        Check 'overlay open --pane right replies <right pane id>:overlay:<hex>' ($p5Open.ok -and $p5Ovl -like "$p5Right`:overlay:*") "$($p5Open | ConvertTo-Json -Compress)"
+        Check 'tree: paneOverlays == ["right"], no session-wide overlay' ($p5Node -and ((@($p5Node.paneOverlays) -join ',') -eq 'right') -and -not $p5Node.overlay) "$($p5Node | ConvertTo-Json -Compress)"
+        # The left pane stays interactive: a typed line lands in its shell and its text is the shell's.
+        $p5LeftMarker = 'p5-left-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        Invoke-Ctl @('session', 'type', "echo $p5LeftMarker`r", '--target', $p5Left) | Out-Null
+        $p5LeftText = $null
+        for ($i = 0; $i -lt 30; $i++) { $p5LeftText = Invoke-Ctl @('session', 'text', '--target', $p5Left); if ($p5LeftText.ok -and ("$($p5LeftText.result)" -match $p5LeftMarker)) { break }; Start-Sleep -Milliseconds 200 }
+        Check 'session type --target <left pane> still lands in the left shell (the sibling stays interactive)' ($p5LeftText.ok -and ("$($p5LeftText.result)" -match $p5LeftMarker)) "$($p5LeftText | ConvertTo-Json -Compress)"
+        # The overlay by its id; `overlay text --pane right` is the same buffer; the right PANE id reads the shell underneath.
+        $p5OvlText = $null
+        for ($i = 0; $i -lt 30; $i++) { $p5OvlText = Invoke-Ctl @('session', 'text', '--target', $p5Ovl); if ($p5OvlText.ok -and ("$($p5OvlText.result)" -match $p5Marker)) { break }; Start-Sleep -Milliseconds 200 }
+        Check 'session text --target <overlay id> shows the program' ($p5OvlText.ok -and ("$($p5OvlText.result)" -match $p5Marker)) "$($p5OvlText | ConvertTo-Json -Compress)"
+        Start-Sleep -Milliseconds 500   # let the prompt after the echo land, so the two reads below see one buffer
+        $p5OvlText = Invoke-Ctl @('session', 'text', '--target', $p5Ovl)
+        $p5PaneText = Invoke-Ctl @('session', 'overlay', 'text', '--pane', 'right', '--target', $p5Id)
+        Check 'overlay text --pane right answers {text} with the same buffer as session text by the overlay id' `
+            ($p5PaneText.ok -and ("$($p5PaneText.result.text)" -match $p5Marker) -and ("$($p5PaneText.result.text)" -eq "$($p5OvlText.result)")) "overlay text=$($p5PaneText | ConvertTo-Json -Compress) session text=$($p5OvlText | ConvertTo-Json -Compress)"
+        $p5PlainOut = (& $ctl session overlay text --pane right --target $p5Id --pipe $pipe 2>&1) -join "`n"
+        Check 'the plain form of overlay text prints result.text, not the object' ($LASTEXITCODE -eq 0 -and $p5PlainOut -match $p5Marker -and $p5PlainOut -notmatch '"text"') "exit $LASTEXITCODE, output: $p5PlainOut"
+        $p5All = Invoke-Ctl @('session', 'text', '--all', '--target', $p5Ovl)
+        $p5AllOvl = Invoke-Ctl @('session', 'overlay', 'text', '--all', '--pane', 'right', '--target', $p5Id)
+        Check 'session text --all and overlay text --all read the whole buffer (the marker is in both)' ($p5All.ok -and ("$($p5All.result)" -match $p5Marker) -and $p5AllOvl.ok -and ("$($p5AllOvl.result.text)" -match $p5Marker)) "session=$($p5All | ConvertTo-Json -Compress) overlay=$($p5AllOvl | ConvertTo-Json -Compress)"
+        $p5Under = Invoke-Ctl @('session', 'text', '--target', $p5Right)
+        Check 'session text --target <right pane id> reads the shell UNDERNEATH' ($p5Under.ok -and ("$($p5Under.result)" -notmatch $p5Marker) -and ("$($p5Under.result)".Trim().Length -gt 0)) "$($p5Under | ConvertTo-Json -Compress)"
+        # The pin: no target is the focused pane's SURFACE — the overlay while the right pane is focused, the shell once the left is.
+        Invoke-Ctl @('session', 'focus', 'right') | Out-Null
+        Start-Sleep -Milliseconds 300
+        $p5Active = Invoke-Ctl @('session', 'text')
+        Check 'session text with no target reaches the focused pane''s overlay (the surface rule)' ($p5Active.ok -and ("$($p5Active.result)" -match $p5Marker)) "$($p5Active | ConvertTo-Json -Compress)"
+        Invoke-Ctl @('session', 'focus', 'left') | Out-Null
+        Start-Sleep -Milliseconds 300
+        $p5ActiveLeft = Invoke-Ctl @('session', 'text')
+        Check 'and the left shell once the left pane is focused' ($p5ActiveLeft.ok -and ("$($p5ActiveLeft.result)" -match $p5LeftMarker) -and ("$($p5ActiveLeft.result)" -notmatch $p5Marker)) "$($p5ActiveLeft | ConvertTo-Json -Compress)"
+        # copy: nothing selected is refused; `selection all` on the overlay, then copy returns its text; the clipboard is untouched.
+        $p5Clip = $null; try { $p5Clip = Get-Clipboard -Raw -ErrorAction Stop } catch { }
+        $p5CopyNone = Invoke-Ctl @('session', 'overlay', 'copy', '--pane', 'right', '--target', $p5Id)
+        Check 'overlay copy --pane right with nothing selected is refused "no selection"' ((-not $p5CopyNone.ok) -and ([string]$p5CopyNone.error) -eq 'no selection') "$($p5CopyNone | ConvertTo-Json -Compress)"
+        $p5Sel = Invoke-Ctl @('selection', 'all', '--target', $p5Ovl)
+        $p5Copy = Invoke-Ctl @('session', 'overlay', 'copy', '--pane', 'right', '--target', $p5Id)
+        $p5ClipAfter = $null; try { $p5ClipAfter = Get-Clipboard -Raw -ErrorAction Stop } catch { }
+        Check 'selection all --target <overlay id> then overlay copy --pane right returns the overlay''s text' ($p5Sel.ok -and $p5Copy.ok -and ("$($p5Copy.result.text)" -match $p5Marker)) "sel=$($p5Sel | ConvertTo-Json -Compress) copy=$($p5Copy | ConvertTo-Json -Compress)"
+        Check 'and the clipboard is unchanged (copy is a read)' ("$p5Clip" -eq "$p5ClipAfter") "before=$p5Clip after=$p5ClipAfter"
+        $p5UnderCopy = Invoke-Ctl @('session', 'copy', '--target', $p5Right)
+        Check 'session copy --target <right pane> keeps reading the pane underneath (nothing selected there)' ($p5UnderCopy.ok -and "$($p5UnderCopy.result)" -eq '') "$($p5UnderCopy | ConvertTo-Json -Compress)"
+        # The other slot is empty: copy / text / result name the slot; result on the held slot is "still running".
+        $p5CopyLeft = Invoke-Ctl @('session', 'overlay', 'copy', '--pane', 'left', '--target', $p5Id)
+        $p5TextLeft = Invoke-Ctl @('session', 'overlay', 'text', '--pane', 'left', '--target', $p5Id)
+        Check 'copy / text --pane left (empty) are refused "no overlay: --pane left ..."' ((-not $p5CopyLeft.ok) -and (-not $p5TextLeft.ok) -and ([string]$p5CopyLeft.error) -like 'no overlay: --pane left*' -and ([string]$p5TextLeft.error) -like 'no overlay: --pane left*') "copy=$($p5CopyLeft | ConvertTo-Json -Compress) text=$($p5TextLeft | ConvertTo-Json -Compress)"
+        $p5Running = Invoke-Ctl @('session', 'overlay', 'result', '--pane', 'right', '--target', $p5Id)
+        Check 'overlay result --pane right while its program is up is refused "overlay still running"' ((-not $p5Running.ok) -and ([string]$p5Running.error) -eq 'overlay still running') "$($p5Running | ConvertTo-Json -Compress)"
+        $p5NoResult = Invoke-Ctl @('session', 'overlay', 'result', '--pane', 'left', '--target', $p5Id)
+        Check 'overlay result --pane left (nothing ever ran there) is refused "no overlay result"' ((-not $p5NoResult.ok) -and ([string]$p5NoResult.error) -eq 'no overlay result') "$($p5NoResult | ConvertTo-Json -Compress)"
+        # The agreement check: --target <right pane id> --pane left names two panes; nothing opened (the left slot
+        # stays empty). The RIGHT pane is the one with its own id: pane 0 was minted with the session id, so
+        # --target <left pane id> IS the session id and agrees with either word (the open --pane right above went
+        # through it). A second open on the held slot is refused; the first stays.
+        $p5Disagree = Invoke-Ctl @('session', 'overlay', 'open', 'cmd /c exit 0', '--pane', 'left', '--target', $p5Right)
+        Check '--target <right pane id> with --pane left is refused (the caller named two panes) and the left slot stays empty' ((-not $p5Disagree.ok) -and ([string]$p5Disagree.error) -match 'is the right pane; --pane left names the other one' -and ((@((Get-SessionSnapshot $p5Id).paneOverlays) -join ',') -eq 'right')) "$($p5Disagree | ConvertTo-Json -Compress)"
+        $p5Again = Invoke-Ctl @('session', 'overlay', 'open', 'cmd /c exit 0', '--pane', 'right', '--target', $p5Id)
+        Check 'a second open --pane right is refused "pane overlay already open" and the first stays' ((-not $p5Again.ok) -and ([string]$p5Again.error) -like 'pane overlay already open*' -and ((@((Get-SessionSnapshot $p5Id).paneOverlays) -join ',') -eq 'right')) "$($p5Again | ConvertTo-Json -Compress)"
+        # The CLI refuses --pane with --size-percent, resize --pane, --all with --lines (both verbs) and a bare --pane; nothing is sent.
+        $p5Shape = { param($n) "$(@($n.paneOverlays) -join ',')|$($n.overlay)|$($n.overlaySize)" }
+        $p5Before = & $p5Shape (Get-SessionSnapshot $p5Id)
+        foreach ($shape in @(
+                @(@('session', 'overlay', 'open', 'cmd /c exit 0', '--pane', 'left', '--size-percent', '40', '--target', $p5Id), 'cannot be combined'),
+                @(@('session', 'overlay', 'resize', '--size-percent', '40', '--pane', 'left', '--target', $p5Id), 'resize --pane'),
+                @(@('session', 'overlay', 'text', '--all', '--lines', '3', '--pane', 'right', '--target', $p5Id), '--all and --lines'),
+                @(@('session', 'text', '--all', '--lines', '3', '--target', $p5Left), '--all and --lines'),
+                @(@('session', 'overlay', 'close', '--pane', '--target', $p5Id), 'needs a word'))) {
+            $argv = [string[]]$shape[0]
+            $out = (& $ctl @argv --pipe $pipe 2>&1) -join "`n"
+            $code = $LASTEXITCODE
+            Check "the CLI refuses '$(($argv | Where-Object { $_ -ne $p5Id -and $_ -ne $p5Left }) -join ' ')' with exit 2" ($code -eq 2 -and $out -match [regex]::Escape($shape[1]) -and $out -match 'Nothing (sent|read)') "exit $code, output: $out"
+        }
+        $p5After = & $p5Shape (Get-SessionSnapshot $p5Id)
+        Check 'and none of them changed the overlay slots' ($p5Before -eq $p5After) "before=$p5Before after=$p5After"
+        # The slot moves with its pane: a 30/70 divider so the boxes differ, then swap: paneOverlays ["left"], the overlay measures the pane's NEW box.
+        Invoke-Ctl @('session', 'resize', '--split-ratio', '0.3', '--target', $p5Id) | Out-Null
+        $p5RightBox = $null
+        for ($i = 0; $i -lt 30; $i++) { $l = Invoke-Ctl @('session', 'metrics', '--target', $p5Left); $r = Invoke-Ctl @('session', 'metrics', '--target', $p5Right); if ($l.ok -and $r.ok -and [int]$l.result.cols -lt [int]$r.result.cols) { $p5RightBox = $r; break }; Start-Sleep -Milliseconds 200 }
+        $p5OvlBox = Invoke-Ctl @('session', 'metrics', '--target', $p5Ovl)
+        Check 'metrics of the overlay == its pane''s box (the wide one, 70%)' ($p5RightBox -and $p5OvlBox.ok -and [int]$p5OvlBox.result.cols -eq [int]$p5RightBox.result.cols -and [int]$p5OvlBox.result.rows -eq [int]$p5RightBox.result.rows) "ovl=$($p5OvlBox.result | ConvertTo-Json -Compress) pane=$($p5RightBox.result | ConvertTo-Json -Compress)"
+        $p5Swap = Invoke-Ctl @('session', 'swap', '--target', $p5Id)
+        $p5SwapNode = $null; $p5SwappedBox = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            $p5SwapNode = Get-SessionSnapshot $p5Id
+            $c = Invoke-Ctl @('session', 'metrics', '--target', $p5Right)
+            if ($p5SwapNode -and ((@($p5SwapNode.paneIds) -join ',') -eq "$p5Right,$p5Left") -and $c.ok -and [int]$c.result.cols -lt [int]$p5RightBox.result.cols) { $p5SwappedBox = $c; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $p5OvlBox2 = Invoke-Ctl @('session', 'metrics', '--target', $p5Ovl)
+        Check 'session swap moves the slot: paneOverlays == ["left"], the overlay id is kept' ($p5Swap.ok -and $p5SwapNode -and ((@($p5SwapNode.paneOverlays) -join ',') -eq 'left')) "$($p5SwapNode | ConvertTo-Json -Compress)"
+        Check 'and the overlay measures its pane''s NEW box (the narrow one, 30%)' ($p5SwappedBox -and $p5OvlBox2.ok -and [int]$p5OvlBox2.result.cols -eq [int]$p5SwappedBox.result.cols -and [int]$p5OvlBox2.result.cols -lt [int]$p5RightBox.result.cols) "ovl=$($p5OvlBox2.result | ConvertTo-Json -Compress) pane=$($p5SwappedBox.result | ConvertTo-Json -Compress)"
+        $p5AfterSwap = Invoke-Ctl @('session', 'text', '--target', $p5Ovl)
+        Check 'session text --target <overlay id> still reads the program after the swap' ($p5AfterSwap.ok -and ("$($p5AfterSwap.result)" -match $p5Marker)) "$($p5AfterSwap | ConvertTo-Json -Compress)"
+        $p5CloseEmpty = Invoke-Ctl @('session', 'overlay', 'close', '--pane', 'right', '--target', $p5Id)
+        Check 'overlay close --pane right (the slot emptied by the swap) answers ok "no overlay"' ($p5CloseEmpty.ok -and [string]$p5CloseEmpty.result -eq 'no overlay') "$($p5CloseEmpty | ConvertTo-Json -Compress)"
+        # split close of the pane holding the overlay: the survivor is the other pane, the slot is gone, the id resolves nowhere, the program is gone.
+        $p5SplitClose = Invoke-Ctl @('session', 'split', 'close', '--target', $p5Right)
+        $p5Single = $null
+        for ($i = 0; $i -lt 30; $i++) { $p5Single = Get-SessionSnapshot $p5Id; if ($p5Single -and -not $p5Single.PSObject.Properties['paneCount']) { break }; Start-Sleep -Milliseconds 200 }
+        $p5Gone = Invoke-Ctl @('session', 'text', '--target', $p5Ovl)
+        Check 'split close of the pane holding the overlay: the other pane survives, paneOverlays gone, the overlay id resolves nowhere' `
+            ($p5SplitClose.ok -and [string]$p5SplitClose.result -eq $p5Left -and $p5Single -and -not $p5Single.PSObject.Properties['paneOverlays'] -and -not $p5Gone.ok) "close=$($p5SplitClose | ConvertTo-Json -Compress) node=$($p5Single | ConvertTo-Json -Compress) text=$($p5Gone | ConvertTo-Json -Compress)"
+        $p5Orphan = $null
+        for ($i = 0; $i -lt 25; $i++) {
+            $p5Orphan = @(Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" -ErrorAction SilentlyContinue | Where-Object { "$($_.CommandLine)" -match $p5Marker })
+            if ($p5Orphan.Count -eq 0) { break }
+            Start-Sleep -Milliseconds 200
+        }
+        Check 'and the overlay''s program is gone with it (no orphaned cmd.exe carrying the marker)' ($p5Orphan.Count -eq 0) "pids=$(($p5Orphan | ForEach-Object ProcessId) -join ',')"
+        # A single pane: --pane right is "pane not visible"; --pane left --block answers the exit, result --pane left reads it back, the window-wide result is not written.
+        $p5NotVisible = Invoke-Ctl @('session', 'overlay', 'open', 'cmd /c exit 0', '--pane', 'right', '--target', $p5Id)
+        Check 'open --pane right on a single-pane session is refused "pane not visible"' ((-not $p5NotVisible.ok) -and ([string]$p5NotVisible.error) -like 'pane not visible*') "$($p5NotVisible | ConvertTo-Json -Compress)"
+        $p5WindowBefore = Invoke-Ctl @('session', 'overlay', 'result')
+        $p5Block = Invoke-Ctl @('session', 'overlay', 'open', 'cmd /c exit 9', '--pane', 'left', '--block', '--target', $p5Id)
+        $p5Result = Invoke-Ctl @('session', 'overlay', 'result', '--pane', 'left', '--target', $p5Id)
+        Check 'open --pane left --block answers the program''s exit, and result --pane left reads it back after the close' ($p5Block.ok -and [string]$p5Block.result -eq 'exit 9' -and $p5Result.ok -and [string]$p5Result.result -eq 'exit 9') "block=$($p5Block | ConvertTo-Json -Compress) result=$($p5Result | ConvertTo-Json -Compress)"
+        $p5WindowAfter = Invoke-Ctl @('session', 'overlay', 'result')
+        Check 'the window-wide overlay result is untouched by a pane overlay''s exit (the recorded divergence)' ($p5WindowAfter.ok -and [string]$p5WindowAfter.result -eq [string]$p5WindowBefore.result -and [string]$p5WindowAfter.result -ne 'exit 9') "before=$($p5WindowBefore.result) after=$($p5WindowAfter.result)"
+        Invoke-Ctl @('session', 'close', $p5Id) | Out-Null
+        Invoke-Ctl @('session', 'select', $sessionId) | Out-Null
+        $p5Restored = $null
+        for ($i = 0; $i -lt 30; $i++) { $p5Restored = Get-ActiveSessionSnapshot; if ($p5Restored -and $p5Restored.id -eq $sessionId) { break }; Start-Sleep -Milliseconds 200 }
+        Check 'p5 fixture closed; the resolver fixture is the active session again' ($p5Restored -and $p5Restored.id -eq $sessionId) "$($p5Restored | ConvertTo-Json -Compress)"
+
         # sidebar.width must move the divider, not just a number. The unit tests see the fake host
         # only; here the proof is live geometry: the active session's measured width (session.metrics,
         # columns x cell width) shrinks when the sidebar widens, because the grid derives from the

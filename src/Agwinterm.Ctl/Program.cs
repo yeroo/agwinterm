@@ -46,7 +46,27 @@ using System.Text.Json;
 //       else is refused rather than acknowledged)
 //   agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
 //   agwintermctl session metrics [<pane-id>] [--json] (live cell + pane pixel metrics)
-//   agwintermctl session text [--lines N] [--target ID]   (N reaches into scrollback; default = screen)
+//   agwintermctl session text [--all|--lines N] [--target ID]   (N reaches into scrollback; --all = the whole
+//       buffer, screen + scrollback; default = screen; --all with --lines is refused)
+//   agwintermctl session overlay open <command...> [--pane left|right] [--wait|--block] [--size-percent N] [--target ID]
+//   agwintermctl session overlay close|result|copy [--pane left|right] [--target ID]
+//   agwintermctl session overlay text [--all|--lines N] [--pane left|right] [--target ID]
+//   agwintermctl session overlay resize --size-percent N [--target ID]   (the session-wide overlay only)
+//       (copy and text print result.text; --pane names a PANE slot, passed through as typed — the server validates
+//       the word; --size-percent beside --pane, and resize --pane, are refused here and nothing is sent: a pane
+//       overlay is always full-pane. The rule, quoted from ISessionHost.SessionOverlay — the skill quotes it too:
+//       A session has three overlay slots: one session-wide and one per pane. A session-wide overlay
+//       covers the whole session (every pane, and any pane overlay under it), as today. A pane overlay
+//       covers exactly one pane's box - always the full box, never floating - and the sibling pane stays
+//       visible and interactive. --pane left|right names the slot: left is pane 0 and right is pane 1
+//       whatever the axis (on a horizontal split left is the top pane), a non-split session accepts
+//       --pane left, and the flag omitted means the session-wide slot - today's behaviour, byte for
+//       byte. A pane overlay is that pane's surface while it is open: keys typed into the focused pane,
+//       the mouse inside the pane's box and --target active reach the overlay; --target with a pane id
+//       reaches the shell underneath (agterm: "session text reads the surface underneath"); --target
+//       with the overlay's id reaches the overlay from anywhere. The slot moves with its pane (a swap,
+//       a split close of the other pane) and dies with it (split close, split off, the shell exiting,
+//       session close, the window closing).)
 //   agwintermctl session type <text...> [--allow-control] [--target ID]   (control bytes refused unless allowed)
 //   agwintermctl session type --stdin [--allow-control] [--target ID]     (text = stdin, as bytes: how quotes,
 //       newlines, a leading -- or runs of spaces are sent; invalid UTF-8 is refused, nothing sent; one
@@ -117,6 +137,10 @@ string? DefaultTarget() => Opt("target") ?? Environment.GetEnvironmentVariable("
 string cmd;
 string? target = null;
 var cargs = new Dictionary<string, object?>();
+// `session overlay copy` / `text` answer {"text":...} (agterm's result.text); the plain form prints the text
+// itself, as `session text` does, so a script reads the same thing from either verb (P5). --json prints the
+// reply as it came.
+bool printTextField = false;
 
 switch (area)
 {
@@ -274,7 +298,11 @@ switch (area)
                 // --select <text> (agterm parity): text may come via --select instead of positionals.
                 cargs["text"] = rest.Count > 0 ? string.Join(' ', rest) : (Opt("select") ?? "");
                 break;
-            case "text": // dump the buffer; --lines N reaches back into scrollback (default: the visible screen)
+            case "text": // dump the buffer; --lines N reaches back into scrollback, --all takes the whole buffer (default: the visible screen)
+                // The pair is refused here in the server's words (one reader, two verbs — `session overlay
+                // text` refuses it the same way), so nothing is sent for a read that meant two things.
+                if (options.ContainsKey("all") && options.ContainsKey("lines")) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.AllWithLines); return 2; }
+                if (options.ContainsKey("all")) cargs["all"] = true;
                 if (int.TryParse(Opt("lines"), out var textLines)) cargs["lines"] = textLines;
                 break;
             case "copy": break;  // return the target's selection text; target only
@@ -348,10 +376,32 @@ switch (area)
             }
             case "readonly": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle|state; block input to the pane
             case "scratch": cargs["op"] = rest.Count > 0 ? rest[0] : "toggle"; break; // on|off|toggle; per-session extra shell
-            case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] | overlay close | overlay resize --size-percent N | overlay result
+            case "overlay": // overlay open <command> [--size-percent N] [--wait|--block] [--pane left|right] | overlay close|result|copy [--pane P] | overlay text [--all|--lines N] [--pane P] | overlay resize --size-percent N
                 cargs["action"] = rest.Count > 0 ? rest[0] : "open";
+                string ovAction = (string)cargs["action"]!;
                 if (rest.Count > 1) cargs["command"] = string.Join(' ', rest.Skip(1));
                 else if (Opt("command") is { } ovcmd) cargs["command"] = ovcmd;
+                // --pane (P5) is passed through as the string typed: the server validates the word (left|right)
+                // and refuses anything else naming both words, so the CLI keeps no second copy of the
+                // vocabulary. A BARE --pane would reach the server as "true" — a word the caller never typed —
+                // so it is refused here. --size-percent beside --pane (present at all), and resize --pane, are
+                // refused before anything is sent, in the server's own words: a pane overlay is always full-pane (the
+                // resize check first: a resize always carries a size, and the refusal names the verb typed).
+                if (options.ContainsKey("pane"))
+                {
+                    if (bareLast.Contains("pane") || Opt("pane")!.Length == 0)
+                    { Console.Error.WriteLine($"session overlay: --pane needs a word after it, {Agwinterm.Pty.OverlayPanes.Left} (pane 0) or {Agwinterm.Pty.OverlayPanes.Right} (pane 1); omit --pane for the session-wide overlay. Nothing sent."); return 2; }
+                    if (ovAction == "resize") { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.ResizeWithPane + ". Nothing sent."); return 2; }
+                    if (options.ContainsKey("size-percent")) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.SizeWithPane + ". Nothing sent."); return 2; }
+                    cargs["pane"] = Opt("pane");
+                }
+                if (ovAction == "text")
+                {
+                    if (options.ContainsKey("all") && options.ContainsKey("lines")) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.AllWithLines); return 2; }
+                    if (options.ContainsKey("all")) cargs["all"] = true;
+                    if (int.TryParse(Opt("lines"), out var ovLines)) cargs["lines"] = ovLines;
+                }
+                if (ovAction is "copy" or "text") printTextField = true;
                 // An unparseable --size-percent is refused, not dropped: `--size-percent sixty` used to
                 // open a FULL-SCREEN overlay and report success. The range (1..100) is the server's
                 // call, so its refusal names the value and the way to ask for the full region.
@@ -651,7 +701,12 @@ try
         if (ok)
         {
             if (root.TryGetProperty("result", out var res))
-                Console.WriteLine(res.ValueKind == JsonValueKind.String ? res.GetString() : res.GetRawText());
+            {
+                if (printTextField && res.ValueKind == JsonValueKind.Object && res.TryGetProperty(Agwinterm.Pty.OverlayPanes.TextKey, out var textField) && textField.ValueKind == JsonValueKind.String)
+                    Console.WriteLine(textField.GetString());
+                else
+                    Console.WriteLine(res.ValueKind == JsonValueKind.String ? res.GetString() : res.GetRawText());
+            }
             return 0;
         }
         Console.Error.WriteLine(root.TryGetProperty("error", out var err) ? err.GetString() : "error");
