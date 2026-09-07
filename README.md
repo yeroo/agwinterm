@@ -295,7 +295,8 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   the same end state), and
   `ok:false` with the status unknown when the window closed under it. `overlay result` stays one
   value per window, written by whichever session's session-wide overlay exits next; `result --pane left|right`
-  is that slot's own `exit N`, and a pane overlay's exit never writes the window-wide value.
+  (or `result --target <pane overlay id>` while that overlay is up) is that slot's own `exit N`, and a
+  pane overlay's exit never writes the window-wide value.
 - `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
   the target resolved to (a session name lands on its focused pane, a session id on the pane that
   carries that id while one does — pane 0 of a fresh session, either side after a `session swap` —

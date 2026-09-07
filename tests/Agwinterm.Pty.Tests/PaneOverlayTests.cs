@@ -727,5 +727,12 @@ public class PaneOverlayTests
         Assert.StartsWith("failed to read surface buffer: ", OverlayPanes.ReadFailedRefusal("boom"));
         Assert.Equal("overlay still running", OverlayPanes.StillRunning);
         Assert.Equal("no overlay result", OverlayPanes.NoResult);
+        // The inferred-id refusals name the id the guard saw and never a --pane word (the caller passed none).
+        foreach (var r in new[] { OverlayPanes.OverlayIdGoneRefusal("x:overlay:1"), OverlayPanes.OverlayIdResizeRefusal("x:overlay:1", 1), OverlayPanes.OverlayIdSizeRefusal("x:overlay:1", 0) })
+        {
+            Assert.StartsWith("'x:overlay:1' ", r);
+            Assert.DoesNotContain("--pane left", r); Assert.DoesNotContain("--pane right", r);
+            Assert.Matches(@"Nothing (done|resized|opened)\.$", r);
+        }
     }
 }

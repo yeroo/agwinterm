@@ -57,9 +57,12 @@ discovered:
   overlay. Ours (no `--pane`) keeps answering the **last** session-wide overlay exit in the window
   (`ok:true "no overlay"` when none) — shipped, tested (`tests/integration/win32-control.ps1`), and
   the P2 leftovers (#227 / #228) were closed on that shape; changing it is a contract break for no
-  caller. Only the **pane** arm (`result --pane left|right`) is agterm's: per slot, `exit N`, refused
-  `overlay still running` while its program is up and `no overlay result` when nothing has run in
-  that slot since the window opened. A pane overlay's exit never writes the window-wide value.
+  caller. The **pane** arm is agterm's: per slot, `exit N`, refused `overlay still running` while its
+  program is up and `no overlay result` when nothing has run in that slot since the window opened —
+  reached by `result --pane left|right`, or by `result --target <that pane overlay's id>` while the
+  overlay is up (the rule's "the id names that overlay's slot"; once it closed the id resolves
+  nowhere and the bare form is window-wide again). A pane overlay's exit never writes the
+  window-wide value.
 - **`--pane` with `--size-percent`, and `resize --pane`, are refused at both ends** — the CLI exits 2
   with "Nothing sent", and a raw client is refused by the server with the same words; agterm calls
   both a usage error. A pane overlay is always its pane's full box; the session-wide floating panel

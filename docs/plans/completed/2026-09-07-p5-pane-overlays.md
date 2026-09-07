@@ -27,11 +27,12 @@ agterm's reference (`session overlay`, read 2026-09-07), in our words:
 > keys typed into the focused pane, the mouse inside the pane's box and `--target active` reach
 > the overlay; `--target <pane id>` reaches the shell **underneath** (agterm: "`session text`
 > reads the surface underneath"); `--target <overlay id>` reaches the overlay from anywhere, and on
-> `session overlay` itself names that overlay's slot — the same as passing its `--pane` word; with
-> `--pane` naming the other side it is refused. The slot moves with its pane (a swap, a `split
-> close` of the other pane) and dies with it (`split close`, `split off`, the shell exiting when
-> that removes the pane — a single-pane session keeps an exited shell on screen, and its overlay
-> with it — `session close`, the window closing).
+> `session overlay` itself names that overlay's slot — the same as passing its `--pane` word — for
+> as long as the id resolves (an overlay that closed is reached by `--pane` only); with `--pane`
+> naming the other side it is refused. The slot moves with its pane (a swap, a `split close` of the
+> other pane) and dies with it (`split close`, `split off`, the shell exiting when that removes the
+> pane — a single-pane session keeps an exited shell on screen, and its overlay with it — `session
+> close`, the window closing).
 
 This sentence lives in `ISessionHost.SessionOverlay`'s comment; `AgentSkill.cs` and the CLI
 header quote it (P4's lesson: state an invariant by CONDITION, once; every copy is a quote, and a
@@ -48,7 +49,7 @@ saw after it (the #248 lesson: a refusal names only what its guard SAW):
 | `overlay not realized` | `copy` / `text` between `open` and the terminal being up | see Technical Details — probably unreachable here; if it is, the phrase is still the contract for a pane whose `S` has no emulator yet |
 | `no selection` | `copy` with nothing selected inside the overlay | — |
 | `failed to read surface buffer` | `text` when the emulator read throws | the exception message |
-| `overlay still running` | `result --pane X` while X's overlay is up | — |
+| `overlay still running` | `result --pane X` (or `result --target <X's overlay id>`) while X's overlay is up | — |
 | `no overlay result` | `result --pane X` when nothing ran in X since the window opened | — |
 
 Two divergences from agterm, recorded here and in `docs/agterm-parity.md`, not silently:
@@ -56,8 +57,11 @@ Two divergences from agterm, recorded here and in `docs/agterm-parity.md`, not s
 - **The session-wide `result` stays window-wide and `ok`.** `session overlay result` (no `--pane`)
   keeps answering the LAST overlay exit in the window (`_lastOverlayExit`, `ok:true "no overlay"`
   when none) — shipped, tested (`win32-control.ps1:632-670`), and the P2 leftovers (#227/#228)
-  have already been closed on that shape. Only the **pane** arm is agterm's: per slot, `exit N`,
-  the two refusals above. Changing the session-wide arm is a contract break for no caller.
+  have already been closed on that shape. The **pane** arm is agterm's: per slot, `exit N`, the
+  two refusals above — reached by `--pane X`, or by `--target <X's overlay id>` while that overlay
+  is up (the rule's "names that overlay's slot"; once it closed the id resolves nowhere and the
+  bare form is the window-wide value again). Changing the session-wide arm is a contract break
+  for no caller.
 - **`--pane` with `--size-percent` is refused at both ends** (CLI exit 2 with "Nothing sent", and
   the server refuses a raw client), and `resize --pane` likewise; agterm calls both a usage error.
   Same words both ends.

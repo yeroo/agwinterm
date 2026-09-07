@@ -65,10 +65,11 @@ using System.Text.Json;
 //       the mouse inside the pane's box and --target active reach the overlay; --target with a pane id
 //       reaches the shell underneath (agterm: "session text reads the surface underneath"); --target
 //       with the overlay's id reaches the overlay from anywhere, and on session overlay itself names
-//       that overlay's slot - the same as passing its --pane word; with --pane naming the other side it
-//       is refused. The slot moves with its pane (a swap, a split close of the other pane) and dies with
-//       it (split close, split off, the shell exiting when that removes the pane - a single-pane session
-//       keeps an exited shell on screen, and its overlay with it - session close, the window closing).)
+//       that overlay's slot - the same as passing its --pane word - for as long as the id resolves (an
+//       overlay that closed is reached by --pane only); with --pane naming the other side it is refused.
+//       The slot moves with its pane (a swap, a split close of the other pane) and dies with it (split
+//       close, split off, the shell exiting when that removes the pane - a single-pane session keeps an
+//       exited shell on screen, and its overlay with it - session close, the window closing).)
 //   agwintermctl session type <text...> [--allow-control] [--target ID]   (control bytes refused unless allowed)
 //   agwintermctl session type --stdin [--allow-control] [--target ID]     (text = stdin, as bytes: how quotes,
 //       newlines, a leading -- or runs of spaces are sent; invalid UTF-8 is refused, nothing sent; one

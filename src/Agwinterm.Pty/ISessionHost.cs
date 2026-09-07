@@ -375,10 +375,11 @@ public interface ISessionHost
     /// the mouse inside the pane's box and --target active reach the overlay; --target with a pane id
     /// reaches the shell underneath (agterm: "session text reads the surface underneath"); --target
     /// with the overlay's id reaches the overlay from anywhere, and on session overlay itself names
-    /// that overlay's slot - the same as passing its --pane word; with --pane naming the other side it
-    /// is refused. The slot moves with its pane (a swap, a split close of the other pane) and dies with
-    /// it (split close, split off, the shell exiting when that removes the pane - a single-pane session
-    /// keeps an exited shell on screen, and its overlay with it - session close, the window closing).
+    /// that overlay's slot - the same as passing its --pane word - for as long as the id resolves (an
+    /// overlay that closed is reached by --pane only); with --pane naming the other side it is refused.
+    /// The slot moves with its pane (a swap, a split close of the other pane) and dies with it (split
+    /// close, split off, the shell exiting when that removes the pane - a single-pane session keeps an
+    /// exited shell on screen, and its overlay with it - session close, the window closing).
     ///
     /// <b>The session-wide slot (pane omitted), unchanged:</b> for open: run <paramref name="command"/> in
     /// an ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
@@ -390,12 +391,15 @@ public interface ISessionHost
     /// nothing is active — the guard is the app's `target != "active"`, so those three targets are one
     /// case). A blocking open's reply is the outcome of THE OVERLAY THAT CALL OPENED and no other
     /// (#227): two blocking opens in one window each get their own program's status. The value
-    /// `result` reads is different — ONE PER WINDOW, not per session or per overlay: "no overlay"
-    /// until the first open in that window, reset to "no overlay" by every open, and written with
-    /// "exit N" by the exit of whichever session's overlay exits while it is still that session's
-    /// overlay (one an open has since replaced, or a close disposed, does not write it); a caller
-    /// that runs overlays on two sessions at once reads the last such exit in the window, not its
-    /// own. `result` skips the target check entirely. A blocking open whose window closes before the
+    /// `result` reads is different — ONE PER WINDOW, not per session or per session-wide overlay:
+    /// "no overlay" until the first open in that window, reset to "no overlay" by every open, and
+    /// written with "exit N" by the exit of whichever session's overlay exits while it is still that
+    /// session's overlay (one an open has since replaced, or a close disposed, does not write it); a
+    /// caller that runs overlays on two sessions at once reads the last such exit in the window, not
+    /// its own. `result` skips the target check, with ONE exception the rule above states: a target
+    /// that is a live PANE overlay's id reads that slot (the pane arm below), as its --pane word
+    /// would; once that overlay closed the id resolves nowhere and the bare form is window-wide
+    /// again. A blocking open whose window closes before the
     /// program exits — or before the open itself ran — is a throw the server turns into ok:false
     /// (the status is unknown); an overlay whose program could not be started at all (the pty-host
     /// down, the cwd gone) ends as "exit 1", not a wait without end.
@@ -417,9 +421,10 @@ public interface ISessionHost
     /// (<c>&lt;pane id&gt;:overlay:&lt;hex&gt;</c> — the owner is readable off the id, as the session-wide
     /// id's is); a slot that already holds one is REFUSED (<see cref="OverlayPanes.AlreadyOpen"/>: no
     /// silent replace, unlike the session-wide slot), <c>--pane right</c> on a one-pane session is
-    /// refused <see cref="OverlayPanes.NotVisible"/>, <c>--target</c> may be the session id or either
-    /// pane id but a pane id naming the OTHER side than <c>--pane</c> is refused
-    /// (<see cref="OverlayPanes.Disagree"/>), and <c>--size-percent</c> / <c>resize</c> with a pane are
+    /// refused <see cref="OverlayPanes.NotVisible"/>, <c>--target</c> may be the session id, either
+    /// pane id, or either pane's overlay id, but a pane id — or a pane's overlay id — naming the OTHER
+    /// side than <c>--pane</c> is refused (<see cref="OverlayPanes.Disagree"/>, which says which of
+    /// the two it saw), and <c>--size-percent</c> / <c>resize</c> with a pane are
     /// refused at the server and the host alike (<see cref="OverlayPanes.SizeWithPane"/>,
     /// <see cref="OverlayPanes.ResizeWithPane"/>). block waits on THAT slot's program, as the
     /// session-wide arm does. close → "closed", or "no overlay" (ok, the session-wide shape) when the

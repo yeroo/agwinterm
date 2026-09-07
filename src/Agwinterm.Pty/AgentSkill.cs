@@ -28,7 +28,9 @@ public static class AgentSkill
         ## Detect
         You are inside agwinterm when `AGWINTERM_ENABLED=1`. Relevant env vars:
         - `AGWINTERM_SESSION_ID` — your session id (the default target for commands). Unique PER PANE:
-          two agents in a split can't collide (each pane resolves as its own target).
+          two agents in a split can't collide (each pane resolves as its own target). Inside a scratch, an
+          overlay or the quick terminal it is THAT cover's id, so your bare commands act on the cover you run in —
+          from inside a pane overlay, a bare `session overlay close` closes your own slot (see Overlays).
         - `AGWINTERM_PANE_ID` — explicit pane identity (same value; use when you specifically mean the pane).
         - `AGWINTERM_WINDOW_ID` — your window id.
         - `AGWINTERM_PIPE` — the control pipe name (full path `\\.\pipe\<name>`).
@@ -187,10 +189,11 @@ public static class AgentSkill
           the mouse inside the pane's box and --target active reach the overlay; --target with a pane id
           reaches the shell underneath (agterm: "session text reads the surface underneath"); --target
           with the overlay's id reaches the overlay from anywhere, and on session overlay itself names
-          that overlay's slot - the same as passing its --pane word; with --pane naming the other side it
-          is refused. The slot moves with its pane (a swap, a split close of the other pane) and dies with
-          it (split close, split off, the shell exiting when that removes the pane - a single-pane session
-          keeps an exited shell on screen, and its overlay with it - session close, the window closing).
+          that overlay's slot - the same as passing its --pane word - for as long as the id resolves (an
+          overlay that closed is reached by --pane only); with --pane naming the other side it is refused.
+          The slot moves with its pane (a swap, a split close of the other pane) and dies with it (split
+          close, split off, the shell exiting when that removes the pane - a single-pane session keeps an
+          exited shell on screen, and its overlay with it - session close, the window closing).
         - `agwintermctl session overlay open "<command>" [--pane left|right] [--size-percent N] [--wait] [--block] [--target <id>]`
           — run `<command>` in a throwaway terminal over the session (or, with `--pane`, over that one pane's box); it vanishes when the program exits, leaving the session untouched. Returns the overlay id.
           `--size-percent N` (1..100) makes it a centered floating panel over a dimmed session (default = full content region). The session gets a `* (overlay)` tag in `tree`.
@@ -201,9 +204,17 @@ public static class AgentSkill
           independent of `overlay` (the session-wide slot; both can be up at once, and the session-wide one covers the
           pane overlays until it closes). Reading it: `session text --target <overlay id>` (or `overlay text --pane X`)
           is the program's screen; `session text --target <pane id>` is the shell UNDERNEATH it; `session text` with no
-          target reaches the overlay while its pane is the focused one. `--target` may be the session id or either pane
-          id, but a pane id that names the OTHER side than `--pane` is refused (`'<id>' is the right pane; --pane left
-          names the other one. Nothing opened.`) — the caller named two panes. What is REFUSED with a pane, `ok:false`
+          target reaches the overlay while its pane is the focused one. `--target` may be the session id, either pane
+          id, or either pane's overlay id (`<pane id>:overlay:<hex>`, the id `open --pane` returned), but one that names
+          the OTHER side than `--pane` is refused (`'<id>' is the right pane; --pane left names the other one. Nothing
+          opened.`, or `'<id>' is the right pane's overlay; --pane left names the other one. Nothing opened.`) — the
+          caller named two panes. That overlay id with `--pane` OMITTED names its own slot, exactly as its word would,
+          for as long as it resolves (`close`, `result`, `copy`, `text`; `open` on it is `pane overlay already open`;
+          `resize` and `--size-percent` are refused naming the overlay, since a pane overlay is always full-pane) — so a
+          program run INSIDE a pane overlay, whose `AGWINTERM_SESSION_ID` is that overlay's id, aims its bare
+          `session overlay` verbs at its own slot and needs `--target <session id>` to reach the session-wide one. Once
+          the overlay closed its id resolves nowhere: `--pane X` is then the only way to that slot (its `result`). What
+          is REFUSED with a pane, `ok:false`
           and nothing opened, each starting with agterm's phrase: `pane not visible` (`--pane right` on a one-pane
           session — we never hide a pane, so that is the only case; pass `--pane left` or omit it),
           `pane overlay already open` (that slot holds one; close it first or read it — a pane slot NEVER silently replaces, unlike the
@@ -238,13 +249,17 @@ public static class AgentSkill
           The window closing under a blocking open answers `ok:false` with the status unknown.
         - `agwintermctl session overlay close [--pane left|right] [--target <id>]`   — dismiss the overlay now. With `--pane`
           that slot: `closed`, or `ok` with `no overlay` when the slot is empty (closing nothing is not a failure).
-        - `agwintermctl session overlay result [--pane left|right]` — WITHOUT `--pane`: the last overlay's `exit N` (or `no
-          overlay`): one value per window, not per session — reset by any session-wide open in the window, written by
-          whichever session's session-wide overlay exits next; it ignores `--target`. Two overlays in one window make it
-          name either one's exit. A pane overlay's exit never writes it. WITH `--pane`: that slot's own last result,
-          `exit N` — or refused `overlay still running` (its program is up) / `no overlay result` (nothing has run in
-          that slot since the window opened). The pane form is per slot, the bare form per window: a deliberate
-          divergence from agterm (recorded in `docs/agterm-parity.md`), because the bare form shipped that way.
+        - `agwintermctl session overlay result [--pane left|right] [--target <id>]` — WITHOUT `--pane`: the last overlay's
+          `exit N` (or `no overlay`): one value per window, not per session — reset by any session-wide open in the
+          window, written by whichever session's session-wide overlay exits next; it ignores `--target` EXCEPT a live
+          pane overlay's id, which reads that slot as its `--pane` word would (a `--pane` open with `--wait` can be
+          polled by the id it returned; once the overlay closed the id resolves nowhere and the bare form is
+          window-wide again — a session-wide overlay's id never selects a slot). Two session-wide overlays in one window
+          make the bare form name either one's exit. A pane overlay's exit never writes it. WITH `--pane`: that slot's
+          own last result, `exit N` — or refused `overlay still running` (its program is up) / `no overlay result`
+          (nothing has run in that slot since the window opened). The pane form is per slot, the bare form per window:
+          a deliberate divergence from agterm (recorded in `docs/agterm-parity.md`), because the bare form shipped
+          that way.
         - `agwintermctl session overlay copy [--pane left|right] [--target <id>]` — the text of the selection made INSIDE
           the overlay (`selection all --target <overlay id>` makes one); `result.text`, printed bare without `--json`.
           The clipboard is NOT touched; `session copy --target <pane id>` keeps reading the pane underneath (bare, or

@@ -871,7 +871,7 @@ internal partial class Program
         {
             if (action == "resize") return ISessionHost.RefusePrefix + OverlayPanes.OverlayIdResizeRefusal(target!, owned);
             if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.OverlayIdSizeRefusal(target!, owned);
-            return PaneOverlayAction(target, action, command, wait, block, owned, text);
+            return PaneOverlayAction(target, action, command, wait, block, owned, text, inferred: true);
         }
         if (action != "result" && OverlayTargetRefusal(target) is { } refusal) return refusal;
         switch (action)
@@ -992,9 +992,14 @@ internal partial class Program
     /// no session — the shared "no session" refusal, except a bare <c>close</c> (no target / "active")
     /// which stays ok "no overlay", the session-wide arm's shape; then the AGREEMENT check — a
     /// <c>--target</c> that is the session id (or a prefix of it, or a name) passes, a pane id (or a
-    /// prefix of one) must be the same side as <c>--pane</c> (<see cref="OverlayPanes.Disagree"/>:
-    /// the caller named two panes); then <c>pane not visible</c> when the index is past the pane count
-    /// (a single-pane session accepts <c>left</c> only). Then per action: <c>open</c> — the held-slot
+    /// prefix of one), or a pane's overlay id, must be the same side as <c>--pane</c>
+    /// (<see cref="OverlayPanes.Disagree"/>: the caller named two panes); then <c>pane not visible</c>
+    /// when the index is past the pane count (a single-pane session accepts <c>left</c> only). With
+    /// <paramref name="inferred"/> — no word was passed; <paramref name="index"/> is what the overlay id
+    /// on <c>--target</c> resolved to on the pipe thread — the hop follows THE ID instead (the slot may
+    /// have moved on a swap, or gone, since), so no refusal names a <c>--pane</c> the caller never
+    /// passed: <see cref="OverlayPanes.OverlayIdGoneRefusal"/> when it resolves to no open pane overlay
+    /// any more. Then per action: <c>open</c> — the held-slot
     /// refusal from <see cref="OverlayOpen"/>, else the overlay pane id; with <c>block</c> the pipe
     /// thread then waits on THE TERM THIS CALL OPENED (its OverlayDone, taken inside the same hop as
     /// the open — #227's rule for the session-wide arm), released by its exit ("exit N"), by a close
@@ -1004,14 +1009,14 @@ internal partial class Program
     /// while nothing has exited in it since the window opened (or since its last open), else "exit N";
     /// <c>copy</c> / <c>text</c> — <see cref="OverlayRead"/> on the slot. An action this arm does not
     /// know opens, as the session-wide arm's default does (and the fake's).</summary>
-    private string PaneOverlayAction(string? target, string action, string? command, bool wait, bool block, int index, OverlayTextArgs text)
+    private string PaneOverlayAction(string? target, string action, string? command, bool wait, bool block, int index, OverlayTextArgs text, bool inferred = false)
     {
         switch (action)
         {
             case "close":
                 return InvokeOnUiQueued(() =>
                 {
-                    var (s, p, early) = LocatePaneSlot(target, index, bareCloseOk: true);
+                    var (s, p, early) = LocatePaneSlot(target, index, bareCloseOk: true, inferred: inferred);
                     if (early is not null) return early;
                     if (p!.Overlay.Term is null) return OverlayPanes.NoOverlay;
                     ClosePaneOverlay(s!, p);
@@ -1020,7 +1025,7 @@ internal partial class Program
             case "result":
                 return InvokeOnUiQueued(() =>
                 {
-                    var (_, p, early) = LocatePaneSlot(target, index);
+                    var (_, p, early) = LocatePaneSlot(target, index, inferred: inferred);
                     if (early is not null) return early;
                     var slot = p!.Overlay;
                     // Under the exit lock the two fields are one state: an open resets LastResult and
@@ -1039,7 +1044,7 @@ internal partial class Program
             case "text":
                 return InvokeOnUiQueued(() =>
                 {
-                    var (_, p, early) = LocatePaneSlot(target, index);
+                    var (_, p, early) = LocatePaneSlot(target, index, inferred: inferred);
                     if (early is not null) return early;
                     return OverlayRead(p!.Overlay, action, text, index);
                 });
@@ -1049,7 +1054,7 @@ internal partial class Program
                     if (!block)
                         return InvokeOnUiQueued(() =>
                         {
-                            var (s, p, early) = LocatePaneSlot(target, index);
+                            var (s, p, early) = LocatePaneSlot(target, index, inferred: inferred);
                             if (early is not null) return early;
                             return OverlayOpen(s!, p!, command!, 0, wait);
                         });
@@ -1062,7 +1067,7 @@ internal partial class Program
                     TaskCompletionSource<string>? done = null;
                     string opened = InvokeOnUiQueued(() =>
                     {
-                        var (s, p, early) = LocatePaneSlot(target, index);
+                        var (s, p, early) = LocatePaneSlot(target, index, inferred: inferred);
                         if (early is not null) return early;
                         string id = OverlayOpen(s!, p!, command!, 0, false);
                         if (!id.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) done = p!.Overlay.Term?.OverlayDone;
@@ -1083,11 +1088,23 @@ internal partial class Program
     /// for an absent / "active" target — the plain ok "no overlay" a bare close answers. The session id is
     /// checked BEFORE the pane ids because one pane carries it (a <c>session new</c> mints pane 0 = the
     /// session id; after a swap that pane sits in slot 1): a target equal to it is the session, and agrees
-    /// with either word — only the pane with its OWN id can disagree.</summary>
-    private (Ses? s, Pane? p, string? early) LocatePaneSlot(string? target, int index, bool bareCloseOk = false)
+    /// with either word — only a pane with its OWN id, or with its overlay's id, can disagree. With
+    /// <paramref name="inferred"/> (see <see cref="PaneOverlayAction"/>) there is no word to agree with:
+    /// the target IS a pane overlay's id, and the pane whose open overlay carries it now is the answer —
+    /// <paramref name="index"/> is only what it was on the pipe thread — or, when none does any more,
+    /// <see cref="OverlayPanes.OverlayIdGoneRefusal"/>.</summary>
+    private (Ses? s, Pane? p, string? early) LocatePaneSlot(string? target, int index, bool bareCloseOk = false, bool inferred = false)
     {
         bool named = !string.IsNullOrEmpty(target) && target != "active";
         var s = FindSesForTarget(target);
+        if (inferred)
+        {
+            if (s is not null)
+                for (int i = 0; i < s.Panes.Count; i++)
+                    if (s.Panes[i].Overlay.Term is { } po && (po.Id == target || po.Id.StartsWith(target!, StringComparison.Ordinal)))
+                        return (s, s.Panes[i], null);
+            return (s, null, ISessionHost.RefusePrefix + OverlayPanes.OverlayIdGoneRefusal(target!));
+        }
         if (s is null) return (null, null, bareCloseOk && !named ? OverlayPanes.NoOverlay : NoSessionRefusal);
         if (named && !(s.Id == target || s.Id.StartsWith(target!, StringComparison.Ordinal)))
             for (int i = 0; i < s.Panes.Count; i++)
@@ -1107,8 +1124,9 @@ internal partial class Program
     /// <summary>The pane whose OPEN overlay <paramref name="target"/> names (its id, or a prefix of it
     /// longer than the pane's own id — FindControlPane's arms), as an index into its session's panes;
     /// -1 for anything else (absent, "active", a session, a pane, a session-wide cover, a scratch, the
-    /// quick terminal, nothing). Read under the workspace lock on the caller's thread; the hop
-    /// re-resolves through LocatePaneSlot, whose agreement loop sees the same id on the same side.</summary>
+    /// quick terminal, nothing). Read under the workspace lock on the caller's thread — a first
+    /// answer only: the hop re-resolves the ID through LocatePaneSlot (<c>inferred</c>), which follows
+    /// the slot wherever a swap moved it meanwhile, and refuses naming the id when it is gone.</summary>
     private int PaneOverlayIndexOf(string? target)
     {
         if (string.IsNullOrEmpty(target) || target == "active") return -1;
