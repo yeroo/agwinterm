@@ -619,10 +619,14 @@ internal sealed class FakeSessionHost : ISessionHost
         if (text is null) return "empty";
         sf.s.Selections[sf.id] = text; return "selected all";
     }
-    /// <summary>What the app's SelectionText renders for a whole-grid selection: every history row and
-    /// then the screen, each row's trailing spaces dropped, CRLF between rows and nothing after the
-    /// last — NOT SurfaceText.Dump, which is LF-joined with trailing blank rows trimmed (a multi-row
-    /// count in <c>copied N chars</c> would differ). Null for a grid with no cells.</summary>
+    /// <summary>What the app's SelectionText renders for SelectAll's range, built from the cells the
+    /// way it builds them: every history row and then the screen — or the alt screen ALONE while it is
+    /// active, the parity programme's decision 2 (ClampSel pins the range to <c>hist</c> there; the
+    /// history is the main screen's) — a wide glyph's trailing spacer (Width 0) skipped, a rune above
+    /// the BMP as its surrogate pair, each row's trailing SPACES dropped (only U+0020: a trailing NBSP
+    /// or U+3000 stays, which is why this is not DumpRow's TrimEnd()), CRLF between rows and nothing
+    /// after the last — NOT SurfaceText.Dump, which is LF-joined with trailing blank rows trimmed (a
+    /// multi-row count in <c>copied N chars</c> would differ). Null for a range with no cells.</summary>
     private static string? WholeGrid(ISession pane)
     {
         var sb = new StringBuilder();
@@ -630,11 +634,21 @@ internal sealed class FakeSessionHost : ISessionHost
         {
             var em = pane.Emulator;
             int rows = em.Screen.Rows, cols = em.Screen.Cols, hist = em.HistoryCount;
-            if (rows + hist <= 0 || cols <= 0) return null;
-            for (int abs = 0; abs < hist + rows; abs++)
+            int first = em.IsAltScreen ? hist : 0, last = hist + rows - 1;
+            if (last < first || cols <= 0) return null;
+            var row = new StringBuilder();
+            for (int abs = first; abs <= last; abs++)
             {
-                if (abs > 0) sb.Append("\r\n");
-                sb.Append((abs < hist ? em.DumpHistoryRow(abs) : em.DumpRow(abs - hist)).TrimEnd(' '));
+                if (abs > first) sb.Append("\r\n");
+                row.Clear();
+                for (int c = 0; c < cols; c++)
+                {
+                    Cell cell = abs < hist ? em.GetHistoryCell(abs, c) : em.Screen[abs - hist, c];
+                    if (cell.Width == 0) continue;
+                    if (cell.Rune > 0xFFFF) row.Append(char.ConvertFromUtf32(cell.Rune));
+                    else row.Append(cell.Rune == '\0' ? ' ' : (char)cell.Rune);
+                }
+                sb.Append(row.ToString().TrimEnd(' '));
             }
         }
         return sb.ToString();

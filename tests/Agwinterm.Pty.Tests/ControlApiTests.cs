@@ -447,6 +447,42 @@ public class ControlApiTests
         Assert.Equal("finalized (empty)", Result(Dispatch(server, "selection.finalize", target: id)));
     }
 
+    // Decision 2 of the parity programme: on the alt screen `selection all` is the alt screen alone -
+    // the history is the main screen's and stays reachable underneath (HistoryCount does not change
+    // when the alt buffer is active), so a fake that walked it would hand back text neither product
+    // does, and say `copied` where both say `nothing to copy`.
+    [Fact]
+    public void SelectionAll_OnTheAltScreen_IsTheAltScreenAlone()
+    {
+        var (server, host) = New();
+        string id = host.ActiveSess!.Id;
+        Write(server, id, "in history\r\n" + string.Concat(Enumerable.Repeat("filler\r\n", 30)));   // 24 rows: the first line scrolls into history
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        Assert.StartsWith("in history\r\n", Result(Dispatch(server, "session.copy", target: id)));      // main screen: history first
+        Write(server, id, "\u001b[?1049h");                                                              // enter the alt screen (blank)
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        Assert.Equal(string.Concat(Enumerable.Repeat("\r\n", 23)), Result(Dispatch(server, "session.copy", target: id)));
+        Assert.Equal("nothing to copy", Result(Dispatch(server, "selection.copy", target: id)));
+        Write(server, id, "\u001b[?1049l");                                                              // back: the history is there again
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        Assert.StartsWith("in history\r\n", Result(Dispatch(server, "session.copy", target: id)));
+    }
+
+    // SelectionText trims only SPACES from a row's end: a no-break space stays, so it counts in
+    // `copied N chars` and, alone on a row, is something to copy - the whitespace arm draws its line
+    // at CR, LF and U+0020, and a fake that trimmed every whitespace would answer it backwards.
+    [Fact]
+    public void SelectionAll_KeepsATrailingNoBreakSpace()
+    {
+        var (server, host) = New();
+        string id = host.ActiveSess!.Id;
+        Write(server, id, "\u00a0\u00a0");
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        string sel = Result(Dispatch(server, "session.copy", target: id));
+        Assert.StartsWith("\u00a0\u00a0\r\n", sel);
+        Assert.Equal($"copied {sel.Length} chars", Result(Dispatch(server, "selection.copy", target: id)));
+    }
+
     private static void Write(ControlServer server, string target, string text)
         => Assert.True(Ok(Dispatch(server, "session.write", new { text }, target: target)));
 }
