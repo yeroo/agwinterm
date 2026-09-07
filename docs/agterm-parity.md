@@ -6,7 +6,7 @@ not, and what we have closed.
 - Compared against **agterm v0.26.0** (2026-09-02), releases 0.22.0 → 0.26.0.
 - **The running order lives in [plans/2026-09-03-parity-batches.md](plans/2026-09-03-parity-batches.md)** —
   this file is what is missing, that file is which batch builds it and when.
-- Ours: agwinterm **0.17.12** released (main is ahead), agliteterm **0.17.13** released.
+- Ours: agwinterm **0.17.13** released (main is ahead), agliteterm **0.17.15** released.
 - Update this file in the PR that closes an item. A line that says "missing" long after it shipped
   is worse than no tracker.
 - **This supersedes the earlier gap docs in this directory** (`agterm-gap-analysis*.md`,
@@ -42,10 +42,36 @@ named as such rather than left to look like a backlog nobody is working on.
 | `session.split` replies with the **pane id** (the split pane's on `on`, also when already split; the survivor's on `off`) | — | agwinterm *(P4, #238)*; lite had it (#13) |
 | Horizontal splits — `--axis vertical\|horizontal` on `session.split` (agterm's words: vertical = left/right, horizontal = top/bottom), per session, re-orients live, survives restore, `axis` in `tree`; `session.focus` takes `primary\|split\|left\|right\|top\|bottom\|other`, `session.resize` gains `--grow-top` / `--grow-bottom` | 0.23.0 | agwinterm *(P4, #238)*, lite: P4-lite |
 | `session.split.close` — closes **either** pane, the survivor's id as the reply; a one-pane session refused | 0.23.0 | agwinterm *(P4, #238)*, lite: P4-lite |
-| `session.swap` — the panes exchanged; axis, ratio sequence, focus's pane, overlays, status and **every id** kept | 0.26.0 | agwinterm *(P4, #238)*, lite: P4-lite *(agliteterm #30 — one flag read in its hidden-session model; see [lite-parity.md](lite-parity.md))* |
+| `session.swap` — the panes exchanged; axis, ratio sequence, focus's pane, the session-wide overlay, status and **every id** kept (a pane overlay travels with its pane since P5) | 0.26.0 | agwinterm *(P4, #238)*, lite: P4-lite *(agliteterm #30 — one flag read in its hidden-session model; see [lite-parity.md](lite-parity.md))* |
+| Pane-scoped overlays and reading an overlay — `--pane left\|right` on `session.overlay` `open` / `close` / `result` (the flag omitted = the session-wide slot, unchanged byte for byte; `left` = pane 0 and `right` = pane 1 whatever the axis; a pane overlay is that pane's **surface** while open, moves with its pane on a swap and dies with it), `session.overlay.copy`, `session.overlay.text [--all\|--lines N]`, `session.text --all`, `paneOverlays` in `tree` | 0.24.0 (`copy` / `text`), pane scoping 2026-08-01 | agwinterm *(P5, #250)*, lite: P5-lite |
 
-The overlay entry is the *honesty* half only: a pane id is now refused rather than silently widened.
-Pane-scoped overlays themselves are still open, below.
+The two `session.overlay` rows are the two halves of one item: #213 the *honesty* half (a pane id is
+refused rather than silently widened — still the rule for the verbs **without** `--pane`), P5 the
+*capability* half (`--pane` names one pane; the refusal for a bare pane id on `--target` stays, and
+now says `--pane` is how a pane is named).
+
+The P5 row carries **two deliberate divergences** from agterm, recorded here rather than left to be
+discovered:
+
+- **The session-wide `session overlay result` stays window-wide and `ok`.** agterm's `result` is per
+  overlay. Ours (no `--pane`) keeps answering the **last** session-wide overlay exit in the window
+  (`ok:true "no overlay"` when none) — shipped, tested (`tests/integration/win32-control.ps1`), and
+  the P2 leftovers (#227 / #228) were closed on that shape; changing it is a contract break for no
+  caller. The **pane** arm is agterm's: per slot, `exit N`, refused `overlay still running` while its
+  program is up and `no overlay result` when nothing has run in that slot since the window opened —
+  reached by `result --pane left|right`, or by `result --target <that pane overlay's id>` while the
+  overlay is up (the rule's "the id names that overlay's slot"; once it closed the id resolves
+  nowhere and the bare form is window-wide again). A pane overlay's exit never writes the
+  window-wide value.
+- **`--pane` with `--size-percent`, and `resize --pane`, are refused at both ends** — the CLI exits 2
+  with "Nothing sent", and a raw client is refused by the server with the same words; agterm calls
+  both a usage error. A pane overlay is always its pane's full box; the session-wide floating panel
+  (`--size-percent`) is unchanged.
+
+Also recorded, not a divergence: agterm's `overlay not realized` (a `copy` / `text` between `open`
+and the terminal being up) is kept as the phrase for a slot with no terminal to read, but the
+moment does not exist here — `open` builds the terminal before it replies, so the buffer is readable
+the moment the id comes back.
 
 The P4 rows carry **two deliberate divergences** from agterm, recorded here rather than left to be
 discovered:
@@ -71,8 +97,9 @@ discovered:
 
 The P1 rows were items **1, 2 and 8** of the open list before P1 closed them, the P2 rows were
 item **6**, the `sidebar.width` half of item **5** and two sub-items of item **11**, the P3 rows
-were item **1** and the `restore.capture` half of item **5** (which closes that item), and the P4
-rows were items **2 and 3** (`session.swap`, and the three split gaps); the list below is
+were item **1** and the `restore.capture` half of item **5** (which closes that item), the P4
+rows were items **2 and 3** (`session.swap`, and the three split gaps), and the P5 row was item
+**1** (pane-scoped overlays, `overlay copy` / `text`); the list below is
 renumbered after each, so read those plans' "closes items ..." against this note rather than
 against the current numbering. P3 is the first batch to touch the per-window restore file, and it
 set the format rule the later batches inherit: additive keys only, no version field, every loaded
@@ -86,43 +113,35 @@ reaches. The agliteterm mirrors are the per-batch `P<n>-lite` plans, tracked in
 
 ## Open — agent-facing control API
 
-Everything here is portable. Ordered by what costs us work today.
-
-### 1. Pane-scoped overlays, and reading an overlay
-**agterm 0.24.0 (`session.overlay.copy`, `session.overlay.text`), pane scoping 2026-08-01.**
-
-An overlay covers the whole session, so a review TUI aimed at the right pane blanks the left pane the
-user is reading. agterm delivers it as `--pane left|right` on the existing verbs, with the flag
-omitted keeping session-wide behaviour. Separately, `session text` addresses the pane *underneath* an
-overlay, so an overlay's own output cannot be read at all.
-
-**Size:** medium (the scoping is real work in the renderer); the two read verbs are small.
+Nothing left here: the control-API items closed with P1–P5. What remains of the overlay verbs is
+agterm's `--cwd`, `--follow` and `--background-color` on `open`, deliberately left out of P5
+(tracked as #139 / #88), and `session.hud` below.
 
 ---
 
 ## Open — UI
 
-### 2. `control.pick` — the native picker, driven over the API
+### 1. `control.pick` — the native picker, driven over the API
 **agterm 2026-07-28.** Half the agterm cookbook is built on it: project launcher, workspace picker,
 conversation picker, backlog picker, SQLite browser. Nothing here can do that without shipping a
 picker binary of its own.
 **The biggest single capability gap.** Size: large.
 
-### 3. `session.hud` and `--position`
+### 2. `session.hud` and `--position`
 **agterm 0.22.0 / 0.24.0.** A transient overlay for status an agent wants seen without printing into
 the terminal, anchored to one of nine positions. Size: medium.
 
-### 4. Quick terminal: screen percentage, and a global hotkey
+### 3. Quick terminal: screen percentage, and a global hotkey
 **agterm 0.24.0 / 0.25.0.** Sizes as 40–90% of the screen, and a system-wide hotkey summons it over
 any app. Ours is a fixed size with no global hotkey. Size: medium (the hotkey is a `RegisterHotKey`
 and a policy decision about stealing a chord system-wide).
 
-### 5. Workspace navigation and keymap alternatives
+### 4. Workspace navigation and keymap alternatives
 **agterm 0.23.0 / 0.24.0.** `workspace.go next|prev`, `toggle_workspace_collapse`, and keymap entries
 that accept several chords for one action separated by `|` (a native chord *and* a tmux-style
 leader). We have `session go`; workspaces are keyboard-unreachable without a chord. Size: small.
 
-### 6. Smaller things from 0.26
+### 5. Smaller things from 0.26
 Cursor shape and blink settings; sidebar tooltips revealing truncated names; the tree naming the
 shell holding each pane's foreground process. (The other two that were here — `session.restore`
 reporting the pane, and `--size-percent` validated rather than clamped — closed in P2.)

@@ -322,6 +322,14 @@ internal partial class Program : ISessionHost, IWindowHost
         // waits on the source of the pane it opened, so two blocking opens in one window each get
         // their own program's status; the window-wide last exit (`overlay result`) stays separate.
         public TaskCompletionSource<string>? OverlayDone;
+        // P5: this pane's overlay slot — a program run over exactly this pane's box while the sibling
+        // pane stays visible and interactive (the rule is on ISessionHost.SessionOverlay). One slot
+        // type with the session-wide slot (Ses.Overlay); SizePercent is always 0 here (a pane overlay
+        // is always full-pane). The slot lives ON the pane, not on the session keyed by index, so a
+        // swap / a survivor promotion move it by construction and ClosePane disposes it with the
+        // pane. Unused on a cover pane (an overlay term, scratch, quick) — nothing opens an overlay
+        // over an overlay.
+        public readonly OverlaySlot Overlay = new();
         // The pane's StartAsync task (CreatePane's command branches). A start that FAILS sets
         // HasExited without raising Exited — both session kinds catch the spawn failure and keep
         // the surface to show it — so a watcher that needs an end (WatchOverlayExit) observes this
@@ -370,11 +378,11 @@ internal partial class Program : ISessionHost, IWindowHost
         public string? Context;    // session.context: one line of "what is this pane for", set over the API (P3); drawn dimmed beside the name; persisted; null = none. Per session, not per pane — SessionContexts holds the rules.
         public string? ProfileName; // shell profile this session launched with (null = default; persisted)
         public Pane? Scratch;      // per-session scratch terminal (lazy; kept alive when hidden; not restored)
-        public Pane? Overlay;      // ephemeral overlay terminal running a program over this session (Wave B3)
-        public int OverlaySizePercent; // 0 = full content region; 1..100 = centered floating panel
-        public bool OverlayWait;   // keep the overlay after its program exits (press a key to close)
-        public bool OverlayExited; // the overlay's program has exited and it's awaiting a key
-        public int OverlayExitCode;   // that program's exit code (the --wait banner) — per session, so another session's open cannot reset it
+        // The SESSION-WIDE overlay slot (Wave B3): an ephemeral program run over the whole session —
+        // every pane, and any pane overlay under it — shown as the kind-3 cover while the session is
+        // active. Per session, so another session's open cannot reset its exit. The per-PANE slots are
+        // Pane.Overlay (P5); the type is the same.
+        public readonly OverlaySlot Overlay = new();
         // Wave F2: per-session background watermark (a faint image drawn behind the terminal of every pane).
         public string? BgPath;      // absolute path to the copied image under AppDir\backgrounds (null = none)
         public int BgOpacity = 15;  // 0..100 (drawn opacity of the watermark)
@@ -393,6 +401,29 @@ internal partial class Program : ISessionHost, IWindowHost
         public required string Name;
         public readonly List<Ses> Sessions = new();
         public bool Expanded = true;
+    }
+
+    /// <summary>One overlay slot (P5): the ONE type behind the session-wide slot (<see cref="Ses.Overlay"/>,
+    /// shown as the kind-3 cover) and the per-pane slots (<see cref="Pane.Overlay"/>, drawn over that
+    /// pane's box). A slot is empty while <see cref="Term"/> is null; the fields describe the program
+    /// running (or, with <c>--wait</c>, just exited) in it. <see cref="Term"/> is written under
+    /// <c>_overlayExitLock</c> — OverlayOpen's assign, the close's null-out and the exit's guard are one
+    /// locked step, so an exit landing on the pty thread never stamps a replaced or closed term's code.
+    /// <see cref="Pane.OverlayDone"/> stays on the overlay term itself: it is per program RUN, and a
+    /// <c>--block</c> caller holds the source of the term its own open created.</summary>
+    private sealed class OverlaySlot
+    {
+        public Pane? Term;        // the overlay's terminal (a cover-kind pane) while the slot is open; null = empty
+        public int SizePercent;   // session-wide slot only: 0 = full content region; 1..100 = centered floating panel. Always 0 on a pane slot (full-pane, never floating)
+        public bool Wait;         // keep the overlay after its program exits (press a key to close)
+        public bool Exited;       // the program has exited and the overlay is awaiting that key (the --wait banner)
+        public int ExitCode;      // that program's exit code (drawn in the banner)
+        // Pane slots only: `session overlay result --pane X` — "exit N" of the last program that ran in
+        // THIS slot, reset to NoResult by each open (mirroring the window-wide _lastOverlayExit reset);
+        // masked by "overlay still running" while a program is up. Written under _overlayExitLock by
+        // WatchOverlayExit, read under it by the host. The session-wide slot does not use it: its
+        // `result` stays the window-wide _lastOverlayExit (the divergence recorded in the P5 plan).
+        public string LastResult = OverlayPanes.NoResult;
     }
 
     private float _cellW = 8, _cellH = 16;
@@ -1060,6 +1091,8 @@ internal partial class Program : ISessionHost, IWindowHost
     /// thread; locks the session.</summary>
     private Uia.TextSnapshot? BuildUiaTextSnapshot()
     {
+        // The one seam: a shown cover, else the focused pane's SURFACE — its overlay term while a pane
+        // overlay is open (P5), else the pane. The reader follows whatever the keyboard reaches.
         var p = ActiveSurface();
         if (p is null) return null;
         var (oxC, oyC, cw, ch) = ActivePaneView();

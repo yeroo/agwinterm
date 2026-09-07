@@ -69,6 +69,20 @@ internal sealed class FakeSessionHost : ISessionHost
         /// window-level quick terminal covers NO session and is not modelled: <see cref="AddCoverPane"/>
         /// mints only <c>:scratch:</c> ids.</summary>
         public readonly List<(string Id, ISession Pane)> CoverPanes = new();
+        /// <summary>The PANE overlay slots (P5), keyed by pane id — what the app keeps in Pane.Overlay.
+        /// Keyed by id like the pins and the captured slots, so a slot travels with its pane through a
+        /// swap and goes with it through <see cref="RemovePane"/>, as the app's does by living on the
+        /// Pane. An entry exists once anything was asked of that slot (its <see cref="PaneOverlaySlot.LastResult"/>
+        /// outlives the term, as the app's does); <see cref="PaneOverlaySlot.Open"/> says whether one is up.
+        /// The open term is ALSO in <see cref="CoverPanes"/> under its overlay id, so
+        /// <c>--target &lt;overlay id&gt;</c> reaches it through the same resolvers a scratch cover uses.</summary>
+        public readonly Dictionary<string, PaneOverlaySlot> PaneOverlays = new();
+        /// <summary>The selection made INSIDE a cover pane, keyed by cover id — what the app's
+        /// SelectionText(pane) reads for the overlay pane. Written by <c>selection all</c> on the cover,
+        /// read by <c>session overlay copy</c>; never the clipboard. The real panes have none here
+        /// (SessionCopy answers "" as before), which is what lets a test prove the two verbs read two
+        /// different surfaces.</summary>
+        public readonly Dictionary<string, string> Selections = new();
         /// <summary>A scratch cover over this session, id "&lt;session id&gt;:scratch:&lt;n&gt;" as the app
         /// spells it (Program.Sessions.cs). Returns the pane id.</summary>
         public string AddCoverPane()
@@ -76,6 +90,32 @@ internal sealed class FakeSessionHost : ISessionHost
             string id = Id + ":scratch:" + Guid.NewGuid().ToString("N")[..6];
             CoverPanes.Add((id, new TerminalSession(80, 24)));
             return id;
+        }
+        /// <summary>The slot of pane <paramref name="index"/>, made on first ask.</summary>
+        public PaneOverlaySlot SlotOf(int index)
+        {
+            string paneId = PaneIds[index];
+            if (!PaneOverlays.TryGetValue(paneId, out var slot)) PaneOverlays[paneId] = slot = new PaneOverlaySlot();
+            return slot;
+        }
+        /// <summary>The tree's <c>paneOverlays</c>: the open slots as <see cref="OverlayPanes"/>' words,
+        /// in pane order — read off the pane list, so a swap is read back the way the app reads it.</summary>
+        public List<string> PaneOverlayWords()
+        {
+            var words = new List<string>();
+            for (int i = 0; i < PaneIds.Count; i++)
+                if (PaneOverlays.TryGetValue(PaneIds[i], out var slot) && slot.Open) words.Add(OverlayPanes.Word(i));
+            return words;
+        }
+        /// <summary>Close an open pane slot: the term leaves <see cref="CoverPanes"/> (its id resolves
+        /// nowhere afterwards), its selection goes, the slot keeps its last result — the app's
+        /// ClosePaneOverlay (task 2).</summary>
+        public void ClosePaneOverlay(PaneOverlaySlot slot)
+        {
+            if (!slot.Open) return;
+            CoverPanes.RemoveAll(c => c.Id == slot.Id);
+            Selections.Remove(slot.Id!);
+            slot.Id = null; slot.Term = null; slot.Exited = false; slot.Wait = false;
         }
         /// <summary>Split this session: adds a pane and returns it, for the multi-pane status cases.</summary>
         public ISession AddPane()
@@ -93,12 +133,28 @@ internal sealed class FakeSessionHost : ISessionHost
         {
             string gone = PaneIds[index];
             RestorePins.Remove(gone); Captured.Remove(gone); Foreground.Remove(gone);
+            // The pane overlay dies with its pane (P5): the app's ClosePane disposes Pane.Overlay too.
+            if (PaneOverlays.Remove(gone, out var slot)) ClosePaneOverlay(slot);
             Panes.RemoveAt(index); PaneIds.RemoveAt(index); PaneCount = Panes.Count;
             Ratios = PaneCount > 1 ? Enumerable.Repeat(1.0 / PaneCount, PaneCount).ToList() : new() { 1.0 };
             FocusedPane = Math.Clamp(index, 0, Panes.Count - 1);
         }
         /// <summary>Seals pane 0's id to the session id once <see cref="Id"/> is set.</summary>
         public Sess Seed() { if (PaneIds.Count == 0) PaneIds.Add(Id); else PaneIds[0] = Id; return this; }
+    }
+    /// <summary>A pane's overlay slot, the shape task 2 gives the app's Pane.Overlay: the term while
+    /// one is open (null = empty), whether the caller asked to keep it after exit (<c>--wait</c>),
+    /// whether its program has exited, and the LAST result — <c>exit N</c> once a program has exited
+    /// in this slot, <see cref="OverlayPanes.NoResult"/> until then and again after an open (every
+    /// open resets it, as the session-wide open resets the window-wide value).</summary>
+    internal sealed class PaneOverlaySlot
+    {
+        public string? Id;
+        public ISession? Term;
+        public bool Wait, Exited;
+        public int ExitCode;
+        public string LastResult = OverlayPanes.NoResult;
+        public bool Open => Term is not null;
     }
     internal sealed class Ws { public string Id = "", Name = ""; public List<Sess> Sessions = new(); }
 
@@ -227,8 +283,17 @@ internal sealed class FakeSessionHost : ISessionHost
     /// <summary>The workspace a session lives in — what the app reads as <c>Ses.Ws</c>.</summary>
     internal Ws WorkspaceOf(Sess s) => Workspaces.First(w => w.Sessions.Contains(s));
 
-    private static ISession? Focused(Sess? s) =>
-        s is null ? null : s.Panes[Math.Clamp(s.FocusedPane, 0, s.Panes.Count - 1)];
+    /// <summary>The focused pane's SURFACE: its overlay term while that pane's slot is open, else the
+    /// pane — the app's ActiveSurface rule (P5), so no target / "active" reaches a pane overlay the way
+    /// it reaches a cover today, and the pane's own id reaches the shell underneath. (The session-wide
+    /// slot has no term in the fake, so it does not take part.)</summary>
+    private static ISession? Focused(Sess? s)
+    {
+        if (s is null) return null;
+        int i = Math.Clamp(s.FocusedPane, 0, s.Panes.Count - 1);
+        if (i < s.PaneIds.Count && s.PaneOverlays.TryGetValue(s.PaneIds[i], out var slot) && slot.Open) return slot.Term;
+        return s.Panes[i];
+    }
 
     public IReadOnlyList<WorkspaceSnapshot> Tree() => Workspaces.Select(w => new WorkspaceSnapshot(
         w.Id, w.Name, ReferenceEquals(w, ActiveWs),
@@ -242,7 +307,8 @@ internal sealed class FakeSessionHost : ISessionHost
                 StatusChangedAt: statusChangedAt,
                 Context: s.Context,
                 CapturedCommands: s.PaneIds.Select(id => s.Captured.TryGetValue(id, out var c) ? c : "").ToList(),   // the slot, "" = none, parallel to PaneIds
-                Axis: s.Axis);
+                Axis: s.Axis,
+                PaneOverlays: s.PaneOverlayWords());   // the open pane slots as words; empty = the tree omits the key (P5)
         }).ToList())).ToList();
 
     public WindowStateSnapshot WindowState() =>
@@ -524,10 +590,21 @@ internal sealed class FakeSessionHost : ISessionHost
     public string ConfigGet(string key) => Config.TryGetValue(key, out var v) ? v : "";
     public string ConfigList() => string.Join("\n", Config.Select(kv => $"{kv.Key} = {kv.Value}"));
     public string SettingsOpen() => "opened";
-    public string SessionCopy(string? target) => "";
-    public string SelectionAll(string? target) => FindSes(target) is not null ? "selected" : "no session";
+    public string SessionCopy(string? target) => "";   // the pane underneath: no selection here, ever — `overlay copy` reads the cover's (P5)
+    // `selection all` on a COVER pane selects its whole buffer (what the app's SelectAll does on the
+    // surface the target resolves to), so `session overlay copy` has something to read; on a real pane
+    // the fake keeps no selection (as before). SelectionClear drops a cover's selection.
+    public string SelectionAll(string? target)
+    {
+        if (CoverTarget(target) is { } cover) { cover.s.Selections[cover.id] = SurfaceText.Dump(cover.pane, new OverlayTextArgs(All: true, Lines: 0)); return "selected"; }
+        return FindSes(target) is not null ? "selected" : "no session";
+    }
     public string SelectionCopy(string? target) => "";
-    public string SelectionClear(string? target) => "cleared";
+    public string SelectionClear(string? target) { if (CoverTarget(target) is { } cover) cover.s.Selections.Remove(cover.id); return "cleared"; }
+    /// <summary>A NAMED target that is a cover — null / "" / "active" never is (an empty prefix would
+    /// match every cover), and a real pane's id resolves before a cover's, as in FindPaneBy.</summary>
+    private (Sess s, string id, ISession pane)? CoverTarget(string? target)
+        => string.IsNullOrEmpty(target) || target == "active" || FindPane(target) is not null ? null : FindCover(target);
     public string SelectionFinalize(string? target) => "";
     public string SessionPaste(string? target, string? text) => FindSes(target) is not null ? "pasted" : "no session";
     public string SessionSearch(string? target, string? query, string? action) => "no matches";
@@ -536,38 +613,151 @@ internal sealed class FakeSessionHost : ISessionHost
     // Mirrors the app: no clamp, because ControlServer.TryOverlaySize refuses out-of-range before the
     // host is reached. The range check here is the fake's own tripwire — a test that drives the host
     // directly with a bad size must see a refusal, not a silently-coerced panel.
-    public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
+    private const string NoOverlaySession = ISessionHost.RefusePrefix + "no session matches that target; nothing opened, resized or closed";
+
+    public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block, string? pane, OverlayTextArgs text)
     {
-        // As the app, in the app's ORDER and WORDING (the suite asserts wording, so the two hosts
-        // must not drift), for open, close and resize — the cases ISessionHost.SessionOverlay's
-        // refusal list names: open checks the command before the session; open and resize are
-        // refused whenever NO session resolves; close is refused only when a target other than
-        // absent, empty or "active" resolves to nothing (`named`), and is ok ("no overlay") for those
-        // three with nothing active, or on a session that exists and has no overlay — idempotent,
-        // the conformance contract closes with nothing open; resize with no overlay open is a
-        // refusal. NOT mirrored: open's reply (the fake answers the SESSION id; the app answers the
-        // overlay pane id, `<session>:overlay:<hex>`), `result` (no arm — it falls into open's "needs
-        // a command" refusal, where the app answers its last exit), and the app's refusal of a target
-        // that names one pane of a split session (OverlayTargetRefusal); a test of any needs the app.
-        const string noSession = ISessionHost.RefusePrefix + "no session matches that target; nothing opened, resized or closed";
+        // The pane word is parsed FIRST, before any resolve (the app's order, task 4): a bad word is
+        // refused with nothing looked up. The server refused it already; this is the fake's own
+        // guard, so a test that drives the host directly gets the same answer.
+        if (!OverlayPanes.TryParse(pane, out int index, out string? paneRefusal)) return ISessionHost.RefusePrefix + paneRefusal;
+        // Then, as the app: resize / a size with a pane, refused before any resolve (revmux r1 of P5:
+        // the fake checked them AFTER the pane count, so a size on a single-pane session answered
+        // "pane not visible" here and the size refusal in the app). A pane overlay's OWN id on the
+        // target with the word omitted names its slot, with the two refusals that name the id.
+        if (index != OverlayPanes.SessionWide)
+        {
+            if (action == "resize") return ISessionHost.RefusePrefix + OverlayPanes.ResizeWithPaneRefusal;
+            if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.SizeWithPaneRefusal;
+            return PaneOverlay(target, action, command, wait, index, text);
+        }
+        if (PaneOverlayIndexOf(target) is >= 0 and var owned)
+        {
+            if (action == "resize") return ISessionHost.RefusePrefix + OverlayPanes.OverlayIdResizeRefusal(target!, owned);
+            if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.OverlayIdSizeRefusal(target!, owned);
+            return PaneOverlay(target, action, command, wait, owned, text);
+        }
+
+        // The SESSION-WIDE slot, as the app, in the app's ORDER and WORDING (the suite asserts
+        // wording, so the two hosts must not drift), for open, close and resize — the cases
+        // ISessionHost.SessionOverlay's refusal list names: open checks the command before the
+        // session; open and resize are refused whenever NO session resolves; close is refused only
+        // when a target other than absent, empty or "active" resolves to nothing (`named`), and is
+        // ok ("no overlay") for those three with nothing active, or on a session that exists and has
+        // no overlay — idempotent, the conformance contract closes with nothing open; resize with no
+        // overlay open is a refusal. NOT mirrored: open's reply (the fake answers the SESSION id; the
+        // app answers the overlay pane id, `<session>:overlay:<hex>`), `result` (no arm — it falls
+        // into open's "needs a command" refusal, where the app answers its last exit), the app's
+        // refusal of a target that names one pane of a split session (OverlayTargetRefusal), and the
+        // session-wide slot's TERM: the fake's is a flag with no buffer, so copy / text on it answer
+        // "no overlay" with none and "overlay not realized" with one — the phrase for a slot whose
+        // surface has no emulator, which here is literally so. The pane slots have real terms.
         var s = FindSes(target);
         bool named = !string.IsNullOrEmpty(target) && target != "active";
         if (sizePercent is < 0 or > 100) return ISessionHost.RefusePrefix + $"size-percent {sizePercent} is outside 0..100";
         switch (action)
         {
             case "close":
-                if (s is null) return named ? noSession : "no overlay";
+                if (s is null) return named ? NoOverlaySession : "no overlay";
                 if (!s.Overlay) return "no overlay";
                 s.Overlay = false; s.OverlaySize = 0; return "closed";
             case "resize":
-                if (s is null) return noSession;
+                if (s is null) return NoOverlaySession;
                 if (!s.Overlay) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
                 s.OverlaySize = sizePercent; return $"resized {s.OverlaySize}%";
+            case "copy":
+            case "text":
+                if (s is null) return NoOverlaySession;
+                if (!s.Overlay) return ISessionHost.RefusePrefix + OverlayPanes.NoOverlayRefusal(OverlayPanes.SessionWide);
+                return ISessionHost.RefusePrefix + OverlayPanes.NotRealizedRefusal(s.Id + ":overlay");
             default:
                 if (string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened";
-                if (s is null) return noSession;
+                if (s is null) return NoOverlaySession;
                 s.Overlay = true; s.OverlaySize = sizePercent; return s.Id;
         }
+    }
+
+    /// <summary>The PANE slot (P5), in the order the app's host takes (task 4), every refusal's
+    /// wording from <see cref="OverlayPanes"/>: the command (open only) before the session, as the
+    /// session-wide arm; no session → the same "no session" refusal (a bare close with nothing active
+    /// stays ok "no overlay"); a <c>--target</c> that is a PANE id on the other side than <c>--pane</c>
+    /// is refused (the agreement check; the session id, a name, or the same side pass); an index past
+    /// the pane count is "pane not visible" (a size with a pane, or resize with a pane, was refused by
+    /// the caller before any resolve, as the app's SessionOverlay does). Then per action: open mints
+    /// <c>&lt;pane id&gt;:overlay:&lt;hex&gt;</c> with a real term (a second open on a held slot is
+    /// REFUSED — no silent replace), close answers "closed" / ok "no overlay", result answers the
+    /// slot's last result or its two refusals, copy the cover's selection or its refusals, text the
+    /// term's buffer. NOT mirrored: <c>block</c> (nothing runs here; the reply is the id as for a
+    /// non-blocking open) — a test of it needs the app.</summary>
+    private string PaneOverlay(string? target, string action, string? command, bool wait, int index, OverlayTextArgs text)
+    {
+        bool named = !string.IsNullOrEmpty(target) && target != "active";
+        if (action is "open" && string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened";
+        var s = FindSes(target);
+        if (s is null) return action == "close" && !named ? "no overlay" : NoOverlaySession;
+        if (named && !(s.Id == target || s.Id.StartsWith(target!, StringComparison.Ordinal)))
+            for (int i = 0; i < s.PaneIds.Count; i++)
+            {
+                if ((s.PaneIds[i] == target || s.PaneIds[i].StartsWith(target!, StringComparison.Ordinal)) && i != index)
+                    return ISessionHost.RefusePrefix + OverlayPanes.Disagree(target!, i, index);
+                // The pane's overlay id too (the app's LocatePaneSlot): naming the other side's overlay is naming two panes.
+                if (s.PaneOverlays.TryGetValue(s.PaneIds[i], out var other) && other.Id is { } oid
+                    && (oid == target || oid.StartsWith(target!, StringComparison.Ordinal)) && i != index)
+                    return ISessionHost.RefusePrefix + OverlayPanes.Disagree(target!, i, index, overlay: true);
+            }
+        if (index >= s.Panes.Count) return ISessionHost.RefusePrefix + OverlayPanes.NotVisibleRefusal(s.Id);
+        var slot = s.SlotOf(index);
+        switch (action)
+        {
+            case "close":
+                if (!slot.Open) return "no overlay";
+                s.ClosePaneOverlay(slot);
+                return "closed";
+            case "result":
+                if (slot.Open && !slot.Exited) return ISessionHost.RefusePrefix + OverlayPanes.StillRunning;
+                if (slot.LastResult == OverlayPanes.NoResult) return ISessionHost.RefusePrefix + OverlayPanes.NoResult;
+                return slot.LastResult;
+            case "copy":
+                if (!slot.Open) return ISessionHost.RefusePrefix + OverlayPanes.NoOverlayRefusal(index);
+                if (!s.Selections.TryGetValue(slot.Id!, out var sel) || sel.Length == 0) return ISessionHost.RefusePrefix + OverlayPanes.NoSelection;
+                return sel;
+            case "text":
+                if (!slot.Open) return ISessionHost.RefusePrefix + OverlayPanes.NoOverlayRefusal(index);
+                try { return SurfaceText.Dump(slot.Term!, text); }
+                catch (Exception e) { return ISessionHost.RefusePrefix + OverlayPanes.ReadFailedRefusal(e.Message); }
+            default: // "open"
+                if (slot.Open) return ISessionHost.RefusePrefix + OverlayPanes.AlreadyOpenRefusal(index);
+                string id = s.PaneIds[index] + ":overlay:" + Guid.NewGuid().ToString("N")[..6];
+                var term = new TerminalSession(80, 24);
+                slot.Id = id; slot.Term = term; slot.Wait = wait; slot.Exited = false; slot.ExitCode = 0;
+                slot.LastResult = OverlayPanes.NoResult;
+                s.CoverPanes.Add((id, term));
+                return id;
+        }
+    }
+
+    /// <summary>The app's PaneOverlayIndexOf: the pane whose OPEN overlay <paramref name="target"/>
+    /// names (its id or a prefix of it, through <see cref="CoverTarget"/> — a real pane's id resolves
+    /// first, so a pane id, itself a prefix of its overlay's id, still means the session-wide slot), or
+    /// -1 for anything else.</summary>
+    private int PaneOverlayIndexOf(string? target)
+    {
+        if (CoverTarget(target) is not { } hit) return -1;
+        for (int i = 0; i < hit.s.PaneIds.Count; i++)
+            if (hit.s.PaneOverlays.TryGetValue(hit.s.PaneIds[i], out var slot) && slot.Id == hit.id) return i;
+        return -1;
+    }
+
+    /// <summary>The fake's stand-in for the app's WatchOverlayExit on a pane slot (task 2): the
+    /// program in pane <paramref name="index"/>'s overlay exits with <paramref name="code"/> — the slot
+    /// records <c>exit N</c>, and without <c>--wait</c> the overlay closes; with it the term stays
+    /// up (the banner) until a close.</summary>
+    internal void ExitPaneOverlay(Sess s, int index, int code)
+    {
+        var slot = s.SlotOf(index);
+        if (!slot.Open) throw new InvalidOperationException("no overlay is open in that slot");
+        slot.Exited = true; slot.ExitCode = code; slot.LastResult = $"exit {code}";
+        if (!slot.Wait) s.ClosePaneOverlay(slot);
     }
     public bool Notify(string? target, string? title, string body) { var s = FindSes(target); if (s is null) return false; s.Notifications++; return true; }
     public bool SessionFlag(string? target, string op) { if (op == "clear") { foreach (var s in Workspaces.SelectMany(w => w.Sessions)) s.Flagged = false; return true; } var x = FindSes(target); if (x is null) return false; x.Flagged = op switch { "on" => true, "off" => false, "toggle" => !x.Flagged, _ => x.Flagged }; return true; }

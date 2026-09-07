@@ -193,16 +193,21 @@ internal partial class Program
                 {
                     var (status, statusChangedAt) = AggStatusAndAt(s);
                     return new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), status,
-                        s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
+                        s.Overlay.Term is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
                         FocusedPane: Math.Clamp(s.Active, 0, Math.Max(0, s.Panes.Count - 1)), PaneCount: s.Panes.Count,
-                        StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
+                        StatusBlink: AggBlink(s), OverlaySize: s.Overlay.SizePercent,
                         SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
                         PaneIds: s.Panes.Select(p => p.Id).ToList(),
                         RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList(),
                         StatusChangedAt: statusChangedAt,
                         Context: s.Context,
                         CapturedCommands: s.Panes.Select(p => p.CapturedCommand ?? "").ToList(),
-                        Axis: s.Axis);
+                        Axis: s.Axis,
+                        // The open PANE slots as their words, in pane order (P5): a swap reorders the
+                        // panes and the slots ride on them, so `["right"]` becomes `["left"]` by
+                        // construction. Empty = the server omits the key.
+                        PaneOverlays: s.Panes.Select((p, i) => (p, i)).Where(t => t.p.Overlay.Term is not null)
+                                             .Select(t => OverlayPanes.Word(t.i)).ToList());
                 }).ToList()
             )).ToList();
     }
@@ -262,8 +267,10 @@ internal partial class Program
         else
         {
             laidOut = false;
+            // A pane overlay term (P5) is laid out as ITS pane's box: `session metrics --target
+            // <overlay id>` answers the box the term was regridded to (RegridSession), with its own metrics.
             foreach (var (p, _, _, w, h) in PaneLayout(ses!))
-                if (ReferenceEquals(p, pane)) { laidOut = w > 0 && h > 0; break; }
+                if (ReferenceEquals(p, pane) || ReferenceEquals(p.Overlay.Term, pane)) { laidOut = w > 0 && h > 0; break; }
         }
         return laidOut
             ? PaneMetricsSnapshot.FromDipGrid(pane.S.Cols, pane.S.Rows, cwDip, chDip, Scale)
@@ -636,7 +643,7 @@ internal partial class Program
             if (ses is null || ses.Panes.Count < 2) return ISessionHost.RefusePrefix + SplitAxes.NotSplit;
             if (!SplitAxes.TryFocusIndex(dir, ses.Axis, ses.Active, out int index, out string? refusal)) return ISessionHost.RefusePrefix + refusal;
             ses.Active = Math.Clamp(index, 0, ses.Panes.Count - 1);
-            _session = ses.S;
+            SyncSession();   // the focused pane's SURFACE (its overlay while one is open — P5)
             RequestRedraw();
             return "focus";
         });
@@ -839,13 +846,52 @@ internal partial class Program
     // and by FakeSessionHost — the unit suite asserts wording, so the two hosts must not drift.
     private const string NoSessionRefusal = ISessionHost.RefusePrefix + "no session matches that target; nothing opened, resized or closed";
 
-    public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
+    public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block,
+        string? pane, OverlayTextArgs text)
     {
+        // The pane arm (P5): the word is parsed first, so a bad one is refused before any resolve;
+        // a resize or a size with a pane is refused here as well as at the server (one definition,
+        // two guards: a raw client that reached the host would be refused in the same words; the
+        // resize check comes FIRST at every end, since a resize always carries a size and would
+        // otherwise be refused as one, in words that never name the verb the caller typed); the
+        // rest is PaneOverlayAction's, per slot.
+        if (pane is not null)
+        {
+            if (!OverlayPanes.TryParse(pane, out int paneIndex, out string? paneRefusal)) return ISessionHost.RefusePrefix + paneRefusal;
+            if (action == "resize") return ISessionHost.RefusePrefix + OverlayPanes.ResizeWithPaneRefusal;
+            if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.SizeWithPaneRefusal;
+            return PaneOverlayAction(target, action, command, wait, block, paneIndex, text);
+        }
+        // A pane overlay's OWN id on --target, --pane omitted, names its slot (the rule: the id reaches
+        // the overlay from anywhere). Before this arm the id passed OverlayTargetRefusal (no pane id
+        // starts with it) and resolved to its SESSION, so `close --target <pane overlay id>` closed the
+        // session-wide slot or answered ok "no overlay" while the program ran on. The two usage
+        // refusals name the id the guard saw; open on a held slot is then "already open", as with the word.
+        if (PaneOverlayIndexOf(target) is >= 0 and var owned)
+        {
+            if (action == "resize") return ISessionHost.RefusePrefix + OverlayPanes.OverlayIdResizeRefusal(target!, owned);
+            if (sizePercent != 0) return ISessionHost.RefusePrefix + OverlayPanes.OverlayIdSizeRefusal(target!, owned);
+            return PaneOverlayAction(target, action, command, wait, block, owned, text, inferred: true);
+        }
         if (action != "result" && OverlayTargetRefusal(target) is { } refusal) return refusal;
         switch (action)
         {
             case "result":
                 return _lastOverlayExit;
+            case "copy":
+            case "text":
+                // The session-wide slot's reader (P5): resolve and read in ONE queued UI hop, as the
+                // pane arm does, so the slot the reply describes is the slot the session had when the
+                // read ran. No session is the shared "no session" refusal (a read of nothing is not
+                // "no overlay"); an empty slot is the bare `no overlay` — the pane arm names its slot
+                // after the colon. The #213 refusal above still stands for a pane-id target without
+                // --pane: the reply would otherwise silently widen to the session's slot.
+                return InvokeOnUiQueued(() =>
+                {
+                    var ses = FindSesForTarget(target);
+                    if (ses is null) return NoSessionRefusal;
+                    return OverlayRead(ses.Overlay, action, text, OverlayPanes.SessionWide);
+                });
             case "close":
                 {
                     // Two states used to share one answer. A SESSION that exists and has no overlay
@@ -858,7 +904,7 @@ internal partial class Program
                     // close in an empty window is not contract-dependent on a session existing.
                     var ses = FindSesForTarget(target);
                     if (ses is null && !string.IsNullOrEmpty(target) && target != "active") return NoSessionRefusal;
-                    if (ses?.Overlay is null) return "no overlay";
+                    if (ses is null || ses.Overlay.Term is null) return "no overlay";
                     PostVerb(() => CloseOverlayOf(ses));
                     return "closed";
                 }
@@ -871,7 +917,7 @@ internal partial class Program
                     // Resolve, check and write in ONE queued UI action and reply from its result
                     // (#227): resolved on the pipe thread and written by a posted action, the check
                     // and the write could straddle the overlay's exit — the exit's close (a posted
-                    // action ahead in the same queue) cleared OverlaySizePercent, the resize then
+                    // action ahead in the same queue) cleared the slot's SizePercent, the resize then
                     // wrote N over a session with no overlay, and the tree showed `overlaySize` on
                     // nothing while the reply said "resized". The refusals are the same as before:
                     // no session at all is not "open one first" (before P2's review both came back
@@ -881,8 +927,8 @@ internal partial class Program
                     {
                         var ses = FindSesForTarget(target);
                         if (ses is null) return NoSessionRefusal;
-                        if (ses.Overlay is null) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
-                        ses.OverlaySizePercent = sp;
+                        if (ses.Overlay.Term is null) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
+                        ses.Overlay.SizePercent = sp;
                         if (ReferenceEquals(_ovlOwner, ses)) RegridCover();
                         RequestRedraw();
                         return $"resized {sp}%";
@@ -908,8 +954,8 @@ internal partial class Program
                             ran = true;
                             var s = FindSesForTarget(target);
                             if (s is null) return NoSessionRefusal;
-                            string id = OverlayOpen(s, command!, sizePercent, false);
-                            done = s.Overlay!.OverlayDone;
+                            string id = OverlayOpen(s, null, command!, sizePercent, false);
+                            done = s.Overlay.Term!.OverlayDone;
                             return id;
                         });
                         // InvokeOnUi does not say whether its lambda ran: a SendMessage to a window
@@ -931,12 +977,188 @@ internal partial class Program
                         catch (OperationCanceledException) { throw new InvalidOperationException(OverlayWindowGone); }
                         return done.Task.Result;
                     }
-                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, command!, sizePercent, wait); });
+                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, null, command!, sizePercent, wait); });
                 }
         }
     }
 
     private const string OverlayWindowGone = "the window closed before the overlay's program exited; its exit status is unknown";
+
+    /// <summary>The pane arm of <see cref="SessionOverlay"/> (P5): <paramref name="index"/> is the parsed
+    /// <c>--pane</c> word (0 = left, 1 = right, whatever the axis). Every action resolves the session
+    /// AND the pane by index INSIDE its UI hop (InvokeOnUiQueued: the split the session has when the
+    /// verb runs, not the one the pipe thread saw), so a refusal leaves the world untouched and a reply
+    /// describes the slot that existed when it ran. The resolve, in order (<see cref="LocatePaneSlot"/>):
+    /// no session — the shared "no session" refusal, except a bare <c>close</c> (no target / "active")
+    /// which stays ok "no overlay", the session-wide arm's shape; then the AGREEMENT check — a
+    /// <c>--target</c> that is the session id (or a prefix of it, or a name) passes, a pane id (or a
+    /// prefix of one), or a pane's overlay id, must be the same side as <c>--pane</c>
+    /// (<see cref="OverlayPanes.Disagree"/>: the caller named two panes); then <c>pane not visible</c>
+    /// when the index is past the pane count (a single-pane session accepts <c>left</c> only). With
+    /// <paramref name="inferred"/> — no word was passed; <paramref name="index"/> is what the overlay id
+    /// on <c>--target</c> resolved to on the pipe thread — the hop follows THE ID instead (the slot may
+    /// have moved on a swap, or gone, since), so no refusal names a <c>--pane</c> the caller never
+    /// passed: <see cref="OverlayPanes.OverlayIdGoneRefusal"/> when it resolves to no open pane overlay
+    /// any more. Then per action: <c>open</c> — the held-slot
+    /// refusal from <see cref="OverlayOpen"/>, else the overlay pane id; with <c>block</c> the pipe
+    /// thread then waits on THE TERM THIS CALL OPENED (its OverlayDone, taken inside the same hop as
+    /// the open — #227's rule for the session-wide arm), released by its exit ("exit N"), by a close
+    /// ("closed") or by the window going (a throw, the status unknown); <c>close</c> — "closed", or
+    /// ok "no overlay" with the slot empty; <c>result</c> — the slot's own last result: refused
+    /// <see cref="OverlayPanes.StillRunning"/> while a program is up in it, <see cref="OverlayPanes.NoResult"/>
+    /// while nothing has exited in it since the window opened (or since its last open), else "exit N";
+    /// <c>copy</c> / <c>text</c> — <see cref="OverlayRead"/> on the slot. An action this arm does not
+    /// know opens, as the session-wide arm's default does (and the fake's).</summary>
+    private string PaneOverlayAction(string? target, string action, string? command, bool wait, bool block, int index, OverlayTextArgs text, bool inferred = false)
+    {
+        switch (action)
+        {
+            case "close":
+                return InvokeOnUiQueued(() =>
+                {
+                    var (s, p, early) = LocatePaneSlot(target, index, bareCloseOk: true, inferred: inferred);
+                    if (early is not null) return early;
+                    if (p!.Overlay.Term is null) return OverlayPanes.NoOverlay;
+                    ClosePaneOverlay(s!, p);
+                    return "closed";
+                });
+            case "result":
+                return InvokeOnUiQueued(() =>
+                {
+                    var (_, p, early) = LocatePaneSlot(target, index, inferred: inferred);
+                    if (early is not null) return early;
+                    var slot = p!.Overlay;
+                    // Under the exit lock the two fields are one state: an open resets LastResult and
+                    // assigns Term in one locked step, an exit writes LastResult while Term is still that
+                    // term. So "running" is a term in the slot whose program has not written its exit —
+                    // true whether or not the close after a non-wait exit has run yet, and false the
+                    // moment a --wait program exits (the banner is up, the result is readable).
+                    lock (_overlayExitLock)
+                    {
+                        if (slot.Term is not null && slot.LastResult == OverlayPanes.NoResult) return ISessionHost.RefusePrefix + OverlayPanes.StillRunning;
+                        if (slot.LastResult == OverlayPanes.NoResult) return ISessionHost.RefusePrefix + OverlayPanes.NoResult;
+                        return slot.LastResult;
+                    }
+                });
+            case "copy":
+            case "text":
+                return InvokeOnUiQueued(() =>
+                {
+                    var (_, p, early) = LocatePaneSlot(target, index, inferred: inferred);
+                    if (early is not null) return early;
+                    return OverlayRead(p!.Overlay, action, text, index);
+                });
+            default: // "open"
+                {
+                    if (string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened";
+                    if (!block)
+                        return InvokeOnUiQueued(() =>
+                        {
+                            var (s, p, early) = LocatePaneSlot(target, index, inferred: inferred);
+                            if (early is not null) return early;
+                            return OverlayOpen(s!, p!, command!, 0, wait);
+                        });
+                    // The source is taken inside the same hop as the open, off the slot this call filled,
+                    // so the wait ends with THIS term's outcome and no other (#227). InvokeOnUiQueued
+                    // throws when the hop cannot run (the window gone, the queue full, a timeout), so a
+                    // reply here is this call's own: a refusal is returned as one; otherwise `done` is
+                    // the term's source, and its absence means OverlayOpen returned an id without a term
+                    // in the slot, which is a bug and says so rather than waiting on nothing.
+                    TaskCompletionSource<string>? done = null;
+                    string opened = InvokeOnUiQueued(() =>
+                    {
+                        var (s, p, early) = LocatePaneSlot(target, index, inferred: inferred);
+                        if (early is not null) return early;
+                        string id = OverlayOpen(s!, p!, command!, 0, false);
+                        if (!id.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) done = p!.Overlay.Term?.OverlayDone;
+                        return id;
+                    });
+                    if (opened.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) return opened;
+                    if (done is null) throw new InvalidOperationException("the open did not complete on the UI thread; whether an overlay opened is unknown — read tree");
+                    try { done.Task.Wait(Timeout.Infinite, _uiGone.Token); }
+                    catch (OperationCanceledException) { throw new InvalidOperationException(OverlayWindowGone); }
+                    return done.Task.Result;
+                }
+        }
+    }
+
+    /// <summary>The pane arm's resolve, on the UI thread (see <see cref="PaneOverlayAction"/> for the
+    /// order). Returns the session and the pane at <paramref name="index"/>, or an <c>early</c> reply
+    /// in their place: a refusal (prefixed), or — with <paramref name="bareCloseOk"/> and no session
+    /// for an absent / "active" target — the plain ok "no overlay" a bare close answers. The session id is
+    /// checked BEFORE the pane ids because one pane carries it (a <c>session new</c> mints pane 0 = the
+    /// session id; after a swap that pane sits in slot 1): a target equal to it is the session, and agrees
+    /// with either word — only a pane with its OWN id, or with its overlay's id, can disagree. With
+    /// <paramref name="inferred"/> (see <see cref="PaneOverlayAction"/>) there is no word to agree with:
+    /// the target IS a pane overlay's id, and the pane whose open overlay carries it now is the answer —
+    /// <paramref name="index"/> is only what it was on the pipe thread — or, when none does any more,
+    /// <see cref="OverlayPanes.OverlayIdGoneRefusal"/>.</summary>
+    private (Ses? s, Pane? p, string? early) LocatePaneSlot(string? target, int index, bool bareCloseOk = false, bool inferred = false)
+    {
+        bool named = !string.IsNullOrEmpty(target) && target != "active";
+        var s = FindSesForTarget(target);
+        if (inferred)
+        {
+            if (s is not null)
+                for (int i = 0; i < s.Panes.Count; i++)
+                    if (s.Panes[i].Overlay.Term is { } po && (po.Id == target || po.Id.StartsWith(target!, StringComparison.Ordinal)))
+                        return (s, s.Panes[i], null);
+            return (s, null, ISessionHost.RefusePrefix + OverlayPanes.OverlayIdGoneRefusal(target!));
+        }
+        if (s is null) return (null, null, bareCloseOk && !named ? OverlayPanes.NoOverlay : NoSessionRefusal);
+        if (named && !(s.Id == target || s.Id.StartsWith(target!, StringComparison.Ordinal)))
+            for (int i = 0; i < s.Panes.Count; i++)
+            {
+                // The pane's id, then its overlay's own id (which starts with the pane's, so a prefix
+                // of the pane id matched above; a longer prefix, or the whole id, lands here): either
+                // on the other side than --pane is the caller naming two panes.
+                if ((s.Panes[i].Id == target || s.Panes[i].Id.StartsWith(target!, StringComparison.Ordinal)) && i != index)
+                    return (s, null, ISessionHost.RefusePrefix + OverlayPanes.Disagree(target!, i, index));
+                if (s.Panes[i].Overlay.Term is { } po && (po.Id == target || po.Id.StartsWith(target!, StringComparison.Ordinal)) && i != index)
+                    return (s, null, ISessionHost.RefusePrefix + OverlayPanes.Disagree(target!, i, index, overlay: true));
+            }
+        if (index >= s.Panes.Count) return (s, null, ISessionHost.RefusePrefix + OverlayPanes.NotVisibleRefusal(s.Id));
+        return (s, s.Panes[index], null);
+    }
+
+    /// <summary>The pane whose OPEN overlay <paramref name="target"/> names (its id, or a prefix of it
+    /// longer than the pane's own id — FindControlPane's arms), as an index into its session's panes;
+    /// -1 for anything else (absent, "active", a session, a pane, a session-wide cover, a scratch, the
+    /// quick terminal, nothing). Read under the workspace lock on the caller's thread — a first
+    /// answer only: the hop re-resolves the ID through LocatePaneSlot (<c>inferred</c>), which follows
+    /// the slot wherever a swap moved it meanwhile, and refuses naming the id when it is gone.</summary>
+    private int PaneOverlayIndexOf(string? target)
+    {
+        if (string.IsNullOrEmpty(target) || target == "active") return -1;
+        if (FindControlPane(target) is not { cover: true, ses: { } s } hit) return -1;
+        lock (_workspaces)
+            for (int i = 0; i < s.Panes.Count; i++)
+                if (ReferenceEquals(s.Panes[i].Overlay.Term, hit.pane)) return i;
+        return -1;
+    }
+
+    /// <summary><c>copy</c> / <c>text</c> on one slot, either kind, on the UI thread (a selection is
+    /// reconciled when read, and selection state belongs to this thread — as SessionCopy). An empty
+    /// slot is <see cref="OverlayPanes.NoOverlayRefusal"/> for <paramref name="index"/> (the bare
+    /// phrase for the session-wide slot). <c>copy</c> is the overlay term's OWN selection through
+    /// <see cref="SelectionText"/> — read-only, the clipboard untouched (CopySelection is not called);
+    /// no live selection is <see cref="OverlayPanes.NoSelection"/>. <c>text</c> is the term's buffer
+    /// through <see cref="SurfaceText.Dump"/>, the one reader <c>session text</c> uses; a throw from the
+    /// walk is <see cref="OverlayPanes.ReadFailed"/> with the message. <see cref="OverlayPanes.NotRealized"/>
+    /// is agterm's phrase for a slot whose terminal is not up yet; CreatePane builds the emulator
+    /// synchronously, so no slot here holds a term without one, and the phrase is not emitted.</summary>
+    private static string OverlayRead(OverlaySlot slot, string action, OverlayTextArgs text, int index)
+    {
+        var term = slot.Term;
+        if (term is null) return ISessionHost.RefusePrefix + OverlayPanes.NoOverlayRefusal(index);
+        if (action == "copy")
+        {
+            if (!HasLiveSel(term)) return ISessionHost.RefusePrefix + OverlayPanes.NoSelection;
+            return SelectionText(term);
+        }
+        try { return SurfaceText.Dump(term.S, text); }
+        catch (Exception e) { return ISessionHost.RefusePrefix + OverlayPanes.ReadFailedRefusal(e.Message); }
+    }
 
     public bool Notify(string? target, string? title, string body)
     {

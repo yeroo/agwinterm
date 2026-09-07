@@ -116,7 +116,10 @@ split, close, swap and restore (`CreateSession` takes pane 0's id separately). M
 there), swap included (Boris's call; the hidden session is drawn in the owner's other slot, so a
 swap is one flag read — no tree identity moves). The contract pins the swap in #241. Four revmux
 rounds, no Major after r1; the divergences P4-lite records are in `docs/lite-parity.md` ("Splits as
-sessions"). The release (0.17.13, the next number — Boris tags) follows.
+sessions"). Released as **v0.17.13** (#243, 2026-09-06). Leftovers, all merged: P4's round-4
+record #239 → #244; the P2/P3 leftovers #227 / #228 / #234 / #246 closed by #248 / #247 / #245 /
+#249 (the `session.overlay` per-open block completion and queued resize, the P2 round-4 sweep, the
+P3 round-2 sweep, the recents clock); lite's #29 / #22 / #25 → agliteterm #35 / #37 / #38.
 
 ### P5 · agwinterm · overlays stop being session-wide
 `--pane left|right` on the overlay verbs, flag omitted keeping today's session-wide behaviour ·
@@ -126,6 +129,23 @@ Kept separate from P2–P4 because it is the only control-API batch with real re
 closed the honesty half — a pane id is refused rather than silently widened — so this closes the
 capability half: a review TUI in the right pane stops blanking the left pane the user is reading, and
 an overlay's own output becomes readable at all.
+
+**Shipped:** #250 (2026-09-07) — plan at
+[completed/2026-09-07-p5-pane-overlays.md](completed/2026-09-07-p5-pane-overlays.md) (the QA
+capture `completed/2026-09-07-p5-pane-overlay.png` beside it); contract steps in the sibling PR that
+follows, as #235 followed #233 (`open --pane left`, `overlay text --pane left`, `close --pane left`,
+`session text --all`, and the three refusals). `--pane left|right` on `open` / `close` / `result`
+(agterm's words; `left` = pane 0 and `right` = pane 1 whatever the axis; a pane id on `--pane` is
+refused as #213 refuses it on `--target`), `overlay copy` / `overlay text [--all|--lines N]` and
+`session text --all` (one reader, two verbs), `paneOverlays` in the tree; the slot lives on the pane,
+so it moves with a swap by construction and dies with `split close` / `split off` / the shell
+exiting. Scoping + `copy` + `text` only (`--cwd`, `--follow`, `--background-color` stay out —
+#139 / #88). The two divergences, recorded in `docs/agterm-parity.md`: the session-wide `result`
+stays window-wide and `ok` (only `result --pane` is agterm's per-slot arm), and `--pane` with
+`--size-percent` / `resize --pane` are refused at both ends. No restore-format change (overlays are
+never persisted), no ABI change. The release (**0.17.14** — Boris tags) follows the contract PR.
+Mirror: P5-lite — pending; lite's overlay is one popup window over the active session, so a pane
+overlay there is a popup sized to the pane rect or a recorded divergence, the P5-lite plan decides.
 
 ---
 
@@ -153,8 +173,11 @@ Same model as P6, different surface — split because it is UI work with a diffe
 2026-09-04, six revmux rounds; plan `docs/plans/completed/2026-09-03-p1-lite-mirror.md` there) ·
 `--stdin` · size-percent validation · `sidebar width` · the caller-workspace default for a bare
 `session new` → **P2-lite — shipped** (agliteterm #26, 2026-09-04) · `session.context` ·
-`restore.capture` → **P3-lite — shipped** (agliteterm #28, 2026-09-05). Each runs right after its
-agwinterm batch merges.
+`restore.capture` → **P3-lite — shipped** (agliteterm #28, 2026-09-05) · `--axis` · `split close` ·
+`swap` · the pane-id reply → **P4-lite — shipped** (agliteterm #30, 2026-09-06; released as lite
+0.17.15) · `--pane left|right` · `overlay copy` / `text` · `session text --all` → **P5-lite —
+pending** (after P5 merges; see P5's line for what lite's popup overlay makes of a pane slot). Each
+runs right after its agwinterm batch merges.
 
 ### P9 · lite · driving a pane
 `session.readonly` **first** — it is how you stop stray keys reaching a running agent — then

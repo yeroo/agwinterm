@@ -310,22 +310,7 @@ public sealed class ControlServer : IDisposable
                 case "session.search": return Ok(host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
                 case "session.scratch": return host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
                 case "quick": host.Quick(GetString(args, "op") ?? "toggle"); return Ok("quick");
-                case "session.overlay":
-                {
-                    // A refusal has to answer ok:false, or a caller that checks `ok` reads "I would
-                    // not do that" as "done" — the exact dishonesty the refusal exists to end. The
-                    // host marks one by prefixing REFUSE_PREFIX; everything else is a result string.
-                    // size-percent is validated, not clamped. Before P2, `0`, `-5`, `150` and the
-                    // string "sixty" (0 from GetInt) all opened a full-screen overlay and answered
-                    // ok:true — three silent coercions between the shell and the panel.
-                    if (!TryOverlaySize(args, out int sizePercent, out string? sizeErr)) return Err(sizeErr!);
-                    string ovl = host.SessionOverlay(target, GetString(args, "action") ?? "open",
-                        GetString(args, "command"), sizePercent,
-                        GetBool(args, "wait"), GetBool(args, "block"));
-                    return ovl.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
-                        ? Err(ovl[ISessionHost.RefusePrefix.Length..])
-                        : Ok(ovl);
-                }
+                case "session.overlay": return HandleSessionOverlay(host, target, args);   // the guards and their order: see the method
                 case "notify":
                     return host.Notify(target, GetString(args, "title"), GetString(args, "body") ?? "")
                         ? Ok("notified") : Err("session not found");
@@ -476,6 +461,17 @@ public sealed class ControlServer : IDisposable
                     // orientation of a split that does not exist is not a fact about the session.
                     sb.Append(",\"").Append(SplitAxes.Key).Append("\":").Append(JsonSerializer.Serialize(n.Axis ?? SplitAxes.Vertical));
                 }
+                // paneOverlays: the open PANE slots, as OverlayPanes' words in pane order — ONLY when
+                // one is open: absence = none, like `overlay` (the session-wide slot, which this is
+                // independent of); a caller reads the words back verbatim. Outside the split block:
+                // `--pane left` is accepted on a one-pane session, so ["left"] can stand alone (P5).
+                if (n.PaneOverlays is { Count: > 0 })
+                {
+                    sb.Append(",\"").Append(OverlayPanes.TreeKey).Append("\":[");
+                    for (int r = 0; r < n.PaneOverlays.Count; r++)
+                    { if (r > 0) sb.Append(','); sb.Append(JsonSerializer.Serialize(n.PaneOverlays[r])); }
+                    sb.Append(']');
+                }
                 sb.Append('}');
             }
             sb.Append("]}");
@@ -556,6 +552,69 @@ public sealed class ControlServer : IDisposable
             if (!SplitAxes.IsOp(ov.GetString()!)) return Err(SplitAxes.OpRefusal(ov.GetString()!));
         }
         return HostReply(host.Split(target, GetString(args, "op") ?? "toggle", axis));
+    }
+
+    /// <summary>
+    /// session.overlay. The guards, in order, each before the host is reached and each leaving the
+    /// world untouched: <c>pane</c> is read strictly (absent = the session-wide slot; a string must be
+    /// one of <see cref="OverlayPanes"/>' two words; anything else — <c>"Left"</c>, <c>"top"</c>, a pane
+    /// id, <c>""</c>, a number — is refused naming both words and the absent form); with a pane,
+    /// <c>size-percent</c> PRESENT at all (valid or not) is refused — a pane overlay is always
+    /// full-pane, so the flag cannot mean anything — and so is <c>resize</c>; then size-percent is
+    /// validated, not clamped (before P2, <c>0</c>, <c>-5</c>, <c>150</c> and the string "sixty" — 0
+    /// from GetInt — all opened a full-screen overlay and answered ok:true); then <c>text</c>'s
+    /// <c>all</c> / <c>lines</c>, exclusive. The host's reply is a string for open / close / resize /
+    /// result and the TEXT for copy / text, which the wire carries as <c>{"text":…}</c> (agterm's
+    /// <c>result.text</c>). A refusal has to answer ok:false, or a caller that checks <c>ok</c> reads
+    /// "I would not do that" as "done" — the exact dishonesty the refusal exists to end.
+    /// </summary>
+    private static string HandleSessionOverlay(ISessionHost host, string? target, JsonElement args)
+    {
+        string action = GetString(args, "action") ?? "open";
+        string? pane = null;
+        if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty(OverlayPanes.Key, out var pv))
+        {
+            if (pv.ValueKind != JsonValueKind.String) return Err(OverlayPanes.Refusal(pv.GetRawText(), quoted: false));
+            if (!OverlayPanes.TryParse(pv.GetString(), out _, out string? paneRefusal)) return Err(paneRefusal!);
+            pane = pv.GetString();
+        }
+        if (pane is not null)
+        {
+            if (action == "resize") return Err(OverlayPanes.ResizeWithPaneRefusal);
+            if (args.TryGetProperty(OverlaySizeKey, out _)) return Err(OverlayPanes.SizeWithPaneRefusal);
+        }
+        if (!TryOverlaySize(args, out int sizePercent, out string? sizeErr)) return Err(sizeErr!);
+        var textArgs = OverlayTextArgs.Screen;
+        if (action == "text" && !TryTextArgs(args, out textArgs, out string? textErr)) return Err(textErr!);
+        string ovl = host.SessionOverlay(target, action, GetString(args, "command"), sizePercent,
+            GetBool(args, "wait"), GetBool(args, "block"), pane, textArgs);
+        if (ovl.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) return Err(ovl[ISessionHost.RefusePrefix.Length..]);
+        return action is "copy" or "text" ? OkRaw(OverlayPanes.TextReply(ovl)) : Ok(ovl);
+    }
+
+    /// <summary>The reader for <c>text</c>'s two flags, on <c>session.text</c> and
+    /// <c>session.overlay text</c> alike: <c>all</c> (a bool: <c>true</c>, <c>"true"</c> or <c>"1"</c>
+    /// — any other value is the flag NOT asked for, as every bool arg here) and <c>lines</c> (a whole
+    /// number, 0 or more; anything else is refused in <see cref="OverlayPanes.LinesRefusal"/>'s words —
+    /// it used to be read as 0, so a typo dumped the screen and reported success). <c>all</c> asked for
+    /// with <c>lines</c> PRESENT — whatever its value — is refused naming both, because a caller who
+    /// wrote both meant two different reads and must not get one of them in silence.</summary>
+    internal static bool TryTextArgs(JsonElement args, out OverlayTextArgs text, out string? error)
+    {
+        text = OverlayTextArgs.Screen; error = null;
+        if (args.ValueKind != JsonValueKind.Object) return true;
+        bool all = GetBool(args, "all");
+        bool hasLines = args.TryGetProperty("lines", out var lv);
+        if (all && hasLines) { error = OverlayPanes.AllWithLines; return false; }
+        int lines = 0;
+        if (hasLines && (lv.ValueKind != JsonValueKind.Number || !lv.TryGetInt32(out lines) || lines < 0))
+        {
+            error = OverlayPanes.LinesRefusal(lv.ValueKind == JsonValueKind.String ? lv.GetString()! : lv.GetRawText(),
+                quoted: lv.ValueKind == JsonValueKind.String);
+            return false;
+        }
+        text = new OverlayTextArgs(all, lines);
+        return true;
     }
 
     /// <summary>A host reply that is either a result string or <see cref="ISessionHost.RefusePrefix"/>
@@ -705,28 +764,14 @@ public sealed class ControlServer : IDisposable
         return null;
     }
 
-    /// <summary>Dump the target session's active-pane buffer as plain text (trailing blank lines
-    /// trimmed). `lines` reaches back into scrollback: the last N lines ending at the bottom of the
-    /// visible screen, so an N larger than the screen height picks up history. Omitted (or 0) keeps
-    /// the old meaning exactly - the visible screen.
-    ///
-    /// Scrollback matters because the interesting part is usually already gone: a launch banner, a
-    /// version, an error printed before a full-screen app took the alt screen. An agent reading a
-    /// pane it did not watch could reach none of it.</summary>
+    /// <summary>Dump the target session's active-pane buffer as plain text — <see cref="SurfaceText.Dump"/>,
+    /// the one reader <c>session overlay text</c> shares (P5): `lines` reaches back into scrollback,
+    /// `all` takes the whole buffer, omitted keeps the old meaning exactly — the visible screen; the
+    /// pair is refused (<see cref="TryTextArgs"/>).</summary>
     private static string HandleText(ISession s, JsonElement args)
     {
-        int want = GetInt(args, "lines", 0);
-        var sb = new StringBuilder();
-        lock (s.SyncRoot)
-        {
-            var em = s.Emulator;
-            int rows = em.Screen.Rows, hist = em.HistoryCount;
-            int take = want <= 0 ? rows : Math.Min(want, rows + hist);
-            // Absolute numbering: [0, hist) is scrollback, then the live rows.
-            for (int abs = hist + rows - take; abs < hist + rows; abs++)
-                sb.Append(abs < hist ? em.DumpHistoryRow(abs) : em.DumpRow(abs - hist)).Append('\n');
-        }
-        return Ok(sb.ToString().TrimEnd('\n'));
+        if (!TryTextArgs(args, out var text, out string? err)) return Err(err!);
+        return Ok(SurfaceText.Dump(s, text));
     }
 
     private static string HandleStatus(ISession s, JsonElement args)

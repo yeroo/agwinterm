@@ -117,4 +117,64 @@ public class ControlServerTypeTextTests
         Assert.Contains("\"ok\":true", resp);
         Assert.Contains("only", resp);
     }
+
+    /// <summary><c>session text --all</c> (P5): the whole buffer, screen and scrollback, without the
+    /// caller having to guess a <c>--lines</c> large enough — agterm's <c>session text</c> has it,
+    /// and ours is the same reader <c>session overlay text</c> uses (<see cref="SurfaceText"/>).</summary>
+    [Fact]
+    public void Text_All_ReadsScrollbackAndScreen()
+    {
+        var (server, session) = New(rows: 4);
+        for (int i = 1; i <= 10; i++) session.Emulator.Feed(System.Text.Encoding.UTF8.GetBytes($"L{i}\r\n"));
+        var r = System.Text.Json.JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.text\",\"args\":{\"all\":true}}")).RootElement;
+        Assert.True(r.GetProperty("ok").GetBoolean());
+        string text = r.GetProperty("result").GetString()!;
+        Assert.StartsWith("L1\n", text);
+        Assert.Contains("L10", text);
+        // A string "true" / "1" is the CLI's spelling of a bool flag; anything else is not --all.
+        Assert.StartsWith("L1\n", System.Text.Json.JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.text\",\"args\":{\"all\":\"true\"}}")).RootElement.GetProperty("result").GetString());
+        Assert.DoesNotContain("L1\n", System.Text.Json.JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.text\",\"args\":{\"all\":false}}")).RootElement.GetProperty("result").GetString());
+    }
+
+    /// <summary><c>--all</c> and <c>--lines</c> together are refused, naming both — a caller who
+    /// wrote both meant two different reads, and must not get one of them in silence. Nothing about
+    /// the buffer is read (a refusal is not a read of the screen).</summary>
+    [Fact]
+    public void Text_AllWithLines_IsRefused_NamingBoth()
+    {
+        var (server, session) = New(rows: 4);
+        session.Emulator.Feed(System.Text.Encoding.UTF8.GetBytes("only\r\n"));
+        foreach (var args in new[] { "{\"all\":true,\"lines\":2}", "{\"all\":true,\"lines\":0}" })
+        {
+            var r = System.Text.Json.JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.text\",\"args\":" + args + "}")).RootElement;
+            Assert.False(r.GetProperty("ok").GetBoolean());
+            Assert.Equal(OverlayPanes.AllWithLines, r.GetProperty("error").GetString());
+        }
+        // --all false with --lines: not the pair — the flag was not asked for.
+        Assert.Contains("\"ok\":true", server.Dispatch("{\"cmd\":\"session.text\",\"args\":{\"all\":false,\"lines\":2}}"));
+    }
+
+    /// <summary><c>--lines</c> that is not a whole number of lines is refused, not read as 0 (revmux r1
+    /// of P5: <c>--lines 5O</c> dumped the screen and reported success). A string is quoted, a
+    /// non-string arrives as its raw JSON; the same words the CLI gives before sending.</summary>
+    [Theory]
+    [InlineData("\"5O\"", "'5O'")]
+    [InlineData("\"\"", "''")]
+    [InlineData("-1", "-1")]
+    [InlineData("2.5", "2.5")]
+    [InlineData("true", "true")]
+    [InlineData("null", "null")]
+    public void Text_LinesNotAWholeNumber_IsRefused_NamingTheValue(string json, string shown)
+    {
+        var (server, session) = New(rows: 4);
+        session.Emulator.Feed(System.Text.Encoding.UTF8.GetBytes("only\r\n"));
+        var r = System.Text.Json.JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.text\",\"args\":{\"lines\":" + json + "}}")).RootElement;
+        Assert.False(r.GetProperty("ok").GetBoolean());
+        Assert.Equal(OverlayPanes.LinesRefusal(shown, quoted: false), r.GetProperty("error").GetString());
+        Assert.EndsWith("Nothing read.", r.GetProperty("error").GetString());
+        // The two spellings meet: a quoted string and its raw form give one message.
+        Assert.Equal(OverlayPanes.LinesRefusal("5O"), OverlayPanes.LinesRefusal("'5O'", quoted: false));
+        // 0 and a plain integer still read.
+        Assert.Contains("\"ok\":true", server.Dispatch("{\"cmd\":\"session.text\",\"args\":{\"lines\":0}}"));
+    }
 }

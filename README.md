@@ -88,7 +88,7 @@ the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)
   output). Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.
 - **Splits** — side by side or stacked (`--axis vertical|horizontal`, agterm's words), either pane
   closable, the two swappable with every id kept; a split collapses to the survivor when a pane exits —
-  **scratch** & **quick** terminals, ephemeral **overlays** (open/resize/close via API), **multi-window**
+  **scratch** & **quick** terminals, ephemeral **overlays** over a session or over **one pane** of it (`--pane left|right`; open/close/result/copy/text via API), **multi-window**
   with per-window addressing.
 
 ### A real Windows terminal
@@ -214,7 +214,7 @@ agwinterm is scriptable through a local named pipe speaking newline-delimited JS
 `agwintermctl` as the CLI wrapper. A few examples:
 
 ```powershell
-agwintermctl tree --json                     # workspace/session tree (+ splits, badges, overlays)
+agwintermctl tree --json                     # workspace/session tree (+ splits, badges, overlays, paneOverlays)
 agwintermctl window state                    # sidebar/fullscreen/active read-back
 agwintermctl sidebar width 300               # move the divider; the reply is the width in effect
 agwintermctl session split on --axis horizontal   # stack the panes; the reply is the split pane's id
@@ -229,6 +229,8 @@ agwintermctl session type "npm test`n"       # type into the active session
 say "hi"
 "@ | agwintermctl session type --stdin   # text with quotes/newlines: stdin as bytes (see below)
 agwintermctl session overlay open "git diff" --size-percent 60
+agwintermctl session overlay open "lazygit" --pane right    # over the right pane only; the left pane stays live
+agwintermctl session overlay text --pane right --all        # the overlay's own screen + scrollback (session text reads the shell under it)
 agwintermctl session restore "npm run dev" --target <pane>   # re-run on every restart; reply names the pane
 agwintermctl restore capture                 # capture every pane's running command into its restore slot NOW, not only at quit
 agwintermctl session rename api              # the custom name in the sidebar and title bar
@@ -272,9 +274,16 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   full content region. `resized N%` is always the N that was asked for. The verb's other failures
   are refusals too: `open` with no command; `open` and `resize` whenever no session resolves (a
   `--target` that matches nothing, or no target and no active session); a `close` whose `--target`
-  names nothing; `open`, `close` and `resize` whose `--target` names one pane of a split session (an
-  overlay covers the whole session — the refusal names the session id to pass instead); and `resize`
-  with no overlay open. `close` stays `ok` when the session resolves and
+  names nothing; `open`, `close` and `resize` without `--pane` whose `--target` names one pane of a
+  split session (a session-wide overlay covers the whole session — the refusal names the session id
+  to pass instead, and `--pane left|right` is how one pane is named); and `resize`
+  with no overlay open. The pane form has its own, each starting with agterm's phrase: `pane not
+  visible` (`--pane right` on a one-pane session), `pane overlay already open` (a pane slot never
+  silently replaces — the session-wide slot still does), `no overlay` (`copy` / `text` / `result` on
+  an empty slot), `no selection`, `overlay still running` / `no overlay result` (`result --pane`);
+  a `--pane` word other than exactly `left`/`right`, a `--target` pane id naming the other side than
+  `--pane`, `--pane` with `--size-percent` and `resize --pane` are refused with nothing sent (a pane
+  overlay is always full-pane). `close` stays `ok` when the session resolves and
   has no overlay, or when the target is absent, empty or `active` while nothing is active — there is
   nothing to close, and nothing is what you asked for. Two replies are not refusals: a `resize` whose
   reply says the window did not run it within 15 s is still queued and may land later; and
@@ -285,7 +294,9 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   returned, and close it by that id — a close whose overlay is already gone is refused, which is
   the same end state), and
   `ok:false` with the status unknown when the window closed under it. `overlay result` stays one
-  value per window, written by whichever session's overlay exits next.
+  value per window, written by whichever session's session-wide overlay exits next; `result --pane left|right`
+  (or `result --target <pane overlay id>` while that overlay is up) is that slot's own `exit N`, and a
+  pane overlay's exit never writes the window-wide value.
 - `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
   the target resolved to (a session name lands on its focused pane, a session id on the pane that
   carries that id while one does — pane 0 of a fresh session, either side after a `session swap` —

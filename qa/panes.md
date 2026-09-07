@@ -8,7 +8,9 @@ reply-and-world half of every verb is `tests/integration/win32-control.ps1`, the
 `tests/integration/restore-roundtrip.ps1`, and neither can see a pixel. The cases here are the
 **visible** claims: that a horizontal split stacks, that the accent bar marks the focused pane on
 either axis, that the divider drags along the axis and the pointer says so, that a swap moves the
-contents and not the divider, and that closing pane 0 leaves one pane filling the area.
+contents and not the divider, and that closing pane 0 leaves one pane filling the area. P5
+(`docs/plans/completed/2026-09-07-p5-pane-overlays.md`) adds the last case: a **pane overlay**
+(`session overlay open --pane left|right`) is drawn over one pane's box and the other pane stays live.
 
 **The rule they all serve:** the arrangement is a claim about pixels, and so is "did not move". Read
 the pane count and the divider from a `PrintWindow` capture (`Save-SandboxCapture`) — `session text`
@@ -65,7 +67,9 @@ $g0h = Shot 'single-hgutter' (HGutter 0.5); $g0v = Shot 'single-vgutter' (VGutte
 $g0v30 = Shot 'single-vgutter30' (VGutter 0.3); $e0 = Shot 'single-topedge' $TopEdge
 ```
 
-`.ralphex/p4-panes-qa.ps1` is this file as one script, for a re-run; the cases are the specification.
+`.ralphex/p4-panes-qa.ps1` is this file as one script, for a re-run (`.ralphex/p5-t3-smoke.ps1` the
+pane-overlay case, driven raw over the pipe from before the CLI had `--pane`); the cases are the
+specification.
 
 ---
 
@@ -257,6 +261,81 @@ session arm stops falling back to the focused pane once the session id's own pan
 
 *Seen (2026-09-06): reply = the old pane 1 id, survivor 89 columns, both ids answering `SURVIVOR`,
 the second close refused with "`session close` closes the session. Nothing closed."*
+
+---
+
+## A pane overlay covers one pane's box, and the other pane stays live
+
+**Guards:** P5 (`docs/plans/completed/2026-09-07-p5-pane-overlays.md`). Before it every overlay
+covered the whole session, so a review TUI aimed at the right pane blanked the left pane the user was
+reading. `session overlay open --pane left|right` draws the program over exactly that pane's box — the
+full box, never floating — and the sibling pane keeps rendering and taking input. The rule the case
+serves is the one `ISessionHost.SessionOverlay` states: a pane overlay is that pane's **surface**
+while it is open (keys into the focused pane and `--target active` reach the overlay, the pane id
+reaches the shell underneath, the overlay id reaches the overlay from anywhere), and the divider is
+not blocked by it (only a session-wide cover disables the drag). The claim is about pixels twice
+over: which box the program is drawn in, and that the other box is untouched — so the capture is the
+proof, with the gutter strip compared byte for byte.
+
+**Setup:** a fresh session split vertically (`$r = Reply $s @('session','split','on','--axis','vertical','--target',$sid); $pid1 = [string]$r.result`;
+wait ~2s), pane 0 = `$sid` (left), pane 1 = `$pid1` (right, focused after the split). Confirm the
+node has no `overlay` and no `paneOverlays`. `$gS = Shot 'ovl-split-vgutter' (VGutter 0.5)` is the
+gutter baseline. The Esc chord is opt-in: `'map escape = close_cover' | Set-Content (Join-Path $s.AppDir 'keymap.conf')`
+then `Reply $s @('keymap','reload')`.
+
+**Steps:**
+1. `$o = Reply $s @('session','overlay','open','cmd /k echo OVL-MARKER-RIGHT','--pane','right','--target',$sid)`;
+   `$ovl = [string]$o.result`; wait ~2s; `$n = Node $s $sid`.
+2. `Send-Ctl $s @('session','type',"echo LEFT-TYPED-1`r",'--target',$sid)`; wait ~2s.
+3. `Shot 'pane-overlay-right'`; `$gO = Shot 'ovl-open-vgutter' (VGutter 0.5)`.
+4. `$tL = Text $s $sid; $tO = Text $s $ovl; $tR = Text $s $pid1; $tA = (Reply $s @('session','text')).result`;
+   `$mo = Metrics $s $ovl; $mr = Metrics $s $pid1`.
+5. `$o2 = Reply $s @('session','overlay','open','cmd /c exit 0','--pane','right','--target',$sid)`.
+6. `Send-Ctl $s @('session','type','typed-into-overlay')`; wait ~1s; read `Text $s $ovl` and `Text $s $pid1`.
+7. `[AgwUi]::Key($s.Hwnd, 0x1B, 1)` (Esc, into the focused right pane); wait ~1s; `$nE = Node $s $sid`.
+8. The `--wait` half, in the **unfocused** box: `Reply $s @('session','overlay','open','cmd /c exit 3','--pane','left','--wait','--target',$sid)`;
+   wait ~2s; `Shot 'pane-overlay-left-wait'`; `[AgwUi]::Key($s.Hwnd, 0x41, 1)` (`a`, into the focused
+   right pane); wait ~1s; `$nW = Node $s $sid`; then `Reply $s @('session','focus','left')`,
+   `[AgwUi]::Key($s.Hwnd, 0x41, 1)` again; wait; `$nW2 = Node $s $sid`.
+
+**Expect:**
+- 1: `ok:true`, `$ovl` starts with `"$pid1:overlay:"` — the owner is readable off the id — and
+  `$n.paneOverlays` is exactly `right`, with no `overlay` key (the session-wide slot is empty);
+- 2–3: `pane-overlay-right.png` shows `LEFT-TYPED-1` typed **and echoed** in the left box, the
+  program's output (`OVL-MARKER-RIGHT` under the shell's banner) filling the right box, the small
+  `overlay` badge at the right box's top-right corner, and the hairline between them where it was;
+  `Compare-Capture $gS $gO` is **true** — the gutter is byte-identical, the overlay stayed inside its
+  box. That comparison is the assertion the case exists for;
+- 4: `$tL` contains `LEFT-TYPED-1` (the left shell), `$tO` contains `OVL-MARKER-RIGHT` (the overlay
+  by its id), `$tR` does **not** contain `OVL-MARKER` and is not empty (the right pane id reads the
+  shell **underneath**), `$tA` contains `OVL-MARKER-RIGHT` (no target while the focused pane holds an
+  overlay = the overlay, the same rule as a cover); `$mo.cols -eq $mr.cols`, `$mo.rows -eq $mr.rows`
+  and `$mo.widthPx -eq $mr.widthPx` — the overlay measures the pane's box, not the content region;
+- 5: `ok:false`, the error starting `pane overlay already open`, and `paneOverlays` still `right`
+  — a pane slot never silently replaces;
+- 6: `typed-into-overlay` appears in `Text $s $ovl` and **not** in `Text $s $pid1` — keys into the
+  focused pane reach its surface, the overlay;
+- 7: `$nE` has no `paneOverlays`, `paneCount` is still 2, `Text $s $pid1` still lacks
+  `typed-into-overlay`, and `session text --target $ovl` is now refused — Esc closed the focused
+  pane's overlay and nothing else;
+- 8: `pane-overlay-left-wait.png` shows the "press any key to close" banner at the bottom of the
+  **left** box only, the right box a plain prompt; after the `a` into the focused right pane `$nW.paneOverlays`
+  is still `left` (the key went to the right shell), and after the
+  focus move and the second `a` `$nW2` has no `paneOverlays`: the banner takes a key from its own
+  pane only.
+
+**Fails when:** `RenderPanes` draws the overlay term over `CoverRect()` instead of the pane's box,
+`PaneBox` / `ActivePaneView` stop substituting the overlay term for the focused pane's surface (step
+6 lands in the shell), `Resolve` widens an overlay id to its pane (step 4's `$tO` reads the shell),
+`OverlayOpen` replaces instead of refusing on a held pane slot (step 5), or the any-key close reads
+`_ovlOwner` only (step 8's first `a` dismisses the left banner from the right pane).
+
+*Seen (2026-09-07, the task-3 smoke at 100% DPI, 1100x700; `.ralphex/p5-t3-smoke.ps1`, 30 checks,
+0 failures; capture kept as `docs/plans/completed/2026-09-07-p5-pane-overlay.png`, beside the plan):
+the left box `LEFT-TYPED-1` at a fresh prompt, the right box the clink banner + `OVL-MARKER-RIGHT`
+with the `overlay` badge top-right, the hairline unmoved; the overlay's metrics equal to the right
+pane's; Esc left both panes; the `--wait` banner sat in the left box and survived a key in the
+right pane.*
 
 ---
 

@@ -642,7 +642,7 @@ internal partial class Program
     {
         // Quick terminal (kind 2) and a sized floating overlay (kind 3) both render as a centered
         // panel over the live main window — a "tool window" look. Scratch (1) / full overlay fill.
-        bool floatingPanel = _cover is not null && ((_coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 }) || _coverKind == 2);
+        bool floatingPanel = _cover is not null && ((_coverKind == 3 && _ovlOwner is { Overlay.SizePercent: > 0 }) || _coverKind == 2);
         if (_cover is not null && !floatingPanel)
         {
             var (ox, oy, cw0, ch0) = ContentArea();
@@ -651,7 +651,7 @@ internal partial class Program
             if (_coverKind == 1 && OwningSes(_cover) is { } scratchOwner) DrawWatermark(scratchOwner, ox, oy, cw0, ch0);
             RenderTerminal(_cover.S, ox, oy, fmt, cw, ch, _cover.ScrollOffset, _cover);
             DrawCoverBadge(rt, brush, ox + cw0, oy);
-            DrawOverlayFooter(rt, brush);
+            if (_coverKind == 3 && _ovlOwner is { } fullOwner) DrawOverlayFooter(rt, brush, CoverRect(), fullOwner.Overlay);
         }
         else
         {
@@ -669,7 +669,7 @@ internal partial class Program
                 brush.Color = ChromeAccent;                                  // 1px frame
                 rt.DrawRectangle(new Rect(fx - 1f, fy - 1f, fw + 2f, fh + 2f), brush, 1f);
                 DrawCoverBadge(rt, brush, fx + fw, fy);
-                if (_coverKind == 3) DrawOverlayFooter(rt, brush);          // overlay-only footer
+                if (_coverKind == 3 && _ovlOwner is { } panelOwner) DrawOverlayFooter(rt, brush, (fx, fy, fw, fh), panelOwner.Overlay);   // overlay-only footer
             }
         }
 
@@ -722,23 +722,46 @@ internal partial class Program
         }
     }
 
-    /// <summary>Render a session's pane grid (terminals + split dividers + focused-pane accent).</summary>
+    /// <summary>Render a session's pane grid (terminals + split dividers + focused-pane accent). Each
+    /// box shows the pane's SURFACE (<see cref="SurfaceOf"/>): the pane's own terminal, or — while its
+    /// overlay slot is open (P5) — the overlay term over the same box with the overlay's metrics, an
+    /// opaque fill first (the program's screen, not a blend with the shell under it), the
+    /// <c>overlay</c> badge at the box's top-right and the <c>--wait</c> footer inside the box. The
+    /// sibling pane is drawn as before, so it stays visible; the inactive-pane dim applies over an
+    /// overlay as over a pane (it IS the pane's surface). A session-wide cover / scratch / quick draws
+    /// on top of everything, from <see cref="DrawWindowContent"/>, as before.</summary>
     private void RenderPanes(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, Ses ses)
     {
         var layout = PaneLayout(ses);
         foreach (var (pane, ox, oy, pw, ph) in layout)
         {
-            var (fmt, cw, ch) = Metrics(pane.FontSize);
-            DrawWatermark(ses, ox, oy, pw, ph);   // faint session background, behind the cells
+            var surface = SurfaceOf(pane);
+            bool overlaid = !ReferenceEquals(surface, pane);
+            var (fmt, cw, ch) = Metrics(surface.FontSize);
+            // Faint session background, behind the cells — of the pane's own terminal only: under an
+            // opaque overlay nothing of it would show, so it is not drawn. The pane's own terminal is
+            // not drawn under the overlay either (same reason; its PTY runs on, untouched).
+            if (!overlaid) DrawWatermark(ses, ox, oy, pw, ph);
             // Per-pane dynamic background (OSC 11, agterm #240): the program set its own bg, so fill this
-            // pane with it instead of leaving the (possibly translucent) window backing showing through.
-            uint dbg = pane.S.Emulator.DynamicBg;
+            // box with it instead of leaving the (possibly translucent) window backing showing through.
+            // An overlay is filled opaque either way: its own dynamic bg, else the theme's background.
+            uint dbg = surface.S.Emulator.DynamicBg;
             if (dbg != 0)
             {
                 brush.Color = new Color4(((dbg >> 16) & 0xFF) / 255f, ((dbg >> 8) & 0xFF) / 255f, (dbg & 0xFF) / 255f, 1f);
                 rt.FillRectangle(new Rect(ox, oy, pw, ph), brush);
             }
-            RenderTerminal(pane.S, ox, oy, fmt, cw, ch, pane.ScrollOffset, pane);
+            else if (overlaid)
+            {
+                brush.Color = C4(_theme.DefaultBackground);
+                rt.FillRectangle(new Rect(ox, oy, pw, ph), brush);
+            }
+            RenderTerminal(surface.S, ox, oy, fmt, cw, ch, surface.ScrollOffset, surface);
+            if (overlaid)
+            {
+                DrawBadge(rt, brush, "overlay", ox + pw, oy, closeBox: false);
+                DrawOverlayFooter(rt, brush, (ox, oy, pw, ph), pane.Overlay);
+            }
             // Dim non-active panes in a split so the focused one stands out.
             if (layout.Count > 1 && !ReferenceEquals(pane, ses.ActivePane) && _config.InactivePaneDim > 0)
             {
@@ -784,10 +807,15 @@ internal partial class Program
     private static (float x, float y, float w, float h) CoverCloseRect(float rightX, float topY) => (rightX - 26f, topY + 4f, 20f, 20f);
 
     private void DrawCoverBadge(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, float rightX, float topY)
+        => DrawBadge(rt, brush, _coverKind switch { 1 => "scratch", 2 => "quick", 3 => "overlay", _ => "" }, rightX, topY, closeBox: _coverKind == 2);
+
+    /// <summary>The badge pill itself, for a cover (<see cref="DrawCoverBadge"/>) or a pane overlay's box
+    /// (<see cref="RenderPanes"/>, P5 — the same pill at the box's top-right, so an overlay looks the same
+    /// over a pane as over the session). <paramref name="closeBox"/> = the quick terminal's ✕ beside it.</summary>
+    private void DrawBadge(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, string badge, float rightX, float topY, bool closeBox)
     {
-        string badge = _coverKind switch { 1 => "scratch", 2 => "quick", 3 => "overlay", _ => "" };
         if (badge.Length == 0) return;
-        if (_coverKind == 2)   // quick terminal: ✕ close box in the corner; the badge pill sits left of it
+        if (closeBox)   // quick terminal: ✕ close box in the corner; the badge pill sits left of it
         {
             var (cx, cy, cw2, ch2) = CoverCloseRect(rightX, topY);
             brush.Color = WithA(SbHighlight, 0.92f);
@@ -803,12 +831,15 @@ internal partial class Program
         rt.DrawText(badge, _uiSmall, new Rect(rightX - bw + 2f, topY + 4f, bw - 8f, 20f), brush);
     }
 
-    /// <summary>When a --wait overlay's program has exited, a footer banner in the cover inviting a key to close.</summary>
-    private void DrawOverlayFooter(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
+    /// <summary>When a --wait overlay's program has exited, a footer banner at the bottom of the rect the
+    /// overlay occupies, inviting a key to close: the cover rect for the session-wide slot, the pane's
+    /// box for a pane slot (P5 — the banner sits inside THAT box only). <paramref name="slot"/> is the
+    /// slot the rect shows; nothing is drawn while its program is still running.</summary>
+    private void DrawOverlayFooter(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush, (float x, float y, float w, float h) rect, OverlaySlot slot)
     {
-        if (_coverKind != 3 || _ovlOwner is not { OverlayExited: true }) return;
-        var (fx, fy, fw, fh) = CoverRect();
-        string msg = $"  exited ({_ovlOwner.OverlayExitCode}) — press any key to close  ";
+        if (!slot.Exited) return;
+        var (fx, fy, fw, fh) = rect;
+        string msg = $"  exited ({slot.ExitCode}) — press any key to close  ";
         float bh = 22f;
         brush.Color = WithA(ChromeAccent, 0.95f);
         rt.FillRectangle(new Rect(fx, fy + fh - bh, fw, bh), brush);

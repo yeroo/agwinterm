@@ -52,14 +52,18 @@ internal partial class Program
 
     // ---- Notifications (OSC 9 / OSC 777 / notify) ----
 
-    /// <summary>Find the session that owns a pane (any pane, its scratch, or its overlay; or the quick cover).</summary>
+    /// <summary>Find the session that owns a pane (any pane, a pane's overlay term (P5), its scratch, or its
+    /// session-wide overlay; or the quick cover).</summary>
     private Ses? OwningSes(Pane p)
     {
         lock (_workspaces)
             foreach (var w in _workspaces)
                 foreach (var s in w.Sessions)
-                    if (s.Panes.Contains(p) || ReferenceEquals(s.Scratch, p) || ReferenceEquals(s.Overlay, p))
-                        return s;
+                {
+                    if (ReferenceEquals(s.Scratch, p) || ReferenceEquals(s.Overlay.Term, p)) return s;
+                    foreach (var q in s.Panes)
+                        if (ReferenceEquals(q, p) || ReferenceEquals(q.Overlay.Term, p)) return s;
+                }
         return null;
     }
 
@@ -134,7 +138,14 @@ internal partial class Program
         return false;
     }
 
-    private static void ClearUnread(Ses s) { foreach (var p in s.Panes) p.Unread = 0; if (s.Scratch is not null) s.Scratch.Unread = 0; if (s.Overlay is not null) s.Overlay.Unread = 0; }
+    // Visiting a session clears every surface it shows: each pane, each pane's overlay term (P5 — like the
+    // session-wide overlay, counted on the term and cleared here, not summed into UnreadOf), scratch, overlay.
+    private static void ClearUnread(Ses s)
+    {
+        foreach (var p in s.Panes) { p.Unread = 0; if (p.Overlay.Term is { } po) po.Unread = 0; }
+        if (s.Scratch is not null) s.Scratch.Unread = 0;
+        if (s.Overlay.Term is { } ov) ov.Unread = 0;
+    }
 
     // ---- Taskbar progress (OSC 9;4, ConEmu/Windows Terminal convention) ----
     // Last-writer-wins across sessions: the most recent report drives the window's taskbar icon.
@@ -780,7 +791,7 @@ internal partial class Program
         var ses = _active;
         if (ses is null) { ShowToast("open a session first"); return; }
         string id = engine == "starship" ? "Starship.Starship" : "JanDeDobbeleer.OhMyPosh";
-        OverlayOpen(ses, $"winget install --id {id} -e --accept-source-agreements --accept-package-agreements", 70, wait: true);
+        OverlayOpen(ses, null, $"winget install --id {id} -e --accept-source-agreements --accept-package-agreements", 70, wait: true);
         ShowToast($"installing {(engine == "starship" ? "starship" : "oh-my-posh")} — re-open the picker when it finishes");
     }
 
@@ -798,7 +809,7 @@ internal partial class Program
             ShowToast("installing oh-my-posh first (it provides the font installer) — then re-pick the font");
             return;
         }
-        OverlayOpen(ses, $"oh-my-posh font install {slug}", 70, wait: true);
+        OverlayOpen(ses, null, $"oh-my-posh font install {slug}", 70, wait: true);
         ConfigSetInternal("font-family", family);
         ShowToast($"installing {family} — the terminal switches to it once the overlay finishes");
     }

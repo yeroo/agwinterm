@@ -532,14 +532,26 @@ internal partial class Program
 
         foreach (var (pane, _, _, w, h) in PaneLayout(ses))
         {
-            var (_, cw, ch) = Metrics(pane.FontSize);
-            // Not even one cell fits: the layout is degenerate (mid-teardown, or a sidebar wider
-            // than the window). Leave this pane's PTY alone rather than telling it it's 1x1.
-            if (w < cw || h < ch) continue;
-            int cols = Math.Max(1, (int)(w / cw)), rows = Math.Max(1, (int)(h / ch));
-            if (pane.S.Cols != cols || pane.S.Rows != rows) pane.S.Resize(cols, rows);
-            pane.ScrollOffset = Math.Clamp(pane.ScrollOffset, 0, pane.S.Emulator.HistoryCount);
+            RegridTerm(pane, w, h);
+            // A pane overlay (P5) is always the full box of ITS pane: it lives on the pane, so a
+            // swap, a survivor promotion or a ratio change reaches it here, through the same layout
+            // tuple, with its own font metrics — there is no second source of geometry for it.
+            if (pane.Overlay.Term is { } ovl) RegridTerm(ovl, w, h);
         }
+    }
+
+    /// <summary>Resize one terminal's PTY grid to fit a <paramref name="w"/> × <paramref name="h"/> px box
+    /// using its own font metrics — the one step behind <see cref="RegridSession"/> (each pane and each
+    /// open pane overlay) and <see cref="RegridCover"/> (the shown cover).</summary>
+    private void RegridTerm(Pane term, float w, float h)
+    {
+        var (_, cw, ch) = Metrics(term.FontSize);
+        // Not even one cell fits: the layout is degenerate (mid-teardown, or a sidebar wider
+        // than the window). Leave this PTY alone rather than telling it it's 1x1.
+        if (w < cw || h < ch) return;
+        int cols = Math.Max(1, (int)(w / cw)), rows = Math.Max(1, (int)(h / ch));
+        if (term.S.Cols != cols || term.S.Rows != rows) term.S.Resize(cols, rows);
+        term.ScrollOffset = Math.Clamp(term.ScrollOffset, 0, term.S.Emulator.HistoryCount);
     }
 
     private void SetActive(Ses ses)
@@ -554,8 +566,9 @@ internal partial class Program
                 p.S.SetStatus(AgentStatus.Idle);
         // A scratch/overlay cover belongs to the previous session; drop it (quick is per-app, kept).
         if (_coverKind is 1 or 3) { _cover = null; _coverKind = 0; _ovlOwner = null; }
-        // If the newly-active session has an overlay up, re-show it as the cover.
-        if (ses.Overlay is not null) { _cover = ses.Overlay; _coverKind = 3; _ovlOwner = ses; }
+        // If the newly-active session has a session-wide overlay up, re-show it as the cover. Pane
+        // overlays (P5) need nothing here: they live on the panes and are drawn with them.
+        if (ses.Overlay.Term is { } ovl) { _cover = ovl; _coverKind = 3; _ovlOwner = ses; }
         _session = ActiveSurface()?.S;                          // a quick cover (if any) keeps input; else the new pane
         RegridSession(ses);
         if (_cover is not null) RegridCover();
@@ -654,8 +667,36 @@ internal partial class Program
 
     // ---- Cover terminals (scratch / quick) ----
 
-    /// <summary>The surface that receives input/render focus: a shown cover, else the active pane.</summary>
-    private Pane? ActiveSurface() => _cover ?? _active?.ActivePane;
+    /// <summary>The surface that receives input/render focus: a shown cover, else the SURFACE of the
+    /// active session's focused pane (<see cref="SurfaceOf"/>: its pane overlay while that slot is open,
+    /// else the pane itself). The one seam the ~40 callers share — keys, the mouse, selection, links,
+    /// paste, the UIA text, <c>--target active</c> — so a pane overlay becomes the focused surface by
+    /// this line alone (the rule is on ISessionHost.SessionOverlay: "a pane overlay is that pane's
+    /// surface while it is open").</summary>
+    private Pane? ActiveSurface() => _cover ?? (_active is { } a ? SurfaceOf(a.ActivePane) : null);
+
+    /// <summary>A pane's surface (P5): the overlay term drawn over its box while its slot is open, else
+    /// the pane. Used by <see cref="ActiveSurface"/>, <c>PaneAt</c> / <c>PaneBox</c> / <c>ActivePaneView</c>
+    /// (the hit-tests: the box is the PANE's, the metrics are the surface's) and the wheel — so the
+    /// pane-to-surface step lives once and no caller branches on the slot itself.</summary>
+    private static Pane SurfaceOf(Pane pane) => pane.Overlay.Term ?? pane;
+
+    /// <summary>The active session's focused pane when its overlay slot is open and no cover is over it —
+    /// the slot the keyboard's close chords (Ctrl+Shift+W, Esc) and the any-key close act on, in that
+    /// order: a cover first (it is over everything), then this slot, then the pane. Null otherwise.</summary>
+    private Pane? FocusedPaneWithOverlay()
+        => _cover is null && _active is { } a && a.ActivePane.Overlay.Term is not null ? a.ActivePane : null;
+
+    /// <summary>The any-key close of a <c>--wait</c> overlay whose program has exited (WM_KEYDOWN and
+    /// WM_CHAR both ask): the kind-3 cover if it has exited, else the focused pane's slot if IT has
+    /// (the banner sits in that pane's box; a key in the OTHER pane goes to that pane's shell, because
+    /// only the focused pane's surface is asked). True = the key closed an overlay and is consumed.</summary>
+    private bool CloseExitedOverlayOnKey()
+    {
+        if (_coverKind == 3 && _ovlOwner is { Overlay.Exited: true }) { CloseActiveOverlay(); return true; }
+        if (FocusedPaneWithOverlay() is { Overlay.Exited: true } fp) { ClosePaneOverlay(_active!, fp); return true; }
+        return false;
+    }
 
     /// <summary>Whether a pane is currently on screen — i.e. whether its output warrants a repaint.
     /// Called on session pump threads: field reads are benignly racy (a stale answer costs one
@@ -668,16 +709,25 @@ internal partial class Program
         if (_cover is { } c && ReferenceEquals(c, p)) return true;
         var act = _active;
         if (act is null) return false;
-        lock (_workspaces) return act.Panes.Contains(p);
+        // A pane of the active session, or the overlay term drawn over one (P5): the overlay is that
+        // pane's surface while open, so its output warrants a repaint exactly when the pane's would.
+        lock (_workspaces)
+            foreach (var q in act.Panes)
+                if (ReferenceEquals(q, p) || ReferenceEquals(q.Overlay.Term, p)) return true;
+        return false;
     }
 
     private void SyncSession() => _session = ActiveSurface()?.S;
 
-    /// <summary>A real filesystem cwd for a session (OSC 7 if reported, else the pane's launch dir).</summary>
-    private string? CwdOf(Ses ses)
+    /// <summary>A real filesystem cwd for a session — its ACTIVE pane's (OSC 7 if reported, else the pane's launch dir).</summary>
+    private string? CwdOf(Ses ses) => CwdOf(ses.ActivePane);
+
+    /// <summary>A real filesystem cwd for one pane (OSC 7 if reported, else its launch dir) — where a
+    /// pane overlay runs: the shell under it is the one the caller is looking at (P5).</summary>
+    private string? CwdOf(Pane pane)
     {
-        string raw = SafeCwd(ses);
-        return string.IsNullOrWhiteSpace(raw) ? ses.StartCwd : PrettyCwd(raw);
+        string raw = SafeCwd(pane);
+        return string.IsNullOrWhiteSpace(raw) ? pane.StartCwd : PrettyCwd(raw);
     }
 
     private void ShowCover(Pane p, int kind) { _cover = p; _coverKind = kind; SyncSession(); RegridCover(); RequestRedraw(); }
@@ -690,20 +740,22 @@ internal partial class Program
     }
 
     /// <summary>Dismiss whatever cover is up (the "close_cover" keymap action): overlays close
-    /// (their program is ephemeral), scratch/quick just hide (their shells stay alive).</summary>
+    /// (their program is ephemeral), scratch/quick just hide (their shells stay alive). With no cover
+    /// up, the focused pane's overlay (P5) closes instead; with neither, nothing — the keybinding gate
+    /// lets the chord (a bare Escape) fall through to the pane, as before.</summary>
     private void CloseCover()
     {
-        if (_cover is null) return;
-        if (_coverKind == 3) CloseActiveOverlay(); else HideCover();
+        if (_cover is not null) { if (_coverKind == 3) CloseActiveOverlay(); else HideCover(); return; }
+        if (FocusedPaneWithOverlay() is { } fp) ClosePaneOverlay(_active!, fp);
     }
 
     /// <summary>The rect (px) the current cover occupies: the full content region, or — for a floating overlay — a centered panel sized by percent.</summary>
     private (float x, float y, float w, float h) CoverRect()
     {
         var (x0, y0, w, h) = ContentArea();
-        if (_coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 and <= 100 } o)
+        if (_coverKind == 3 && _ovlOwner is { Overlay.SizePercent: > 0 and <= 100 } o)
         {
-            float fw = w * o.OverlaySizePercent / 100f, fh = h * o.OverlaySizePercent / 100f;
+            float fw = w * o.Overlay.SizePercent / 100f, fh = h * o.Overlay.SizePercent / 100f;
             return (x0 + (w - fw) / 2f, y0 + (h - fh) / 2f, fw, fh);
         }
         if (_coverKind == 2)   // quick terminal: a centered floating panel over the main window (~85%)
@@ -720,11 +772,7 @@ internal partial class Program
         if (_cover is null) return;
         if (_hwnd != IntPtr.Zero && IsIconic(_hwnd)) return;   // same 1x1 trap as RegridSession
         var (_, _, w, h) = CoverRect();
-        var (_, cw, ch) = Metrics(_cover.FontSize);
-        if (w < cw || h < ch) return;
-        int cols = Math.Max(1, (int)(w / cw)), rows = Math.Max(1, (int)(h / ch));
-        if (_cover.S.Cols != cols || _cover.S.Rows != rows) _cover.S.Resize(cols, rows);
-        _cover.ScrollOffset = Math.Clamp(_cover.ScrollOffset, 0, _cover.S.Emulator.HistoryCount);
+        RegridTerm(_cover, w, h);
     }
 
     /// <summary>Show a session's scratch terminal (creating it lazily in the session's cwd).</summary>
@@ -760,74 +808,154 @@ internal partial class Program
 
     // ---- Overlays (Wave B3): an ephemeral program run over a session ----
 
-    /// <summary>Open an overlay on a session: run <paramref name="command"/> in an ephemeral terminal over it.
-    /// sizePercent 0 = full content region; 1..100 = a centered floating panel. Returns the overlay
-    /// pane id.</summary>
-    private string OverlayOpen(Ses ses, string command, int sizePercent, bool wait, Dictionary<string, string>? extraEnv = null)
+    /// <summary>Open an overlay: run <paramref name="command"/> in an ephemeral terminal over a session
+    /// (<paramref name="pane"/> null — the session-wide slot, today's path verbatim: replace-and-cover;
+    /// sizePercent 0 = full content region, 1..100 = a centered floating panel) or over exactly one
+    /// pane's box (<paramref name="pane"/> given — that pane's slot, P5: the sibling stays visible and
+    /// interactive, the overlay is always full-pane, and it runs in the PANE's cwd with the pane's font
+    /// size, because the shell under it is the one the caller is looking at). Returns the overlay pane
+    /// id — <c>&lt;session id&gt;:overlay:&lt;hex&gt;</c> or <c>&lt;pane id&gt;:overlay:&lt;hex&gt;</c>, so
+    /// the owner is readable off the id — or, for a pane whose slot is HELD, the <c>pane overlay
+    /// already open</c> refusal with nothing opened: the pane slot never replaces (agterm's rule; the
+    /// host checks the slot in the same UI hop before calling, this is the guard that makes a missed
+    /// check a refusal rather than a silent replace). <c>_lastOverlayExit</c> is NOT reset by a pane
+    /// open — the pane arm has its own <see cref="OverlaySlot.LastResult"/>, reset here.</summary>
+    private string OverlayOpen(Ses ses, Pane? pane, string command, int sizePercent, bool wait, Dictionary<string, string>? extraEnv = null)
     {
-        CloseOverlayOf(ses);                    // one overlay per session; replace any existing one
-        string id = ses.Id + ":overlay:" + Guid.NewGuid().ToString("N")[..6];
-        var pane = CreatePane(id, ses.Ws, CwdOf(ses), ses.FontSize, command, shellWrap: true, extraEnv: extraEnv);
-        pane.OverlayDone = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        // The window-wide LAST exit (`overlay result`) is reset by every open, and the new pane
-        // becomes the session's overlay in the same locked step: an exit that lands on the pty
-        // thread either wrote before this (and is reset here) or sees the replacement and skips —
-        // never writes a replaced pane's code over the reset (WatchOverlayExit takes the lock).
-        lock (_overlayExitLock) { _lastOverlayExit = "no overlay"; ses.Overlay = pane; }
-        ses.OverlaySizePercent = sizePercent;   // validated at the control API (TryOverlaySize); in-app callers pass literals
-        ses.OverlayWait = wait;
-        ses.OverlayExited = false; ses.OverlayExitCode = 0;
-        if (ReferenceEquals(ses, _active)) { _cover = pane; _coverKind = 3; _ovlOwner = ses; SyncSession(); RegridCover(); }
+        OverlaySlot slot;
+        string id;
+        if (pane is null)
+        {
+            CloseOverlayOf(ses);                    // one session-wide overlay per session; replace any existing one
+            slot = ses.Overlay;
+            id = ses.Id + ":overlay:" + Guid.NewGuid().ToString("N")[..6];
+        }
+        else
+        {
+            slot = pane.Overlay;
+            if (slot.Term is not null)
+                return ISessionHost.RefusePrefix + OverlayPanes.AlreadyOpenRefusal(Math.Max(0, ses.Panes.IndexOf(pane)));
+            sizePercent = 0;                         // a pane overlay is always full-pane (refused upstream; pinned here)
+            id = pane.Id + ":overlay:" + Guid.NewGuid().ToString("N")[..6];
+        }
+        var owner = pane ?? ses.ActivePane;
+        var term = CreatePane(id, ses.Ws, CwdOf(owner), owner.FontSize, command, shellWrap: true, extraEnv: extraEnv);
+        term.OverlayDone = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The slot's LAST exit is reset by every open, and the new term becomes the slot's overlay in
+        // the same locked step: an exit that lands on the pty thread either wrote before this (and is
+        // reset here) or sees the replacement and skips — never writes a replaced term's code over
+        // the reset (WatchOverlayExit takes the lock). For the session-wide slot the last exit is the
+        // window-wide `overlay result` (_lastOverlayExit); for a pane slot it is the slot's own.
+        lock (_overlayExitLock)
+        {
+            if (pane is null) _lastOverlayExit = "no overlay"; else slot.LastResult = OverlayPanes.NoResult;
+            slot.Term = term;
+        }
+        slot.SizePercent = sizePercent;   // validated at the control API (TryOverlaySize); in-app callers pass literals
+        slot.Wait = wait;
+        slot.Exited = false; slot.ExitCode = 0;
+        if (pane is null)
+        {
+            if (ReferenceEquals(ses, _active)) { _cover = term; _coverKind = 3; _ovlOwner = ses; SyncSession(); RegridCover(); }
+        }
+        else
+        {
+            // The term takes the pane's box (RegridSession regrids every open pane overlay) and, when
+            // this pane is the focused one of the active session, becomes the window's focused surface
+            // (SyncSession — through ActiveSurface, which follows the pane's surface).
+            RegridSession(ses);
+            if (ReferenceEquals(ses, _active)) SyncSession();
+        }
         RequestRedraw();
-        WatchOverlayExit(ses, pane);
+        WatchOverlayExit(ses, pane, term);
         return id;
     }
 
-    /// <summary>Tear down a session's overlay (hiding its cover if shown, disposing its PTY).</summary>
+    /// <summary>Tear down a session's SESSION-WIDE overlay (hiding its cover if shown, disposing its PTY).
+    /// The pane slots are <see cref="ClosePaneOverlay"/>'s.</summary>
     private void CloseOverlayOf(Ses ses)
     {
-        var pane = ses.Overlay;
-        if (pane is null) return;
-        if (_coverKind == 3 && ReferenceEquals(_cover, pane)) { _cover = null; _coverKind = 0; _ovlOwner = null; SyncSession(); if (_active is not null) RegridSession(_active); }
-        lock (_overlayExitLock) ses.Overlay = null;   // the exit's guard reads this under the same lock
-        ses.OverlayExited = false; ses.OverlaySizePercent = 0; ses.OverlayWait = false;
-        // Closed (or replaced) before its program exited: release a `--block` caller with "closed"
-        // rather than parking it — Dispose ends the pty without raising Exited (ServerSession
-        // suppresses the event on its own teardown), so nothing else would. A no-op after an exit.
-        pane.OverlayDone?.TrySetResult("closed");
-        try { pane.S.Dispose(); } catch { }
+        var slot = ses.Overlay;
+        var term = slot.Term;
+        if (term is null) return;
+        if (_coverKind == 3 && ReferenceEquals(_cover, term)) { _cover = null; _coverKind = 0; _ovlOwner = null; SyncSession(); if (_active is not null) RegridSession(_active); }
+        lock (_overlayExitLock) slot.Term = null;   // the exit's guard reads this under the same lock
+        slot.Exited = false; slot.SizePercent = 0; slot.Wait = false;
+        ReleaseAndDispose(term);
         RequestRedraw();
+    }
+
+    /// <summary>Tear down one PANE's overlay (P5): the slot empties, a <c>--block</c> caller is released
+    /// with "closed", the term's PTY is disposed, the pane's own surface is back. The pane's own PTY was
+    /// never resized by the overlay (it drew over the pane), so there is nothing to regrid; the window's
+    /// focused surface is repointed when the pane is the focused one of the active session. Callers:
+    /// the host's <c>close --pane</c>, the exit watcher (no <c>--wait</c>), the any-key close of an
+    /// exited <c>--wait</c> overlay, Ctrl+Shift+W / Esc on the focused pane, and every path that ends
+    /// the pane itself — <see cref="ClosePane"/> (split close / split off / the shell exiting),
+    /// <see cref="CloseSessionInternal"/>; WM_DESTROY disposes the term directly. A no-op on an empty
+    /// slot.</summary>
+    private void ClosePaneOverlay(Ses ses, Pane pane)
+    {
+        var slot = pane.Overlay;
+        var term = slot.Term;
+        if (term is null) return;
+        lock (_overlayExitLock) slot.Term = null;   // the exit's guard reads this under the same lock
+        slot.Exited = false; slot.Wait = false;
+        ReleaseAndDispose(term);
+        if (ReferenceEquals(ses, _active)) SyncSession();
+        RequestRedraw();
+    }
+
+    /// <summary>The end of an overlay term, both slot kinds: closed (or replaced) before its program
+    /// exited, release a <c>--block</c> caller with "closed" rather than parking it — Dispose ends the
+    /// pty without raising Exited (ServerSession suppresses the event on its own teardown), so nothing
+    /// else would. A no-op after an exit.</summary>
+    private static void ReleaseAndDispose(Pane term)
+    {
+        term.OverlayDone?.TrySetResult("closed");
+        try { term.S.Dispose(); } catch { }
     }
 
     /// <summary>Close the currently-shown overlay cover (from a keystroke / close verb).</summary>
     private void CloseActiveOverlay() { if (_ovlOwner is not null) CloseOverlayOf(_ovlOwner); }
 
-    /// <summary>When an overlay's program exits, record its code and either close the overlay or (with --wait) mark it exited.</summary>
-    private void WatchOverlayExit(Ses ses, Pane pane)
+    /// <summary>When an overlay's program exits, record its code in its slot's last result and either
+    /// close the overlay or (with --wait) mark it exited. <paramref name="pane"/> null = the session-wide
+    /// slot of <paramref name="ses"/> (the window-wide <c>_lastOverlayExit</c>); else that pane's slot
+    /// (its own <see cref="OverlaySlot.LastResult"/>).</summary>
+    private void WatchOverlayExit(Ses ses, Pane? pane, Pane term)
     {
+        var slot = pane is null ? ses.Overlay : pane.Overlay;
         int fired = 0;   // one-shot: the event, the already-exited check and the start watch can all see the end
         void OnExit(int code)
         {
             if (Interlocked.Exchange(ref fired, 1) != 0) return;
-            // This pane's own outcome first: a `--block` caller is released with its OWN program's
+            // This term's own outcome first: a `--block` caller is released with its OWN program's
             // status (#227), whatever other overlays in the window did meanwhile.
-            pane.OverlayDone?.TrySetResult($"exit {code}");
-            // The window-wide last exit is written only while this pane is still its session's
-            // overlay: a pane an open has since replaced (or a close disposed) must not stamp its
-            // code over the one `overlay result` now describes. Guard and write are one locked
-            // step against OverlayOpen's reset-and-assign and CloseOverlayOf's null-out, so there
-            // is no gap in which a replaced pane's exit lands after the replacement's reset. The
-            // post below is unconditional as before: its own guard runs on the UI thread.
-            lock (_overlayExitLock) { if (ReferenceEquals(ses.Overlay, pane)) _lastOverlayExit = $"exit {code}"; }
+            term.OverlayDone?.TrySetResult($"exit {code}");
+            // The slot's last exit is written only while this term is still the slot's overlay: a
+            // term an open has since replaced (or a close disposed) must not stamp its code over the
+            // one `overlay result` now describes. Guard and write are one locked step against
+            // OverlayOpen's reset-and-assign and the close's null-out, so there is no gap in which a
+            // replaced term's exit lands after the replacement's reset. The post below is
+            // unconditional as before: its own guard runs on the UI thread.
+            lock (_overlayExitLock)
+            {
+                if (ReferenceEquals(slot.Term, term))
+                {
+                    if (pane is null) _lastOverlayExit = $"exit {code}"; else slot.LastResult = $"exit {code}";
+                }
+            }
             Post(() =>
             {
-                if (!ReferenceEquals(ses.Overlay, pane)) return;   // already replaced/closed
-                if (ses.OverlayWait) { ses.OverlayExited = true; ses.OverlayExitCode = code; RequestRedraw(); }
-                else CloseOverlayOf(ses);
+                if (!ReferenceEquals(slot.Term, term)) return;   // already replaced/closed
+                if (slot.Wait) { slot.Exited = true; slot.ExitCode = code; RequestRedraw(); }
+                else if (pane is null) CloseOverlayOf(ses);
+                else ClosePaneOverlay(ses, pane);
             });
         }
-        pane.S.Exited += OnExit;
-        if (pane.S.HasExited) OnExit(pane.S.ExitCode ?? 0);        // already gone before we subscribed
+        term.S.Exited += OnExit;
+        if (term.S.HasExited) OnExit(term.S.ExitCode ?? 0);        // already gone before we subscribed
         // A start that FAILS (pty-host down, cwd gone) sets HasExited without raising Exited —
         // the session keeps its surface to show the failure — so nothing above would end this
         // overlay and a `--block` caller would wait forever (revmux r1). The start task completes
@@ -837,7 +965,7 @@ internal partial class Program
         // (an async method that throws OperationCanceledException completes Canceled, with
         // t.Exception null) — no call site passes a cancellable token, so none can happen today;
         // whoever wires one through CreatePane must widen this guard or a --block waits forever.
-        else pane.Start?.ContinueWith(t => { if (t.Exception is not null || pane.S.HasExited) OnExit(pane.S.ExitCode ?? 1); }, TaskScheduler.Default);
+        else term.Start?.ContinueWith(t => { if (t.Exception is not null || term.S.HasExited) OnExit(term.S.ExitCode ?? 1); }, TaskScheduler.Default);
     }
 
     /// <summary>App version for TERM_PROGRAM_VERSION — the entry assembly's informational version
@@ -905,9 +1033,13 @@ internal partial class Program
                 lock (w._workspaces)
                     foreach (var s in w._workspaces.SelectMany(x => x.Sessions))
                     {
-                        foreach (var p in s.Panes) claimed.Add(p.Id);
+                        foreach (var p in s.Panes)
+                        {
+                            claimed.Add(p.Id);
+                            if (p.Overlay.Term is { } po) claimed.Add(po.Id);   // a pane overlay's term is hosted like any other (P5)
+                        }
                         if (s.Scratch is { } sc) claimed.Add(sc.Id);
-                        if (s.Overlay is { } ov) claimed.Add(ov.Id);
+                        if (s.Overlay.Term is { } ov) claimed.Add(ov.Id);
                     }
                 if (w._quick is { } q) claimed.Add(q.Id);
             }
@@ -1057,8 +1189,8 @@ internal partial class Program
             // itself is the authority (it no-ops harmlessly when already current).
             Post(() =>
             {
-                OverlayOpen(ses, "claude update", 60, wait: true);
-                var ovl = ses.Overlay;
+                OverlayOpen(ses, null, "claude update", 60, wait: true);
+                var ovl = ses.Overlay.Term;
                 if (ovl is null) { _claudeUpdating = false; return; }
                 ShowToast(latest is null ? $"running claude update (you have {installed})…"
                                          : $"updating Claude Code {installed} → {latest}…", 4000);
@@ -1228,9 +1360,15 @@ internal partial class Program
             foreach (var w in _workspaces)
                 foreach (var s in w.Sessions)
                 {
-                    foreach (var p in s.Panes) if (match(p)) return (p, s, false);
+                    foreach (var p in s.Panes)
+                    {
+                        if (match(p)) return (p, s, false);
+                        // A pane overlay's term is a cover too (P5): `--target <overlay id>` reaches
+                        // it from anywhere, and the cover refusals (restore, swap, split) apply.
+                        if (p.Overlay.Term is { } po && match(po)) return (po, s, true);
+                    }
                     if (s.Scratch is { } sc && match(sc)) return (sc, s, true);
-                    if (s.Overlay is { } ov && match(ov)) return (ov, s, true);
+                    if (s.Overlay.Term is { } ov && match(ov)) return (ov, s, true);
                 }
         if (_quick is { } q && match(q)) return (q, null, true);
         return null;
@@ -1240,7 +1378,13 @@ internal partial class Program
     private void ZoomPane((Pane pane, Ses? ses, bool cover) hit, int delta)
     {
         ChangeFontSizeOfPane(hit.pane, delta);
-        if (hit.cover) { if (ReferenceEquals(_cover, hit.pane)) RegridCover(); }   // inactive covers regrid on show
+        if (hit.cover)
+        {
+            // The shown cover regrids to its cover rect; a pane overlay's term (P5) regrids with its
+            // session, to its pane's box; a hidden scratch / an inactive session's overlay regrids on show.
+            if (ReferenceEquals(_cover, hit.pane)) RegridCover();
+            else if (hit.ses is not null) RegridSession(hit.ses);
+        }
         else if (hit.ses is not null) RegridSession(hit.ses);
         RequestRedraw();
         SaveState();
@@ -1261,6 +1405,9 @@ internal partial class Program
     private void ChangeFontSize(int delta)
     {
         if (_cover is not null) { ChangeFontSizeOfPane(_cover, delta); RegridCover(); RequestRedraw(); }
+        // The focused pane's overlay (P5) is that pane's surface: it zooms alone, like a cover, and
+        // its size is not persisted (overlays never are) — so no SaveState, unlike the pane's own zoom.
+        else if (_active is { } act && act.ActivePane.Overlay.Term is { } ovl) { ChangeFontSizeOfPane(ovl, delta); RegridSession(act); RequestRedraw(); }
         else if (_active is not null) ChangeFontSizeOf(_active, delta);
     }
 
@@ -1279,8 +1426,8 @@ internal partial class Program
         ses.Active = idx + 1;            // focus the new pane, within its session
         // Only the active session's focused pane is the window's focused surface. Pointing
         // `_session` at a pane of some other session would leave the window focused on a
-        // surface that is not on screen.
-        if (ReferenceEquals(ses, _active)) _session = ses.S;
+        // surface that is not on screen. SyncSession: the new pane's surface, under a cover if one is up.
+        if (ReferenceEquals(ses, _active)) SyncSession();
         RegridSession(ses);
         RequestRedraw();
         SaveState();
@@ -1292,7 +1439,7 @@ internal partial class Program
         var ses = _active;
         if (ses is null || ses.Panes.Count < 2) return;
         ses.Active = Math.Clamp(ses.Active + dir, 0, ses.Panes.Count - 1);
-        _session = ses.S;
+        SyncSession();   // the focused pane's SURFACE (its overlay while one is open — P5), not its shell
         RequestRedraw();
     }
 
@@ -1339,10 +1486,14 @@ internal partial class Program
         foreach (var q in ses.Panes) q.Ratio += freed;   // the survivor grows to fill the freed share of the axis
         if (ses.Panes.Count == 1) ses.Panes[0].Ratio = 1f;   // exactly the full width or height, whatever the shares summed to
         ses.Active = Math.Clamp(idx, 0, ses.Panes.Count - 1);
+        // The pane's overlay dies with the pane (P5: split close, split off, the shell exiting — every
+        // path ends here); the survivor keeps its own, regridded to the new box below.
+        ClosePaneOverlay(ses, pane);
         try { pane.S.Dispose(); } catch { }
         // Only the active session's focused pane is the window's focused surface. Pointing `_session`
         // at a pane of some other session would leave the window focused on a surface not on screen.
-        if (ReferenceEquals(ses, _active)) _session = ses.S;
+        // SyncSession: the survivor's SURFACE — its own overlay if it holds one (P5) — under a cover if up.
+        if (ReferenceEquals(ses, _active)) SyncSession();
         RegridSession(ses);
         if (ReferenceEquals(ses, _active)) RequestRedraw();
         SaveState();
@@ -1501,10 +1652,10 @@ internal partial class Program
     private void CloseSessionInternal(Ses ses)
     {
         CaptureClosedSession(ses);   // remember it so Reopen Closed Session can bring it back
-        foreach (var p in ses.Panes) { try { p.S.Dispose(); } catch { } }
+        foreach (var p in ses.Panes) { ClosePaneOverlay(ses, p); try { p.S.Dispose(); } catch { } }   // each pane's overlay (P5) dies with its pane
         // Dismiss + dispose this session's scratch cover if it belongs here.
         if (ses.Scratch is not null) { if (_coverKind == 1 && ReferenceEquals(_cover, ses.Scratch)) HideCover(); try { ses.Scratch.S.Dispose(); } catch { } ses.Scratch = null; }
-        if (ses.Overlay is not null) CloseOverlayOf(ses); // dismiss + dispose this session's overlay
+        CloseOverlayOf(ses); // dismiss + dispose this session's session-wide overlay (a no-op on an empty slot)
         bool wasActive = ReferenceEquals(_active, ses);
         _mru.Remove(ses.Id);
         EmitEvent("session", ses.Id, "closed"); EmitEvent("tree");   // control-API event log (#273)
@@ -1697,10 +1848,12 @@ internal partial class Program
     /// to the one boundary a two-pane session has, the window's focused surface is repointed only when
     /// <paramref name="ses"/> IS the active session (#230: swapping a background session must not steal
     /// focus), then redraw, save, and a tree event (paneIds and focusedPane changed).</para>
-    /// <para>Nothing else moves. Checked, and found per-session or order-independent: overlay, scratch
-    /// and the quick cover (<see cref="Ses.Overlay"/> / <see cref="Ses.Scratch"/> / <c>_cover</c> —
-    /// session-wide until P5, which inherits the obligation to move a pane-scoped overlay with its pane);
-    /// the status aggregate (<see cref="StatusAggregate"/> is a max over the panes); context, flag, name,
+    /// <para>A PANE overlay moves with its pane (P5): its slot is <see cref="Pane.Overlay"/>, on the pane
+    /// this reverses, so there is no swap step for it — and its box changed, so the regrid below regrids
+    /// it too (<see cref="RegridSession"/> regrids every open pane overlay to its pane's box). Nothing
+    /// else moves. Checked, and found per-session or order-independent: the session-wide overlay, scratch
+    /// and the quick cover (<see cref="Ses.Overlay"/> / <see cref="Ses.Scratch"/> / <c>_cover</c> cover the
+    /// session, not a pane); the status aggregate (<see cref="StatusAggregate"/> is a max over the panes); context, flag, name,
     /// profile, elevation, background (all on <see cref="Ses"/>); MRU and the multi-selection (session
     /// ids); broadcast (per window); the UIA tree (one node per window, no per-pane node); the sidebar
     /// row (per session). Per-PANE state — scroll offset, selection, read-only, unread, font size, the
@@ -1718,8 +1871,8 @@ internal partial class Program
         }
         if (ReferenceEquals(ses, _active) && _divDragging) { _divDragging = false; ReleaseCapture(); }
         _divLeft = 0;
-        RegridSession(ses);
-        if (ReferenceEquals(ses, _active)) { _session = ses.S; RequestRedraw(); }
+        RegridSession(ses);   // both panes AND their pane overlays (the slot travelled with the pane; the box did not)
+        if (ReferenceEquals(ses, _active)) { SyncSession(); RequestRedraw(); }   // the focused pane's surface followed its pane
         SaveState();
         EmitEvent("tree");   // control-API event log (#273): paneIds and focusedPane changed
     }
