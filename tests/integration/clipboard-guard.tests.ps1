@@ -2,8 +2,8 @@
 # restore. Every state in clipboard-guard.ps1's header has a case here, and so has every way the
 # real one was wrong in review (#256 round 5): a user copy between the snapshot and the sentinel,
 # a user copy after the sentinel, a partial put on the restore, a sentinel write that fails after
-# the empty. Runs in CI before win32-control.ps1.
-param([switch]$Strict)
+# the empty; and round 6's two: a restore refused five times after a successful write, and a datum
+# that could not be read taken for someone else's copy. Runs in CI before win32-control.ps1.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'clipboard-guard.ps1')
 $fail = 0
@@ -141,6 +141,73 @@ try {
     $threw = $false
     try { $guard::Take() | Out-Null } catch { $threw = $true }
     Check 'Take() throws when the clipboard cannot be opened' $threw
+
+    # Round 6, Major 1: written, then the clipboard cannot be reopened for the restore — `unopened` five
+    # times over. The sentinel is still on the clipboard, so the file is KEPT (it was deleted, and the
+    # case passed over a clipboard still holding the sentinel).
+    $f = New-Fake
+    $snap = $guard::Take()
+    $w = $guard::WriteSentinel('agw-paste-9b', $snap)
+    $file = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-clipboard-test-" + [guid]::NewGuid().ToString('N') + '.bin')
+    $snap.Save($file)
+    $f.OpenFails = $true
+    $sets = $f.Sets
+    $r = Invoke-ClipboardRestore $snap $w $file
+    Check 'written, then the restore cannot open five times → unopened, the sentinel still in, the file KEPT' ($w.State -eq 'written' -and $r.State -eq 'unopened' -and $r.Detail -like '*5 tries*' -and $f.Sets -eq $sets -and $U.GetString($f.Store[13]) -eq "agw-paste-9b`0" -and (Test-Path -LiteralPath $file)) "w=$w r=$r"
+    $f.OpenFails = $false
+    $r = Invoke-ClipboardRestore $snap $w $file
+    Check 'the same write restores once the clipboard opens again; the file deleted then' ($r.State -eq 'restored' -and (Same $f $snap) -and -not (Test-Path -LiteralPath $file)) "$r"
+    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+
+    # Round 6, Major 2: the sequence moved without a copy and the sentinel's data cannot be READ — that
+    # is not someone else's copy (`changed` deleted the file and the case passed): `unread`, nothing
+    # touched, the file kept; and the same under Generation's second open leaves the generation
+    # unverified rather than skipping the case with the sentinel in.
+    $f = New-Fake
+    $snap = $guard::Take()
+    $w = $guard::WriteSentinel('agw-paste-10', $snap)
+    $file = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-clipboard-test-" + [guid]::NewGuid().ToString('N') + '.bin')
+    $snap.Save($file)
+    $f.Seq++; $f.GetFails = 13
+    $sets = $f.Sets; $empties = $f.Empties
+    $r = Invoke-ClipboardRestore $snap $w $file
+    Check 'the number moved and CF_UNICODETEXT cannot be read → unread (not changed), nothing touched, the file kept' ($w.State -eq 'written' -and $r.State -eq 'unread' -and $r.Detail -like '*could not be read*' -and $f.Sets -eq $sets -and $f.Empties -eq $empties -and $U.GetString($f.Store[13]) -eq "agw-paste-10`0" -and (Test-Path -LiteralPath $file)) "w=$w r=$r"
+    $f.GetFails = 16
+    $r = Invoke-ClipboardRestore $snap $w $file
+    Check 'a synthesized format that cannot be read → unread too' ($r.State -eq 'unread' -and (Test-Path -LiteralPath $file)) "$r"
+    $f.GetFails = 0
+    $r = Invoke-ClipboardRestore $snap $w $file
+    Check 'readable again: the same write restores by content; the file deleted then' ($r.State -eq 'restored' -and (Same $f $snap) -and -not (Test-Path -LiteralPath $file)) "$r"
+    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+    $f = New-Fake
+    $snap = $guard::Take()
+    $f.GetFails = 13
+    $w = $guard::WriteSentinel('agw-paste-10b', $snap)
+    Check 'CF_UNICODETEXT unreadable under the second open → written, generation unverified, the inside number' ($w.State -eq 'written' -and $w.Detail -like 'generation unverified*could not be read*' -and $w.Sequence -eq $f.Seq - 3) "$w seq=$($f.Seq)"
+    $f.GetFails = 0
+    $r = Invoke-ClipboardRestore $snap $w $null
+    Check 'then restored by content' ($r.State -eq 'restored' -and (Same $f $snap)) "$r"
+    # Positively theirs stays `changed`: a format the sentinel never carries beside an unreadable one, an
+    # image (an Unsupported id), other text, an emptied clipboard.
+    $f = New-Fake
+    $snap = $guard::Take()
+    $w = $guard::WriteSentinel('agw-paste-10c', $snap)
+    $f.Seq++; $f.Store[0xC0F3] = [Text.Encoding]::ASCII.GetBytes('theirs'); $f.GetFails = 13
+    $r = Invoke-ClipboardRestore $snap $w $null
+    Check 'a foreign format beside an unreadable CF_UNICODETEXT is positively theirs → changed' ($r.State -eq 'changed' -and $f.Store.ContainsKey([uint32]0xC0F3)) "$r"
+    $f.GetFails = 0
+    $f = New-Fake
+    $snap = $guard::Take()
+    $w = $guard::WriteSentinel('agw-paste-10d', $snap)
+    $f.UserWrites(2, [byte[]](1, 2, 3))
+    $r = Invoke-ClipboardRestore $snap $w $null
+    Check 'an image copied during the case (CF_BITMAP) is positively theirs → changed, kept' ($r.State -eq 'changed' -and $r.Detail -like '*CF_BITMAP*' -and $f.Store.ContainsKey([uint32]2)) "$r"
+    $f = New-Fake
+    $snap = $guard::Take()
+    $w = $guard::WriteSentinel('agw-paste-10e', $snap)
+    $f.Store.Clear(); $f.Seq++
+    $r = Invoke-ClipboardRestore $snap $w $null
+    Check 'an emptied clipboard is positively not ours → changed, nothing written' ($r.State -eq 'changed' -and $f.Store.Count -eq 0) "$r"
 
     # A format that is not global memory: Unsupported, nothing written. An image clipboard as Windows
     # presents it (a DIB with its synthesized CF_BITMAP and CF_PALETTE) never runs.

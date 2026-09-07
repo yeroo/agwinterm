@@ -78,7 +78,7 @@ jobs:
       - name: Clipboard guard (fake)
         shell: pwsh
         timeout-minutes: 5
-        run: ./tests/integration/clipboard-guard.tests.ps1 -Strict
+        run: ./tests/integration/clipboard-guard.tests.ps1
 
       - name: Win32 control-host integration
         shell: pwsh
