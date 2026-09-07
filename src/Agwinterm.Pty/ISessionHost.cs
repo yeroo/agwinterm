@@ -424,7 +424,12 @@ public interface ISessionHost
     /// refused <see cref="OverlayPanes.NotVisible"/>, <c>--target</c> may be the session id, either
     /// pane id, or either pane's overlay id, but a pane id — or a pane's overlay id — naming the OTHER
     /// side than <c>--pane</c> is refused (<see cref="OverlayPanes.Disagree"/>, which says which of
-    /// the two it saw), and <c>--size-percent</c> / <c>resize</c> with a pane are
+    /// the two it saw); a pane's overlay id with <c>--pane</c> OMITTED names its own slot for as long
+    /// as it resolves — one that stopped resolving between the resolve and the UI hop is refused
+    /// <see cref="OverlayPanes.OverlayIdGoneRefusal"/> (ok:false, retry by the pane word), one already
+    /// gone when the call arrived is no pane overlay's id at all (the session-wide arm: "no session
+    /// matches" for close/copy/text, the window-wide value for result) — and <c>--size-percent</c> /
+    /// <c>resize</c> with a pane are
     /// refused at the server and the host alike (<see cref="OverlayPanes.SizeWithPane"/>,
     /// <see cref="OverlayPanes.ResizeWithPane"/>). block waits on THAT slot's program, as the
     /// session-wide arm does. close → "closed", or "no overlay" (ok, the session-wide shape) when the

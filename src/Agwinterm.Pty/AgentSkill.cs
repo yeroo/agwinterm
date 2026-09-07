@@ -29,8 +29,11 @@ public static class AgentSkill
         You are inside agwinterm when `AGWINTERM_ENABLED=1`. Relevant env vars:
         - `AGWINTERM_SESSION_ID` — your session id (the default target for commands). Unique PER PANE:
           two agents in a split can't collide (each pane resolves as its own target). Inside a scratch, an
-          overlay or the quick terminal it is THAT cover's id, so your bare commands act on the cover you run in —
-          from inside a pane overlay, a bare `session overlay close` closes your own slot (see Overlays).
+          overlay or the quick terminal it is THAT cover's id: `session text` / `type` / `keys` with no target act on
+          the cover you run in. `session overlay` verbs resolve it by what it names — from inside a PANE overlay a
+          bare `session overlay close` closes your own slot (see Overlays); from inside a scratch the bare form is the
+          owning session's SESSION-WIDE slot (pass `--pane` or `--target` for anything else); from inside the quick
+          terminal it is refused `no session matches that target` (the quick terminal belongs to no session).
         - `AGWINTERM_PANE_ID` — explicit pane identity (same value; use when you specifically mean the pane).
         - `AGWINTERM_WINDOW_ID` — your window id.
         - `AGWINTERM_PIPE` — the control pipe name (full path `\\.\pipe\<name>`).
@@ -213,7 +216,9 @@ public static class AgentSkill
           `resize` and `--size-percent` are refused naming the overlay, since a pane overlay is always full-pane) — so a
           program run INSIDE a pane overlay, whose `AGWINTERM_SESSION_ID` is that overlay's id, aims its bare
           `session overlay` verbs at its own slot and needs `--target <session id>` to reach the session-wide one. Once
-          the overlay closed its id resolves nowhere: `--pane X` is then the only way to that slot (its `result`). What
+          the overlay closed its id resolves nowhere: `--pane X` is then the only way to that slot (its `result`); an id
+          that stops resolving WHILE a call is in flight (the overlay closed under it) is refused `'<id>' no longer names
+          an open pane overlay: ... retry with --pane <its side>` — `ok:false`, retry by the word, not by the id. What
           is REFUSED with a pane, `ok:false`
           and nothing opened, each starting with agterm's phrase: `pane not visible` (`--pane right` on a one-pane
           session — we never hide a pane, so that is the only case; pass `--pane left` or omit it),
@@ -237,15 +242,20 @@ public static class AgentSkill
           program exited. `exit 1` also covers a program that could not be started at all (the session's cwd gone,
           the pty-host down), and a blocking open closes its pane as it replies, so AFTER the call `exit 1` cannot be
           told from a program that ran and failed. When that distinction matters, do not block: open with `--wait`
-          (the pane stays after the exit and the reply is its id), poll `overlay result` until it says `exit N`,
+          (the pane stays after the exit and the reply is its id), poll `overlay result` until it says `exit N` — a
+          session-wide open polls the bare form; a `--pane X` open polls `overlay result --pane X` (or `--target <the
+          id the open returned>` while the overlay is up), because a pane open never resets the window-wide value and
+          a pane exit never writes it (a bare poll after a pane open reads whatever an earlier session-wide overlay
+          left there, or waits forever) —
           `session text --target <that id>` for the output or the start failure (`exit N` is written when the process
           ends, not when its output is drained — the last lines can still be landing; read again if the text looks
           cut off), then `overlay close --target <that id>` (a bare `close` closes the ACTIVE session's overlay, which
           need not be yours; that close answers `ok:false` when the overlay is already gone — a key pressed on the
-          `--wait` prompt, a later open replacing it — which means closed, not failed; `tree` settles it). `overlay result` is ONE value
-          per window — reset to `no overlay` by any open in the window, written by any session's overlay exit — so
-          the poll is trustworthy only while yours is the only overlay in the window; `tree` shows which sessions
-          have one.
+          `--wait` prompt, a later open replacing it — which means closed, not failed; `tree` settles it). The bare
+          `overlay result` is ONE value per window — reset to `no overlay` by any session-wide open in the window,
+          written by any session's session-wide overlay exit — so the bare poll is trustworthy only while yours is
+          the only session-wide overlay in the window; `tree` shows which sessions have one. The pane form is per
+          slot and has no such caveat.
           The window closing under a blocking open answers `ok:false` with the status unknown.
         - `agwintermctl session overlay close [--pane left|right] [--target <id>]`   — dismiss the overlay now. With `--pane`
           that slot: `closed`, or `ok` with `no overlay` when the slot is empty (closing nothing is not a failure).

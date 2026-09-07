@@ -135,16 +135,20 @@ public static class OverlayPanes
 
     /// <summary>A pane overlay's own id on <c>--target</c> with <c>--pane</c> omitted names its slot (the
     /// rule: the id reaches the overlay from anywhere), so the two usage refusals for that slot name
-    /// the id the guard saw, not a <c>--pane</c> the caller never passed — as does
-    /// <see cref="OverlayIdGoneRefusal"/>, for an id that stopped resolving between the pipe thread's
-    /// inference and the UI hop (its overlay closed, or its pane went, in flight).</summary>
-    public static string OverlayIdGoneRefusal(string target) =>
-        $"'{target}' no longer names an open pane overlay: it closed, or its pane went, while this call was in flight; read tree and retry. Nothing done.";
-
+    /// the id the guard saw, not a <c>--pane</c> the caller never passed.</summary>
     public static string OverlayIdResizeRefusal(string target, int index) =>
         $"'{target}' is the {Word(index)} pane's overlay, which is always full-pane and cannot be resized; pass the session id to resize the session-wide overlay. Nothing resized.";
     public static string OverlayIdSizeRefusal(string target, int index) =>
         $"'{target}' is the {Word(index)} pane's overlay, and a pane overlay is always full-pane: --size-percent does not apply. Nothing opened.";
+
+    /// <summary>Not a usage error but a race outcome: a pane overlay's id that resolved on the pipe
+    /// thread stopped resolving before the UI hop (its overlay closed, or its pane went, in flight).
+    /// Names the id only — the caller passed no <c>--pane</c> — and sends the retry to the slot's
+    /// pane WORD, not back to the same target: the id now resolves nowhere (<c>close</c>/<c>text</c>/
+    /// <c>copy</c> on it are "no session matches", <c>result</c> on it is the window-wide value), while
+    /// the slot's last result survives under <c>--pane</c>.</summary>
+    public static string OverlayIdGoneRefusal(string target) =>
+        $"'{target}' no longer names an open pane overlay: it closed, or its pane went, while this call was in flight; read tree, then retry with --pane <its side> (a closed slot's result survives there; the id resolves nowhere now). Nothing done.";
 
     /// <summary><c>--lines</c> on <c>session text</c> and <c>session overlay text</c> is a whole number of
     /// lines, 0 or more; anything else is refused at the CLI (nothing sent) and at the server alike —
