@@ -612,10 +612,15 @@ internal sealed class FakeSessionHost : ISessionHost
     /// <summary>The surface's selection if it is still live, else null and the entry is gone. The one
     /// liveness rule modelled is the app's first (ReconcileSel, Program.Input.cs:690): a selection is
     /// an index into ONE buffer, so the screen switching under it — main to alt or back — drops it,
-    /// and <c>session copy</c> answers "" and <c>selection copy</c> "no selection" from then on, as
-    /// the app does. Checked on every read, as the app checks on every use. What is NOT modelled: a
-    /// write moving the text (the app's selection follows it or stays on its cells; the stored text
-    /// is the snapshot SelectAll took) — a fake test re-issues <c>selection all</c> after a write.</summary>
+    /// and <c>session copy</c> answers "" and <c>selection copy</c> "no selection", as the app does.
+    /// The check is LAZY: it runs on a read (the four callers), where the app runs it on every use
+    /// AND on every paint of a visible pane (Program.Render.cs:420 via HasLiveSel). So a
+    /// main→alt→main round trip with NO read while the alt screen is up keeps the entry here and
+    /// drops it in the app (for a pane the app paints — an active session's); a fake test that
+    /// switches screens must read while it is switched, as SelectionAll_ThenTheScreenSwitches does.
+    /// Also NOT modelled: a write moving the text (the app's selection follows it or stays on its
+    /// cells; the stored text is the snapshot SelectAll took) — a fake test re-issues
+    /// <c>selection all</c> after a write.</summary>
     private static string? LiveSel((Sess s, string id, ISession pane) sf)
     {
         if (!sf.s.Selections.TryGetValue(sf.id, out var sel)) return null;
