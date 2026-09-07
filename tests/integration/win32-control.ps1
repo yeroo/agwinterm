@@ -64,6 +64,238 @@ namespace Agwinterm.Win32ControlTest
 '@
 }
 
+# The user's clipboard, whole: every format's bytes, so the P6 paste case can put it back EXACTLY and
+# prove it did. pwsh's Get-/Set-Clipboard reach the text arm only (the CF_HTML / RTF beside the text of a
+# copy out of a browser or Word would be lost, and an image-only clipboard reads as empty text).
+if (-not ('Agwinterm.Win32ControlTest.Clipboard' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+
+namespace Agwinterm.Win32ControlTest
+{
+    /// <summary>Every format on the clipboard with its bytes, taken under one OpenClipboard.
+    /// <c>Unsupported</c> names a format whose data is not a global memory block (a GDI bitmap or
+    /// metafile, a palette, owner-display, the private range) or could not be read: such a
+    /// clipboard cannot be put back faithfully, so the case that would replace it must not run.</summary>
+    public sealed class ClipboardSnapshot
+    {
+        public uint[] Formats = new uint[0];
+        public byte[][] Data = new byte[0][];
+        public string Unsupported;
+
+        /// <summary>Format ids and names, never contents: for a Check detail.</summary>
+        public string Names
+        {
+            get
+            {
+                if (Formats.Length == 0) return "(empty)";
+                var sb = new StringBuilder();
+                for (int i = 0; i < Formats.Length; i++)
+                {
+                    if (i > 0) sb.Append(' ');
+                    sb.Append(Formats[i]).Append('=').Append(Clipboard.FormatName(Formats[i])).Append('[').Append(Data[i].Length).Append(']');
+                }
+                return sb.ToString();
+            }
+        }
+
+        public int Bytes { get { int n = 0; foreach (var d in Data) n += d.Length; return n; } }
+
+        /// <summary>Same formats (any order) with the same bytes each.</summary>
+        public bool SameAs(ClipboardSnapshot other)
+        {
+            if (other == null || other.Formats.Length != Formats.Length) return false;
+            for (int i = 0; i < Formats.Length; i++)
+            {
+                int j = Array.IndexOf(other.Formats, Formats[i]);
+                if (j < 0 || other.Data[j].Length != Data[i].Length) return false;
+                for (int k = 0; k < Data[i].Length; k++) if (other.Data[j][k] != Data[i][k]) return false;
+            }
+            return true;
+        }
+
+        /// <summary>Recovery copy on disk: per format, an id and a length (little-endian uint32) then
+        /// the bytes. Kept whenever the restore was not proven, deleted only after it was.</summary>
+        public void Save(string path)
+        {
+            using (var f = new FileStream(path, FileMode.CreateNew))
+            using (var w = new BinaryWriter(f))
+            {
+                for (int i = 0; i < Formats.Length; i++)
+                {
+                    w.Write(Formats[i]);
+                    w.Write((uint)Data[i].Length);
+                    w.Write(Data[i]);
+                }
+            }
+        }
+    }
+
+    public static class Clipboard
+    {
+        [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] static extern bool OpenClipboard(IntPtr owner);
+        [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] static extern bool CloseClipboard();
+        [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] static extern bool EmptyClipboard();
+        [DllImport("user32.dll", SetLastError = true)] static extern uint EnumClipboardFormats(uint format);
+        [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetClipboardData(uint format);
+        [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetClipboardData(uint format, IntPtr data);
+        [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern int GetClipboardFormatNameW(uint format, StringBuilder name, int max);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalFree(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalLock(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] static extern bool GlobalUnlock(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern UIntPtr GlobalSize(IntPtr h);
+
+        const uint CF_UNICODETEXT = 13, GMEM_MOVEABLE = 0x0002;
+
+        /// <summary>Changes with every clipboard write; a read leaves it alone.</summary>
+        public static uint Sequence() { return GetClipboardSequenceNumber(); }
+
+        public static string FormatName(uint f)
+        {
+            switch (f)
+            {
+                case 1: return "CF_TEXT"; case 2: return "CF_BITMAP"; case 3: return "CF_METAFILEPICT"; case 4: return "CF_SYLK";
+                case 5: return "CF_DIF"; case 6: return "CF_TIFF"; case 7: return "CF_OEMTEXT"; case 8: return "CF_DIB";
+                case 9: return "CF_PALETTE"; case 10: return "CF_PENDATA"; case 11: return "CF_RIFF"; case 12: return "CF_WAVE";
+                case 13: return "CF_UNICODETEXT"; case 14: return "CF_ENHMETAFILE"; case 15: return "CF_HDROP"; case 16: return "CF_LOCALE";
+                case 17: return "CF_DIBV5"; case 0x80: return "CF_OWNERDISPLAY"; case 0x81: return "CF_DSPTEXT";
+                case 0x82: return "CF_DSPBITMAP"; case 0x83: return "CF_DSPMETAFILEPICT"; case 0x8E: return "CF_DSPENHMETAFILE";
+            }
+            if (f >= 0x200 && f <= 0x2FF) return "CF_PRIVATE";
+            if (f >= 0x300 && f <= 0x3FF) return "CF_GDIOBJ";
+            var sb = new StringBuilder(256);
+            return GetClipboardFormatNameW(f, sb, sb.Capacity) > 0 ? sb.ToString() : "?";
+        }
+
+        // A GDI handle, a palette, owner-display and the private range are not global memory:
+        // their bytes cannot be copied out and put back. CF_BITMAP is synthesized from a CF_DIB /
+        // CF_DIBV5 beside it (and comes back with it), so it is only unsupported when it stands alone.
+        static bool IsUnsupported(uint f, uint[] all)
+        {
+            if (f == 2) return Array.IndexOf(all, 8u) < 0 && Array.IndexOf(all, 17u) < 0;
+            return f == 3 || f == 9 || f == 14 || f == 0x80 || f == 0x82 || f == 0x83 || f == 0x8E || (f >= 0x200 && f <= 0x3FF);
+        }
+
+        static void Open()
+        {
+            for (int i = 0; i < 40; i++)
+            {
+                if (OpenClipboard(IntPtr.Zero)) return;
+                Thread.Sleep(25);
+            }
+            throw new InvalidOperationException("the clipboard could not be opened (another window holds it)");
+        }
+
+        /// <summary>Every format's bytes, or a snapshot whose Unsupported names why it cannot be
+        /// taken whole. Throws when the clipboard cannot be opened.</summary>
+        public static ClipboardSnapshot Take()
+        {
+            Open();
+            try
+            {
+                var formats = new List<uint>();
+                for (uint f = EnumClipboardFormats(0); f != 0; f = EnumClipboardFormats(f)) formats.Add(f);
+                var all = formats.ToArray();
+                var keep = new List<uint>();
+                var data = new List<byte[]>();
+                foreach (uint f in all)
+                {
+                    if (f == 2 && !IsUnsupported(f, all)) continue;   // synthesized from the DIB; comes back with it
+                    if (IsUnsupported(f, all)) return new ClipboardSnapshot { Unsupported = "format " + f + " (" + FormatName(f) + ")" };
+                    IntPtr h = GetClipboardData(f);
+                    if (h == IntPtr.Zero) return new ClipboardSnapshot { Unsupported = "format " + f + " (" + FormatName(f) + "), whose data could not be read" };
+                    ulong size = (ulong)GlobalSize(h);
+                    if (size == 0 || size > int.MaxValue) return new ClipboardSnapshot { Unsupported = "format " + f + " (" + FormatName(f) + "), whose size could not be read" };
+                    IntPtr p = GlobalLock(h);
+                    if (p == IntPtr.Zero) return new ClipboardSnapshot { Unsupported = "format " + f + " (" + FormatName(f) + "), which could not be locked" };
+                    try
+                    {
+                        var bytes = new byte[(int)size];
+                        Marshal.Copy(p, bytes, 0, bytes.Length);
+                        keep.Add(f);
+                        data.Add(bytes);
+                    }
+                    finally { GlobalUnlock(h); }
+                }
+                return new ClipboardSnapshot { Formats = keep.ToArray(), Data = data.ToArray() };
+            }
+            finally { CloseClipboard(); }
+        }
+
+        static IntPtr ToGlobal(byte[] bytes)
+        {
+            IntPtr h = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)(ulong)bytes.Length);
+            if (h == IntPtr.Zero) throw new InvalidOperationException("GlobalAlloc failed");
+            IntPtr p = GlobalLock(h);
+            if (p == IntPtr.Zero) { GlobalFree(h); throw new InvalidOperationException("GlobalLock failed"); }
+            try { Marshal.Copy(bytes, 0, p, bytes.Length); } finally { GlobalUnlock(h); }
+            return h;
+        }
+
+        // Under an already open clipboard: empty it and set every format of the snapshot.
+        static void Put(ClipboardSnapshot snap)
+        {
+            if (!EmptyClipboard()) throw new InvalidOperationException("EmptyClipboard failed");
+            for (int i = 0; i < snap.Formats.Length; i++)
+            {
+                IntPtr h = ToGlobal(snap.Data[i]);
+                if (SetClipboardData(snap.Formats[i], h) == IntPtr.Zero)
+                {
+                    GlobalFree(h);
+                    throw new InvalidOperationException("SetClipboardData failed for format " + snap.Formats[i] + " (" + FormatName(snap.Formats[i]) + ")");
+                }
+            }
+        }
+
+        /// <summary>Replaces the clipboard with <paramref name="text"/> alone and returns the sequence
+        /// number that write produced. If the write fails after the clipboard was emptied, the
+        /// snapshot is put back before the exception is thrown (and the failure of THAT, if any, is
+        /// in the message).</summary>
+        public static uint PutText(string text, ClipboardSnapshot fallback)
+        {
+            var bytes = Encoding.Unicode.GetBytes(text + "\0");
+            Open();
+            try
+            {
+                try { Put(new ClipboardSnapshot { Formats = new[] { CF_UNICODETEXT }, Data = new[] { bytes } }); }
+                catch (Exception ex)
+                {
+                    string back;
+                    try { Put(fallback); back = "the snapshot was put back"; }
+                    catch (Exception ex2) { back = "and putting the snapshot back failed too: " + ex2.Message; }
+                    throw new InvalidOperationException(ex.Message + "; " + back);
+                }
+            }
+            finally { CloseClipboard(); }
+            return GetClipboardSequenceNumber();
+        }
+
+        /// <summary>Puts the snapshot back, under one OpenClipboard, only while the clipboard still
+        /// holds what <paramref name="expectedSequence"/> wrote: "restored", or "changed" (someone
+        /// wrote to it since; it is left alone). Throws when it cannot be opened or a set fails.</summary>
+        public static string Restore(ClipboardSnapshot snap, uint expectedSequence)
+        {
+            Open();
+            try
+            {
+                if (GetClipboardSequenceNumber() != expectedSequence) return "changed";
+                Put(snap);
+                return "restored";
+            }
+            finally { CloseClipboard(); }
+        }
+    }
+}
+'@
+}
+
 function Check([string]$name, [bool]$ok, [string]$detail = '') {
     if ($ok) { "  PASS  $name" }
     else { $script:fail++; "  FAIL  $name$(if ($detail) { " — $detail" })" }
@@ -877,37 +1109,43 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         $p5ActiveLeft = Invoke-Ctl @('session', 'text')
         Check 'and the left shell once the left pane is focused' ($p5ActiveLeft.ok -and ("$($p5ActiveLeft.result)" -match $p5LeftMarker) -and ("$($p5ActiveLeft.result)" -notmatch $p5Marker)) "$($p5ActiveLeft | ConvertTo-Json -Compress)"
         # copy: nothing selected is refused; `selection all` on the overlay, then copy returns its text; the clipboard is untouched.
-        $p5Clip = $null; try { $p5Clip = Get-Clipboard -Raw -ErrorAction Stop } catch { }
+        $p5Seq = [Agwinterm.Win32ControlTest.Clipboard]::Sequence()
         $p5CopyNone = Invoke-Ctl @('session', 'overlay', 'copy', '--pane', 'right', '--target', $p5Id)
         Check 'overlay copy --pane right with nothing selected is refused "no selection"' ((-not $p5CopyNone.ok) -and ([string]$p5CopyNone.error) -eq 'no selection') "$($p5CopyNone | ConvertTo-Json -Compress)"
         $p5Sel = Invoke-Ctl @('selection', 'all', '--target', $p5Ovl)
         $p5Copy = Invoke-Ctl @('session', 'overlay', 'copy', '--pane', 'right', '--target', $p5Id)
-        $p5ClipAfter = $null; try { $p5ClipAfter = Get-Clipboard -Raw -ErrorAction Stop } catch { }
+        $p5SeqAfter = [Agwinterm.Win32ControlTest.Clipboard]::Sequence()
         Check 'selection all --target <overlay id> then overlay copy --pane right returns the overlay''s text' ($p5Sel.ok -and $p5Copy.ok -and ("$($p5Copy.result.text)" -match $p5Marker)) "sel=$($p5Sel | ConvertTo-Json -Compress) copy=$($p5Copy | ConvertTo-Json -Compress)"
-        Check 'and the clipboard is unchanged (copy is a read)' ("$p5Clip" -eq "$p5ClipAfter") "before=$p5Clip after=$p5ClipAfter"
+        Check 'and the clipboard is unchanged (copy is a read: its sequence number did not move)' ($p5Seq -eq $p5SeqAfter) "sequence before=$p5Seq after=$p5SeqAfter"
         $p5UnderCopy = Invoke-Ctl @('session', 'copy', '--target', $p5Right)
         Check 'session copy --target <right pane> keeps reading the pane underneath (nothing selected there)' ($p5UnderCopy.ok -and "$($p5UnderCopy.result)" -eq '') "$($p5UnderCopy | ConvertTo-Json -Compress)"
         # P6: `session paste` with NO text pastes the clipboard (agwintermctl always sends text, "" when
         # none was given, so the documented fallback never ran before #256). The clipboard is the user's,
-        # shared with every window on this machine, and pwsh's Get-/Set-Clipboard reach its TEXT arm
-        # only: that text is saved and put back exactly, and a richer format published beside it (the
-        # CF_HTML / RTF of a copy out of a browser or Word) is NOT - it is lost, the text survives. An
-        # empty clipboard is the cheapest case (nothing to displace) and the one CI has, so the case runs
-        # there and leaves the clipboard empty after; only a read that fails outright, or a sentinel
-        # write that fails, skips it (a PASS marked SKIPPED). The sentinel lands in the RIGHT pane's
-        # shell (the pane underneath the overlay, by its own id) and is read back with `session text`.
-        # The restore is in a finally, before anything is asserted, and only while the clipboard still
-        # holds this run's sentinel - a copy the user made during the poll is kept, not overwritten;
-        # a restore that fails is a FAIL here, never an escape past the checks below.
-        $p6Saved = $null; $p6Readable = $true
-        try { $p6Saved = Get-Clipboard -Raw -ErrorAction Stop } catch { $p6Readable = $false }
-        if ($null -eq $p6Saved) { $p6Saved = '' }
+        # shared with every window on this machine, so the case takes EVERY format's bytes (the CF_HTML /
+        # RTF beside the text of a copy out of a browser or Word included), saves them to a file, puts
+        # its sentinel there, and - in a finally, before anything is asserted - puts them back under one
+        # OpenClipboard, only while the sequence number is still the one the sentinel write produced (a
+        # copy the user made during the poll is kept, not overwritten: `changed`). A second snapshot
+        # proves the restore byte for byte; only then is the file deleted. A restore that fails or is
+        # not proven FAILs and names the file. A clipboard that cannot be opened, or holds what cannot
+        # be copied as bytes (a GDI bitmap or metafile, a palette, an owner-display or private-range
+        # format), means the case does not run: SKIP, or FAIL under -Strict (a hosted runner's clipboard
+        # is empty, the cheapest case, and it runs there). No detail line prints clipboard contents:
+        # format names, counts and lengths only. The sentinel lands in the RIGHT pane's shell (the pane
+        # underneath the overlay, by its own id) and is read back with `session text`.
+        $p6Clip = [Agwinterm.Win32ControlTest.Clipboard]
+        $p6Name = 'session paste --target <right pane> with NO text pastes the clipboard'
+        $p6Snap = $null; $p6Why = $null
+        try { $p6Snap = $p6Clip::Take() } catch { $p6Why = "the clipboard could not be read: $($_.Exception.Message)" }
+        if ($p6Snap -and $p6Snap.Unsupported) { $p6Why = "the clipboard holds $($p6Snap.Unsupported), which cannot be put back byte for byte; clear it, or copy plain text, to run this case" }
+        $p6File = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-clipboard-" + [guid]::NewGuid().ToString('N') + '.bin')
+        if (-not $p6Why) { try { $p6Snap.Save($p6File) } catch { $p6Why = "the clipboard could not be saved to $p6File`: $($_.Exception.Message)" } }
         $p6Sentinel = 'agw-paste-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-        $p6Paste = $null; $p6Seen = $false; $p6Text = ''; $p6Placed = $false; $p6Restore = 'no sentinel placed'
-        if ($p6Readable) {
+        $p6Paste = $null; $p6Seen = $false; $p6Text = ''; $p6Seq = $null; $p6Restore = 'not attempted'; $p6After = $null
+        if (-not $p6Why) {
             try {
-                try { Set-Clipboard -Value $p6Sentinel -ErrorAction Stop; $p6Placed = $true } catch { $p6Restore = "sentinel write failed: $_" }
-                if ($p6Placed) {
+                try { $p6Seq = $p6Clip::PutText($p6Sentinel, $p6Snap) } catch { $p6Why = "the sentinel could not be written: $($_.Exception.Message)" }
+                if ($null -ne $p6Seq) {
                     $p6Paste = Invoke-Ctl @('session', 'paste', '--target', $p5Right)
                     for ($i = 0; $i -lt 16; $i++) {
                         Start-Sleep -Milliseconds 250
@@ -916,20 +1154,29 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
                     }
                 }
             } finally {
-                if ($p6Placed) {
-                    $p6Now = $null; try { $p6Now = Get-Clipboard -Raw -ErrorAction Stop } catch { }
-                    if ("$p6Now" -eq $p6Sentinel) {
-                        try { Set-Clipboard -Value $p6Saved -ErrorAction Stop; $p6Restore = 'restored' } catch { $p6Restore = "restore failed: $_" }
-                    } else { $p6Restore = 'left alone: the clipboard changed under the poll' }
+                if ($null -ne $p6Seq) {
+                    for ($i = 0; $i -lt 5; $i++) {
+                        try { $p6Restore = $p6Clip::Restore($p6Snap, $p6Seq); break }
+                        catch { $p6Restore = "restore failed: $($_.Exception.Message)"; Start-Sleep -Milliseconds 200 }
+                    }
+                    if ($p6Restore -eq 'restored') {
+                        try { $p6After = $p6Clip::Take() } catch { $p6Restore = "restored, but the read-back failed: $($_.Exception.Message)" }
+                        if ($p6After) {
+                            if ($p6After.Unsupported) { $p6Restore = "restored, but the read-back holds $($p6After.Unsupported)" }
+                            elseif ($p6Snap.SameAs($p6After)) { Remove-Item -LiteralPath $p6File -Force -ErrorAction SilentlyContinue }
+                            else { $p6Restore = 'restored, but the read-back differs from the snapshot' }
+                        }
+                    }
                 }
             }
         }
-        if (-not $p6Placed) {
-            Check "session paste --target <right pane> with NO text pastes the clipboard (SKIPPED: $(if ($p6Readable) { $p6Restore } else { 'the clipboard could not be read' }))" $true
+        if ($p6Why) {
+            if ($Strict) { Check "$p6Name (NOT RUN: $p6Why)" $false }
+            else { "  SKIP  $p6Name — $p6Why" }
         } else {
-            $p6Back = $null; try { $p6Back = Get-Clipboard -Raw -ErrorAction Stop } catch { }
-            Check 'session paste --target <right pane> with NO text pastes the clipboard into that shell' ($p6Paste.ok -and "$($p6Paste.result)" -eq 'pasted' -and $p6Seen) "paste=$($p6Paste | ConvertTo-Json -Compress) text=$($p6Text.Substring([Math]::Max(0, $p6Text.Length - 160)))"
-            Check 'and the clipboard is put back as it was (or left alone if it changed under the poll)' (($p6Restore -eq 'restored' -and "$p6Saved" -eq "$p6Back") -or $p6Restore -like 'left alone*') "restore=$p6Restore before=$p6Saved after=$p6Back"
+            $p6Kept = if (Test-Path -LiteralPath $p6File) { " snapshot kept at $p6File" } else { '' }
+            Check "$p6Name into that shell" ($p6Paste.ok -and "$($p6Paste.result)" -eq 'pasted' -and $p6Seen) "paste=$($p6Paste | ConvertTo-Json -Compress) text=$($p6Text.Substring([Math]::Max(0, $p6Text.Length - 160)))"
+            Check 'and the clipboard is put back byte for byte, proven by a read-back (or left alone if it changed under the poll)' ($p6Restore -in 'restored', 'changed') "restore=$p6Restore before=$($p6Snap.Names) after=$(if ($p6After) { $p6After.Names } else { '(not read)' })$p6Kept"
         }
         # The other slot is empty: copy / text / result name the slot; result on the held slot is "still running".
         $p5CopyLeft = Invoke-Ctl @('session', 'overlay', 'copy', '--pane', 'left', '--target', $p5Id)

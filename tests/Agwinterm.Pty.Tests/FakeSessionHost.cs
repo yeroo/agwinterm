@@ -90,7 +90,7 @@ internal sealed class FakeSessionHost : ISessionHost
         /// <c>selection finalize</c>. Never the clipboard. A cover
         /// and the pane under it are two keys, which is what lets a test prove <c>session copy</c> and
         /// <c>overlay copy</c> read two different surfaces.</summary>
-        public readonly Dictionary<string, string> Selections = new();
+        public readonly Dictionary<string, (string Text, bool Alt)> Selections = new();
         /// <summary>A scratch cover over this session, id "&lt;session id&gt;:scratch:&lt;n&gt;" as the app
         /// spells it (Program.Sessions.cs). Returns the pane id.</summary>
         public string AddCoverPane()
@@ -608,16 +608,30 @@ internal sealed class FakeSessionHost : ISessionHost
     // never sees one — the server refuses it with the read verbs (Resolve), before this is called.
     private const string NoPane = ISessionHost.RefusePrefix + SessionContexts.NoSession;
     public string SessionCopy(string? target)
-        => Surface(target) is { } sf ? (sf.s.Selections.TryGetValue(sf.id, out var sel) ? sel : "") : "";
+        => Surface(target) is { } sf ? LiveSel(sf) ?? "" : "";
+    /// <summary>The surface's selection if it is still live, else null and the entry is gone. The one
+    /// liveness rule modelled is the app's first (ReconcileSel, Program.Input.cs:690): a selection is
+    /// an index into ONE buffer, so the screen switching under it — main to alt or back — drops it,
+    /// and <c>session copy</c> answers "" and <c>selection copy</c> "no selection" from then on, as
+    /// the app does. Checked on every read, as the app checks on every use. What is NOT modelled: a
+    /// write moving the text (the app's selection follows it or stays on its cells; the stored text
+    /// is the snapshot SelectAll took) — a fake test re-issues <c>selection all</c> after a write.</summary>
+    private static string? LiveSel((Sess s, string id, ISession pane) sf)
+    {
+        if (!sf.s.Selections.TryGetValue(sf.id, out var sel)) return null;
+        bool alt; lock (sf.pane.SyncRoot) alt = sf.pane.Emulator.IsAltScreen;
+        if (alt == sel.Alt) return sel.Text;
+        sf.s.Selections.Remove(sf.id); return null;
+    }
     public string SelectionAll(string? target)
     {
         if (Surface(target) is not { } sf) return NoPane;
         // The app's SelectAll: HasSel = (hist + rows) > 0 && cols > 0 — geometry, never content, so a
         // blank pane is "selected all" and holds its blank rows. "empty" is a surface with no grid,
         // which a fake pane (80x24 from birth) never is; it is kept for the shape, not reached.
-        string? text = WholeGrid(sf.pane);
+        var (text, alt) = WholeGrid(sf.pane);
         if (text is null) return "empty";
-        sf.s.Selections[sf.id] = text; return "selected all";
+        sf.s.Selections[sf.id] = (text, alt); return "selected all";
     }
     /// <summary>What the app's SelectionText renders for SelectAll's range, built from the cells the
     /// way it builds them: every history row and then the screen — or the alt screen ALONE while it is
@@ -626,16 +640,19 @@ internal sealed class FakeSessionHost : ISessionHost
     /// the BMP as its surrogate pair, each row's trailing SPACES dropped (only U+0020: a trailing NBSP
     /// or U+3000 stays, which is why this is not DumpRow's TrimEnd()), CRLF between rows and nothing
     /// after the last — NOT SurfaceText.Dump, which is LF-joined with trailing blank rows trimmed (a
-    /// multi-row count in <c>copied N chars</c> would differ). Null for a range with no cells.</summary>
-    private static string? WholeGrid(ISession pane)
+    /// multi-row count in <c>copied N chars</c> would differ). Null text for a range with no cells.
+    /// The screen it was taken on comes back with it (the app's SelAlt stamp) — LiveSel's key.</summary>
+    private static (string? Text, bool Alt) WholeGrid(ISession pane)
     {
         var sb = new StringBuilder();
+        bool alt;
         lock (pane.SyncRoot)
         {
             var em = pane.Emulator;
             int rows = em.Screen.Rows, cols = em.Screen.Cols, hist = em.HistoryCount;
-            int first = em.IsAltScreen ? hist : 0, last = hist + rows - 1;
-            if (last < first || cols <= 0) return null;
+            alt = em.IsAltScreen;
+            int first = alt ? hist : 0, last = hist + rows - 1;
+            if (last < first || cols <= 0) return (null, alt);
             var row = new StringBuilder();
             for (int abs = first; abs <= last; abs++)
             {
@@ -651,12 +668,13 @@ internal sealed class FakeSessionHost : ISessionHost
                 sb.Append(row.ToString().TrimEnd(' '));
             }
         }
-        return sb.ToString();
+        return (sb.ToString(), alt);
     }
     public string SelectionCopy(string? target)
     {
         if (Surface(target) is not { } sf) return NoPane;
-        if (!sf.s.Selections.Remove(sf.id, out var sel)) return "no selection";
+        if (LiveSel(sf) is not { } sel) return "no selection";
+        sf.s.Selections.Remove(sf.id);
         // The app's CopySelection: the clipboard is set only when the text has a copyable character,
         // the selection is cleared either way; N counts UTF-16 units, as string.Length does.
         return HasCopyable(sel) ? $"copied {sel.Length} chars" : "nothing to copy";
@@ -674,7 +692,7 @@ internal sealed class FakeSessionHost : ISessionHost
     public string SelectionFinalize(string? target)
         => Surface(target) is not { } sf ? NoPane
          : !CopyOnSelect ? "finalized (copy-on-select off)"
-         : sf.s.Selections.TryGetValue(sf.id, out var sel) && HasCopyable(sel) ? "finalized (copied)" : "finalized (empty)";
+         : LiveSel(sf) is { } sel && HasCopyable(sel) ? "finalized (copied)" : "finalized (empty)";
     /// <summary>The app's CopySelection rule: a character other than CR, LF or space (IndexOfAnyExcept).</summary>
     private static bool HasCopyable(string sel) => sel.AsSpan().IndexOfAnyExcept('\r', '\n', ' ') >= 0;
     public string SessionPaste(string? target, string? text) => Surface(target) is not null ? "pasted" : NoPane;
@@ -810,7 +828,7 @@ internal sealed class FakeSessionHost : ISessionHost
                 return slot.LastResult;
             case "copy":
                 if (!slot.Open) return ISessionHost.RefusePrefix + OverlayPanes.NoOverlayRefusal(index);
-                if (!s.Selections.TryGetValue(slot.Id!, out var sel) || sel.Length == 0) return ISessionHost.RefusePrefix + OverlayPanes.NoSelection;
+                if (LiveSel((s, slot.Id!, slot.Term!)) is not { Length: > 0 } sel) return ISessionHost.RefusePrefix + OverlayPanes.NoSelection;
                 return sel;
             case "text":
                 if (!slot.Open) return ISessionHost.RefusePrefix + OverlayPanes.NoOverlayRefusal(index);

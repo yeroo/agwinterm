@@ -246,7 +246,7 @@
         "{alpha}"
       ],
       "result": "string",
-      "note": "P6: the selection `selection all` just made, read back through the existing verb - the proof that the selection was MADE, without a clipboard write. Value not compared: it is the shell's screen."
+      "note": "P6: the selection `selection all` just made, read back through the existing verb without a clipboard write. Shape only: the value is the shell's screen and is not compared, so this does not prove a selection was MADE (a no-op `selected all` followed by an empty copy passes) - that proof is each product's honesty suite (agwinterm win32-control.ps1, lite's UI suite), on a fixture whose content is known."
     },
     {
       "verb": "selection.clear",

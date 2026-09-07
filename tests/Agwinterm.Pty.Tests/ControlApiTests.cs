@@ -468,6 +468,27 @@ public class ControlApiTests
         Assert.StartsWith("in history\r\n", Result(Dispatch(server, "session.copy", target: id)));
     }
 
+    // The app drops a selection when the screen switches under it (ReconcileSel's first guard: an
+    // index into one buffer names unrelated text in the other) — session copy answers "" and
+    // selection copy answers "no selection" from then on, and coming BACK does not revive it. A fake that kept its
+    // snapshot would hand the main screen's text out from under a full-screen TUI.
+    [Fact]
+    public void SelectionAll_ThenTheScreenSwitches_DropsTheSelection()
+    {
+        var (server, host) = New();
+        string id = host.ActiveSess!.Id;
+        Write(server, id, "main text");
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        Assert.StartsWith("main text\r\n", Result(Dispatch(server, "session.copy", target: id)));
+        Write(server, id, "\u001b[?1049h");                                                              // the TUI enters the alt screen
+        Assert.Equal("", Result(Dispatch(server, "session.copy", target: id)));
+        Assert.Equal("no selection", Result(Dispatch(server, "selection.copy", target: id)));
+        Write(server, id, "\u001b[?1049l");                                                              // and leaves it: still gone
+        Assert.Equal("", Result(Dispatch(server, "session.copy", target: id)));
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));            // a new one works
+        Assert.StartsWith("main text\r\n", Result(Dispatch(server, "session.copy", target: id)));
+    }
+
     // SelectionText trims only SPACES from a row's end: a no-break space stays, so it counts in
     // `copied N chars` and, alone on a row, is something to copy - the whitespace arm draws its line
     // at CR, LF and U+0020, and a fake that trimmed every whitespace would answer it backwards.

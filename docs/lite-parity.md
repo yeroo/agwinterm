@@ -291,8 +291,10 @@ products. What differs, each recorded in the P6-lite plan:
 
 The contract's P6 steps (#256) are shape-only and run on the no-selection arm of `copy` and
 `finalize` on purpose: the Windows clipboard is shared with the user and with every other sandbox on
-the machine, so the contract never writes it — `selection all` is proven by a `session copy`
-read-back instead, and the copy itself (`copied N chars`) is each product's own honesty suite's.
+the machine, so the contract never writes it. The `session copy` read-back after `selection all` is
+shape coverage, not proof that a selection was made — the value is the shell's screen and is not
+compared, so a no-op `selected all` followed by an empty copy would pass; that proof, and the copy
+itself (`copied N chars`), is each product's own honesty suite's, on a fixture whose content is known.
 
 ---
 
