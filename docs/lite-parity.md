@@ -204,18 +204,60 @@ restore` answers a usage line on a post-#233 build) and SKIP against the release
 until the release that carries #233 + #235 is tagged — red under `-Strict`, the release gate
 (**0.17.12**, tagged 2026-09-05, closed it).
 
-### To be mirrored: what P5 (agwinterm, pane-scoped overlays) owes lite — P5-lite pending
+### Mirrored: what P5 (agwinterm #250) owed lite — P5-lite shipped
 
-P5 gives agwinterm's `session.overlay` a **per-pane slot**: `--pane left|right` on `open` / `close`
-/ `result` (`left` = pane 0, `right` = pane 1, whatever the axis; the flag omitted = the session-wide
-slot, unchanged), `session.overlay.copy` and `session.overlay.text [--all|--lines N]` reading the
-overlay's own selection and buffer, `session.text --all`, and `paneOverlays` in `tree`. The rule is
-stated once on `ISessionHost.SessionOverlay` and quoted by the skill and the CLI header. **lite has
-no pane overlays**: its overlay is ONE popup window over the active session (`src/main.cpp`,
-"one at a time; opening a new overlay replaces the previous"), so a pane slot there is either a
-popup sized to the pane rect or a recorded divergence — the P5-lite plan decides, as P4-lite did for
-swap. Until it lands, the contract's P5 steps (the sibling contract PR after P5 merges) leave
-agliteterm's `check-contract` red by design, as #235's did before P3-lite.
+Batch **P5-lite** — agliteterm **#40** (2026-09-07, four revmux rounds; plan
+`docs/plans/completed/2026-09-07-p5-lite-mirror.md` there). lite has pane overlays: a pane overlay
+is IN-WINDOW, one more hidden `Session` hung on the shell it covers (`Session::overlay`), sized to
+the shell's grid, painted in the pane's box instead of the shell and reached by `focusedSession()`
+/ `hitTest` as that pane's surface while it is open — not a popup sized to the pane rect (a popup's
+`g_focusOverride` takes every key, so the sibling pane could not stay interactive, the rule's one
+hard property), and not a recorded divergence: the contract's four P5 steps and three refusals run
+the same on both products. `--pane left|right` (`left` = slot 0, `right` = slot 1 whatever the
+axis, the slots `session focus` names), `open` / `close` / `result` / `copy` / `text` on the slot
+with agwinterm's sentences verbatim (`OverlayPanes.cs`), `paneOverlays` in `tree` as the same array
+of words, `session text --all` / `--lines N`, the overlay id as `AGWINTERM_SESSION_ID` of the
+program inside, the chord closing the focused pane's overlay first, the slot moving with its shell
+on a swap and dying with its pane — all mirrored. What differs, each recorded in the P5-lite plan:
+
+- **(a)** the session-wide slot is a popup over the window, not a cover inside the content region
+  (P2-lite, unchanged); `copy` on it is always `no selection` — the popup paints no selection and
+  takes no drag (the selection gap above; P6-lite keeps it refusing `selection all`).
+- **(b)** `session text` and `overlay text` default to the WHOLE buffer (scrollback + screen) —
+  `--all` is the explicit spelling of lite's bare form, `--lines N` the last N lines of that text
+  and `--lines 0` the screen — where agwinterm's and agterm's bare `session text` is the screen
+  only: lite's skill promised "the whole buffer" and its suites read markers from history through
+  it, so the default stays and the flags give a caller the screen when it wants one.
+- **(c)** `exit N` is the exit status of the command `open` ran as PowerShell reports it
+  (`$LASTEXITCODE` for a native program, else 0 / 1 from `$?`), carried in an FTCS
+  `OSC 133;D;<code>` mark the overlay's own command line emits — read off the FIRST mark with an
+  exit in that overlay; the pty-host protocol carries no exit code and is frozen. A command that
+  never completed leaves the slot's result as it was, and `overlay still running` /
+  `no overlay result` are refusals as in agwinterm. The mark is the terminal's shared FTCS state,
+  so a command that emits `OSC 133;D` (or a full A–D cycle) of its own sets the exit `result`
+  reports: the status is the command's own claim, not a host-side record; a caller that needs one
+  it cannot forge reads `session output` or the program's own artefact (a host-side record is a
+  pty-host protocol change, its own item).
+- **(d)** the session-wide `open` keeps accepting any target that resolves (P2-lite) where
+  agwinterm refuses a pane id of a split without `--pane` (#213) — except a pane overlay's own id,
+  which names its slot on both products.
+- **(e)** `open --pane` answers the overlay's id (a lite session id, `<prefix>-<seq>`; the program
+  inside holds it) because the slot is created inline the way `session split on` is, while the
+  popup keeps its status word (created after the reply is written) — the contract's step notes
+  both spellings.
+- **(f)** an overlay's (or any cover's) id on `flag on`/`off`/`toggle` / `seen` / `rename` /
+  `status` / `duplicate` / `move` (`flag clear` takes no target and unflags every session, in both
+  products) is refused naming the session it covers (`session <verb>: '<id>' is a
+  scratch/overlay/quick pane, not a session; … Nothing <done>.`), where agwinterm lands a scratch
+  or overlay cover id on the session it covers (`FindSesForTarget`) — a program inside a lite
+  overlay that wants the pane's session row names that session's id (`tree`'s `paneOverlays` says
+  which); lite's `session context` refuses a cover the same way.
+
+Lite has no `--wait` / `--block` (the overlay stays up until closed, P2-lite) and no
+`overlay not realized` / `OverlayIdGoneRefusal` (the emulator is built before `newSession`
+returns; the slot's verbs run inline under one lock — documented, not emitted). The contract's
+P5 steps (#252) are the gate: agliteterm's `check-contract` is red until #252 is on `main` and
+lite's copy is updated, as #235's were before P3-lite.
 
 ---
 
@@ -268,6 +310,9 @@ and the list should grow as more turn up.
 - **Settings storage.** agwinterm reads `agwinterm.conf` and honours `--app-id`; lite uses the
   registry and a `%LOCALAPPDATA%` override. That is why the two QA adapters isolate differently, and
   it is not worth unifying.
+- **`session text` reads the whole buffer in lite** (screen + scrollback, `--all` its explicit
+  spelling) and the screen only in agwinterm and agterm; `--lines N` is the same reader on both,
+  and a script wanting the screen passes `--lines 0` / reads `--lines N` on either (P5-lite).
 - **Splits as sessions.** lite models a split as a hidden session; agwinterm models panes inside a
   session. Behaviour matches — a split belongs to its session, closes with it, restores with it, axis
   and order included (an `L` line beside the `P`) — and the internal shape stays different. P4-lite

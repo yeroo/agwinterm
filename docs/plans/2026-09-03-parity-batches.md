@@ -38,7 +38,7 @@ Three contract questions gate their batches. They are cheap to answer and expens
 | # | Question | Gates |
 | --- | --- | --- |
 | 1 | ~~`session.new` with an unknown workspace: **refuse** (lite does) or **fall back to active** (agwinterm does)?~~ **Answered: refuse** (2026-09-04, in P2 #226). lite already refused, every other workspace-taking verb here already refused, and the contract file states the principle in prose for `workspace.select`. A bare `session new` with *no* workspace named now lands in the **caller's** workspace, not the active one (P2 task 5a, from a live agliteterm report). | P2 |
-| 2 | On the alt screen, do splits scroll into main-screen history (lite) or pin to row 0 (agwinterm)? Both are self-consistent; they cannot both stay. | P6, P7 |
+| 2 | ~~On the alt screen, do selections scroll into main-screen history (lite) or pin to row 0 (agwinterm)? Both are self-consistent; they cannot both stay.~~ **Answered: pin to row 0** (Boris, 2026-09-07) — agwinterm's way and most terminals'. lite stops scrolling into main-screen history while the alt screen is up, and `selection all` on the alt screen is the app's screen only, in both products. Lands in P6-lite (the verb's range) and P7-lite (the wheel and the drag). | P6, P7 |
 | 3 | Is `control.pick` (P16) worth its size, or does the picker stay out of scope? It is the biggest single capability gap and also the biggest plan. | P16 |
 
 ---
@@ -144,8 +144,14 @@ exiting. Scoping + `copy` + `text` only (`--cwd`, `--follow`, `--background-colo
 stays window-wide and `ok` (only `result --pane` is agterm's per-slot arm), and `--pane` with
 `--size-percent` / `resize --pane` are refused at both ends. No restore-format change (overlays are
 never persisted), no ABI change. The release (**0.17.14** — Boris tags) follows the contract PR.
-Mirror: P5-lite — pending; lite's overlay is one popup window over the active session, so a pane
-overlay there is a popup sized to the pane rect or a recorded divergence, the P5-lite plan decides.
+Mirror: **P5-lite — shipped** (agliteterm #40, 2026-09-07, four revmux rounds; plan
+`docs/plans/completed/2026-09-07-p5-lite-mirror.md` there): a pane overlay is IN-WINDOW — a hidden
+`Session` hung on the shell it covers as that pane's surface — not a popup sized to the pane rect;
+the contract's steps run the same on both products. Six recorded differences (`docs/lite-parity.md`,
+"Mirrored: what P5 owed lite"), the notable ones: lite's `session text` defaults to the whole buffer
+(`--all` its explicit spelling); `exit N` rides an FTCS `OSC 133;D` mark the wrapper emits (the
+command's own claim); a cover id on the session verbs is refused where agwinterm lands it on the
+covered session.
 
 ---
 
@@ -176,8 +182,8 @@ Same model as P6, different surface — split because it is UI work with a diffe
 `restore.capture` → **P3-lite — shipped** (agliteterm #28, 2026-09-05) · `--axis` · `split close` ·
 `swap` · the pane-id reply → **P4-lite — shipped** (agliteterm #30, 2026-09-06; released as lite
 0.17.15) · `--pane left|right` · `overlay copy` / `text` · `session text --all` → **P5-lite —
-pending** (after P5 merges; see P5's line for what lite's popup overlay makes of a pane slot). Each
-runs right after its agwinterm batch merges.
+shipped** (agliteterm #40, 2026-09-07; see P5's line). Each runs right after its agwinterm batch
+merges.
 
 ### P9 · lite · driving a pane
 `session.readonly` **first** — it is how you stop stray keys reaching a running agent — then
