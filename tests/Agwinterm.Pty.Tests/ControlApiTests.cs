@@ -371,33 +371,65 @@ public class ControlApiTests
     // The five verbs the P6 contract steps pin. Before this, ControlServer wrapped their host
     // replies in Ok(), so a target that resolved to nothing came back {ok:true,result:"no session"}
     // - a refusal every script reads as done. Same wording as session.rename / session.context.
+    // session.copy answered ok:true "" — a missing pane and an empty selection were one reply; it now
+    // refuses with the read verbs (session.text's "no session"), which is the one different wording.
     [Theory]
-    [InlineData("selection.all")]
-    [InlineData("selection.copy")]
-    [InlineData("selection.clear")]
-    [InlineData("selection.finalize")]
-    [InlineData("session.paste")]
-    public void SelectionVerbs_AndPaste_NoPaneForTarget_IsRefused(string verb)
+    [InlineData("selection.all", SessionContexts.NoSession)]
+    [InlineData("selection.copy", SessionContexts.NoSession)]
+    [InlineData("selection.clear", SessionContexts.NoSession)]
+    [InlineData("selection.finalize", SessionContexts.NoSession)]
+    [InlineData("session.paste", SessionContexts.NoSession)]
+    [InlineData("session.copy", "no session")]
+    public void SelectionVerbs_CopyAndPaste_NoPaneForTarget_IsRefused(string verb, string error)
     {
         var (server, host) = New();
+        string active = host.ActiveSess!.Id;
+        Write(server, active, "left alone\r\n");
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: active)));   // a selection that must SURVIVE the refusal
         var r = Dispatch(server, verb, verb == "session.paste" ? new { text = "x" } : null, target: "no-such-session-id");
         Assert.False(Ok(r));
-        Assert.Equal(SessionContexts.NoSession, r.GetProperty("error").GetString());
+        Assert.Equal(error, r.GetProperty("error").GetString());
         Assert.False(r.TryGetProperty("result", out _));
-        Assert.Equal("", Result(Dispatch(server, "session.copy", target: host.ActiveSess!.Id)));   // nothing selected anywhere
+        Assert.Contains("left alone", Result(Dispatch(server, "session.copy", target: active)));   // nothing changed anywhere
     }
 
+    // The replies on a pane that HAS text but no selection yet (`selection all` makes one), on the
+    // active session's id — and session.copy reads back what `selection all` made, then what
+    // `selection copy` (clears) and `selection finalize` (keeps) left of it.
     [Theory]
-    [InlineData("selection.all", "selected")]
+    [InlineData("selection.all", "selected all")]
     [InlineData("selection.copy", "no selection")]
     [InlineData("selection.clear", "cleared")]
     [InlineData("selection.finalize", "finalized (empty)")]
     [InlineData("session.paste", "pasted")]
-    public void SelectionVerbs_AndPaste_OnTheActiveSession_AnswerOk(string verb, string reply)
+    [InlineData("session.copy", "")]
+    public void SelectionVerbs_CopyAndPaste_OnTheActiveSession_AnswerOk(string verb, string reply)
     {
         var (server, host) = New();
+        Write(server, host.ActiveSess!.Id, "some text\r\n");
         var r = Dispatch(server, verb, verb == "session.paste" ? new { text = "x" } : null, target: host.ActiveSess!.Id);
         Assert.True(Ok(r));
         Assert.Equal(reply, Result(r));
     }
+
+    [Fact]
+    public void SelectionAll_IsReadBackBySessionCopy_CopyClearsIt_FinalizeKeepsIt()
+    {
+        var (server, host) = New();
+        string id = host.ActiveSess!.Id;
+        Assert.Equal("empty", Result(Dispatch(server, "selection.all", target: id)));   // a blank pane: nothing to select
+        Assert.Equal("", Result(Dispatch(server, "session.copy", target: id)));
+        Write(server, id, "read me back\r\n");
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        string sel = Result(Dispatch(server, "session.copy", target: id));
+        Assert.Contains("read me back", sel);
+        Assert.Equal("finalized (copied)", Result(Dispatch(server, "selection.finalize", target: id)));
+        Assert.Equal(sel, Result(Dispatch(server, "session.copy", target: id)));            // finalize keeps the selection
+        Assert.Equal($"copied {sel.Length} chars", Result(Dispatch(server, "selection.copy", target: id)));
+        Assert.Equal("", Result(Dispatch(server, "session.copy", target: id)));             // copy clears it (CopySelection(clear: true))
+        Assert.Equal("no selection", Result(Dispatch(server, "selection.copy", target: id)));
+    }
+
+    private static void Write(ControlServer server, string target, string text)
+        => Assert.True(Ok(Dispatch(server, "session.write", new { text }, target: target)));
 }

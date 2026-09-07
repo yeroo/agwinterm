@@ -174,9 +174,10 @@ mechanism: the popup guard named only the overlay while quick and scratch share 
 `docs/plans/2026-09-07-p6-lite-selection.md` there), with decision 2 (pin to row 0). The
 agwinterm half is the **contract PR #256** (the sibling of #235 / #252, merged AFTER #45 so lite's
 `check-contract` stays green until it runs `-Update`): the four `selection.*` steps plus a
-`session copy` read-back, two refusals — and the defect lite's plan found here, the four selection
-verbs and `session.paste` answering `ok:true` `no session` on a target that resolves to no pane,
-fixed in the same PR (`HostReply` + `RefusePrefix`). Five recorded differences in
+`session copy` read-back, three refusals — and the defect lite's plan found here, the four selection
+verbs and `session.paste` answering `ok:true` `no session` on a target that resolves to no pane
+(and `session.copy` `ok:true` `""`), fixed in the same PR (`HostReply` + `RefusePrefix`; `session.copy`
+refuses with the read verbs). Five recorded differences in
 `docs/lite-parity.md`, "Mirrored: what P6 owed lite". Left for their own issue: `session.readonly`
 and `session.search` still answer `ok:true` on no session.
 

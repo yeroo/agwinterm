@@ -301,7 +301,6 @@ public sealed class ControlServer : IDisposable
                             return Err($"sidebar: unknown op '{op}'. One of: show|hide|toggle|expand|collapse|state|width|mode tree|mode flagged|mode toggle (on/off = show/hide). Nothing changed.");
                         host.SidebarOp(op); return Ok("sidebar");
                     }
-                case "session.copy": return Ok(host.SessionCopy(target)); // selection text (host-side), "" if none
                 // HostReply, not Ok: a target that resolves to no pane is a REFUSAL (ok:false,
                 // SessionContexts.NoSession). These five answered ok:true "no session" — a setup step
                 // that silently did not happen, the failure mode the lite contract steps pin (P6).
@@ -359,6 +358,11 @@ public sealed class ControlServer : IDisposable
                 "session.write" => HandleWrite(s, args),
                 "session.type" => HandleType(s, args),
                 "session.text" => HandleText(s, args),
+                // The selection's text, "" when the pane has none — and a target that resolves to no
+                // pane is the read verbs' refusal above (it answered ok:true "" — a missing pane and an
+                // empty selection were the same reply). Not HostReply: the reply IS the selection, and
+                // a selection may begin with anything, RefusePrefix included.
+                "session.copy" => Ok(host.SessionCopy(target)),
                 "session.status" => HandleStatus(s, args),
                 "session.metrics" => HandleSessionMetrics(host, s, target),
                 // surface.cursor — the caret COLUMN as a bare integer (agterm's shape, so a script

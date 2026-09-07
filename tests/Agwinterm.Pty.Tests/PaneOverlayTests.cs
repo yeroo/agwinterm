@@ -382,15 +382,16 @@ public class PaneOverlayTests
     public void Copy_NoSelection_ThenSelectionAllOnTheOverlay_ReturnsItsText()
     {
         var (server, host) = New();
-        Split(server);
+        var (_, right) = Split(server);
         string id = Result(Open(server, "right"));
         Write(server, id, "select me\r\n");
         var r = Act(server, "copy", "right");
         Assert.False(Ok(r)); Assert.Equal(OverlayPanes.NoSelection, Error(r));
 
-        Assert.Equal("selected", Result(Dispatch(server, "selection.all", id)));
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", id)));
         Assert.Contains("select me", Text(Act(server, "copy", "right")));
-        Assert.Equal("", Result(Dispatch(server, "session.copy", "active")));   // the pane underneath: untouched
+        Assert.Equal("", Result(Dispatch(server, "session.copy", right)));      // the pane underneath, by its id: untouched
+        Assert.Contains("select me", Result(Dispatch(server, "session.copy", "active")));   // `active` is the SURFACE: the open overlay (ActiveSurface), not the pane under it
         Assert.Equal(OverlayPanes.NoOverlayRefusal(0), Error(Act(server, "copy", "left")));   // the other slot: empty, not "no selection"
         // Clearing the overlay's selection puts copy back to its refusal.
         Assert.True(Ok(Dispatch(server, "selection.clear", id)));

@@ -77,11 +77,15 @@ internal sealed class FakeSessionHost : ISessionHost
         /// The open term is ALSO in <see cref="CoverPanes"/> under its overlay id, so
         /// <c>--target &lt;overlay id&gt;</c> reaches it through the same resolvers a scratch cover uses.</summary>
         public readonly Dictionary<string, PaneOverlaySlot> PaneOverlays = new();
-        /// <summary>The selection made INSIDE a cover pane, keyed by cover id — what the app's
-        /// SelectionText(pane) reads for the overlay pane. Written by <c>selection all</c> on the cover,
-        /// read by <c>session overlay copy</c>; never the clipboard. The real panes have none here
-        /// (SessionCopy answers "" as before), which is what lets a test prove the two verbs read two
-        /// different surfaces.</summary>
+        /// <summary>The selection each SURFACE holds, keyed by the surface's id — a cover's id or a
+        /// real pane's (<see cref="PaneIds"/>) — as the app's lives on its Pane and is read by
+        /// SelectionText(pane). Written by <c>selection all</c> (only when the surface had text: the
+        /// app's SelectAll on a blank pane leaves no live selection and answers <c>empty</c>), read by
+        /// <c>session copy</c> (a real pane's, or the active surface's) and <c>session overlay copy</c>
+        /// (a cover's), dropped by <c>selection clear</c> and by <c>selection copy</c> (the app's
+        /// CopySelection(clear: true)), kept by <c>selection finalize</c>. Never the clipboard. A cover
+        /// and the pane under it are two keys, which is what lets a test prove <c>session copy</c> and
+        /// <c>overlay copy</c> read two different surfaces.</summary>
         public readonly Dictionary<string, string> Selections = new();
         /// <summary>A scratch cover over this session, id "&lt;session id&gt;:scratch:&lt;n&gt;" as the app
         /// spells it (Program.Sessions.cs). Returns the pane id.</summary>
@@ -590,26 +594,53 @@ internal sealed class FakeSessionHost : ISessionHost
     public string ConfigGet(string key) => Config.TryGetValue(key, out var v) ? v : "";
     public string ConfigList() => string.Join("\n", Config.Select(kv => $"{kv.Key} = {kv.Value}"));
     public string SettingsOpen() => "opened";
-    public string SessionCopy(string? target) => "";   // the pane underneath: no selection here, ever — `overlay copy` reads the cover's (P5)
-    // `selection all` on a COVER pane selects its whole buffer (what the app's SelectAll does on the
-    // surface the target resolves to), so `session overlay copy` has something to read; on a real pane
-    // the fake keeps no selection (as before). SelectionClear drops a cover's selection.
+    // The selection verbs, session.copy and session.paste act on the SURFACE a target resolves to
+    // (Surface: the app's PaneForTarget) and on that surface's entry in Sess.Selections, with the
+    // app's replies. A target that resolves to no surface is the app's refusal on the five
+    // (ISessionHost.SelectionAll), so a test against the fake asserts the app's ok:false; session.copy
+    // never sees one — the server refuses it with the read verbs (Resolve), before this is called.
+    private const string NoPane = ISessionHost.RefusePrefix + SessionContexts.NoSession;
+    public string SessionCopy(string? target)
+        => Surface(target) is { } sf ? (sf.s.Selections.TryGetValue(sf.id, out var sel) ? sel : "") : "";
     public string SelectionAll(string? target)
     {
-        if (CoverTarget(target) is { } cover) { cover.s.Selections[cover.id] = SurfaceText.Dump(cover.pane, new OverlayTextArgs(All: true, Lines: 0)); return "selected"; }
-        return FindSes(target) is not null ? "selected" : NoPane;
+        if (Surface(target) is not { } sf) return NoPane;
+        string text = SurfaceText.Dump(sf.pane, new OverlayTextArgs(All: true, Lines: 0));
+        if (text.Length == 0) { sf.s.Selections.Remove(sf.id); return "empty"; }
+        sf.s.Selections[sf.id] = text; return "selected all";
     }
-    // A target that resolves to no pane (and is not a cover) is the app's refusal on all five
-    // (ISessionHost.SelectionAll), so a test against the fake asserts the app's ok:false.
-    private const string NoPane = ISessionHost.RefusePrefix + SessionContexts.NoSession;
-    public string SelectionCopy(string? target) => CoverTarget(target) is not null || FindSes(target) is not null ? "no selection" : NoPane;
-    public string SelectionClear(string? target) { if (CoverTarget(target) is { } cover) { cover.s.Selections.Remove(cover.id); return "cleared"; } return FindSes(target) is not null ? "cleared" : NoPane; }
+    public string SelectionCopy(string? target)
+        => Surface(target) is not { } sf ? NoPane
+         : sf.s.Selections.Remove(sf.id, out var sel) ? $"copied {sel.Length} chars" : "no selection";
+    public string SelectionClear(string? target)
+    {
+        if (Surface(target) is not { } sf) return NoPane;
+        sf.s.Selections.Remove(sf.id); return "cleared";
+    }
+    public string SelectionFinalize(string? target)
+        => Surface(target) is not { } sf ? NoPane
+         : sf.s.Selections.ContainsKey(sf.id) ? "finalized (copied)" : "finalized (empty)";
+    public string SessionPaste(string? target, string? text) => Surface(target) is not null ? "pasted" : NoPane;
+    /// <summary>The app's PaneForTarget, with the surface's id: null / "" / "active" is the active
+    /// session's focused pane — or the overlay term open over it, as ActiveSurface says — then a real
+    /// pane by FindPane, then a cover by id or prefix (FindPaneBy's tail, after the real panes; an
+    /// empty prefix never reaches it, so "" cannot match every cover).</summary>
+    private (Sess s, string id, ISession pane)? Surface(string? target)
+    {
+        if (string.IsNullOrEmpty(target) || target == "active")
+        {
+            if (ActiveSess is not { } a || a.Panes.Count == 0) return null;
+            int i = Math.Clamp(a.FocusedPane, 0, a.Panes.Count - 1);
+            if (i < a.PaneIds.Count && a.PaneOverlays.TryGetValue(a.PaneIds[i], out var slot) && slot.Open) return (a, slot.Id!, slot.Term!);
+            return (a, a.PaneIds[i], a.Panes[i]);
+        }
+        if (FindPane(target) is { } hit) return (hit.s, hit.s.PaneIds[hit.pane], hit.s.Panes[hit.pane]);
+        return FindCover(target);
+    }
     /// <summary>A NAMED target that is a cover — null / "" / "active" never is (an empty prefix would
     /// match every cover), and a real pane's id resolves before a cover's, as in FindPaneBy.</summary>
     private (Sess s, string id, ISession pane)? CoverTarget(string? target)
         => string.IsNullOrEmpty(target) || target == "active" || FindPane(target) is not null ? null : FindCover(target);
-    public string SelectionFinalize(string? target) => CoverTarget(target) is not null || FindSes(target) is not null ? "finalized (empty)" : NoPane;
-    public string SessionPaste(string? target, string? text) => FindSes(target) is not null ? "pasted" : NoPane;
     public string SessionSearch(string? target, string? query, string? action) => "no matches";
     public bool SessionScratch(string? target, string op) => FindSes(target) is not null;
     public void Quick(string op) { QuickVisible = op switch { "on" => true, "off" => false, "toggle" => !QuickVisible, _ => QuickVisible }; }

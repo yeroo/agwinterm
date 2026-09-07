@@ -269,10 +269,12 @@ products. What differs, each recorded in the P6-lite plan:
 
 - **(a)** an unresolved target is refused `ok:false` (`session not found`) on all four, as on
   every lite verb — and agwinterm answered `ok:true` with the string `no session` on the four
-  selection verbs AND on `session.paste`, a refusal a script reads as success. **Fixed here in the
-  P6 contract PR, #256** (`ControlServer` wraps the five in `HostReply`, the hosts return
-  `RefusePrefix + SessionContexts.NoSession`); the contract's two new refusals pin `ok:false`
-  on both products. Not a difference any more.
+  selection verbs AND on `session.paste`, a refusal a script reads as success — and `session.copy`
+  answered `ok:true` with `""`, a missing pane and an empty selection in one reply. **Fixed here in
+  the P6 contract PR, #256** (`ControlServer` wraps the five in `HostReply`, the hosts return
+  `RefusePrefix + SessionContexts.NoSession`; `session.copy` refuses with the read verbs, as
+  `session.text` does); the contract's three new refusals pin `ok:false` on both products. Not a
+  difference any more.
 - **(b)** `selection finalize` never answers `finalized (copy-on-select off)`: lite's
   release-copies rule has no off switch (a `CopyOnSelect` knob is P10's, the configuration surface).
 - **(c)** `selection all` on any popup (overlay, quick or scratch — all three share `paintPopup`)

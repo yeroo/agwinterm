@@ -796,7 +796,9 @@ internal partial class Program
     public string SessionPaste(string? target, string? text) => InvokeOnUi(() =>
     {
         var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
-        PasteTextInto(p, text ?? ClipboardGet(), interactive: false);   // scripted: never prompt (agents)
+        // "text (or the clipboard when text is null/EMPTY)": the CLI always sends text, "" when the
+        // caller gave none, so `?? ClipboardGet()` never ran and `session paste` pasted nothing.
+        PasteTextInto(p, string.IsNullOrEmpty(text) ? ClipboardGet() : text, interactive: false);   // scripted: never prompt (agents)
         return "pasted";
     });
 
