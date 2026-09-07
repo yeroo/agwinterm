@@ -224,34 +224,34 @@ Docs: `docs/agterm-parity.md:47-48` (the honesty half only) and `:91-99` (the it
 ## Implementation Steps
 
 ### Task 1: the vocabulary and the slot type, with the fake
-- [ ] `src/Agwinterm.Pty/OverlayPanes.cs` (name free): `Left = "left"`, `Right = "right"`,
+- [x] `src/Agwinterm.Pty/OverlayPanes.cs` (name free): `Left = "left"`, `Right = "right"`,
       `TryParse(string?, out int index, out string? refusal)` (absent → -1 = session-wide; a
       non-string or any other word refused naming both words and the absent form); the refusal
       strings from the table as constants/builders, each starting with agterm's phrase; a
       `SizeWithPane` refusal for `--pane` + `--size-percent` and a `ResizeWithPane` one. One
       comment states the rule sentence (the canonical copy is `ISessionHost.SessionOverlay` —
       point at it, do not paraphrase it)
-- [ ] `ISessionHost.SessionOverlay(string? target, string action, string? command, int sizePercent,
+- [x] `ISessionHost.SessionOverlay(string? target, string action, string? command, int sizePercent,
       bool wait, bool block, string? pane)` — `action` gains `copy` and `text`; the doc comment
       carries the rule sentence and the per-action reply: `open` → id, `close` → `closed` /
       `no overlay`, `result` → `exit N` (pane arm: the two refusals), `copy` → the text, `text` →
       the text. Since `text` needs `all`/`lines`, add them as a small `OverlayTextArgs`/two
       parameters — decide once, in the interface. `SingleSessionHost` refuses everything with a
       pane
-- [ ] `SessionSnapshot` gains `IReadOnlyList<string> PaneOverlays` (default empty) at the END;
+- [x] `SessionSnapshot` gains `IReadOnlyList<string> PaneOverlays` (default empty) at the END;
       `ControlServer` emits `"paneOverlays":[…]` beside `paneIds` **only when non-empty**
       (comment: absence = none, like `overlay`; a caller reads the words back verbatim)
-- [ ] server: `session.overlay` reads `pane` with the strict reader; `--pane` with a present
+- [x] server: `session.overlay` reads `pane` with the strict reader; `--pane` with a present
       `size-percent` → refused before the host is called (both ends, same words); `resize` with a
       pane → refused; `copy`/`text` results are objects `{ "text": … }` (agterm's `result.text`);
       `text` takes `all` (bool) and `lines`, exclusive → refusal naming both. **`session.text`
       gains `all`** (`HandleText`: `all` → `take = rows + hist`; `all` + `lines` refused)
-- [ ] fake: per-pane overlay slots (`FakeSession.PaneOverlays`), a selection text per cover pane
+- [x] fake: per-pane overlay slots (`FakeSession.PaneOverlays`), a selection text per cover pane
       and a buffer per cover pane, the refusals via `OverlayPanes` — mirroring the app's order;
       `PaneOverlayTests.cs` sections for everything the fake can prove (parse, tree, refusals,
       coexistence, `close` empty, `result` states, `copy`/`text` errors, `text --all`, swap moves
       the slot, `split close` drops it)
-- [ ] run the .NET suite — must pass before task 2
+- [x] run the .NET suite — must pass before task 2
 
 ### Task 2: the slot on the pane, and its lifecycle
 - [ ] one slot class (e.g. `OverlaySlot { Pane Term; int SizePercent; bool Wait; bool Exited; int

@@ -839,8 +839,19 @@ internal partial class Program
     // and by FakeSessionHost — the unit suite asserts wording, so the two hosts must not drift.
     private const string NoSessionRefusal = ISessionHost.RefusePrefix + "no session matches that target; nothing opened, resized or closed";
 
-    public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block)
+    public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block,
+        string? pane, OverlayTextArgs text)
     {
+        // P5 task 1: the vocabulary exists, the pane slot does not yet (tasks 2-4 add the slot, the
+        // render and this host's pane arm). Until then a pane, and the two read actions, are refused
+        // honestly rather than falling into the open arm below — an action this switch does not know
+        // used to open an overlay.
+        if (pane is not null)
+        {
+            if (!OverlayPanes.TryParse(pane, out _, out string? paneRefusal)) return ISessionHost.RefusePrefix + paneRefusal;
+            return ISessionHost.RefusePrefix + OverlayPanes.NotVisible + ": pane overlays are not wired in this build yet; omit --pane";
+        }
+        if (action is "copy" or "text") return ISessionHost.RefusePrefix + OverlayPanes.NoOverlay + ": overlay " + action + " is not wired in this build yet";
         if (action != "result" && OverlayTargetRefusal(target) is { } refusal) return refusal;
         switch (action)
         {

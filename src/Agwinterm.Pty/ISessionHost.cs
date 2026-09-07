@@ -11,7 +11,9 @@ namespace Agwinterm.Pty;
 /// is each pane's captured restore slot ("" = none), parallel to <see cref="PaneIds"/> like
 /// <see cref="RestoreCommands"/> — the <c>restore.capture</c> read-back (P3); <see cref="Axis"/> is
 /// the session's split orientation, one of <see cref="SplitAxes"/>' words (null = vertical), emitted
-/// by the tree only while the session is split (P4). New optional fields go
+/// by the tree only while the session is split (P4); <see cref="PaneOverlays"/> is the open PANE
+/// overlay slots as <see cref="OverlayPanes"/>' words in pane order (empty = none; the tree omits the
+/// key), independent of <see cref="Overlay"/>, the session-wide slot (P5). New optional fields go
 /// at the END: both hosts and <see cref="SingleSessionHost"/> construct this positionally.</summary>
 public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
     bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
@@ -19,7 +21,7 @@ public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentS
     IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null,
     IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0,
     string? Context = null, IReadOnlyList<string>? CapturedCommands = null,
-    string? Axis = null);
+    string? Axis = null, IReadOnlyList<string>? PaneOverlays = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -355,7 +357,28 @@ public interface ISessionHost
     void Quick(string op);
 
     /// <summary>
-    /// Overlay control. action = open|close|resize|result. For open: run <paramref name="command"/> in
+    /// Overlay control. action = open|close|resize|result|copy|text. <paramref name="pane"/> is the
+    /// <c>--pane</c> word as sent (null = omitted), validated by <see cref="OverlayPanes.TryParse"/> at
+    /// the server AND by the host (one definition, two guards).
+    ///
+    /// <b>The rule (P5), stated here once and quoted — the same words, no paraphrase — by
+    /// <see cref="OverlayPanes"/>' readers, the skill file and the CLI header (plain text, no markup,
+    /// so the three copies can be diffed):</b>
+    ///
+    /// A session has three overlay slots: one session-wide and one per pane. A session-wide overlay
+    /// covers the whole session (every pane, and any pane overlay under it), as today. A pane overlay
+    /// covers exactly one pane's box - always the full box, never floating - and the sibling pane stays
+    /// visible and interactive. --pane left|right names the slot: left is pane 0 and right is pane 1
+    /// whatever the axis (on a horizontal split left is the top pane), a non-split session accepts
+    /// --pane left, and the flag omitted means the session-wide slot - today's behaviour, byte for
+    /// byte. A pane overlay is that pane's surface while it is open: keys typed into the focused pane,
+    /// the mouse inside the pane's box and --target active reach the overlay; --target with a pane id
+    /// reaches the shell underneath (agterm: "session text reads the surface underneath"); --target
+    /// with the overlay's id reaches the overlay from anywhere. The slot moves with its pane (a swap,
+    /// a split close of the other pane) and dies with it (split close, split off, the shell exiting,
+    /// session close, the window closing).
+    ///
+    /// <b>The session-wide slot (pane omitted), unchanged:</b> for open: run <paramref name="command"/> in
     /// an ephemeral terminal over the target session; sizePercent 0 = full-region, 1..100 = a centered
     /// floating panel; wait = keep it after the program exits (press a key to close); block = wait for
     /// the program to exit and return its status. Returns the overlay pane id (open), "exit N" (block;
@@ -387,8 +410,34 @@ public interface ISessionHost
     /// one pane of a multi-pane session (the overlay covers the whole session; the app's
     /// OverlayTargetRefusal); resize with no overlay open. A second host that returns those as plain
     /// strings reproduces the ok:true-on-failure P2 removed.
+    ///
+    /// <b>The pane slot (pane = left|right), agterm's arm:</b> open → the overlay pane id
+    /// (<c>&lt;pane id&gt;:overlay:&lt;hex&gt;</c> — the owner is readable off the id, as the session-wide
+    /// id's is); a slot that already holds one is REFUSED (<see cref="OverlayPanes.AlreadyOpen"/>: no
+    /// silent replace, unlike the session-wide slot), <c>--pane right</c> on a one-pane session is
+    /// refused <see cref="OverlayPanes.NotVisible"/>, <c>--target</c> may be the session id or either
+    /// pane id but a pane id naming the OTHER side than <c>--pane</c> is refused
+    /// (<see cref="OverlayPanes.Disagree"/>), and <c>--size-percent</c> / <c>resize</c> with a pane are
+    /// refused at the server and the host alike (<see cref="OverlayPanes.SizeWithPane"/>,
+    /// <see cref="OverlayPanes.ResizeWithPane"/>). block waits on THAT slot's program, as the
+    /// session-wide arm does. close → "closed", or "no overlay" (ok, the session-wide shape) when the
+    /// slot is empty. result → that slot's LAST result — "exit N" — or the two refusals
+    /// <see cref="OverlayPanes.StillRunning"/> (its program is up) and <see cref="OverlayPanes.NoResult"/>
+    /// (nothing has run in that slot since the window opened); the pane arm is per slot, not the
+    /// window-wide value the session-wide arm keeps (a recorded divergence: there is no window-wide
+    /// meaning for "the last pane overlay").
+    ///
+    /// <b>copy and text (either slot):</b> copy → the text of the selection made INSIDE the overlay
+    /// (the overlay pane's own selection; the clipboard is not touched, and <c>session copy</c> keeps
+    /// reading the pane underneath), refused <see cref="OverlayPanes.NoOverlay"/> with the slot empty,
+    /// <see cref="OverlayPanes.NotRealized"/> with no terminal to read yet, <see cref="OverlayPanes.NoSelection"/>
+    /// with nothing selected. text → the overlay's drawn buffer through <see cref="SurfaceText.Dump"/>
+    /// with <paramref name="text"/> (<c>--all</c> / <c>--lines</c>, exclusive — the server refuses the
+    /// pair), refused <see cref="OverlayPanes.NoOverlay"/> / <see cref="OverlayPanes.NotRealized"/> /
+    /// <see cref="OverlayPanes.ReadFailed"/>. The server wraps both as <c>{"text":…}</c>.
     /// </summary>
-    string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block);
+    string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block,
+        string? pane, OverlayTextArgs text);
 
     /// <summary>Raise a desktop notification against a session (in-app banner + sidebar badge + OS tray balloon).
     /// Returns false if the target isn't found.</summary>
@@ -567,7 +616,12 @@ public sealed class SingleSessionHost : ISessionHost
     public string SessionSearch(string? target, string? query, string? action) => "";
     public bool SessionScratch(string? target, string op) => false;
     public void Quick(string op) { }
-    public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block) => "no overlay";
+    // No panes here: everything with --pane is refused (the phrase is agterm's; what the guard saw is
+    // a host with nothing to scope to), and copy / text have no overlay to read.
+    public string SessionOverlay(string? target, string action, string? command, int sizePercent, bool wait, bool block, string? pane, OverlayTextArgs text)
+        => pane is not null ? ISessionHost.RefusePrefix + OverlayPanes.NotVisibleNoPanes
+         : action is "copy" or "text" ? ISessionHost.RefusePrefix + OverlayPanes.NoOverlay
+         : "no overlay";
     public bool Notify(string? target, string? title, string body) => false;
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;

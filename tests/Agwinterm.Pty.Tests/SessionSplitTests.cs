@@ -816,13 +816,19 @@ public class SessionSplitTests
         Assert.True(Ok(JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.context\",\"target\":\"s1\",\"args\":{\"context\":\"P4 swap fixture\"}}")).RootElement));
         sess.Flagged = true; sess.Overlay = true; sess.OverlaySize = 40; sess.Notifications = 3;
         sess.Panes[1].SetStatus(Agwinterm.Core.AgentStatus.Blocked);   // the split pane wins the aggregate
-        // Per-pane state on the split pane: a pin and a captured slot, keyed by its id.
+        // Per-pane state on the split pane: a pin and a captured slot, keyed by its id — and, since
+        // P5, a PANE overlay: the one per-pane thing a swap must MOVE (the box changed), while the
+        // session-wide `overlay` / `overlaySize` above stay where they are.
         Assert.True(Ok(JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.restore\",\"target\":" + JsonSerializer.Serialize(splitId) + ",\"args\":{\"command\":\"cargo watch\"}}")).RootElement));
         sess.Captured[splitId] = "ping -n 300 127.0.0.1";
+        var paneOverlay = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.overlay\",\"args\":{\"action\":\"open\",\"command\":\"cmd\",\"pane\":\"right\"}}")).RootElement;
+        string overlayId = Id(paneOverlay);
+        var overlayTerm = host.Resolve(overlayId);
         var before = TreeSession(server);
         Assert.Equal("blocked", before.GetProperty("status").GetString());
         long changedAt = before.GetProperty("statusChangedAt").GetInt64();
         Assert.NotEqual(0, changedAt);
+        Assert.Equal(new[] { "right" }, Strings(before.GetProperty(OverlayPanes.TreeKey)));
 
         Swapped(Swap(server, null));
 
@@ -836,7 +842,12 @@ public class SessionSplitTests
         Assert.Equal("ping -n 300 127.0.0.1", after.GetProperty("capturedCommands").GetProperty(splitId).GetString());
         Assert.False(after.GetProperty("restoreCommands").TryGetProperty("s1", out _));
         Assert.Equal("P4 swap fixture", sess.Context);
-        Assert.Empty(sess.CoverPanes);                          // no cover was made or moved
+        // The pane overlay MOVED with the split pane: it is the left slot now, the same term under
+        // the same id; the session-wide slot (`overlay`, `overlaySize`, asserted byte-identical above)
+        // did not move. The only cover is the one this test opened — nothing else was made.
+        Assert.Equal(new[] { "left" }, Strings(after.GetProperty(OverlayPanes.TreeKey)));
+        Assert.Same(overlayTerm, host.Resolve(overlayId));
+        Assert.Equal(new[] { overlayId }, sess.CoverPanes.Select(c => c.Id).ToArray());
     }
 
     [Fact]
