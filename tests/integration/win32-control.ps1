@@ -887,6 +887,34 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         Check 'and the clipboard is unchanged (copy is a read)' ("$p5Clip" -eq "$p5ClipAfter") "before=$p5Clip after=$p5ClipAfter"
         $p5UnderCopy = Invoke-Ctl @('session', 'copy', '--target', $p5Right)
         Check 'session copy --target <right pane> keeps reading the pane underneath (nothing selected there)' ($p5UnderCopy.ok -and "$($p5UnderCopy.result)" -eq '') "$($p5UnderCopy | ConvertTo-Json -Compress)"
+        # P6: `session paste` with NO text pastes the clipboard (agwintermctl always sends text, "" when
+        # none was given, so the documented fallback never ran before #256). The clipboard is the user's,
+        # shared with every window on this machine: the case runs only when it holds plain text that
+        # Set-Clipboard can put back exactly — anything else (pwsh's Get-Clipboard reads text only, so an
+        # image or files read as nothing) skips it (PASS, marked SKIPPED) rather than be overwritten
+        # with something this suite cannot restore. The sentinel lands in the RIGHT pane's shell (the
+        # pane underneath the overlay, by its own id) and is read back with `session text`; the restore
+        # is in a finally, before anything is asserted.
+        $p6Saved = $null
+        try { $p6Saved = Get-Clipboard -Raw -ErrorAction Stop } catch { }
+        if ($null -eq $p6Saved -or "$p6Saved" -eq '') {
+            Check 'session paste --target <right pane> with NO text pastes the clipboard (SKIPPED: the clipboard holds no plain text to put back)' $true
+        } else {
+            $p6Sentinel = 'agw-paste-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            $p6Paste = $null; $p6Seen = $false; $p6Text = ''
+            try {
+                Set-Clipboard -Value $p6Sentinel
+                $p6Paste = Invoke-Ctl @('session', 'paste', '--target', $p5Right)
+                for ($i = 0; $i -lt 16; $i++) {
+                    Start-Sleep -Milliseconds 250
+                    $p6Text = [string](Invoke-Ctl @('session', 'text', '--target', $p5Right)).result
+                    if ($p6Text.Contains($p6Sentinel)) { $p6Seen = $true; break }
+                }
+            } finally { Set-Clipboard -Value $p6Saved }
+            $p6Back = $null; try { $p6Back = Get-Clipboard -Raw -ErrorAction Stop } catch { }
+            Check 'session paste --target <right pane> with NO text pastes the clipboard into that shell' ($p6Paste.ok -and "$($p6Paste.result)" -eq 'pasted' -and $p6Seen) "paste=$($p6Paste | ConvertTo-Json -Compress) text=$($p6Text.Substring([Math]::Max(0, $p6Text.Length - 160)))"
+            Check 'and the clipboard is put back as it was' ("$p6Saved" -eq "$p6Back") "before=$p6Saved after=$p6Back"
+        }
         # The other slot is empty: copy / text / result name the slot; result on the held slot is "still running".
         $p5CopyLeft = Invoke-Ctl @('session', 'overlay', 'copy', '--pane', 'left', '--target', $p5Id)
         $p5TextLeft = Invoke-Ctl @('session', 'overlay', 'text', '--pane', 'left', '--target', $p5Id)

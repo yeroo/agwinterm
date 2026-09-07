@@ -394,13 +394,14 @@ public class ControlApiTests
     }
 
     // The replies on a pane that HAS text but no selection yet (`selection all` makes one), on the
-    // active session's id — and session.copy reads back what `selection all` made, then what
-    // `selection copy` (clears) and `selection finalize` (keeps) left of it.
+    // active session's id, with the product's defaults (copy-on-select OFF, so finalize says so and
+    // never looks at the selection) — and session.copy reads back what `selection all` made, then
+    // what `selection copy` (clears) and `selection finalize` (keeps) left of it.
     [Theory]
     [InlineData("selection.all", "selected all")]
     [InlineData("selection.copy", "no selection")]
     [InlineData("selection.clear", "cleared")]
-    [InlineData("selection.finalize", "finalized (empty)")]
+    [InlineData("selection.finalize", "finalized (copy-on-select off)")]
     [InlineData("session.paste", "pasted")]
     [InlineData("session.copy", "")]
     public void SelectionVerbs_CopyAndPaste_OnTheActiveSession_AnswerOk(string verb, string reply)
@@ -417,17 +418,33 @@ public class ControlApiTests
     {
         var (server, host) = New();
         string id = host.ActiveSess!.Id;
-        Assert.Equal("empty", Result(Dispatch(server, "selection.all", target: id)));   // a blank pane: nothing to select
+        // A blank 80x24 pane: SelectAll decides by geometry, so it IS a selection — 24 blank rows,
+        // which SelectionText renders as 23 CRLFs and nothing else — and `selection copy` has
+        // nothing in it worth the clipboard (CopySelection's whitespace arm) but clears it anyway.
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        string blank = string.Concat(Enumerable.Repeat("\r\n", 23));
+        Assert.Equal(blank, Result(Dispatch(server, "session.copy", target: id)));
+        host.CopyOnSelect = true;                                                              // the copy is declined, the selection kept
+        Assert.Equal("finalized (empty)", Result(Dispatch(server, "selection.finalize", target: id)));
+        Assert.Equal(blank, Result(Dispatch(server, "session.copy", target: id)));
+        host.CopyOnSelect = false;
+        Assert.Equal("nothing to copy", Result(Dispatch(server, "selection.copy", target: id)));
         Assert.Equal("", Result(Dispatch(server, "session.copy", target: id)));
+        Assert.Equal("no selection", Result(Dispatch(server, "selection.copy", target: id)));
         Write(server, id, "read me back\r\n");
         Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
         string sel = Result(Dispatch(server, "session.copy", target: id));
-        Assert.Contains("read me back", sel);
+        Assert.StartsWith("read me back\r\n", sel);                                          // CRLF rows, as SelectionText joins them
+        // finalize keeps the selection on every arm: off (the default) never looks at it, on copies it.
+        Assert.Equal("finalized (copy-on-select off)", Result(Dispatch(server, "selection.finalize", target: id)));
+        Assert.Equal(sel, Result(Dispatch(server, "session.copy", target: id)));
+        host.CopyOnSelect = true;
         Assert.Equal("finalized (copied)", Result(Dispatch(server, "selection.finalize", target: id)));
-        Assert.Equal(sel, Result(Dispatch(server, "session.copy", target: id)));            // finalize keeps the selection
+        Assert.Equal(sel, Result(Dispatch(server, "session.copy", target: id)));
         Assert.Equal($"copied {sel.Length} chars", Result(Dispatch(server, "selection.copy", target: id)));
         Assert.Equal("", Result(Dispatch(server, "session.copy", target: id)));             // copy clears it (CopySelection(clear: true))
         Assert.Equal("no selection", Result(Dispatch(server, "selection.copy", target: id)));
+        Assert.Equal("finalized (empty)", Result(Dispatch(server, "selection.finalize", target: id)));
     }
 
     private static void Write(ControlServer server, string target, string text)

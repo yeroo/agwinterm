@@ -235,7 +235,7 @@
         "{alpha}"
       ],
       "result": "string",
-      "note": "P6: MAKE a selection through the API - the pane's whole buffer - and say what happened (`selected all`, or `empty` on a pane with nothing to select). Until P6 lite could read a selection (session.copy) but not make, clear or finalise one, so a QA step that called this did nothing and returned an error most callers ignore."
+      "note": "P6: MAKE a selection through the API - the pane's whole buffer - and say what happened (`selected all` for any pane with a grid (geometry, not content: a blank pane selects its blank rows), `empty` only for a surface with no grid). Until P6 lite could read a selection (session.copy) but not make, clear or finalise one, so a QA step that called this did nothing and returned an error most callers ignore."
     },
     {
       "verb": "session.copy",

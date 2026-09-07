@@ -1,3 +1,4 @@
+using System.Text;
 using Agwinterm.Core;
 using Agwinterm.Pty;
 
@@ -79,11 +80,14 @@ internal sealed class FakeSessionHost : ISessionHost
         public readonly Dictionary<string, PaneOverlaySlot> PaneOverlays = new();
         /// <summary>The selection each SURFACE holds, keyed by the surface's id — a cover's id or a
         /// real pane's (<see cref="PaneIds"/>) — as the app's lives on its Pane and is read by
-        /// SelectionText(pane). Written by <c>selection all</c> (only when the surface had text: the
-        /// app's SelectAll on a blank pane leaves no live selection and answers <c>empty</c>), read by
+        /// SelectionText(pane). Written by <c>selection all</c> whenever the surface has a grid — the
+        /// app's SelectAll decides by geometry, not content, so a blank pane holds its blank rows (the
+        /// whole grid as SelectionText renders it: every history and screen row, trailing spaces
+        /// dropped, CRLF between rows, so an 80x24 blank pane is 46 chars of CRLF) — read by
         /// <c>session copy</c> (a real pane's, or the active surface's) and <c>session overlay copy</c>
         /// (a cover's), dropped by <c>selection clear</c> and by <c>selection copy</c> (the app's
-        /// CopySelection(clear: true)), kept by <c>selection finalize</c>. Never the clipboard. A cover
+        /// CopySelection(clear: true), whether or not it had a character to copy), kept by
+        /// <c>selection finalize</c>. Never the clipboard. A cover
         /// and the pane under it are two keys, which is what lets a test prove <c>session copy</c> and
         /// <c>overlay copy</c> read two different surfaces.</summary>
         public readonly Dictionary<string, string> Selections = new();
@@ -169,6 +173,9 @@ internal sealed class FakeSessionHost : ISessionHost
     /// <summary>The app's _sidebarWShown: the width the sidebar has when visible, kept while hidden.</summary>
     internal int SidebarW = SidebarWidths.Default;
     internal readonly Dictionary<string, string> Config = new();
+    /// <summary>The app's TerminalConfig.CopyOnSelect, default false as the product's: <c>selection
+    /// finalize</c> copies only when it is on, and says so either way.</summary>
+    internal bool CopyOnSelect;
     /// <summary>Stand-in for the app's process query failing or timing out: restore.capture must then
     /// refuse (nothing written) rather than report "nothing running" for every pane.</summary>
     internal bool CaptureFails;
@@ -605,21 +612,57 @@ internal sealed class FakeSessionHost : ISessionHost
     public string SelectionAll(string? target)
     {
         if (Surface(target) is not { } sf) return NoPane;
-        string text = SurfaceText.Dump(sf.pane, new OverlayTextArgs(All: true, Lines: 0));
-        if (text.Length == 0) { sf.s.Selections.Remove(sf.id); return "empty"; }
+        // The app's SelectAll: HasSel = (hist + rows) > 0 && cols > 0 — geometry, never content, so a
+        // blank pane is "selected all" and holds its blank rows. "empty" is a surface with no grid,
+        // which a fake pane (80x24 from birth) never is; it is kept for the shape, not reached.
+        string? text = WholeGrid(sf.pane);
+        if (text is null) return "empty";
         sf.s.Selections[sf.id] = text; return "selected all";
     }
+    /// <summary>What the app's SelectionText renders for a whole-grid selection: every history row and
+    /// then the screen, each row's trailing spaces dropped, CRLF between rows and nothing after the
+    /// last — NOT SurfaceText.Dump, which is LF-joined with trailing blank rows trimmed (a multi-row
+    /// count in <c>copied N chars</c> would differ). Null for a grid with no cells.</summary>
+    private static string? WholeGrid(ISession pane)
+    {
+        var sb = new StringBuilder();
+        lock (pane.SyncRoot)
+        {
+            var em = pane.Emulator;
+            int rows = em.Screen.Rows, cols = em.Screen.Cols, hist = em.HistoryCount;
+            if (rows + hist <= 0 || cols <= 0) return null;
+            for (int abs = 0; abs < hist + rows; abs++)
+            {
+                if (abs > 0) sb.Append("\r\n");
+                sb.Append((abs < hist ? em.DumpHistoryRow(abs) : em.DumpRow(abs - hist)).TrimEnd(' '));
+            }
+        }
+        return sb.ToString();
+    }
     public string SelectionCopy(string? target)
-        => Surface(target) is not { } sf ? NoPane
-         : sf.s.Selections.Remove(sf.id, out var sel) ? $"copied {sel.Length} chars" : "no selection";
+    {
+        if (Surface(target) is not { } sf) return NoPane;
+        if (!sf.s.Selections.Remove(sf.id, out var sel)) return "no selection";
+        // The app's CopySelection: the clipboard is set only when the text has a copyable character,
+        // the selection is cleared either way; N counts UTF-16 units, as string.Length does.
+        return HasCopyable(sel) ? $"copied {sel.Length} chars" : "nothing to copy";
+    }
     public string SelectionClear(string? target)
     {
         if (Surface(target) is not { } sf) return NoPane;
         sf.s.Selections.Remove(sf.id); return "cleared";
     }
+    // The app's three arms in its order: copy-on-select off answers before the selection is looked at
+    // (FinalizeSelection short-circuits on the flag), so a default-configured host never says
+    // "(copied)" or "(empty)"; a test that wants those arms sets CopyOnSelect first. "(copied)" is
+    // CopySelection(clear: false) succeeding — the same whitespace rule as `selection copy`, the
+    // selection kept — so a blank grid's selection finalizes "(empty)" and survives.
     public string SelectionFinalize(string? target)
         => Surface(target) is not { } sf ? NoPane
-         : sf.s.Selections.ContainsKey(sf.id) ? "finalized (copied)" : "finalized (empty)";
+         : !CopyOnSelect ? "finalized (copy-on-select off)"
+         : sf.s.Selections.TryGetValue(sf.id, out var sel) && HasCopyable(sel) ? "finalized (copied)" : "finalized (empty)";
+    /// <summary>The app's CopySelection rule: a character other than CR, LF or space (IndexOfAnyExcept).</summary>
+    private static bool HasCopyable(string sel) => sel.AsSpan().IndexOfAnyExcept('\r', '\n', ' ') >= 0;
     public string SessionPaste(string? target, string? text) => Surface(target) is not null ? "pasted" : NoPane;
     /// <summary>The app's PaneForTarget, with the surface's id: null / "" / "active" is the active
     /// session's focused pane — or the overlay term open over it, as ActiveSurface says — then a real
