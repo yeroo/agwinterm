@@ -130,7 +130,7 @@ closed the honesty half — a pane id is refused rather than silently widened �
 capability half: a review TUI in the right pane stops blanking the left pane the user is reading, and
 an overlay's own output becomes readable at all.
 
-**Shipped:** #PR (2026-09-07) — plan at
+**Shipped:** #250 (2026-09-07) — plan at
 [completed/2026-09-07-p5-pane-overlays.md](completed/2026-09-07-p5-pane-overlays.md) (the QA
 capture `completed/2026-09-07-p5-pane-overlay.png` beside it); contract steps in the sibling PR that
 follows, as #235 followed #233 (`open --pane left`, `overlay text --pane left`, `close --pane left`,

@@ -407,7 +407,7 @@ Docs: `docs/agterm-parity.md:47-48` (the honesty half only) and `:91-99` (the it
       665 Pty), Rust 36, ABI v18, `conformance.ps1 -Strict` all passed, `win32-control.ps1 -Strict`
       144 PASS / 0 FAIL / 0 SKIP, `restore-roundtrip.ps1 -Strict` all passed, `control-api.json`
       unchanged against main, no orphaned host process afterwards.
-- [ ] mark P5 **Shipped** in the batch index with the PR number; open the PR from this task so the
+- [x] mark P5 **Shipped** in the batch index with the PR number; open the PR from this task so the
       trackers carry the number (P1–P4's practice), with the QA capture in the body
 
 ## Technical Details
