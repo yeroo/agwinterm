@@ -254,12 +254,12 @@ Docs: `docs/agterm-parity.md:47-48` (the honesty half only) and `:91-99` (the it
 - [x] run the .NET suite — must pass before task 2
 
 ### Task 2: the slot on the pane, and its lifecycle
-- [ ] one slot class (e.g. `OverlaySlot { Pane Term; int SizePercent; bool Wait; bool Exited; int
+- [x] one slot class (e.g. `OverlaySlot { Pane Term; int SizePercent; bool Wait; bool Exited; int
       ExitCode; string LastResult = "no overlay result" }`) replacing `Ses.Overlay` +
       `OverlaySizePercent/Wait/Exited/ExitCode` (`Program.cs:373-377`) and added as `Pane.Overlay`
       (`SizePercent` always 0 there). Every reader of the five fields moves to the slot — grep
       each name; the Context list is the checklist
-- [ ] `OverlayOpen(ses, pane: Pane?, command, sizePercent, wait, extraEnv)`: `pane is null` =
+- [x] `OverlayOpen(ses, pane: Pane?, command, sizePercent, wait, extraEnv)`: `pane is null` =
       today's path verbatim (replace-and-cover); a pane → refuse-if-held is the HOST's check (the
       hop re-resolves), the id is `<pane id>:overlay:<hex>`, `CreatePane` in the PANE's cwd
       (a `CwdOf(Pane)` twin of `CwdOf(Ses)` `Program.Sessions.cs:677`, on `SafeCwd(Pane)`
@@ -267,19 +267,19 @@ Docs: `docs/agterm-parity.md:47-48` (the honesty half only) and `:91-99` (the it
       the slot set under `_overlayExitLock` the way `ses.Overlay` is, `_lastOverlayExit` NOT
       reset (the pane arm has its own `LastResult`), `WatchOverlayExit(ses, pane, term)` writes
       the slot's `Exited/ExitCode/LastResult` and, without `--wait`, closes the slot
-- [ ] `CloseOverlayOf(ses)` keeps the session-wide slot; `ClosePaneOverlay(ses, pane)` for the
+- [x] `CloseOverlayOf(ses)` keeps the session-wide slot; `ClosePaneOverlay(ses, pane)` for the
       pane slot (release `OverlayDone` with `closed`, dispose, regrid the pane, redraw). Callers:
       `split close` / `split off` / shell-exit collapse (`ClosePane`, survivor promotion) /
       `CloseSessionInternal` / `WM_DESTROY` — each disposes pane overlays too
-- [ ] `SwapPanes`: the slot travels (it is on the pane — assert that in a comment) and the boxes
+- [x] `SwapPanes`: the slot travels (it is on the pane — assert that in a comment) and the boxes
       changed, so regrid both pane overlays with the session (`RegridSession` regrids
       `p.Overlay.Term` to `p`'s box for every pane); drop the "session-wide until P5" clause and
       the `SwapReply.cs:35` sentence
-- [ ] `OwningSes`, `FindPaneBy` (`cover: true` for pane overlays too — the `--target <overlay
+- [x] `OwningSes`, `FindPaneBy` (`cover: true` for pane overlays too — the `--target <overlay
       id>` recipe must keep working), `IsSurfaceVisible`, unread (`:73/:137`),
       `ReapOrphanedHostedSessions`, `ZoomPane` / `ChangeFontSize` (a focused pane overlay zooms
       alone, like a cover), UIA snapshot — each handles both kinds
-- [ ] run the .NET suite (nothing observable changes yet; the build must be clean)
+- [x] run the .NET suite (nothing observable changes yet; the build must be clean)
 
 ### Task 3: render, focus, mouse
 - [ ] `ActiveSurface()` = `_cover ?? FocusedSurface(_active)` where a pane's surface is its

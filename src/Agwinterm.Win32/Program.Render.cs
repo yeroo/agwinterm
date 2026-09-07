@@ -642,7 +642,7 @@ internal partial class Program
     {
         // Quick terminal (kind 2) and a sized floating overlay (kind 3) both render as a centered
         // panel over the live main window — a "tool window" look. Scratch (1) / full overlay fill.
-        bool floatingPanel = _cover is not null && ((_coverKind == 3 && _ovlOwner is { OverlaySizePercent: > 0 }) || _coverKind == 2);
+        bool floatingPanel = _cover is not null && ((_coverKind == 3 && _ovlOwner is { Overlay.SizePercent: > 0 }) || _coverKind == 2);
         if (_cover is not null && !floatingPanel)
         {
             var (ox, oy, cw0, ch0) = ContentArea();
@@ -806,9 +806,9 @@ internal partial class Program
     /// <summary>When a --wait overlay's program has exited, a footer banner in the cover inviting a key to close.</summary>
     private void DrawOverlayFooter(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
-        if (_coverKind != 3 || _ovlOwner is not { OverlayExited: true }) return;
+        if (_coverKind != 3 || _ovlOwner is not { Overlay.Exited: true }) return;
         var (fx, fy, fw, fh) = CoverRect();
-        string msg = $"  exited ({_ovlOwner.OverlayExitCode}) — press any key to close  ";
+        string msg = $"  exited ({_ovlOwner.Overlay.ExitCode}) — press any key to close  ";
         float bh = 22f;
         brush.Color = WithA(ChromeAccent, 0.95f);
         rt.FillRectangle(new Rect(fx, fy + fh - bh, fw, bh), brush);

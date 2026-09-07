@@ -207,7 +207,7 @@ internal partial class Program
                     command: expanded, interactive: true, extraEnv: AgwEnv(ctx));
                 break;
             case "overlay":
-                if (ctx is not null) OverlayOpen(ctx, expanded, 0, false, AgwEnv(ctx));
+                if (ctx is not null) OverlayOpen(ctx, null, expanded, 0, false, AgwEnv(ctx));
                 else ShowToast("no session for overlay command");
                 break;
             case "detached":
@@ -246,7 +246,7 @@ internal partial class Program
         if (surface is not null && ses is not null)
         {
             if (_coverKind == 1 && ReferenceEquals(surface, ses.Scratch)) paneName = "scratch";
-            else if (_coverKind == 3 && ReferenceEquals(surface, ses.Overlay)) paneName = "overlay";
+            else if (_coverKind == 3 && ReferenceEquals(surface, ses.Overlay.Term)) paneName = "overlay";
             else if (_coverKind == 2 && ReferenceEquals(surface, _quick)) paneName = "quick";
             else
             {
@@ -1119,7 +1119,7 @@ internal partial class Program
         if (_markMode && MarkModeKey(vk, ctrl)) return true;
 
         // A --wait overlay whose program has exited hangs around; any key dismisses it.
-        if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return true; }
+        if (_coverKind == 3 && _ovlOwner is { Overlay.Exited: true }) { CloseActiveOverlay(); return true; }
 
         // Escape during an MRU walk cancels back to where the walk began.
         if (_mruWalking && vk == VK_ESCAPE) { MruCancel(); return true; }

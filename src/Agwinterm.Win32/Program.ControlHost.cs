@@ -193,16 +193,21 @@ internal partial class Program
                 {
                     var (status, statusChangedAt) = AggStatusAndAt(s);
                     return new SessionSnapshot(s.Id, s.Name, ReferenceEquals(s, _active), status,
-                        s.Overlay is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
+                        s.Overlay.Term is not null, UnreadOf(s), s.Flagged, s.BgPath is not null,
                         FocusedPane: Math.Clamp(s.Active, 0, Math.Max(0, s.Panes.Count - 1)), PaneCount: s.Panes.Count,
-                        StatusBlink: AggBlink(s), OverlaySize: s.OverlaySizePercent,
+                        StatusBlink: AggBlink(s), OverlaySize: s.Overlay.SizePercent,
                         SplitRatios: s.Panes.Select(p => (double)p.Ratio).ToList(),
                         PaneIds: s.Panes.Select(p => p.Id).ToList(),
                         RestoreCommands: s.Panes.Select(p => p.RestoreCommand ?? "").ToList(),
                         StatusChangedAt: statusChangedAt,
                         Context: s.Context,
                         CapturedCommands: s.Panes.Select(p => p.CapturedCommand ?? "").ToList(),
-                        Axis: s.Axis);
+                        Axis: s.Axis,
+                        // The open PANE slots as their words, in pane order (P5): a swap reorders the
+                        // panes and the slots ride on them, so `["right"]` becomes `["left"]` by
+                        // construction. Empty = the server omits the key.
+                        PaneOverlays: s.Panes.Select((p, i) => (p, i)).Where(t => t.p.Overlay.Term is not null)
+                                             .Select(t => OverlayPanes.Word(t.i)).ToList());
                 }).ToList()
             )).ToList();
     }
@@ -869,7 +874,7 @@ internal partial class Program
                     // close in an empty window is not contract-dependent on a session existing.
                     var ses = FindSesForTarget(target);
                     if (ses is null && !string.IsNullOrEmpty(target) && target != "active") return NoSessionRefusal;
-                    if (ses?.Overlay is null) return "no overlay";
+                    if (ses is null || ses.Overlay.Term is null) return "no overlay";
                     PostVerb(() => CloseOverlayOf(ses));
                     return "closed";
                 }
@@ -882,7 +887,7 @@ internal partial class Program
                     // Resolve, check and write in ONE queued UI action and reply from its result
                     // (#227): resolved on the pipe thread and written by a posted action, the check
                     // and the write could straddle the overlay's exit — the exit's close (a posted
-                    // action ahead in the same queue) cleared OverlaySizePercent, the resize then
+                    // action ahead in the same queue) cleared the slot's SizePercent, the resize then
                     // wrote N over a session with no overlay, and the tree showed `overlaySize` on
                     // nothing while the reply said "resized". The refusals are the same as before:
                     // no session at all is not "open one first" (before P2's review both came back
@@ -892,8 +897,8 @@ internal partial class Program
                     {
                         var ses = FindSesForTarget(target);
                         if (ses is null) return NoSessionRefusal;
-                        if (ses.Overlay is null) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
-                        ses.OverlaySizePercent = sp;
+                        if (ses.Overlay.Term is null) return ISessionHost.RefusePrefix + "no overlay to resize on that target; open one first";
+                        ses.Overlay.SizePercent = sp;
                         if (ReferenceEquals(_ovlOwner, ses)) RegridCover();
                         RequestRedraw();
                         return $"resized {sp}%";
@@ -919,8 +924,8 @@ internal partial class Program
                             ran = true;
                             var s = FindSesForTarget(target);
                             if (s is null) return NoSessionRefusal;
-                            string id = OverlayOpen(s, command!, sizePercent, false);
-                            done = s.Overlay!.OverlayDone;
+                            string id = OverlayOpen(s, null, command!, sizePercent, false);
+                            done = s.Overlay.Term!.OverlayDone;
                             return id;
                         });
                         // InvokeOnUi does not say whether its lambda ran: a SendMessage to a window
@@ -942,7 +947,7 @@ internal partial class Program
                         catch (OperationCanceledException) { throw new InvalidOperationException(OverlayWindowGone); }
                         return done.Task.Result;
                     }
-                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, command!, sizePercent, wait); });
+                    return InvokeOnUi(() => { var s = FindSesForTarget(target); return s is null ? NoSessionRefusal : OverlayOpen(s, null, command!, sizePercent, wait); });
                 }
         }
     }

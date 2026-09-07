@@ -309,7 +309,7 @@ internal partial class Program
                 {
                     char c = (char)wParam;
                     if (_kittyAteChar) { _kittyAteChar = false; return IntPtr.Zero; }   // OnKeyDown already CSI-u-encoded this key
-                    if (_coverKind == 3 && _ovlOwner is { OverlayExited: true }) { CloseActiveOverlay(); return IntPtr.Zero; }
+                    if (_coverKind == 3 && _ovlOwner is { Overlay.Exited: true }) { CloseActiveOverlay(); return IntPtr.Zero; }
                     if (_setOpen)
                     {
                         if (_ddRow is not null && c >= 0x20 && c != 0x7f) { _ddQuery += c; FilterDropdown(); RequestRedraw(); }
@@ -619,9 +619,13 @@ internal partial class Program
                 lock (_windowIndex) quitting = _updateQuitting || _byId.Count <= 1;
                 foreach (var s in AllSessions())
                 {
-                    foreach (var p in s.Panes) { try { if (quitting) p.S.Detach(); else p.S.Dispose(); } catch { } }
+                    foreach (var p in s.Panes)
+                    {
+                        try { p.Overlay.Term?.S.Dispose(); } catch { }   // a pane overlay (P5) is never restored either
+                        try { if (quitting) p.S.Detach(); else p.S.Dispose(); } catch { }
+                    }
                     try { s.Scratch?.S.Dispose(); } catch { }
-                    try { s.Overlay?.S.Dispose(); } catch { }
+                    try { s.Overlay.Term?.S.Dispose(); } catch { }
                 }
                 try { _quick?.S.Dispose(); } catch { }
                 bool lastWindow;

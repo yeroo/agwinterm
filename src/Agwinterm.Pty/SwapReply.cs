@@ -32,8 +32,10 @@ public sealed record SwapResult(string SessionId, IReadOnlyList<string> PaneIds,
 /// id keeps naming the pane it always named, which now sits on the other side — "the first pane shares
 /// the session id" becomes "at most one pane carries the session id: a swap may put it on either
 /// side, and closing that pane — by any path — leaves none" (the rule in full is on
-/// <see cref="ISessionHost.SplitClose"/>). Nothing else moves: overlays and scratch are session-wide
-/// (until P5), the status aggregate
+/// <see cref="ISessionHost.SplitClose"/>). A pane overlay moves with its pane — its slot is on the
+/// pane, so it needs no swap step (the rule is on <see cref="ISessionHost.SessionOverlay"/>: "the slot
+/// moves with its pane (a swap, a split close of the other pane)"). Nothing else moves: the session-wide
+/// overlay and scratch cover the session, not a pane, the status aggregate
 /// is order-independent, context, flag, MRU and broadcast are session-keyed, events carry pane ids.
 ///
 /// Resolution: null / "" / "active" = the active session; else the content verbs' resolver (a
