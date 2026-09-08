@@ -349,7 +349,11 @@ public interface ISessionHost
     /// No pane: the refusal above.</summary>
     string SelectionFinalize(string? target);
     /// <summary>Paste text (or the clipboard when text is null/empty) into the target pane, honoring
-    /// bracketed paste. No pane: the refusal above.</summary>
+    /// bracketed paste: <see cref="SessionPastes.Pasted"/> when the payload reached the pane,
+    /// <see cref="SessionPastes.Nothing"/> when there was none to send (empty text and a clipboard
+    /// that gave no text — empty, non-text, or unreadable; the reply does not say which). A pane
+    /// under <c>session readonly on</c> is <see cref="RefusePrefix"/> + <see cref="SessionPastes.ReadOnlyPane"/>
+    /// and nothing is sent. No pane: the refusal above.</summary>
     string SessionPaste(string? target, string? text);
 
     /// <summary>Open/drive the find bar over the active session; returns "N of M" / "no matches" / "closed".</summary>

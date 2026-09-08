@@ -796,10 +796,18 @@ internal partial class Program
     public string SessionPaste(string? target, string? text) => InvokeOnUi(() =>
     {
         var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
+        // Report what actually happened (the `nothing to copy` idiom above; SessionPastes has the
+        // words): PasteTextInto returns silently for a read-only pane and for empty text, and this
+        // used to answer `pasted` for both. The read-only refusal comes before the clipboard is
+        // touched; the missing-pane refusal above comes before everything.
+        if (p.ReadOnly) return ISessionHost.RefusePrefix + SessionPastes.ReadOnlyPane;
         // "text (or the clipboard when text is null/EMPTY)": the CLI always sends text, "" when the
         // caller gave none, so `?? ClipboardGet()` never ran and `session paste` pasted nothing.
-        PasteTextInto(p, string.IsNullOrEmpty(text) ? ClipboardGet() : text, interactive: false);   // scripted: never prompt (agents)
-        return "pasted";
+        // ClipboardGet answers "" both for a clipboard with no text and for one it could not read.
+        string payload = SessionPastes.Payload(text, ClipboardGet);
+        if (payload.Length == 0) return SessionPastes.Nothing;
+        PasteTextInto(p, payload, interactive: false);   // scripted: never prompt (agents)
+        return SessionPastes.Pasted;
     });
 
     // Search operates on the active pane's find bar (a UI-thread concept); run it synchronously

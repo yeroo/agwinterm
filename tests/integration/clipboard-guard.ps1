@@ -5,8 +5,11 @@
 #
 # The states, by CONDITION, once (every caller quotes these words, none invents its own):
 #   Take()                      the snapshot: every format's bytes and the sequence number they were read
-#                               under; or Unsupported (a format that is not global memory), nothing written;
-#                               throws when the clipboard cannot be opened.
+#                               under; or Unsupported — a noun phrase naming what stood in the way: a
+#                               format that is not global memory, a format whose data could not be
+#                               read, or formats that could not be enumerated (a failed API call, not
+#                               content: a retry may run) — nothing written; throws when the clipboard
+#                               cannot be opened.
 #   WriteSentinel(text, snap)   `unopened`  — nothing touched.
 #                               `failed`    — EmptyClipboard refused under the open: nothing touched.
 #                               `changed`   — the sequence moved since the snapshot: nothing touched. Or,
@@ -24,8 +27,10 @@
 #                               `unverified` — the sentinel was put and the close completed, but whether
 #                                             it is STILL in could not be read: the second open was
 #                                             refused, or under it every format seen is of the sentinel's
-#                                             kind but one could not be read (or the formats could not be
-#                                             enumerated). Sequence is the number read under the writer's
+#                                             kind, nothing read differs from the sentinel, but one format
+#                                             could not be read (or the formats could not be enumerated).
+#                                             What was read outranks what was not: differing text beside
+#                                             an unreadable format is `changed`. Sequence is the number read under the writer's
 #                                             open. The case does NOT run (a paste would consume whatever
 #                                             is there: round 7 — a copy whose text differed but whose
 #                                             later format was unreadable was pasted as if it were ours);
@@ -50,10 +55,12 @@
 #                                             nothing touched.
 #                               `unread`    — whose it is is UNKNOWN: the sequence is not the write's
 #                                             generation, every format seen is of the sentinel's kind,
-#                                             but one of them could not be read — or the formats could
-#                                             not be enumerated at all (EnumClipboardFormats fails with
-#                                             the same zero as "no more"; only GetLastError tells, and
-#                                             an EMPTY clipboard is `changed`). Nothing touched, never
+#                                             nothing read differs from the sentinel, but one format
+#                                             could not be read (what was read outranks what was not:
+#                                             differing text beside it is `changed`) — or the formats
+#                                             could not be enumerated at all (EnumClipboardFormats fails
+#                                             with the same zero as "no more"; only GetLastError tells,
+#                                             and an EMPTY clipboard is `changed`). Nothing touched, never
 #                                             retried, never taken for either side — CLIPBOARD NOT
 #                                             RESTORED for the run, the snapshot file kept; the human
 #                                             decides with -RestoreClipboard.
@@ -74,7 +81,7 @@
 # Add-Type cannot replace a loaded type: a ClipboardGuard from an older run of this file in the same
 # shell would run its old C# under the new source with no warning. Revision below is bumped with every
 # change to the C#, and a loaded type that does not carry it stops the run.
-$clipboardGuardRevision = 4
+$clipboardGuardRevision = 5
 if (('Agwinterm.Win32ControlTest.ClipboardGuard' -as [type]) -and
     ('Agwinterm.Win32ControlTest.ClipboardGuard' -as [type])::Revision -ne $clipboardGuardRevision) {
     throw "a ClipboardGuard type from an older run of this file is loaded in this shell (revision $(('Agwinterm.Win32ControlTest.ClipboardGuard' -as [type])::Revision), source $clipboardGuardRevision); run it from a fresh pwsh"
@@ -300,7 +307,7 @@ namespace Agwinterm.Win32ControlTest
     public static class ClipboardGuard
     {
         /// <summary>Bumped with every change to this C#; the .ps1 refuses a loaded type without it.</summary>
-        public const int Revision = 4;
+        public const int Revision = 5;
         public const uint CF_UNICODETEXT = 13;
 
         /// <summary>The clipboard the guard talks to: the native one unless a test swaps in a fake.</summary>
@@ -362,7 +369,7 @@ namespace Agwinterm.Win32ControlTest
         static ClipboardSnapshot TakeOpen()
         {
             uint[] all = Api.Formats();
-            if (all == null) return new ClipboardSnapshot { Unsupported = "the formats could not be enumerated", Seen = new uint[0] };
+            if (all == null) return new ClipboardSnapshot { Unsupported = "formats that could not be enumerated (EnumClipboardFormats failed)", Seen = new uint[0] };
             var keep = new List<uint>();
             var data = new List<byte[]>();
             foreach (uint f in all)
@@ -448,9 +455,11 @@ namespace Agwinterm.Win32ControlTest
         // after the close 3923, and stable from then on (reading the synthesized formats does not move
         // it; putting all four explicitly, as a restore does, adds nothing). The generation is therefore
         // read under a second open that finds the clipboard holding exactly the sentinel. A copy made
-        // between the close and that open shows as other content: `changed`, theirs kept. A datum that
-        // could not be READ, with nothing foreign beside it, is neither: the generation stays unverified
-        // (like a refused open) and the restore proves ownership by content.
+        // between the close and that open shows as other content: `changed`, theirs kept — a differing
+        // CF_UNICODETEXT read before a later format failed included (round 7: what was read outranks
+        // what was not). Only a datum that could not be read with nothing foreign and nothing differing
+        // beside it is neither: `unverified` (like a refused open) — the case does not run, and the
+        // restore proves ownership by content.
         static ClipboardWrite Generation(string text, uint inside)
         {
             uint after = Api.Sequence();
@@ -462,10 +471,20 @@ namespace Agwinterm.Win32ControlTest
                 uint now = Api.Sequence();
                 string who = Ownership(back, text);
                 if (who == "ours") return new ClipboardWrite { State = "written", Sequence = now, Sentinel = text, Detail = "generation " + now + " (the close moved the sequence " + inside + " -> " + now + "; the sentinel is in)" };
-                if (who == "unread") return new ClipboardWrite { State = "unverified", Sequence = inside, Sentinel = text, Detail = "the close moved the sequence " + inside + " -> " + now + " and under the second open " + back.Unsupported + ", so whether the sentinel is still in could not be read; the case does not run, the restore proves ownership by content" };
-                return new ClipboardWrite { State = "changed", Sequence = now, Sentinel = text, Detail = "a copy replaced the sentinel before its generation could be read (sequence " + inside + " -> " + now + "; the clipboard holds " + (back.Unsupported ?? back.Names) + "); theirs is kept" };
+                if (who == "unread") return new ClipboardWrite { State = "unverified", Sequence = inside, Sentinel = text, Detail = "the close moved the sequence " + inside + " -> " + now + " and under the second open the clipboard holds " + Held(back) + ", so whether the sentinel is still in could not be read; the case does not run, the restore proves ownership by content" };
+                return new ClipboardWrite { State = "changed", Sequence = now, Sentinel = text, Detail = "a copy replaced the sentinel before its generation could be read (sequence " + inside + " -> " + now + "; the clipboard holds " + Held(back) + "); theirs is kept" };
             }
             finally { Api.Close(); }
+        }
+
+        // What a read-back saw, for a Detail: the formats that were read (ids, names, lengths — never
+        // contents), then the one that stood in the way, when one did. A `changed` decided by differing
+        // text beside an unreadable format names both (round 8: it named the unreadable one alone, the
+        // description of `unread`, on the verdict the recovery file goes with).
+        static string Held(ClipboardSnapshot s)
+        {
+            if (s.Unsupported == null) return s.Names;
+            return s.Formats.Length == 0 ? s.Unsupported : s.Names + ", then " + s.Unsupported;
         }
 
         // Whose the clipboard is, read back under an open. "ours": exactly the sentinel. "theirs":
@@ -510,8 +529,8 @@ namespace Agwinterm.Win32ControlTest
                 {
                     ClipboardSnapshot held = TakeOpen();
                     string who = Ownership(held, write.Sentinel);
-                    if (who == "unread") return new ClipboardWrite { State = "unread", Sequence = now, Sentinel = write.Sentinel, Detail = "whose the clipboard is could not be read (sequence " + write.Sequence + " -> " + now + "; " + held.Unsupported + "); nothing touched" };
-                    if (who != "ours") return new ClipboardWrite { State = "changed", Sequence = now, Detail = "someone wrote to the clipboard during the case (sequence " + write.Sequence + " -> " + now + "; it holds " + (held.Unsupported ?? held.Names) + "); theirs is kept" };
+                    if (who == "unread") return new ClipboardWrite { State = "unread", Sequence = now, Sentinel = write.Sentinel, Detail = "whose the clipboard is could not be read (sequence " + write.Sequence + " -> " + now + "; it holds " + Held(held) + "); nothing touched" };
+                    if (who != "ours") return new ClipboardWrite { State = "changed", Sequence = now, Detail = "someone wrote to the clipboard during the case (sequence " + write.Sequence + " -> " + now + "; it holds " + Held(held) + "); theirs is kept" };
                 }
                 string why = PutProven(snap);
                 if (why == null) return new ClipboardWrite { State = "restored", Sequence = Api.Sequence() };

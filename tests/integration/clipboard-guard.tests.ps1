@@ -216,12 +216,14 @@ try {
     $f.UserWrites(13, $U.GetBytes("theirs`0")); $f.Store[16] = [byte[]](0, 0, 0, 0); $f.GetFails = 16
     $r = Invoke-ClipboardRestore $snap $w $null
     Check 'other text before an unreadable CF_LOCALE → changed at the restore (not unread), theirs kept' ($w.State -eq 'unverified' -and $r.State -eq 'changed' -and $U.GetString($f.Store[13]) -eq "theirs`0") "w=$w r=$r"
+    Check '  and its Detail names what was READ (the differing text, by format) before what was not' ($r.Detail -like '*13=CF_UNICODETEXT`[*`], then format 16 (CF_LOCALE), whose data could not be read*') "$r"
     $f.GetFails = 0
     $f = New-Fake
     $snap = $guard::Take()
     $f.CopyAtSecondOpen = $U.GetBytes("theirs`0"); $f.GetFails = 16
     $w = $guard::WriteSentinel('agw-paste-10f', $snap)
     Check 'other text before an unreadable CF_LOCALE under the SECOND open → changed (no paste, not unverified)' ($w.State -eq 'changed' -and $U.GetString($f.Store[13]) -eq "theirs`0") "$w"
+    Check '  and its Detail names what was READ before what was not' ($w.Detail -like '*13=CF_UNICODETEXT`[*`], then format 16 (CF_LOCALE), whose data could not be read*') "$w"
     $f.GetFails = 0
     # Positively theirs stays `changed`: a format the sentinel never carries beside an unreadable one, an
     # image (an Unsupported id), other text, an emptied clipboard.

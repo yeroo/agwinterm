@@ -393,6 +393,29 @@ public class ControlApiTests
         Assert.Contains("left alone", Result(Dispatch(server, "session.copy", target: active)));   // nothing changed anywhere
     }
 
+    // Round 8 of #256: session.paste reports what happened. A read-only pane is a REFUSAL (ok:false,
+    // "pane is read-only"), made before any clipboard is read — the interactive paste shows a toast,
+    // a script was told `pasted` for text that was dropped; an empty text with nothing on the
+    // clipboard is ok:true "nothing to paste", never `pasted`. The fake has no clipboard, so its
+    // omitted-text arm IS the empty clipboard; the payload rule itself is pinned in SessionPastesTests.
+    [Fact]
+    public void SessionPaste_ReadOnlyPane_IsRefused_AndAnEmptyPayload_SaysNothingToPaste()
+    {
+        var (server, host) = New();
+        string active = host.ActiveSess!.Id;
+        Assert.Equal("on", Result(Dispatch(server, "session.readonly", new { op = "on" }, target: active)));
+        var refused = Dispatch(server, "session.paste", new { text = "dropped" }, target: active);
+        Assert.False(Ok(refused));
+        Assert.Equal(SessionPastes.ReadOnlyPane, refused.GetProperty("error").GetString());
+        Assert.False(refused.TryGetProperty("result", out _));
+        Assert.Equal("off", Result(Dispatch(server, "session.readonly", new { op = "off" }, target: active)));
+        Assert.Equal(SessionPastes.Pasted, Result(Dispatch(server, "session.paste", new { text = "dropped" }, target: active)));
+        var nothing = Dispatch(server, "session.paste", new { text = "" }, target: active);
+        Assert.True(Ok(nothing));
+        Assert.Equal(SessionPastes.Nothing, Result(nothing));
+        Assert.Equal(SessionPastes.Nothing, Result(Dispatch(server, "session.paste", target: active)));   // no text at all
+    }
+
     // The replies on a pane that HAS text but no selection yet (`selection all` makes one), on the
     // active session's id, with the product's defaults (copy-on-select OFF, so finalize says so and
     // never looks at the selection) — and session.copy reads back what `selection all` made, then
