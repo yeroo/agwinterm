@@ -289,11 +289,13 @@ products. What differs, each recorded in the P6-lite plan:
 - and `copied N chars` counts differently on non-ASCII text: lite counts UTF-8 bytes, agwinterm
   UTF-16 code units (`string.Length`). Same N for ASCII.
 - **(f)** `session.paste` reports what happened in agwinterm only (#256, rounds 8-9): `pasted` when
-  the payload reached the pane, `nothing to paste` when neither the text nor the clipboard gave any
-  (no claim about why: an empty, non-text or unreadable clipboard alike), and refusals `ok:false`
-  before the clipboard is read — `pane is read-only` (`session readonly on`, the menu item or the
-  `toggle_read_only` binding), `the pane's process has exited` (a single-pane session keeps the
-  exited surface), `paste failed: <why>` when the write threw. lite's `session.paste` answers
+  the payload was handed to the pane's input without a synchronous error (not proof a program read
+  it), `nothing to paste` when neither the text nor the clipboard gave any (no claim about why: an
+  empty, non-text or unreadable clipboard alike), refusals `ok:false` before the clipboard is read —
+  `pane is read-only` (`session readonly on`, the menu item or the `toggle_read_only` binding),
+  `the pane's process has exited` (a single-pane session keeps the exited surface) — and
+  `paste failed: <why>` when the write threw: that one comes after the payload was picked (the
+  clipboard may have been read) and says nothing about how much landed. lite's `session.paste` answers
   `pasted` whatever happened — on an exited pane, on an empty payload (it writes only a non-empty
   one to a live handle) — and lite has no read-only pane (`session readonly` is in its "does NOT
   have" list). The lite mirror of the replies is a follow-up with the P6 paste leftovers in #257;

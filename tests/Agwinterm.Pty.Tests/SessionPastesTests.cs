@@ -46,10 +46,13 @@ public class SessionPastesTests
     }
 
     [Fact]
-    public void AWriteThatThrew_IsRefusedWithWhatItSaid()
+    public void TheFailedAndExitedRefusals_AreWordedAsDocumented()
     {
-        // The host wraps PasteTextInto: an exception is a refusal that names it, never the empty
-        // ok:true the sync handler would make of it (round 9 of #256).
+        // Pins the WORDS only. The host's try/catch around PasteTextInto (the refusal that names
+        // the exception instead of the sync handler's empty ok:true, round 9 of #256) has no unit
+        // test: FakeSessionHost.SessionPaste re-implements the rule and never writes, so a throwing
+        // fake pane would pin the fake's own branch and leave the real catch deletable. The live
+        // suite proves the exited arm; the catch arm is argued from the code (round 10).
         Assert.Equal("paste failed: Session not started.", SessionPastes.Failed("Session not started."));
         Assert.Equal("the pane's process has exited", SessionPastes.ExitedPane);
     }

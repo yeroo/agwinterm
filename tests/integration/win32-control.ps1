@@ -119,12 +119,16 @@ if (-not $Exe) { "  SKIP  agwinterm build not found (build src\Agwinterm.Win32 o
 # pane inside agwinterm, these are the caller's own routing variables, so they are put back at the
 # end rather than left pointing at a pipe that no longer exists.
 $savedEnv = @{}
-foreach ($name in 'AGWINTERM_SESSION_ID', 'AGWINTERM_PANE_ID', 'AGWINTERM_PIPE', 'AGWINTERM_APP_ID') {
+foreach ($name in 'AGWINTERM_SESSION_ID', 'AGWINTERM_PANE_ID', 'AGWINTERM_PIPE', 'AGWINTERM_APP_ID', 'AGWINTERM_DUMP') {
     $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 $env:AGWINTERM_SESSION_ID = $null
 $env:AGWINTERM_PANE_ID = $null
 $env:AGWINTERM_PIPE = $null
+# AGWINTERM_DUMP makes every TerminalSession copy its raw output to a file. The P6 paste cases run
+# on the shared desktop with the user's clipboard on the line, so the sandbox app must not inherit
+# a dump path from the caller's shell: cleared here, put back with the rest at the end.
+$env:AGWINTERM_DUMP = $null
 $testToken = [guid]::NewGuid().ToString('N')
 $pipe = 'win32-control-' + $testToken.Substring(0, 12)
 $appId = 'agwinterm-win32-control-' + $testToken
@@ -1056,15 +1060,20 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         if ($p6Sink) { try { Invoke-Ctl @('session', 'close', $p6Sink) | Out-Null } catch { } }   # the sink session, its process with it
         # Round 9: a single-pane session keeps its exited process on screen, and its input may still
         # take bytes — a paste into it is refused (ok:false, "the pane's process has exited") before
-        # the clipboard is read; explicit text, so the guard is not needed. The exit is asynchronous:
-        # the poll waits for the refusal (a paste that lands before the exit is `pasted` and ignored).
+        # the clipboard is read; explicit text, so the guard is not needed. `session new` is posted
+        # (the session exists later, on the UI thread) while a paste is sent ahead of posted messages,
+        # so the poll first waits for the session to be listed, as the resolver case above does. The
+        # exit is asynchronous and the refusal lags it by the output-settle window: the poll runs
+        # until the EXPECTED refusal — a paste that lands before it is `pasted` (or, in the spawn
+        # gap, `paste failed: Session not started.`) and ignored; the last reply is the detail.
         $p6ExitMade = Invoke-Ctl @('session', 'new', '--name', 'p6-exited', '--command', 'cmd /c exit 0', '--no-select')
         $p6Exited = if ($p6ExitMade.ok) { [string]$p6ExitMade.result } else { $null }
         $p6ExitPaste = $null
         if ($p6Exited) {
+            for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $p6Exited); $i++) { Start-Sleep -Milliseconds 200 }
             for ($i = 0; $i -lt 60; $i++) {
                 $p6ExitPaste = Invoke-Ctl @('session', 'paste', 'agw-exited-' + $i, '--target', $p6Exited)
-                if (-not $p6ExitPaste.ok) { break }
+                if ((-not $p6ExitPaste.ok) -and ([string]$p6ExitPaste.error) -eq "the pane's process has exited") { break }
                 Start-Sleep -Milliseconds 250
             }
         }

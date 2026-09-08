@@ -13,7 +13,11 @@ namespace Agwinterm.Pty;
 /// </summary>
 public static class SessionPastes
 {
-    /// <summary>The payload reached the pane.</summary>
+    /// <summary>The payload was handed to the pane's input without a synchronous error. Not proof
+    /// that a program read it: a child that has just exited is seen as exited only after its output
+    /// settles (<see cref="TerminalSession.HasExited"/> is set after <c>SettleOutput</c>), and the
+    /// pipe takes bytes without an acknowledgement — a paste in that window is <c>pasted</c> for text
+    /// no program reads. The refusals below cover what the host KNOWS at the time of the call.</summary>
     public const string Pasted = "pasted";
     /// <summary>Nothing was sent: the text was empty and so was what the clipboard gave. NOT proof
     /// that the clipboard is empty — a clipboard that could not be opened or read, or holds no text
@@ -28,11 +32,17 @@ public static class SessionPastes
     public const string ReadOnlyPane = "pane is read-only";
     /// <summary>The refusal for a pane whose process has exited (a single-pane session keeps the
     /// exited surface on screen): its input may still take bytes, but no program reads them.
-    /// Answered before the clipboard is read.</summary>
+    /// Answered before the clipboard is read. It follows the exit by the output-settle window —
+    /// <see cref="TerminalSession.HasExited"/> is set after <c>SettleOutput</c> returns (one quiet
+    /// 50 ms window, at most 500 ms) — so a paste inside that window answers <see cref="Pasted"/>;
+    /// a caller that retries gets the refusal. The enduring state (an exited pane on screen) is
+    /// refused always; only the transition is not.</summary>
     public const string ExitedPane = "the pane's process has exited";
     /// <summary>The refusal for a write that threw (a broken pipe, a session that never started):
-    /// what the exception said, after "paste failed: ". Whether any of the payload reached the
-    /// pane is not known.</summary>
+    /// what the exception said, after "paste failed: ". Unlike <see cref="ReadOnlyPane"/> and
+    /// <see cref="ExitedPane"/> it comes AFTER the payload was picked — the clipboard may have been
+    /// read — and whether any of the payload reached the pane is not known (a stream write can fail
+    /// part-way), so a caller must not retry blindly.</summary>
     public static string Failed(string why) => "paste failed: " + why;
 
     /// <summary>The text to paste: <paramref name="text"/> when the caller gave any (whitespace and
