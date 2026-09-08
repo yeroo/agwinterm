@@ -87,11 +87,13 @@ public interface ISession : IDisposable
     /// (<c>?2026</c>) defers the repaints output itself triggers (a timer repaint can still show
     /// the partial frame). (3) The screen state the pane reads back moves. For the selection pin of
     /// this contract that is, exhaustively, the alt-screen flag (any alt-screen mode: <c>?47</c>,
-    /// <c>?1047</c>, <c>?1049</c>), the scroll generation and history count (output that scrolls
-    /// the main screen up with scrollback on and no partial region — plain text included; a
-    /// downward scroll moves neither) and the scroll region (<c>DECSTBM</c>: while a PARTIAL region
-    /// is set — a reserved status line — a selection stays on its cells instead of following its
-    /// text; a full-screen region leaves it tracking); otherwise, for example, the title
+    /// <c>?1047</c>, <c>?1049</c>), the scroll generation and history count (they move only when a
+    /// line is pushed off the top of the main screen into scrollback: scrollback on, no partial
+    /// region, and a line feed, <c>IND</c>, <c>NEL</c> or <c>SU</c> at the bottom margin — plain
+    /// text that wraps or ends a line included; a downward scroll or an <c>IL</c>/<c>DL</c> edit
+    /// moves neither) and the scroll region (<c>DECSTBM</c>: while a PARTIAL region is set — a
+    /// reserved status line — a selection stays on its cells instead of following its text; a
+    /// full-screen region leaves it tracking); otherwise, for example, the title
     /// (<c>OSC 0</c>/<c>2</c>), the reported cwd (<c>OSC 7</c>, <c>OSC 9;9</c>: the title bar's
     /// fallback label when no custom name or program title takes precedence, used by a scratch
     /// pane, an overlay, a duplicate and <c>new-session-directory = current</c>; a split keeps its
