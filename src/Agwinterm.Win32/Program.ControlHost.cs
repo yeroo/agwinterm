@@ -757,15 +757,17 @@ internal partial class Program
     });
 
     // Selection/clipboard control API. Clipboard + selection are UI-thread concepts, so hop on-thread.
+    // No pane for the target is the shared refusal (ISessionHost.RefusePrefix + SessionContexts.NoSession,
+    // ok:false at the server) — it used to be the bare string "no session" under ok:true.
     public string SelectionAll(string? target) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         SelectAll(p); return HasLiveSel(p) ? "selected all" : "empty";
     });
 
     public string SelectionCopy(string? target) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         if (!HasLiveSel(p)) return "no selection";
         // Report what actually happened: a live selection over cells a TUI has blanked copies
         // nothing and leaves the clipboard alone, and an agent acting on this reply must not be
@@ -776,14 +778,14 @@ internal partial class Program
 
     public string SelectionClear(string? target) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         p.ClearSel(); RequestRedraw(); return "cleared";
     });
 
     // Test/observability hook: run the same finalize path a mouse-up runs (honors copy-on-select).
     public string SelectionFinalize(string? target) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         // Ask the copy what happened rather than inferring it from a surviving selection: since
         // FinalizeSelection passes clear:false, the selection survives either way, so the
         // "(empty)" arm was unreachable and a declined copy was reported as a copy.
@@ -793,9 +795,26 @@ internal partial class Program
 
     public string SessionPaste(string? target, string? text) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
-        PasteTextInto(p, text ?? ClipboardGet(), interactive: false);   // scripted: never prompt (agents)
-        return "pasted";
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
+        // Report what actually happened (the `nothing to copy` idiom above; SessionPastes has the
+        // words): PasteTextInto returns silently for a read-only pane and for empty text, and this
+        // used to answer `pasted` for both. The read-only refusal comes before the clipboard is
+        // touched; the missing-pane refusal above comes before everything.
+        if (p.ReadOnly) return ISessionHost.RefusePrefix + SessionPastes.ReadOnlyPane;
+        // A single-pane session keeps its exited process on screen (OnPaneProcessExited leaves it; a
+        // split pane is closed and the target resolves to nothing). Its input pipe may still take
+        // bytes, so a paste into it would answer `pasted` for text that reached no program (round 9
+        // of #256): refused, before the clipboard is read, like the read-only pane.
+        if (p.S.HasExited) return ISessionHost.RefusePrefix + SessionPastes.ExitedPane;
+        // "text (or the clipboard when text is null/EMPTY)": the CLI always sends text, "" when the
+        // caller gave none, so `?? ClipboardGet()` never ran and `session paste` pasted nothing.
+        // ClipboardGet answers "" both for a clipboard with no text and for one it could not read.
+        string payload = SessionPastes.Payload(text, ClipboardGet);
+        // The write can throw (a pipe that broke, a session never started); the WM_APP_SYNC handler
+        // would swallow that into ok:true with an empty result, so it is answered as a refusal here.
+        try { if (payload.Length != 0) PasteTextInto(p, payload, interactive: false); }   // scripted: never prompt (agents)
+        catch (Exception ex) { return ISessionHost.RefusePrefix + SessionPastes.Failed(ex.Message); }
+        return SessionPastes.Reply(payload);
     });
 
     // Search operates on the active pane's find bar (a UI-thread concept); run it synchronously

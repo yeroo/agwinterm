@@ -1,3 +1,4 @@
+using System.Text;
 using Agwinterm.Core;
 using Agwinterm.Pty;
 
@@ -77,12 +78,19 @@ internal sealed class FakeSessionHost : ISessionHost
         /// The open term is ALSO in <see cref="CoverPanes"/> under its overlay id, so
         /// <c>--target &lt;overlay id&gt;</c> reaches it through the same resolvers a scratch cover uses.</summary>
         public readonly Dictionary<string, PaneOverlaySlot> PaneOverlays = new();
-        /// <summary>The selection made INSIDE a cover pane, keyed by cover id — what the app's
-        /// SelectionText(pane) reads for the overlay pane. Written by <c>selection all</c> on the cover,
-        /// read by <c>session overlay copy</c>; never the clipboard. The real panes have none here
-        /// (SessionCopy answers "" as before), which is what lets a test prove the two verbs read two
-        /// different surfaces.</summary>
-        public readonly Dictionary<string, string> Selections = new();
+        /// <summary>The selection each SURFACE holds, keyed by the surface's id — a cover's id or a
+        /// real pane's (<see cref="PaneIds"/>) — as the app's lives on its Pane and is read by
+        /// SelectionText(pane). Written by <c>selection all</c> whenever the surface has a grid — the
+        /// app's SelectAll decides by geometry, not content, so a blank pane holds its blank rows (the
+        /// whole grid as SelectionText renders it: every history and screen row, trailing spaces
+        /// dropped, CRLF between rows, so an 80x24 blank pane is 46 chars of CRLF) — read by
+        /// <c>session copy</c> (a real pane's, or the active surface's) and <c>session overlay copy</c>
+        /// (a cover's), dropped by <c>selection clear</c> and by <c>selection copy</c> (the app's
+        /// CopySelection(clear: true), whether or not it had a character to copy), kept by
+        /// <c>selection finalize</c>. Never the clipboard. A cover
+        /// and the pane under it are two keys, which is what lets a test prove <c>session copy</c> and
+        /// <c>overlay copy</c> read two different surfaces.</summary>
+        public readonly Dictionary<string, (string Text, bool Alt)> Selections = new();
         /// <summary>A scratch cover over this session, id "&lt;session id&gt;:scratch:&lt;n&gt;" as the app
         /// spells it (Program.Sessions.cs). Returns the pane id.</summary>
         public string AddCoverPane()
@@ -165,6 +173,9 @@ internal sealed class FakeSessionHost : ISessionHost
     /// <summary>The app's _sidebarWShown: the width the sidebar has when visible, kept while hidden.</summary>
     internal int SidebarW = SidebarWidths.Default;
     internal readonly Dictionary<string, string> Config = new();
+    /// <summary>The app's TerminalConfig.CopyOnSelect, default false as the product's: <c>selection
+    /// finalize</c> copies only when it is on, and says so either way.</summary>
+    internal bool CopyOnSelect;
     /// <summary>Stand-in for the app's process query failing or timing out: restore.capture must then
     /// refuse (nothing written) rather than report "nothing running" for every pane.</summary>
     internal bool CaptureFails;
@@ -590,23 +601,136 @@ internal sealed class FakeSessionHost : ISessionHost
     public string ConfigGet(string key) => Config.TryGetValue(key, out var v) ? v : "";
     public string ConfigList() => string.Join("\n", Config.Select(kv => $"{kv.Key} = {kv.Value}"));
     public string SettingsOpen() => "opened";
-    public string SessionCopy(string? target) => "";   // the pane underneath: no selection here, ever — `overlay copy` reads the cover's (P5)
-    // `selection all` on a COVER pane selects its whole buffer (what the app's SelectAll does on the
-    // surface the target resolves to), so `session overlay copy` has something to read; on a real pane
-    // the fake keeps no selection (as before). SelectionClear drops a cover's selection.
+    // The selection verbs, session.copy and session.paste act on the SURFACE a target resolves to
+    // (Surface: the app's PaneForTarget) and on that surface's entry in Sess.Selections, with the
+    // app's replies. A target that resolves to no surface is the app's refusal on the five
+    // (ISessionHost.SelectionAll), so a test against the fake asserts the app's ok:false; session.copy
+    // never sees one — the server refuses it with the read verbs (Resolve), before this is called.
+    private const string NoPane = ISessionHost.RefusePrefix + SessionContexts.NoSession;
+    public string SessionCopy(string? target)
+        => Surface(target) is { } sf ? LiveSel(sf) ?? "" : "";
+    /// <summary>The surface's selection if it is still live, else null and the entry is gone. The one
+    /// liveness rule modelled is the app's first (ReconcileSel, Program.Input.cs:690): a selection is
+    /// an index into ONE buffer, so the screen switching under it — main to alt or back — drops it,
+    /// and <c>session copy</c> answers "" and <c>selection copy</c> "no selection", as the app does.
+    /// The check is LAZY: it runs on a read (the four callers), where the app runs it on every use
+    /// AND on every paint of a visible pane (Program.Render.cs:420 via HasLiveSel). So a
+    /// main→alt→main round trip with NO read while the alt screen is up keeps the entry here and
+    /// drops it in the app (for a pane the app paints — an active session's); a fake test that
+    /// switches screens must read while it is switched, as SelectionAll_ThenTheScreenSwitches does.
+    /// Also NOT modelled: a write moving the text (the app's selection follows it or stays on its
+    /// cells; the stored text is the snapshot SelectAll took) — a fake test re-issues
+    /// <c>selection all</c> after a write.</summary>
+    private static string? LiveSel((Sess s, string id, ISession pane) sf)
+    {
+        if (!sf.s.Selections.TryGetValue(sf.id, out var sel)) return null;
+        bool alt; lock (sf.pane.SyncRoot) alt = sf.pane.Emulator.IsAltScreen;
+        if (alt == sel.Alt) return sel.Text;
+        sf.s.Selections.Remove(sf.id); return null;
+    }
     public string SelectionAll(string? target)
     {
-        if (CoverTarget(target) is { } cover) { cover.s.Selections[cover.id] = SurfaceText.Dump(cover.pane, new OverlayTextArgs(All: true, Lines: 0)); return "selected"; }
-        return FindSes(target) is not null ? "selected" : "no session";
+        if (Surface(target) is not { } sf) return NoPane;
+        // The app's SelectAll: HasSel = (hist + rows) > 0 && cols > 0 — geometry, never content, so a
+        // blank pane is "selected all" and holds its blank rows. "empty" is a surface with no grid,
+        // which a fake pane (80x24 from birth) never is; it is kept for the shape, not reached.
+        var (text, alt) = WholeGrid(sf.pane);
+        if (text is null) return "empty";
+        sf.s.Selections[sf.id] = (text, alt); return "selected all";
     }
-    public string SelectionCopy(string? target) => "";
-    public string SelectionClear(string? target) { if (CoverTarget(target) is { } cover) cover.s.Selections.Remove(cover.id); return "cleared"; }
+    /// <summary>What the app's SelectionText renders for SelectAll's range, built from the cells the
+    /// way it builds them: every history row and then the screen — or the alt screen ALONE while it is
+    /// active, the parity programme's decision 2 (ClampSel pins the range to <c>hist</c> there; the
+    /// history is the main screen's) — a wide glyph's trailing spacer (Width 0) skipped, a rune above
+    /// the BMP as its surrogate pair, each row's trailing SPACES dropped (only U+0020: a trailing NBSP
+    /// or U+3000 stays, which is why this is not DumpRow's TrimEnd()), CRLF between rows and nothing
+    /// after the last — NOT SurfaceText.Dump, which is LF-joined with trailing blank rows trimmed (a
+    /// multi-row count in <c>copied N chars</c> would differ). Null text for a range with no cells.
+    /// The screen it was taken on comes back with it (the app's SelAlt stamp) — LiveSel's key.</summary>
+    private static (string? Text, bool Alt) WholeGrid(ISession pane)
+    {
+        var sb = new StringBuilder();
+        bool alt;
+        lock (pane.SyncRoot)
+        {
+            var em = pane.Emulator;
+            int rows = em.Screen.Rows, cols = em.Screen.Cols, hist = em.HistoryCount;
+            alt = em.IsAltScreen;
+            int first = alt ? hist : 0, last = hist + rows - 1;
+            if (last < first || cols <= 0) return (null, alt);
+            var row = new StringBuilder();
+            for (int abs = first; abs <= last; abs++)
+            {
+                if (abs > first) sb.Append("\r\n");
+                row.Clear();
+                for (int c = 0; c < cols; c++)
+                {
+                    Cell cell = abs < hist ? em.GetHistoryCell(abs, c) : em.Screen[abs - hist, c];
+                    if (cell.Width == 0) continue;
+                    if (cell.Rune > 0xFFFF) row.Append(char.ConvertFromUtf32(cell.Rune));
+                    else row.Append(cell.Rune == '\0' ? ' ' : (char)cell.Rune);
+                }
+                sb.Append(row.ToString().TrimEnd(' '));
+            }
+        }
+        return (sb.ToString(), alt);
+    }
+    public string SelectionCopy(string? target)
+    {
+        if (Surface(target) is not { } sf) return NoPane;
+        if (LiveSel(sf) is not { } sel) return "no selection";
+        sf.s.Selections.Remove(sf.id);
+        // The app's CopySelection: the clipboard is set only when the text has a copyable character,
+        // the selection is cleared either way; N counts UTF-16 units, as string.Length does.
+        return HasCopyable(sel) ? $"copied {sel.Length} chars" : "nothing to copy";
+    }
+    public string SelectionClear(string? target)
+    {
+        if (Surface(target) is not { } sf) return NoPane;
+        sf.s.Selections.Remove(sf.id); return "cleared";
+    }
+    // The app's three arms in its order: copy-on-select off answers before the selection is looked at
+    // (FinalizeSelection short-circuits on the flag), so a default-configured host never says
+    // "(copied)" or "(empty)"; a test that wants those arms sets CopyOnSelect first. "(copied)" is
+    // CopySelection(clear: false) succeeding — the same whitespace rule as `selection copy`, the
+    // selection kept — so a blank grid's selection finalizes "(empty)" and survives.
+    public string SelectionFinalize(string? target)
+        => Surface(target) is not { } sf ? NoPane
+         : !CopyOnSelect ? "finalized (copy-on-select off)"
+         : LiveSel(sf) is { } sel && HasCopyable(sel) ? "finalized (copied)" : "finalized (empty)";
+    /// <summary>The app's CopySelection rule: a character other than CR, LF or space (IndexOfAnyExcept).</summary>
+    private static bool HasCopyable(string sel) => sel.AsSpan().IndexOfAnyExcept('\r', '\n', ' ') >= 0;
+    // The app's SessionPaste, in order: no pane → refused; the surface's session read-only → refused
+    // before any clipboard is looked at; the surface's process exited → refused likewise (the fake's
+    // panes are never started, so HasExited stays false here — win32-control.ps1 proves that arm
+    // live); then the payload rule (SessionPastes.Payload) with a clipboard that gives nothing — the
+    // fake has none, so an omitted text is "nothing to paste". The fake writes nothing, so the app's
+    // `paste failed` arm has no fake.
+    public string SessionPaste(string? target, string? text)
+        => Surface(target) is not { } sf ? NoPane
+         : sf.s.ReadOnly ? ISessionHost.RefusePrefix + SessionPastes.ReadOnlyPane
+         : sf.pane.HasExited ? ISessionHost.RefusePrefix + SessionPastes.ExitedPane
+         : SessionPastes.Reply(SessionPastes.Payload(text, () => ""));
+    /// <summary>The app's PaneForTarget, with the surface's id: null / "" / "active" is the active
+    /// session's focused pane — or the overlay term open over it, as ActiveSurface says — then a real
+    /// pane by FindPane, then a cover by id or prefix (FindPaneBy's tail, after the real panes; an
+    /// empty prefix never reaches it, so "" cannot match every cover).</summary>
+    private (Sess s, string id, ISession pane)? Surface(string? target)
+    {
+        if (string.IsNullOrEmpty(target) || target == "active")
+        {
+            if (ActiveSess is not { } a || a.Panes.Count == 0) return null;
+            int i = Math.Clamp(a.FocusedPane, 0, a.Panes.Count - 1);
+            if (i < a.PaneIds.Count && a.PaneOverlays.TryGetValue(a.PaneIds[i], out var slot) && slot.Open) return (a, slot.Id!, slot.Term!);
+            return (a, a.PaneIds[i], a.Panes[i]);
+        }
+        if (FindPane(target) is { } hit) return (hit.s, hit.s.PaneIds[hit.pane], hit.s.Panes[hit.pane]);
+        return FindCover(target);
+    }
     /// <summary>A NAMED target that is a cover — null / "" / "active" never is (an empty prefix would
     /// match every cover), and a real pane's id resolves before a cover's, as in FindPaneBy.</summary>
     private (Sess s, string id, ISession pane)? CoverTarget(string? target)
         => string.IsNullOrEmpty(target) || target == "active" || FindPane(target) is not null ? null : FindCover(target);
-    public string SelectionFinalize(string? target) => "";
-    public string SessionPaste(string? target, string? text) => FindSes(target) is not null ? "pasted" : "no session";
     public string SessionSearch(string? target, string? query, string? action) => "no matches";
     public bool SessionScratch(string? target, string op) => FindSes(target) is not null;
     public void Quick(string op) { QuickVisible = op switch { "on" => true, "off" => false, "toggle" => !QuickVisible, _ => QuickVisible }; }
@@ -719,7 +843,7 @@ internal sealed class FakeSessionHost : ISessionHost
                 return slot.LastResult;
             case "copy":
                 if (!slot.Open) return ISessionHost.RefusePrefix + OverlayPanes.NoOverlayRefusal(index);
-                if (!s.Selections.TryGetValue(slot.Id!, out var sel) || sel.Length == 0) return ISessionHost.RefusePrefix + OverlayPanes.NoSelection;
+                if (LiveSel((s, slot.Id!, slot.Term!)) is not { Length: > 0 } sel) return ISessionHost.RefusePrefix + OverlayPanes.NoSelection;
                 return sel;
             case "text":
                 if (!slot.Open) return ISessionHost.RefusePrefix + OverlayPanes.NoOverlayRefusal(index);

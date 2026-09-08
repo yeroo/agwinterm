@@ -209,8 +209,9 @@ internal partial class Program
         return s.ActivePane.StartCwd;
     }
 
-    /// <summary>The path shown in the title bar for a session: live OSC 7 cwd if the shell reports it,
-    /// else the pane's launch dir, else the process cwd — so a real path always shows, out of the box.</summary>
+    /// <summary>The path used as a session's title-bar label when no custom name or program title
+    /// takes precedence (<see cref="SessionDisplayName"/>): live OSC 7 cwd if the shell reports it,
+    /// else the pane's launch dir, else the process cwd — so the fallback is a real path, out of the box.</summary>
     private static string TitleCwd(Ses s)
     {
         string live = SafeCwd(s);

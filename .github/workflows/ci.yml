@@ -72,6 +72,21 @@ jobs:
         timeout-minutes: 15
         run: ./tests/conformance/conformance.ps1 -Strict
 
+      # The clipboard guard the integration suite writes the runner's clipboard through, against a
+      # fake clipboard: every state it can leave the clipboard in, including the ones a real run
+      # cannot provoke (a partial put, a copy racing the sentinel).
+      - name: Clipboard guard (fake)
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./tests/integration/clipboard-guard.tests.ps1
+
+      # The process the integration suite pastes into (a sink the control API starts directly, no
+      # shell underneath) and the readiness test that gates the pastes, on synthetic pane text.
+      - name: Paste sink (synthetic)
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./tests/integration/paste-sink.tests.ps1
+
       - name: Win32 control-host integration
         shell: pwsh
         timeout-minutes: 10

@@ -301,12 +301,14 @@ public sealed class ControlServer : IDisposable
                             return Err($"sidebar: unknown op '{op}'. One of: show|hide|toggle|expand|collapse|state|width|mode tree|mode flagged|mode toggle (on/off = show/hide). Nothing changed.");
                         host.SidebarOp(op); return Ok("sidebar");
                     }
-                case "session.copy": return Ok(host.SessionCopy(target)); // selection text (host-side), "" if none
-                case "selection.all": return Ok(host.SelectionAll(target));
-                case "selection.copy": return Ok(host.SelectionCopy(target));      // -> Windows clipboard
-                case "selection.clear": return Ok(host.SelectionClear(target));
-                case "selection.finalize": return Ok(host.SelectionFinalize(target)); // copy-on-select path (testing)
-                case "session.paste": return Ok(host.SessionPaste(target, GetString(args, "text")));
+                // HostReply, not Ok: a target that resolves to no pane is a REFUSAL (ok:false,
+                // SessionContexts.NoSession). These five answered ok:true "no session" — a setup step
+                // that silently did not happen, the failure mode the lite contract steps pin (P6).
+                case "selection.all": return HostReply(host.SelectionAll(target));
+                case "selection.copy": return HostReply(host.SelectionCopy(target));      // -> Windows clipboard
+                case "selection.clear": return HostReply(host.SelectionClear(target));
+                case "selection.finalize": return HostReply(host.SelectionFinalize(target)); // copy-on-select path (testing)
+                case "session.paste": return HostReply(host.SessionPaste(target, GetString(args, "text")));
                 case "session.search": return Ok(host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
                 case "session.scratch": return host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
                 case "quick": host.Quick(GetString(args, "op") ?? "toggle"); return Ok("quick");
@@ -356,6 +358,11 @@ public sealed class ControlServer : IDisposable
                 "session.write" => HandleWrite(s, args),
                 "session.type" => HandleType(s, args),
                 "session.text" => HandleText(s, args),
+                // The selection's text, "" when the pane has none — and a target that resolves to no
+                // pane is the read verbs' refusal above (it answered ok:true "" — a missing pane and an
+                // empty selection were the same reply). Not HostReply: the reply IS the selection, and
+                // a selection may begin with anything, RefusePrefix included.
+                "session.copy" => Ok(host.SessionCopy(target)),
                 "session.status" => HandleStatus(s, args),
                 "session.metrics" => HandleSessionMetrics(host, s, target),
                 // surface.cursor — the caret COLUMN as a bare integer (agterm's shape, so a script
@@ -743,9 +750,11 @@ public sealed class ControlServer : IDisposable
     /// sequence for a TUI, a lone ^C - passes allow-control and gets exactly what it asked for.
     ///
     /// It does NOT get sent to session.write, whatever an earlier version of this message said:
-    /// session.write injects into the emulator and never reaches the shell (ISession.Inject), so as
-    /// a way to deliver bytes to a program it does not work at all. Pointing a caller at a verb that
-    /// silently cannot do the job is worse than the refusal it was meant to soften.</summary>
+    /// session.write injects into the emulator as terminal output — the payload's own bytes never
+    /// reach the child's input (ISession.Inject says what an injected payload can still do to the
+    /// child and the pane), so as a way to deliver bytes to a program it does not work at all.
+    /// Pointing a caller at a verb that silently cannot do the job is worse than the refusal it was
+    /// meant to soften.</summary>
     private static string HandleType(ISession s, JsonElement args)
     {
         string text = (GetString(args, "text") ?? "").Replace("\r\n", "\r").Replace('\n', '\r');

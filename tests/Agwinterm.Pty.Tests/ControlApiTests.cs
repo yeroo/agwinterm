@@ -365,4 +365,168 @@ public class ControlApiTests
         Assert.Contains("session not found", r.GetProperty("error").GetString());
         Assert.Equal(1, host.ActiveSess!.PaneCount);        // and nothing was split as a fallback
     }
+
+    // ---- selection verbs and paste: a target with no pane is a refusal, not an ok:true string ----
+
+    // The five verbs the P6 contract steps pin. Before this, ControlServer wrapped their host
+    // replies in Ok(), so a target that resolved to nothing came back {ok:true,result:"no session"}
+    // - a refusal every script reads as done. Same wording as session.rename / session.context.
+    // session.copy answered ok:true "" — a missing pane and an empty selection were one reply; it now
+    // refuses with the read verbs (session.text's "no session"), which is the one different wording.
+    [Theory]
+    [InlineData("selection.all", SessionContexts.NoSession)]
+    [InlineData("selection.copy", SessionContexts.NoSession)]
+    [InlineData("selection.clear", SessionContexts.NoSession)]
+    [InlineData("selection.finalize", SessionContexts.NoSession)]
+    [InlineData("session.paste", SessionContexts.NoSession)]
+    [InlineData("session.copy", "no session")]
+    public void SelectionVerbs_CopyAndPaste_NoPaneForTarget_IsRefused(string verb, string error)
+    {
+        var (server, host) = New();
+        string active = host.ActiveSess!.Id;
+        Write(server, active, "left alone\r\n");
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: active)));   // a selection that must SURVIVE the refusal
+        var r = Dispatch(server, verb, verb == "session.paste" ? new { text = "x" } : null, target: "no-such-session-id");
+        Assert.False(Ok(r));
+        Assert.Equal(error, r.GetProperty("error").GetString());
+        Assert.False(r.TryGetProperty("result", out _));
+        Assert.Contains("left alone", Result(Dispatch(server, "session.copy", target: active)));   // nothing changed anywhere
+    }
+
+    // Round 8 of #256: session.paste reports what happened. A read-only pane is a REFUSAL (ok:false,
+    // "pane is read-only"), made before any clipboard is read — the interactive paste shows a toast,
+    // a script was told `pasted` for text that was dropped; an empty text with nothing on the
+    // clipboard is ok:true "nothing to paste", never `pasted`. The fake has no clipboard, so its
+    // omitted-text arm IS the empty clipboard; the payload rule itself is pinned in SessionPastesTests.
+    [Fact]
+    public void SessionPaste_ReadOnlyPane_IsRefused_AndAnEmptyPayload_SaysNothingToPaste()
+    {
+        var (server, host) = New();
+        string active = host.ActiveSess!.Id;
+        Assert.Equal("on", Result(Dispatch(server, "session.readonly", new { op = "on" }, target: active)));
+        var refused = Dispatch(server, "session.paste", new { text = "dropped" }, target: active);
+        Assert.False(Ok(refused));
+        Assert.Equal(SessionPastes.ReadOnlyPane, refused.GetProperty("error").GetString());
+        Assert.False(refused.TryGetProperty("result", out _));
+        Assert.Equal("off", Result(Dispatch(server, "session.readonly", new { op = "off" }, target: active)));
+        Assert.Equal(SessionPastes.Pasted, Result(Dispatch(server, "session.paste", new { text = "dropped" }, target: active)));
+        var nothing = Dispatch(server, "session.paste", new { text = "" }, target: active);
+        Assert.True(Ok(nothing));
+        Assert.Equal(SessionPastes.Nothing, Result(nothing));
+        Assert.Equal(SessionPastes.Nothing, Result(Dispatch(server, "session.paste", target: active)));   // no text at all
+    }
+
+    // The replies on a pane that HAS text but no selection yet (`selection all` makes one), on the
+    // active session's id, with the product's defaults (copy-on-select OFF, so finalize says so and
+    // never looks at the selection) — and session.copy reads back what `selection all` made, then
+    // what `selection copy` (clears) and `selection finalize` (keeps) left of it.
+    [Theory]
+    [InlineData("selection.all", "selected all")]
+    [InlineData("selection.copy", "no selection")]
+    [InlineData("selection.clear", "cleared")]
+    [InlineData("selection.finalize", "finalized (copy-on-select off)")]
+    [InlineData("session.paste", "pasted")]
+    [InlineData("session.copy", "")]
+    public void SelectionVerbs_CopyAndPaste_OnTheActiveSession_AnswerOk(string verb, string reply)
+    {
+        var (server, host) = New();
+        Write(server, host.ActiveSess!.Id, "some text\r\n");
+        var r = Dispatch(server, verb, verb == "session.paste" ? new { text = "x" } : null, target: host.ActiveSess!.Id);
+        Assert.True(Ok(r));
+        Assert.Equal(reply, Result(r));
+    }
+
+    [Fact]
+    public void SelectionAll_IsReadBackBySessionCopy_CopyClearsIt_FinalizeKeepsIt()
+    {
+        var (server, host) = New();
+        string id = host.ActiveSess!.Id;
+        // A blank 80x24 pane: SelectAll decides by geometry, so it IS a selection — 24 blank rows,
+        // which SelectionText renders as 23 CRLFs and nothing else — and `selection copy` has
+        // nothing in it worth the clipboard (CopySelection's whitespace arm) but clears it anyway.
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        string blank = string.Concat(Enumerable.Repeat("\r\n", 23));
+        Assert.Equal(blank, Result(Dispatch(server, "session.copy", target: id)));
+        host.CopyOnSelect = true;                                                              // the copy is declined, the selection kept
+        Assert.Equal("finalized (empty)", Result(Dispatch(server, "selection.finalize", target: id)));
+        Assert.Equal(blank, Result(Dispatch(server, "session.copy", target: id)));
+        host.CopyOnSelect = false;
+        Assert.Equal("nothing to copy", Result(Dispatch(server, "selection.copy", target: id)));
+        Assert.Equal("", Result(Dispatch(server, "session.copy", target: id)));
+        Assert.Equal("no selection", Result(Dispatch(server, "selection.copy", target: id)));
+        Write(server, id, "read me back\r\n");
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        string sel = Result(Dispatch(server, "session.copy", target: id));
+        Assert.StartsWith("read me back\r\n", sel);                                          // CRLF rows, as SelectionText joins them
+        // finalize keeps the selection on every arm: off (the default) never looks at it, on copies it.
+        Assert.Equal("finalized (copy-on-select off)", Result(Dispatch(server, "selection.finalize", target: id)));
+        Assert.Equal(sel, Result(Dispatch(server, "session.copy", target: id)));
+        host.CopyOnSelect = true;
+        Assert.Equal("finalized (copied)", Result(Dispatch(server, "selection.finalize", target: id)));
+        Assert.Equal(sel, Result(Dispatch(server, "session.copy", target: id)));
+        Assert.Equal($"copied {sel.Length} chars", Result(Dispatch(server, "selection.copy", target: id)));
+        Assert.Equal("", Result(Dispatch(server, "session.copy", target: id)));             // copy clears it (CopySelection(clear: true))
+        Assert.Equal("no selection", Result(Dispatch(server, "selection.copy", target: id)));
+        Assert.Equal("finalized (empty)", Result(Dispatch(server, "selection.finalize", target: id)));
+    }
+
+    // Decision 2 of the parity programme: on the alt screen `selection all` is the alt screen alone -
+    // the history is the main screen's and stays reachable underneath (HistoryCount does not change
+    // when the alt buffer is active), so a fake that walked it would hand back text neither product
+    // does, and say `copied` where both say `nothing to copy`.
+    [Fact]
+    public void SelectionAll_OnTheAltScreen_IsTheAltScreenAlone()
+    {
+        var (server, host) = New();
+        string id = host.ActiveSess!.Id;
+        Write(server, id, "in history\r\n" + string.Concat(Enumerable.Repeat("filler\r\n", 30)));   // 24 rows: the first line scrolls into history
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        Assert.StartsWith("in history\r\n", Result(Dispatch(server, "session.copy", target: id)));      // main screen: history first
+        Write(server, id, "\u001b[?1049h");                                                              // enter the alt screen (blank)
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        Assert.Equal(string.Concat(Enumerable.Repeat("\r\n", 23)), Result(Dispatch(server, "session.copy", target: id)));
+        Assert.Equal("nothing to copy", Result(Dispatch(server, "selection.copy", target: id)));
+        Write(server, id, "\u001b[?1049l");                                                              // back: the history is there again
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        Assert.StartsWith("in history\r\n", Result(Dispatch(server, "session.copy", target: id)));
+    }
+
+    // The app drops a selection when the screen switches under it (ReconcileSel's first guard: an
+    // index into one buffer names unrelated text in the other) — session copy answers "" and
+    // selection copy answers "no selection" from then on, and coming BACK does not revive it. A fake that kept its
+    // snapshot would hand the main screen's text out from under a full-screen TUI.
+    [Fact]
+    public void SelectionAll_ThenTheScreenSwitches_DropsTheSelection()
+    {
+        var (server, host) = New();
+        string id = host.ActiveSess!.Id;
+        Write(server, id, "main text");
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        Assert.StartsWith("main text\r\n", Result(Dispatch(server, "session.copy", target: id)));
+        Write(server, id, "\u001b[?1049h");                                                              // the TUI enters the alt screen
+        Assert.Equal("", Result(Dispatch(server, "session.copy", target: id)));
+        Assert.Equal("no selection", Result(Dispatch(server, "selection.copy", target: id)));
+        Write(server, id, "\u001b[?1049l");                                                              // and leaves it: still gone
+        Assert.Equal("", Result(Dispatch(server, "session.copy", target: id)));
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));            // a new one works
+        Assert.StartsWith("main text\r\n", Result(Dispatch(server, "session.copy", target: id)));
+    }
+
+    // SelectionText trims only SPACES from a row's end: a no-break space stays, so it counts in
+    // `copied N chars` and, alone on a row, is something to copy - the whitespace arm draws its line
+    // at CR, LF and U+0020, and a fake that trimmed every whitespace would answer it backwards.
+    [Fact]
+    public void SelectionAll_KeepsATrailingNoBreakSpace()
+    {
+        var (server, host) = New();
+        string id = host.ActiveSess!.Id;
+        Write(server, id, "\u00a0\u00a0");
+        Assert.Equal("selected all", Result(Dispatch(server, "selection.all", target: id)));
+        string sel = Result(Dispatch(server, "session.copy", target: id));
+        Assert.StartsWith("\u00a0\u00a0\r\n", sel);
+        Assert.Equal($"copied {sel.Length} chars", Result(Dispatch(server, "selection.copy", target: id)));
+    }
+
+    private static void Write(ControlServer server, string target, string text)
+        => Assert.True(Ok(Dispatch(server, "session.write", new { text }, target: target)));
 }

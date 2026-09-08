@@ -12,7 +12,7 @@
     "Steps run in order and share state — a session must exist before anything can select it — and",
     "{placeholders} carry captured values forward.",
     "",
-    "The full app implements a superset (41 verbs here; it also has search, output, readonly, bind,",
+    "The full app implements a superset (50 distinct verbs here; it also has search, readonly, bind,",
     "background, theme.*, config.*, install.*, ...). Those are deliberately NOT in this file: this is",
     "the shared floor both products stand on, not an inventory of either one."
   ],
@@ -225,6 +225,61 @@
       ],
       "result": "string",
       "note": "the selection's text, and an empty string when there is no selection — not an error."
+    },
+    {
+      "verb": "selection.all",
+      "args": [
+        "selection",
+        "all",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string",
+      "note": "P6: MAKE a selection through the API - the pane's whole buffer - and say what happened (`selected all` for any pane with a grid (geometry, not content: a blank pane selects its blank rows), `empty` only for a surface with no grid). Until P6 lite could read a selection (session.copy) but not make, clear or finalise one, so a QA step that called this did nothing and returned an error most callers ignore."
+    },
+    {
+      "verb": "session.copy",
+      "args": [
+        "session",
+        "copy",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string",
+      "note": "P6: the selection `selection all` just made, read back through the existing verb without a clipboard write. Shape only: the value is the shell's screen and is not compared, so this does not prove a selection was MADE (a no-op `selected all` followed by an empty copy passes) - that proof is each product's honesty suite (agwinterm win32-control.ps1, lite's UI suite), on a fixture whose content is known."
+    },
+    {
+      "verb": "selection.clear",
+      "args": [
+        "selection",
+        "clear",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string",
+      "note": "P6: drops the selection and answers `cleared` - also when there was none to drop (clearing nothing is the state the caller asked for, not an error)."
+    },
+    {
+      "verb": "selection.copy",
+      "args": [
+        "selection",
+        "copy",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string",
+      "note": "P6: with no selection this answers `no selection` and writes NOTHING to the clipboard - the shape check runs on that arm on purpose: the Windows clipboard is shared with the user and every other sandbox on the machine, so the contract never writes it. The copy itself (`copied N chars`) is each product's own honesty suite's."
+    },
+    {
+      "verb": "selection.finalize",
+      "args": [
+        "selection",
+        "finalize",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "string",
+      "note": "P6: the mouse-up path (copy-on-select) run from a script; with no selection it answers `finalized (empty)` (the full app: `finalized (copy-on-select off)` when that setting is off - lite has no off switch) and touches no clipboard either."
     },
     {
       "verb": "session.type",
@@ -830,6 +885,34 @@
         "--target",
         "{alpha}"
       ]
+    },
+    {
+      "args": [
+        "selection",
+        "all",
+        "--target",
+        "no-such-session-id"
+      ],
+      "note": "P6: a selection verb aimed at a target that resolves to no pane is REFUSED (ok:false, `session not found`), and no selection changes anywhere. The full app used to answer ok:true with the string `no session` on all four selection verbs and on session.paste - a refusal a script reads as success."
+    },
+    {
+      "args": [
+        "session",
+        "copy",
+        "--target",
+        "no-such-session-id"
+      ],
+      "note": "P6: session.copy on a target that resolves to no pane is REFUSED too - it answered ok:true with an empty string, so a script could not tell a missing pane from an empty selection. Its refusal is the read verbs' (session.text's), not the selection verbs' wording; the check is ok:false either way."
+    },
+    {
+      "args": [
+        "session",
+        "paste",
+        "pasted-text",
+        "--target",
+        "no-such-session-id"
+      ],
+      "note": "P6: same for session.paste - a paste that silently went nowhere is the worst of the silent-success class (the text was meant for a shell)."
     }
   ],
   "$orderComment": [

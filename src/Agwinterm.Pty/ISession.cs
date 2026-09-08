@@ -73,7 +73,39 @@ public interface ISession : IDisposable
     event Action<int>? Exited;
 
     // ---- I/O ----
-    /// <summary>Feed bytes into the EMULATOR only (display injection; never reaches the shell).</summary>
+    /// <summary>Feed bytes into the emulator as terminal OUTPUT (display injection). The payload's
+    /// own bytes are not typed into the child — this is not a way to deliver bytes to a program —
+    /// but the emulator runs them through the same parser as the child's output (the pump's output
+    /// dump, raw-output forward and exit settle count see the child's bytes alone; the parser's
+    /// callbacks, the VT log included, run for the payload too), so the rule is: a payload can do
+    /// whatever the child's output can. That comes in four kinds, illustrated here, not enumerated.
+    /// (1) A terminal query the emulator implements (<c>CSI ? u</c>, <c>DECRQM</c> for
+    /// <c>?1016</c>/<c>?2026</c>, <c>OSC 11 ?</c> …) is answered on the child's input, and
+    /// answering counts as pane activity — a Blocked/Completed status clears. (2) A mode it sets
+    /// changes what the pane sends or paints later, until something clears it again: focus, mouse,
+    /// bracketed-paste and key-encoding modes change the child's input; synchronized output
+    /// (<c>?2026</c>) suppresses the redraw request the output callback itself makes (a timer
+    /// repaint, a status change — which answering a query can itself cause, see (1) — or a host
+    /// action's, a notification or a visual bell, can still show the partial frame). (3) The screen
+    /// state the pane reads back moves. For the selection pin of this contract that is,
+    /// exhaustively, the alt-screen flag (any alt-screen mode: <c>?47</c>, <c>?1047</c>,
+    /// <c>?1049</c>), the scroll generation and history count (they move only when a line is pushed
+    /// off the top of the main screen into scrollback — scrollback on, no partial region, and
+    /// something scrolls the screen up: text that wraps or ends a line, a Sixel image placed at the
+    /// bottom, <c>SU</c>; a downward scroll or an <c>IL</c>/<c>DL</c> edit moves neither) and the
+    /// scroll region (<c>DECSTBM</c>: full screen, or partial — a reserved status line); what the
+    /// pin does with each — clear, renumber or hold — is <c>StampSel</c>/<c>ReconcileSel</c>'s own
+    /// comment in Program.Input.cs, not restated here; otherwise, for example, the title
+    /// (<c>OSC 0</c>/<c>2</c>), the reported cwd (<c>OSC 7</c>, <c>OSC 9;9</c>: the title bar's
+    /// fallback label when no custom name or program title takes precedence, used by a scratch
+    /// pane, an overlay, a duplicate and <c>new-session-directory = current</c>; a split keeps its
+    /// launch directory), the per-pane background (<c>OSC 11</c>/<c>111</c>) and the shell marks
+    /// <c>session output</c> reads (<c>OSC 133</c>). (4) Every host action (<c>IHostActions</c>)
+    /// fires as if the child had asked: a clipboard-write request (<c>OSC 52</c>, subject to host
+    /// policy), the bell, a notification (<c>OSC 9</c>, <c>OSC 777</c> — its control-API event
+    /// always, badge and sound per focus and config), taskbar progress (<c>OSC 9;4</c>), a VT-log
+    /// line for an unhandled sequence or a denied clipboard write. Read-only does not gate any of
+    /// it. This is the one statement of that; the other docs point here.</summary>
     void Inject(ReadOnlySpan<byte> bytes);
     /// <summary>Run a mutation against the emulator under <see cref="SyncRoot"/>.</summary>
     void MutateLocked(Action<ITerminalCore> mutate);

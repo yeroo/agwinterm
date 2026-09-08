@@ -203,7 +203,16 @@ public interface ISessionHost
     /// <summary>Broadcast-input toggle for the frontmost window: op = on|off|toggle|state. Returns "on"/"off".</summary>
     string BroadcastOp(string op);
 
-    /// <summary>Read-only toggle for a target pane: op = on|off|toggle|state. Returns "on"/"off".</summary>
+    /// <summary>Read-only toggle for a target pane: op = on|off|toggle|state. Returns "on"/"off".
+    /// What "on" blocks: keys typed at the pane and pastes into it — the interactive paste and
+    /// <see cref="SessionPaste"/>, which refuses. <c>session type</c> is NOT blocked (ControlServer
+    /// writes it to the child's input directly): a script that must not reach a read-only pane
+    /// checks <c>state</c> first; closing that gap is #257's. <c>session write</c> feeds terminal
+    /// OUTPUT into the emulator rather than typing its payload into the child; it is not blocked by
+    /// read-only either, and everything <see cref="ISession.Inject"/> says an injected payload can
+    /// still do (answer a query on the child's input, set a mode, move the screen state the pane
+    /// reads back, raise a host action) applies to a read-only pane — that doc is the one statement
+    /// of it.</summary>
     string ReadOnlyOp(string? target, string op);
 
     /// <summary>Plain text of the last completed command's output (FTCS/OSC 133 marks).</summary>
@@ -334,17 +343,35 @@ public interface ISessionHost
     /// <summary>Current text selection of the target session's active pane ("" if none).</summary>
     string SessionCopy(string? target);
 
-    /// <summary>Select the target pane's whole buffer (scrollback + live grid).</summary>
+    /// <summary>Select the target pane's whole buffer (scrollback + live grid). Like the three
+    /// selection verbs below and <see cref="SessionPaste"/>: a target that resolves to no pane is
+    /// <see cref="RefusePrefix"/> + <see cref="SessionContexts.NoSession"/> and nothing changes —
+    /// the server turns it into ok:false, never an ok:true string a script would read as done.</summary>
     string SelectionAll(string? target);
     /// <summary>Copy the target pane's current selection to the Windows clipboard. A live selection
     /// whose cells hold no text — a full-screen app repainted over them — copies nothing and leaves
-    /// the clipboard untouched, answering "nothing to copy".</summary>
+    /// the clipboard untouched, answering "nothing to copy". No pane: the refusal above.</summary>
     string SelectionCopy(string? target);
-    /// <summary>Clear the target pane's selection.</summary>
+    /// <summary>Clear the target pane's selection. No pane: the refusal above.</summary>
     string SelectionClear(string? target);
-    /// <summary>Run the selection-finalize path (honors copy-on-select) — for scripting/testing.</summary>
+    /// <summary>Run the selection-finalize path (honors copy-on-select) — for scripting/testing.
+    /// No pane: the refusal above.</summary>
     string SelectionFinalize(string? target);
-    /// <summary>Paste text (or the clipboard when text is null/empty) into the target pane, honoring bracketed paste.</summary>
+    /// <summary>Paste text (or the clipboard when text is null/empty) into the target pane, honoring
+    /// bracketed paste: <see cref="SessionPastes.Pasted"/> when the payload was handed to the pane's
+    /// input without a synchronous error (not proof that a program read it — see that constant),
+    /// <see cref="SessionPastes.Nothing"/> when there was none to send (empty text and a clipboard
+    /// that gave no text — empty, non-text, or unreadable; the reply does not say which). Refused,
+    /// with nothing sent and the clipboard unread: a pane that is read-only (<see cref="ReadOnlyOp"/>
+    /// on, the menu item or the <c>toggle_read_only</c> binding) with <see cref="RefusePrefix"/> +
+    /// <see cref="SessionPastes.ReadOnlyPane"/>; a pane whose process has exited (a single-pane
+    /// session keeps it on screen) with <see cref="SessionPastes.ExitedPane"/> — refused once the
+    /// exit has been OBSERVED (<see cref="ISession.HasExited"/>); the observation lags the exit by
+    /// a backend-specific amount, and a call before it may still be accepted (see that constant).
+    /// Refused AFTER the payload was picked (so the clipboard may have been read) and with delivery
+    /// unknown: a write that threw, with <see cref="SessionPastes.Failed"/> — a prefix may have
+    /// reached the pane, so a caller must not retry blindly. No pane: the refusal above,
+    /// first.</summary>
     string SessionPaste(string? target, string? text);
 
     /// <summary>Open/drive the find bar over the active session; returns "N of M" / "no matches" / "closed".</summary>

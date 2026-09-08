@@ -158,7 +158,7 @@ public static class AgentSkill
         - `agwintermctl selection all [--target <id>]`           — select the whole buffer (scrollback + live grid)
         - `agwintermctl selection copy [--target <id>]`          — copy the current selection to the Windows clipboard
         - `agwintermctl selection clear [--target <id>]`         — clear the selection
-        - `agwintermctl session paste "<text>" [--target <id>]`  — paste text into the pane (clipboard if text omitted; honors bracketed paste)
+        - `agwintermctl session paste "<text>" [--target <id>]`  — paste text into the pane (clipboard if text omitted; honors bracketed paste); replies `pasted` (handed to the pane's input, NOT proof a program read it — verify with `session text`), or `nothing to paste` when neither the text nor the clipboard gave any; refused (ok:false) on a read-only pane and on a pane whose process has exited (nothing sent, clipboard unread; the exit is observed a moment after it happens, so a paste right after a child dies can still reply `pasted`), and as `paste failed: <why>` when the write threw (the clipboard may have been read and part of the payload may have landed — do not retry blindly)
         - keys: Ctrl+C (copy selection) · Ctrl+V (paste) · Ctrl+Shift+A (select all) · double/triple-click = word/line · drag past the edge auto-scrolls
         - config `copy-on-select = true` auto-copies each finished selection (no Ctrl+C needed)
 
@@ -166,7 +166,9 @@ public static class AgentSkill
         - `agwintermctl session type "npm test" --target <id>`   — send keystrokes (newline = Enter). Control bytes are
           REFUSED, not stripped: a NUL would truncate your command while its Return still fired. Add `--allow-control`
           when you really mean one (an escape sequence for a TUI, a lone ^C). `session write` is NOT the way — it
-          injects into the display and never reaches the shell
+          injects into the display, not into the program's input; but a terminal query in the payload is answered
+          onto the program's input, and a mode it sets (mouse, focus, bracketed paste, key encoding) changes what
+          the program receives from then on
         - `agwintermctl session type --stdin --target <id>`      — the text is STDIN, as bytes. This is how text with
           quotes, newlines, runs of spaces or a leading `--` is sent: positionals are re-joined with one space and
           the option parser eats a leading `--`, both silently. Pipe a here-string (`@"..."@ | agwintermctl session
