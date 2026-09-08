@@ -75,19 +75,21 @@ public interface ISession : IDisposable
     // ---- I/O ----
     /// <summary>Feed bytes into the emulator as terminal OUTPUT (display injection). The payload's
     /// own bytes are not typed into the child — this is not a way to deliver bytes to a program —
-    /// but the emulator parses them exactly as it parses the child's output, so a payload can do
-    /// everything the child's output can: a terminal query in it (<c>CSI ? u</c>, <c>DECRQM</c>,
-    /// <c>OSC 11 ?</c>) is answered on the child's input; a mode it sets (focus reporting, mouse
-    /// tracking, bracketed paste, the key-encoding modes) changes what the pane's later input sends
-    /// to the child until something clears it again; the screen state the pane reads back moves
-    /// with it — the alt screen (<c>?1049</c>, which the selection pin keys on), the per-pane
-    /// background (<c>OSC 11</c>/<c>111</c>) and the shell marks that prompt navigation and
-    /// <c>session output</c> read (<c>OSC 133</c>); and every host action the parser raises fires
-    /// as if the child had asked — a clipboard-write request (<c>OSC 52</c>, subject to host policy), the
-    /// bell (<c>BEL</c>), a notification with its badge, sound and control-API event (<c>OSC 9</c>,
-    /// <c>OSC 777</c>), the taskbar progress state (<c>OSC 9;4</c>), the title (<c>OSC 0</c>/<c>2</c>)
-    /// and the cwd a new split inherits (<c>OSC 7</c>, <c>OSC 9;9</c>). Read-only does not gate any
-    /// of it. This is the one statement of that; the other docs point here.</summary>
+    /// but the emulator parses them with the same parser as the child's output (only the parser:
+    /// the output dump, the VT-log tap and the exit settle count see the child's bytes alone), so a
+    /// payload can do everything the child's output can: a terminal query in it (<c>CSI ? u</c>,
+    /// <c>DECRQM</c>, <c>OSC 11 ?</c>) is answered on the child's input; a mode it sets (focus
+    /// reporting, mouse tracking, bracketed paste, the key-encoding modes) changes what the pane's
+    /// later input sends to the child until something clears it again; the screen state the pane
+    /// reads back moves with it — the alt screen (<c>?1049</c>, which the selection pin keys on),
+    /// the per-pane background (<c>OSC 11</c>/<c>111</c>) and the shell marks that prompt
+    /// navigation and <c>session output</c> read (<c>OSC 133</c>); and every host action the parser
+    /// raises fires as if the child had asked — a clipboard-write request (<c>OSC 52</c>, subject
+    /// to host policy), the bell (<c>BEL</c>), a notification with its badge, sound and control-API
+    /// event (<c>OSC 9</c>, <c>OSC 777</c>), the taskbar progress state (<c>OSC 9;4</c>), the title
+    /// (<c>OSC 0</c>/<c>2</c>) and the cwd a new split inherits (<c>OSC 7</c>, <c>OSC 9;9</c>).
+    /// Read-only does not gate any of it. This is the one statement of that; the other docs point
+    /// here.</summary>
     void Inject(ReadOnlySpan<byte> bytes);
     /// <summary>Run a mutation against the emulator under <see cref="SyncRoot"/>.</summary>
     void MutateLocked(Action<ITerminalCore> mutate);
