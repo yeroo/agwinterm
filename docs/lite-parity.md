@@ -414,7 +414,10 @@ agliteterm [#57](https://github.com/yeroo/agliteterm/pull/57) adds four verbs an
   receive no replay. K2 losslessly stores captures containing tabs/newlines using the R/B codec.
   Older builds ignore K2 and drop those exceptional captures on their next save.
 - OMP discovery reads local installed themes; it downloads/installs nothing and edits no shell
-  profile. Live initialization requires a writable PowerShell pane at an observed prompt. Replies
+  profile. Live initialization requires a fresh writable PowerShell pane at an observed prompt
+  with no prior input. Any input or adoption makes draft emptiness unproven, so later live changes
+  refuse; configuring future shells remains available. Broader live changes need shell-side
+  empty-buffer confirmation. Replies
   distinguish bytes written from shell success, and disclose persistence failures. Persisted
   themes affect eligible new implicit PowerShell setup, not adopted shells or explicit argv.
   Themes/tool output can execute shell code and must be trusted.
