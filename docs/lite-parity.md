@@ -48,12 +48,13 @@ turn cells into SGR-Pixels coordinates. Neither is a gap: lite has no consumer f
 README tells callers to capability-probe both. **Size:** large.
 
 ### Configuration and appearance
-`config.get` · `config.list` · `config.set` · `theme.list` · `theme.set` · `omp.list` · `omp.set` ·
-`font` · `settings.open` · `keymap.reload` · `profiles.list` · `profiles.reload`
+P10a-lite [#54](https://github.com/yeroo/agliteterm/pull/54) implements `config.get/list/set`,
+`theme.list/set`, `settings.open` and `keymap.reload`, plus configurable new-replica scrollback
+and copy-on-select. Lite uses validated, per-value HKCU persistence, not agwinterm.conf.
 
-lite keeps settings in the registry (`HKCU\Software\agliteterm`) with a Properties dialog, so this is
-not a straight port — but `config.get`/`set` over the API is what lets an agent set up a workspace
-without a human clicking. **Size:** medium as a group, small each.
+Remaining P10b work: `omp.list/set`, `font`, `profiles.list/reload`, and opt-in replay of captured
+commands. Theme names are lite's four UI modes, not the full app's terminal-theme catalog.
+P10 as a whole is not complete.
 
 ### Commands and installers
 `command.list` · `command.run` · `command.leader` · `install.cli` · `install.hooks` ·
@@ -274,8 +275,10 @@ products. What differs, each recorded in the P6-lite plan:
   `RefusePrefix + SessionContexts.NoSession`; `session.copy` refuses with the read verbs, as
   `session.text` does); the contract's three new refusals pin `ok:false` on both products. Not a
   difference any more.
-- **(b)** `selection finalize` never answers `finalized (copy-on-select off)`: lite's
-  release-copies rule has no off switch (a `CopyOnSelect` knob is P10's, the configuration surface).
+- **(b)** P10a closes the off-switch gap: `copy-on-select` defaults on; off suppresses mouse-release
+  and `selection finalize` writes, with the reply `finalized (copy-on-select off)`. Explicit copy
+  remains available. The historical P6 contract note is tracked separately in
+  [lite #55](https://github.com/yeroo/agliteterm/issues/55); its executable string-shape floor is unchanged.
 - **(c)** Before P7, `selection all` on any popup (overlay, quick or scratch — all three share `paintPopup`)
   was refused `the popup paints no selection`; agwinterm's covers take a selection. P7-lite paints
   one and lifts this.
@@ -314,7 +317,8 @@ itself (`copied N chars`), is each product's own honesty suite's, on a fixture w
 agliteterm [#50](https://github.com/yeroo/agliteterm/pull/50) merged on 2026-09-08 as `1e0903a`.
 Ctrl+Shift+M enters mark mode; arrows/Home/End extend it, Enter or Ctrl+C copies, and Escape cancels.
 Ctrl+Shift+A selects all. Both bindings can be cleared or rebound. Double/triple-click selects a
-word/line; release copies; dragging past a main-screen edge autoscrolls. Posted wheel messages work.
+word/line; release copies by default (P10a adds the off switch); dragging past a main-screen edge
+autoscrolls. Posted wheel messages work.
 Frame, split, pane-overlay and overlay/quick/scratch popup surfaces share the selection rules;
 alternate screens stay pinned to their own grid. Captured drags are cancelled on invalidation.
 
@@ -362,6 +366,34 @@ Unknown-operation refusals and binding-command case preservation are tracked in
 No new canonical contract steps are added by P9: the existing shared floor is unchanged. A later
 contract batch follows the remaining agwinterm honesty fixes, with the usual lite mirror update.
 
+### Mirrored: P10a-lite configuration
+
+agliteterm [#54](https://github.com/yeroo/agliteterm/pull/54), candidate `32f0d4a`, adds seven verbs
+and fourteen supported keys. Unknown or invalid settings refuse without mutation. Settings apply
+to the current instance and persist for later launches; other running instances retain their
+runtime state. UI toggles and Properties edits persist only their changed fields, preserving
+unrelated preferences saved by another instance.
+
+- Configuration work runs on the UI thread. Pending timed-out requests are cancelled; already
+  running timeouts report an unknown outcome and require read-back. Modal dialogs permit reads
+  but refuse mutation/reload and duplicate settings opens, protecting unsaved edits.
+- `theme` exposes auto/dark/light/classic. `settings.open` requests Properties without raising
+  the terminal. `keymap.reload` drops stale bindings, restores absent defaults and respects zero.
+- `scrollback-lines` defaults to 5000 and affects new local replicas, including adopted surfaces,
+  not existing buffers or the host cap. Zero disables history; positive caps retain the core's
+  512-row batched-eviction slack. Copy-on-select defaults on; explicit copy is independent of it.
+
+Local acceptance: 287 combined selection/driving/configuration checks, 118 driving-only and 99
+configuration-only checks, plus 142 pure configuration and 30 driving checks. Each interactive run
+released its suite token after verified process/clipboard/registry cleanup. One full Codex-only
+review and one narrow confirmation completed; the final two healthy reviewers found no shipping
+blockers. A subsequent test-only correction replaces a fixed positive replay wait with bounded
+exact-marker polling; all 118 driving checks passed again with verified cleanup. Runtime code is
+unchanged from the reviewed revision. Full Windows CI and delivery evidence are linked from the PR
+and [run 34225641992](https://github.com/yeroo/agliteterm/actions/runs/34225641992).
+No new canonical conformance steps are introduced. Font targeting, profiles, OMP and captured
+command replay remain P10b, not delivered features of P10a.
+
 ---
 
 ## Where agliteterm is AHEAD
@@ -396,7 +428,6 @@ and the list should grow as more turn up.
 
 | Feature | Notes |
 | --- | --- |
-| Configurable scrollback | lite does not call `agwcore_emu_set_scrollback`; the cap is the core default |
 | Images / graphics | see the `image.*` verbs above |
 | Dashboard, quick-terminal parity, multi-window | agwinterm has a window library; lite has one window plus popups |
 

@@ -223,14 +223,21 @@ The full Strict Windows CI suite passed, including the same 188 checks. Explicit
 restored shells, never adopted shells; captured commands do not replay. Differences and remaining
 find-bar/divider-drag work are recorded in `docs/lite-parity.md`.
 
-### P10 · lite · the configuration surface
-`config.get/list/set` · `theme.list/set` · `omp.list/set` · `font` · `settings.open` ·
-`keymap.reload` · `profiles.list/reload` · configurable scrollback (`agwcore_emu_set_scrollback`,
-which lite never calls, so its cap is the core default)
+### P10 · lite · the configuration surface — P10a complete, P10b open
 
-Not a straight port: lite keeps settings in `HKCU\Software\agliteterm` behind a Properties dialog.
-The real work of this plan is naming the keys once. `config.get/set` over the API is what lets an
-agent set up a workspace without a human clicking.
+P10a [lite #54](https://github.com/yeroo/agliteterm/pull/54) implements `config.get/list/set`,
+`theme.list/set`, `settings.open`, `keymap.reload`, configurable new-replica scrollback and
+copy-on-select. Fourteen keys share validation and canonical formatting. Registry setters and UI
+actions persist only changed fields, rather than stale multi-setting snapshots. Modal editing
+blocks mutations; menu and toolbar checks reflect API changes.
+
+The local combined suite passed 287 checks; the isolated driving/configuration modes passed
+118/99, plus 172 pure unit checks. The narrow Codex-only confirmation found no blockers from
+two healthy independent reviewers. Exact CI/delivery evidence and deferred metadata are in the PR.
+
+P10b remains: `omp.list/set`, `font`, `profiles.list/reload`, and opt-in captured-command replay.
+P10a does not change lite's fixed-strike/no-zoom font decision or claim those remaining features.
+Current behavior and product differences are recorded in `docs/lite-parity.md`.
 
 ### P11 · lite · commands, installers, agent integration
 `command.list/run/leader` · `install.cli/hooks/shell` · `app.update` · `claude.adopt/yolo/update`
