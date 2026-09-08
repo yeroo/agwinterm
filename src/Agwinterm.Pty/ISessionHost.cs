@@ -208,11 +208,10 @@ public interface ISessionHost
     /// <see cref="SessionPaste"/>, which refuses. <c>session type</c> is NOT blocked (ControlServer
     /// writes it to the child's input directly): a script that must not reach a read-only pane
     /// checks <c>state</c> first; closing that gap is #257's. <c>session write</c> feeds terminal
-    /// OUTPUT into the emulator (<see cref="ISession.Inject"/>) rather than typing its payload into
-    /// the child; it is not blocked by read-only either, and the emulator's normal side effects
-    /// still apply — a repaint, a terminal-query reply (<c>CSI ? u</c>, <c>DECRQM</c>,
-    /// <c>OSC 11 ?</c>) that the host answers on the child's input, and an <c>OSC 52</c> clipboard
-    /// write (behind the <c>clipboard-write</c> setting, like one from the child).</summary>
+    /// OUTPUT into the emulator rather than typing its payload into the child; it is not blocked by
+    /// read-only either, and everything <see cref="ISession.Inject"/> says an injected payload can
+    /// still do (answer a query on the child's input, set a mode, raise a host action) applies to a
+    /// read-only pane — that doc is the one statement of it.</summary>
     string ReadOnlyOp(string? target, string op);
 
     /// <summary>Plain text of the last completed command's output (FTCS/OSC 133 marks).</summary>

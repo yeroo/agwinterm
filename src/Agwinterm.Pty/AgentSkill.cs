@@ -166,7 +166,9 @@ public static class AgentSkill
         - `agwintermctl session type "npm test" --target <id>`   — send keystrokes (newline = Enter). Control bytes are
           REFUSED, not stripped: a NUL would truncate your command while its Return still fired. Add `--allow-control`
           when you really mean one (an escape sequence for a TUI, a lone ^C). `session write` is NOT the way — it
-          injects into the display, not into the program's input (the display may answer a terminal query in it)
+          injects into the display, not into the program's input; but a terminal query in the payload is answered
+          onto the program's input, and a mode it sets (mouse, focus, bracketed paste, key encoding) changes what
+          the program receives from then on
         - `agwintermctl session type --stdin --target <id>`      — the text is STDIN, as bytes. This is how text with
           quotes, newlines, runs of spaces or a leading `--` is sent: positionals are re-joined with one space and
           the option parser eats a leading `--`, both silently. Pipe a here-string (`@"..."@ | agwintermctl session
