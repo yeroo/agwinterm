@@ -6,7 +6,7 @@ plan, one branch, one PR — run with review steps disabled, then reviewed by re
 
 Each `P<n>` becomes its own plan file in this directory when it is its turn, and moves to
 `completed/` when it ships; expanding all of them up front would just produce stale plans. A batch
-without a **Shipped** line below has not started.
+without a status line below is backlog; **Ready** is not **Shipped**.
 
 ## The rules the split obeys
 
@@ -22,9 +22,13 @@ without a **Shipped** line below has not started.
   two merges. P8 below is therefore dissolved into those per-batch mirrors.
 - **A batch is a theme, not a size quota.** Items travel together when they share a test area or a
   format change, so one revmux round covers them coherently.
-- **Every batch exits the same way:** its own tests, the QA cases in `qa/` (both products have them),
-  the full suite green, then revmux — **two rounds minimum**; the second round is where criticals have
-  historically surfaced.
+- **Every batch exits the same way:** its own tests, applicable QA acceptance and the full suite
+  green, with independent review. Boris's 2026-09-08 stopping rule is one full review, batched
+  fixes and one narrow confirmation when needed. More rounds require a correctness, safety or
+  acceptance blocker, or a substantive new change; cosmetic findings do not hold a merge.
+  During Claude's rate-limit outage Codex leads, with Codex-only independent revmux reviewers.
+  Shared-desktop tests still require the suite token through proven cleanup; unsafe legacy
+  fixtures run only on disposable CI runners until hardened.
 - **A release follows every agwinterm batch that adds a verb.** agliteterm's CI proves the contract
   against the *released* `agwintermctl` (its `fetch-native.ps1` takes the `latest` release), so a lite
   mirror cannot go green until the verb it mirrors has shipped in a CLI. Only `*.*.9` / `*.*.18` /
@@ -90,7 +94,8 @@ additive keys only, no version field, every loaded value validated. Round-4 left
 (#227 / #228) remain, in `SessionOverlay`. Mirror: agliteterm P3-lite — **shipped** as agliteterm
 #28 (2026-09-05; plan `docs/plans/2026-09-05-p3-lite-mirror.md` there): `session.context` as a `C`
 line type after the `S` lines, `restore.capture` as a `K` line with an in-process Toolhelp32 + PEB
-query instead of the CIM one, `replayOnRestore` a constant `false` until P9 lands the replay, and a
+query instead of the CIM one, `replayOnRestore` a constant `false` for captured commands (P9's
+explicit pin/binding replay is separate), and a
 hidden pane refusing `session context` (the three divergences are in `docs/lite-parity.md`); its
 checks SKIP against the released `agwintermctl` until the release that carries #233 + #235 is tagged.
 
@@ -187,6 +192,13 @@ the posted `WM_MOUSEWHEEL` that never reaches lite's handler (harness finding, 0
 
 Same model as P6, different surface — split because it is UI work with a different test shape.
 
+**Shipped:** agliteterm [#50](https://github.com/yeroo/agliteterm/pull/50), 2026-09-08,
+main `1e0903a`. Mark mode, seeded/rebindable Select All, word/line mouse selection, drag-autoscroll,
+posted wheel handling and alternate-screen pinning work on frame and popup surfaces. The merged
+P6 contract is mirrored. Local Strict selection acceptance and disposable Windows CI both passed
+70 checks; the full Strict suite also passed. Clipboard/registry and owned-process cleanup are
+guarded in the selection fixture. Remaining legacy shared-desktop fixture safety is lite #51.
+
 ### P8 · lite · mirror Wave 1 — dissolved into per-batch mirrors
 `surface.cursor` · `statusChangedAt` · `version` → **P1-lite — shipped** (agliteterm #20,
 2026-09-04, six revmux rounds; plan `docs/plans/completed/2026-09-03-p1-lite-mirror.md` there) ·
@@ -202,6 +214,14 @@ merges.
 `session.readonly` **first** — it is how you stop stray keys reaching a running agent — then
 `session.focus` · `session.switch` · `session.resize` · `session.background` · `session.search` ·
 `session.bind` · `session.restore`
+
+**Shipped:** agliteterm [#52](https://github.com/yeroo/agliteterm/pull/52), main `190e514`, tested
+candidate `c77b256` (2026-09-08). Six verbs implemented; `focus` already shipped in P4-lite and `background`
+remains refused because lite draws no images. Guarded local acceptance passed 188 combined P7/P9
+checks, pure driving checks passed 30, and the final two-reviewer Codex-only confirmation was clean.
+The full Strict Windows CI suite passed, including the same 188 checks. Explicit pins/bindings replay on fresh
+restored shells, never adopted shells; captured commands do not replay. Differences and remaining
+find-bar/divider-drag work are recorded in `docs/lite-parity.md`.
 
 ### P10 · lite · the configuration surface
 `config.get/list/set` · `theme.list/set` · `omp.list/set` · `font` · `settings.open` ·

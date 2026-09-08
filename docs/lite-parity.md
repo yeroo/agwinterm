@@ -25,18 +25,18 @@ purpose justifies it.
 
 ---
 
-## Control API: 41 verbs agliteterm does not answer
+## Control API: remaining gaps and batch status
 
 Grouped by what they cost an agent, not alphabetically. The four `selection.*` verbs — the
 sharpest gap, the one where a QA setup step silently did nothing — closed in P6-lite (see
 "Mirrored: what P6 owed lite" below).
 
 ### Reading and driving a pane
-`session.search` · `session.focus` · `session.switch` · `session.resize` · `session.background` ·
-`session.readonly` · `session.bind` · `session.restore` · `session.write`
-
-`session.write` is in flight (agliteterm #15). `session.readonly` matters most of the rest: it is how
-you stop stray keys reaching a running agent.
+`session.focus` shipped in P4-lite; `session.write` is also implemented (display injection, not
+shell input). P9-lite [#52](https://github.com/yeroo/agliteterm/pull/52) implements `session.search`,
+`session.switch`, `session.resize`, `session.readonly`, `session.bind` and `session.restore`;
+its status and deliberate differences are recorded below. `session.background` remains refused:
+lite draws no images, and adding a watermark pipeline is outside this batch.
 
 ### Images
 `image.show` · `image.sixel` · `image.clear` · `image.frame`
@@ -119,8 +119,8 @@ verb:
   later batch; lite's verb count is 43 with it.
 
 `session.new`'s **refusal** of an unknown workspace needed no mirror — lite had it first, which is
-why decision 1 went that way. `session.restore`'s pane reply stays agwinterm-only until **P9**
-brings the verb to lite at all. The conformance steps for `session new --workspace
+why decision 1 went that way. P9-lite implements `session.restore` and its pane reply.
+The conformance steps for `session new --workspace
 no-such-workspace`, `--size-percent`, `sidebar width` and the two sidebar refusals landed in the
 sibling contract PR (#229) right after #226; agliteterm's `test/control-api.json` is that file
 again and `check-contract` is in step. Until the agwinterm release that carries #226 is tagged, lite's
@@ -139,11 +139,10 @@ lite's README and its shipped skill text rather than left for a reader to trip o
   could not be "dimmed". The sidebar row — lite's one per-session text surface — draws the context
   dimmed after the name in its post-paint pass, beside the pennant and the unread pill it already
   draws, and the badges do not move (`qa/persistence.md` there has the capture).
-- **`replayOnRestore` is a constant `false`.** lite restores a session's LAUNCH spec at the next
-  start and never types a slot back (`session.restore` is P9), so the truthful answer is `false`;
-  a toggle with nothing behind it, or `true`, would be the lie P2 existed to end. The shape is the
-  contract's, so one script reads both products; the field starts reporting a toggle when P9 lands
-  the replay. The capture itself is in-process (one Toolhelp32 snapshot plus the PEB read lite
+- **`replayOnRestore` is a constant `false`.** It describes replay of captured `K` commands, which
+  lite never types back. P9's explicit `R` pins and `B` bindings are separate and do not change
+  this answer. A future captured-command replay setting belongs to the configuration batch.
+  The capture itself is in-process (one Toolhelp32 snapshot plus the PEB read lite
   already does for a shell's cwd — milliseconds, no child process, so none of the CIM query's
   timeout-and-kill semantics), with agwinterm's default denylist frozen as a constant: lite has no
   `restore-denylist.conf`.
@@ -187,8 +186,8 @@ Both products' P3 checks run for real since agwinterm **0.17.12** (2026-09-05). 
   but empty one (only an OMITTED `--target` means every real pane) or a pane that is never restored
   is refused with nothing written; a process query that fails is a refusal, not an empty answer for
   every pane. `tree --json` reads the slots back as `capturedCommands`,
-  keyed by pane id like `restoreCommands`. Lite has no `session.restore` yet (that is **P9**), so
-  this lands the slot and the verb first and the pin later.
+  keyed by pane id like `restoreCommands`. P3 landed captured slots first; P9 adds explicit pins
+  separately, not as an instruction to replay captures.
 
 The conformance steps for both (the `session context` set and `--clear` steps, the `restore capture`
 step pinning the reply keys, and the two errors-block refusals) landed in the sibling contract PR
@@ -216,8 +215,8 @@ program inside, the chord closing the focused pane's overlay first, the slot mov
 on a swap and dying with its pane — all mirrored. What differs, each recorded in the P5-lite plan:
 
 - **(a)** the session-wide slot is a popup over the window, not a cover inside the content region
-  (P2-lite, unchanged); `copy` on it is always `no selection` — the popup paints no selection and
-  takes no drag (the selection gap above; P6-lite keeps it refusing `selection all`).
+  (P2-lite, unchanged). The former no-selection limitation closed in P7-lite: popup selection
+  paints, takes a drag, and copies its own cells.
 - **(b)** `session text` and `overlay text` default to the WHOLE buffer (scrollback + screen) —
   `--all` is the explicit spelling of lite's bare form, `--lines N` the last N lines of that text
   and `--lines 0` the screen — where agwinterm's and agterm's bare `session text` is the screen
@@ -277,15 +276,15 @@ products. What differs, each recorded in the P6-lite plan:
   difference any more.
 - **(b)** `selection finalize` never answers `finalized (copy-on-select off)`: lite's
   release-copies rule has no off switch (a `CopyOnSelect` knob is P10's, the configuration surface).
-- **(c)** `selection all` on any popup (overlay, quick or scratch — all three share `paintPopup`)
-  is refused `the popup paints no selection`; agwinterm's covers take a selection. P7-lite paints
+- **(c)** Before P7, `selection all` on any popup (overlay, quick or scratch — all three share `paintPopup`)
+  was refused `the popup paints no selection`; agwinterm's covers take a selection. P7-lite paints
   one and lifts this.
 - **(d)** `selection copy`'s clipboard write is posted to the UI thread; the reply counts the text
   posted. A caller reading the clipboard right after waits for the window's next message (the
   suites' 300 ms). When that enqueue fails, `copy` and `finalize` refuse `the clipboard write could
   not be queued; selection unchanged` — the selection is kept for a retry.
-- **(e)** the alt-screen pin covers the VERB; the wheel and the drag still reach main-screen
-  history until P7-lite.
+- **(e)** The P6 alt-screen pin initially covered only the verb. P7-lite extends it to wheel,
+  drag and keyboard selection; none of those routes enters main-screen history from the alt screen.
 - and `copied N chars` counts differently on non-ASCII text: lite counts UTF-8 bytes, agwinterm
   UTF-16 code units (`string.Length`). Same N for ASCII.
 - **(f)** `session.paste` reports what happened in agwinterm only (#256, rounds 8-9): `pasted` when
@@ -296,11 +295,12 @@ products. What differs, each recorded in the P6-lite plan:
   `the pane's process has exited` (a single-pane session keeps the exited surface; the exit is
   observed a moment after it happens, so a paste right after a child dies can still be `pasted`) — and
   `paste failed: <why>` when the write threw: that one comes after the payload was picked (the
-  clipboard may have been read) and says nothing about how much landed. lite's `session.paste` answers
-  `pasted` whatever happened — on an exited pane, on an empty payload (it writes only a non-empty
-  one to a live handle) — and lite has no read-only pane (`session readonly` is in its "does NOT
-  have" list). The lite mirror of the replies is a follow-up with the P6 paste leftovers in #257;
-  the contract's paste step stays shape-only until both products answer alike.
+  clipboard may have been read) and says nothing about how much landed. Outside its refusals,
+  lite's `session.paste` still answers `pasted` on an exited pane or an empty payload (it writes only a non-empty
+  one to a live handle). P9 adds the read-only refusal before clipboard access, but does not mirror
+  the empty/exited/write-failure outcomes yet. Those remain [lite #53](https://github.com/yeroo/agliteterm/issues/53); agwinterm #257
+  separately tracks missing-session refusals on `readonly` and `search`. The contract's paste
+  step stays shape-only until both products answer alike.
 
 The contract's P6 steps (#256) are shape-only and run on the no-selection arm of `copy` and
 `finalize` on purpose: the Windows clipboard is shared with the user and with every other sandbox on
@@ -308,6 +308,59 @@ the machine, so the contract never writes it. The `session copy` read-back after
 shape coverage, not proof that a selection was made — the value is the shell's screen and is not
 compared, so a no-op `selected all` followed by an empty copy would pass; that proof, and the copy
 itself (`copied N chars`), is each product's own honesty suite's, on a fixture whose content is known.
+
+### Mirrored: P7-lite keyboard and mouse selection shipped
+
+agliteterm [#50](https://github.com/yeroo/agliteterm/pull/50) merged on 2026-09-08 as `1e0903a`.
+Ctrl+Shift+M enters mark mode; arrows/Home/End extend it, Enter or Ctrl+C copies, and Escape cancels.
+Ctrl+Shift+A selects all. Both bindings can be cleared or rebound. Double/triple-click selects a
+word/line; release copies; dragging past a main-screen edge autoscrolls. Posted wheel messages work.
+Frame, split, pane-overlay and overlay/quick/scratch popup surfaces share the selection rules;
+alternate screens stay pinned to their own grid. Captured drags are cancelled on invalidation.
+
+The P6 contract mirror is in step. Local Strict selection acceptance and GitHub Windows CI both
+passed 70 selection checks, and the complete `run-all.ps1 -Strict` passed in CI. The local fixture
+held the shared suite token through owned-process teardown and whole-format clipboard/touched-HKCU
+restoration. Legacy fixture hardening remains [lite #51](https://github.com/yeroo/agliteterm/issues/51);
+those older full-suite fixtures are confined to the disposable CI runner until hardened.
+
+### Mirrored: P9-lite driving a pane shipped
+
+agliteterm [#52](https://github.com/yeroo/agliteterm/pull/52) merged on 2026-09-08 as `190e514`,
+from tested candidate `c77b256`. Guarded local acceptance and Windows CI each passed 188 combined
+selection/driving checks; 30 pure driving checks and the complete Strict suite passed. The final
+Codex-only confirmation reported no findings from two healthy independent reviewers. CI evidence:
+[run 34215226185](https://github.com/yeroo/agliteterm/actions/runs/34215226185).
+
+- **Human-input gate.** `readonly` blocks keys, paste and reporting mouse input on the addressed
+  surface, while API typing/display writes and terminal replies remain allowed. Blocked keys
+  preserve scrollback and working status. The flag resets on restart; status shows READ-ONLY.
+- **Explicit replay.** `restore` pins a command; `bind` supplies a verbatim command that wins over
+  the pin. Additive `R`/`B` state fields preserve quotes, backslashes and Unicode. Replay waits
+  2500 ms (not a shell-readiness proof), re-resolves current state, and skips adopted or gone shells.
+  Captured `K` commands never replay. Lite accepts a session id/name for binding to its own shell;
+  agwinterm uses pane-id resolution and lower-cases binding text. Lite saves before replying;
+  agwinterm posts the update.
+- **Split and navigation.** `resize` persists slot-0's ratio as `G`, clamps to 0.05..0.95, validates
+  growth against the axis, and refuses unavailable geometry before mutation. Lite accepts a numeric
+  ratio string as well as a JSON number. `switch` previews a snapshot of recency without changing
+  it; commit updates recency, cancel restores the origin. Unnamed replies use `session N` instead
+  of agwinterm's empty name. Next/previous key bindings still walk tree order, not MRU.
+- **Search.** The verb searches the active surface (a valid target does not redirect it), maps
+  Unicode scalars to cells, paints current/other matches and shows FIND status. Alternate-screen
+  search excludes main history. Counts refresh on a search call; stale row highlights are suppressed.
+  A find bar/Ctrl+F and mouse divider drag remain follow-ups, not shipped features.
+- **Refusals.** Lite refuses unknown `readonly`/`switch` operations and missing `readonly`/`search`
+  targets with `ok:false`; agwinterm still toggles on an unknown readonly op or returns success
+  strings for the other cases (missing-session follow-up: [#257](https://github.com/yeroo/agwinterm/issues/257)).
+  Both now refuse read-only API paste; the older P9 plan predates agwinterm #256's fix. Lite's
+  remaining paste outcome differences are listed under P6 above.
+
+Unknown-operation refusals and binding-command case preservation are tracked in
+[agwinterm #259](https://github.com/yeroo/agwinterm/issues/259), separately from #257.
+
+No new canonical contract steps are added by P9: the existing shared floor is unchanged. A later
+contract batch follows the remaining agwinterm honesty fixes, with the usual lite mirror update.
 
 ---
 
@@ -325,10 +378,8 @@ Not a one-way list, and these should move the other way.
   elsewhere, so that reply is a guess. lite (P2-lite, its #24) answers `selected` only when
   `GetForegroundWindow` is the window afterwards, and a string starting `not raised:` otherwise —
   still `ok`, the contract's shape, so one script works against both. **agwinterm should copy this.**
-- **Splits scroll into main-screen history on the alt screen.** lite's renderer and hit-test derive
-  their row from the same offset on either screen; agwinterm pins the alt screen to 0. Both are
-  self-consistent (highlight and clipboard agree either way), so this is a difference to decide about
-  rather than a defect — see `qa/product.md` in the lite repo.
+- **Alternate-screen history difference resolved.** Boris chose pinning to the alternate grid.
+  P6-lite applied that rule to selection verbs; P7-lite applied it to wheel, drag and mark mode.
 - ~~**An unknown workspace is refused, not silently swapped** for the active one on `session.new`.
   agwinterm falls back.~~ **Matched in batch P2** (agwinterm **#226**): agwinterm now refuses an
   unknown `--workspace`
@@ -345,13 +396,9 @@ and the list should grow as more turn up.
 
 | Feature | Notes |
 | --- | --- |
-| Mark mode (keyboard selection) | agwinterm: Ctrl+Shift+M, arrows, Enter copies |
-| Select All | no equivalent |
-| Drag-autoscroll | dragging past the pane edge does not extend the selection |
 | Configurable scrollback | lite does not call `agwcore_emu_set_scrollback`; the cap is the core default |
 | Images / graphics | see the `image.*` verbs above |
 | Dashboard, quick-terminal parity, multi-window | agwinterm has a window library; lite has one window plus popups |
-| Wheel over the pane | a posted `WM_MOUSEWHEEL` does not reach lite's handler (harness finding, 0.17.11) |
 
 ---
 
