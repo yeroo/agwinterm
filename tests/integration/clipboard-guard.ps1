@@ -81,7 +81,7 @@
 # Add-Type cannot replace a loaded type: a ClipboardGuard from an older run of this file in the same
 # shell would run its old C# under the new source with no warning. Revision below is bumped with every
 # change to the C#, and a loaded type that does not carry it stops the run.
-$clipboardGuardRevision = 5
+$clipboardGuardRevision = 6
 if (('Agwinterm.Win32ControlTest.ClipboardGuard' -as [type]) -and
     ('Agwinterm.Win32ControlTest.ClipboardGuard' -as [type])::Revision -ne $clipboardGuardRevision) {
     throw "a ClipboardGuard type from an older run of this file is loaded in this shell (revision $(('Agwinterm.Win32ControlTest.ClipboardGuard' -as [type])::Revision), source $clipboardGuardRevision); run it from a fresh pwsh"
@@ -307,7 +307,7 @@ namespace Agwinterm.Win32ControlTest
     public static class ClipboardGuard
     {
         /// <summary>Bumped with every change to this C#; the .ps1 refuses a loaded type without it.</summary>
-        public const int Revision = 5;
+        public const int Revision = 6;
         public const uint CF_UNICODETEXT = 13;
 
         /// <summary>The clipboard the guard talks to: the native one unless a test swaps in a fake.</summary>
@@ -418,7 +418,7 @@ namespace Agwinterm.Win32ControlTest
             if (why != null) why = Put(snap, out emptied);
             if (why != null) return why;
             ClipboardSnapshot back = TakeOpen();
-            if (back.Unsupported != null) return "the read-back holds " + back.Unsupported;
+            if (back.Unsupported != null) return "the read-back holds " + Held(back);   // what was read first, then what was not
             if (!snap.SameAs(back)) return "the read-back differs from the snapshot (before=" + snap.Names + " after=" + back.Names + ")";
             return null;
         }

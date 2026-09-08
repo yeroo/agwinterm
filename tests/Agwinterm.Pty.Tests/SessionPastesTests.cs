@@ -44,4 +44,13 @@ public class SessionPastesTests
         Assert.Equal("", SessionPastes.Payload(text, () => null!));
         Assert.Equal(SessionPastes.Nothing, SessionPastes.Reply(""));
     }
+
+    [Fact]
+    public void AWriteThatThrew_IsRefusedWithWhatItSaid()
+    {
+        // The host wraps PasteTextInto: an exception is a refusal that names it, never the empty
+        // ok:true the sync handler would make of it (round 9 of #256).
+        Assert.Equal("paste failed: Session not started.", SessionPastes.Failed("Session not started."));
+        Assert.Equal("the pane's process has exited", SessionPastes.ExitedPane);
+    }
 }

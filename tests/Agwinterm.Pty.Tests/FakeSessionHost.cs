@@ -701,11 +701,15 @@ internal sealed class FakeSessionHost : ISessionHost
     /// <summary>The app's CopySelection rule: a character other than CR, LF or space (IndexOfAnyExcept).</summary>
     private static bool HasCopyable(string sel) => sel.AsSpan().IndexOfAnyExcept('\r', '\n', ' ') >= 0;
     // The app's SessionPaste, in order: no pane → refused; the surface's session read-only → refused
-    // before any clipboard is looked at; then the payload rule (SessionPastes.Payload) with a
-    // clipboard that gives nothing — the fake has none, so an omitted text is "nothing to paste".
+    // before any clipboard is looked at; the surface's process exited → refused likewise (the fake's
+    // panes are never started, so HasExited stays false here — win32-control.ps1 proves that arm
+    // live); then the payload rule (SessionPastes.Payload) with a clipboard that gives nothing — the
+    // fake has none, so an omitted text is "nothing to paste". The fake writes nothing, so the app's
+    // `paste failed` arm has no fake.
     public string SessionPaste(string? target, string? text)
         => Surface(target) is not { } sf ? NoPane
          : sf.s.ReadOnly ? ISessionHost.RefusePrefix + SessionPastes.ReadOnlyPane
+         : sf.pane.HasExited ? ISessionHost.RefusePrefix + SessionPastes.ExitedPane
          : SessionPastes.Reply(SessionPastes.Payload(text, () => ""));
     /// <summary>The app's PaneForTarget, with the surface's id: null / "" / "active" is the active
     /// session's focused pane — or the overlay term open over it, as ActiveSurface says — then a real

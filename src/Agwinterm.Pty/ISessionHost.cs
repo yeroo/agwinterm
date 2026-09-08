@@ -203,7 +203,11 @@ public interface ISessionHost
     /// <summary>Broadcast-input toggle for the frontmost window: op = on|off|toggle|state. Returns "on"/"off".</summary>
     string BroadcastOp(string op);
 
-    /// <summary>Read-only toggle for a target pane: op = on|off|toggle|state. Returns "on"/"off".</summary>
+    /// <summary>Read-only toggle for a target pane: op = on|off|toggle|state. Returns "on"/"off".
+    /// What "on" blocks: keys typed at the pane and pastes into it — the interactive paste and
+    /// <see cref="SessionPaste"/>, which refuses. <c>session type</c> and <c>session write</c> are
+    /// NOT blocked (ControlServer writes them to the session directly): a script that must not
+    /// reach a read-only pane checks <c>state</c> first. Closing that gap is #257's.</summary>
     string ReadOnlyOp(string? target, string op);
 
     /// <summary>Plain text of the last completed command's output (FTCS/OSC 133 marks).</summary>
@@ -351,9 +355,12 @@ public interface ISessionHost
     /// <summary>Paste text (or the clipboard when text is null/empty) into the target pane, honoring
     /// bracketed paste: <see cref="SessionPastes.Pasted"/> when the payload reached the pane,
     /// <see cref="SessionPastes.Nothing"/> when there was none to send (empty text and a clipboard
-    /// that gave no text — empty, non-text, or unreadable; the reply does not say which). A pane
-    /// under <c>session readonly on</c> is <see cref="RefusePrefix"/> + <see cref="SessionPastes.ReadOnlyPane"/>
-    /// and nothing is sent. No pane: the refusal above.</summary>
+    /// that gave no text — empty, non-text, or unreadable; the reply does not say which). Refused,
+    /// with nothing sent and the clipboard unread: a pane that is read-only (<see cref="ReadOnlyOp"/>
+    /// on, the menu item or the <c>toggle_read_only</c> binding) with <see cref="RefusePrefix"/> +
+    /// <see cref="SessionPastes.ReadOnlyPane"/>; a pane whose process has exited (a single-pane
+    /// session keeps it on screen) with <see cref="SessionPastes.ExitedPane"/>; and a write that
+    /// threw with <see cref="SessionPastes.Failed"/>. No pane: the refusal above, first.</summary>
     string SessionPaste(string? target, string? text);
 
     /// <summary>Open/drive the find bar over the active session; returns "N of M" / "no matches" / "closed".</summary>

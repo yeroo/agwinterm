@@ -158,7 +158,7 @@ public static class AgentSkill
         - `agwintermctl selection all [--target <id>]`           — select the whole buffer (scrollback + live grid)
         - `agwintermctl selection copy [--target <id>]`          — copy the current selection to the Windows clipboard
         - `agwintermctl selection clear [--target <id>]`         — clear the selection
-        - `agwintermctl session paste "<text>" [--target <id>]`  — paste text into the pane (clipboard if text omitted; honors bracketed paste); replies `pasted`, or `nothing to paste` when neither the text nor the clipboard gave any; refused on a read-only pane
+        - `agwintermctl session paste "<text>" [--target <id>]`  — paste text into the pane (clipboard if text omitted; honors bracketed paste); replies `pasted`, or `nothing to paste` when neither the text nor the clipboard gave any; refused (ok:false) on a read-only pane, on a pane whose process has exited, and as `paste failed: <why>` when the write threw
         - keys: Ctrl+C (copy selection) · Ctrl+V (paste) · Ctrl+Shift+A (select all) · double/triple-click = word/line · drag past the edge auto-scrolls
         - config `copy-on-select = true` auto-copies each finished selection (no Ctrl+C needed)
 

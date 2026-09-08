@@ -130,6 +130,16 @@ try {
     $f.EmptyFails = $true
     $r = Invoke-ClipboardRestore $snap $w $null
     Check 'EmptyClipboard refused on the restore (the sentinel stays) → mutated' ($r.State -eq 'mutated' -and $U.GetString($f.Store[13]) -eq "agw-paste-8`0") "$r"
+    # The put-back succeeds but its read-back cannot read every format: mutated (the clipboard is in
+    # an unknown state), and the Detail names what was READ before what was not — the same order as
+    # every other Detail (round 9 of #256: the put-back proof printed the unreadable format alone).
+    $f = New-Fake
+    $snap = $guard::Take()
+    $w = $guard::WriteSentinel('agw-paste-8b', $snap)
+    $f.GetFails = 16
+    $r = Invoke-ClipboardRestore $snap $w $null
+    Check 'the put-back read-back cannot read CF_LOCALE → mutated, its Detail names the text READ before the unreadable format' ($r.State -eq 'mutated' -and $r.Detail -like 'the read-back holds 13=CF_UNICODETEXT`[*`], then format 16 (CF_LOCALE), whose data could not be read*') "$r"
+    $f.GetFails = 0
 
     # Cannot open: unopened, retried by the loop, nothing touched.
     $f = New-Fake

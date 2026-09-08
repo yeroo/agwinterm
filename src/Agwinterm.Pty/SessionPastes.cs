@@ -20,9 +20,20 @@ public static class SessionPastes
     /// (an image, files), gives the same reply; it says only that no text was obtained and none sent.</summary>
     public const string Nothing = "nothing to paste";
     /// <summary>The refusal (after <see cref="ISessionHost.RefusePrefix"/>) for a pane whose input
-    /// is blocked by <c>session readonly on</c>: the interactive paste shows a toast; a script needs
-    /// ok:false, not <see cref="Pasted"/> for text that was dropped.</summary>
+    /// is blocked because it is read-only — set by <c>session readonly on</c> / <c>toggle</c>, the
+    /// Toggle Read-Only Pane menu item or the <c>toggle_read_only</c> binding, and lifted by
+    /// <c>session readonly off</c> / the same toggles. The interactive paste shows a toast; a script
+    /// needs ok:false, not <see cref="Pasted"/> for text that was dropped. Answered before the
+    /// clipboard is read.</summary>
     public const string ReadOnlyPane = "pane is read-only";
+    /// <summary>The refusal for a pane whose process has exited (a single-pane session keeps the
+    /// exited surface on screen): its input may still take bytes, but no program reads them.
+    /// Answered before the clipboard is read.</summary>
+    public const string ExitedPane = "the pane's process has exited";
+    /// <summary>The refusal for a write that threw (a broken pipe, a session that never started):
+    /// what the exception said, after "paste failed: ". Whether any of the payload reached the
+    /// pane is not known.</summary>
+    public static string Failed(string why) => "paste failed: " + why;
 
     /// <summary>The text to paste: <paramref name="text"/> when the caller gave any (whitespace and
     /// newlines included — they are input, never trimmed), else what <paramref name="clipboard"/>

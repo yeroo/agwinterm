@@ -73,6 +73,9 @@ namespace Agwinterm.Win32ControlTest
 # guard's states and its fake-clipboard tests: clipboard-guard.ps1 / clipboard-guard.tests.ps1.
 . (Join-Path $PSScriptRoot 'clipboard-guard.ps1')
 $clipboardGuard = [Agwinterm.Win32ControlTest.ClipboardGuard]
+# The process the P6 paste cases paste INTO — a sink the control API starts directly, no shell underneath —
+# and the readiness test that gates them: paste-sink.ps1 (its header says why) / paste-sink.tests.ps1.
+. (Join-Path $PSScriptRoot 'paste-sink.ps1')
 $script:clipboardNotRestored = $null
 
 # Recovery mode: put a kept snapshot back and stop. Nothing else runs (no sandbox, no token needed).
@@ -936,48 +939,71 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         # still `unopened` after its retries (the header's "a `mutated` anywhere"), and is named on a
         # plain line (Check drops its detail on PASS). No detail line prints clipboard contents:
         # format names, counts and lengths only.
-        # The paste lands in the RIGHT pane (the pane underneath the overlay, by its own id) and is
-        # read back with `session text`. That pane is NOT a shell while it is pasted into: between the
+        # The pastes land in a session of their OWN whose process is a SINK, not a shell: between the
         # proof's close and the paste's own clipboard read, a copy made anywhere on this desktop would
         # be pasted instead of the sentinel (round 8), and a shell would RUN a multi-line one — the
-        # profile is throwaway, the shell is the user's. So the shell is first told to start a SINK, a
-        # program that reads lines and never runs them (the console echoes what it reads, so the text
-        # still shows), and the paste cases below go into that. The sink stays until the session closes;
-        # nothing after this block types into the right pane's shell.
-        $p6Sink = 'agw-sink-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-        # No `$` in the line: the shell underneath may be PowerShell, which expands "$null" before
-        # the child sees it; [void](Read-Host) needs none. Read-Host throws under -NonInteractive.
-        Invoke-Ctl @('session', 'type', "powershell -NoProfile -Command `"'$p6Sink-ready'; for(;;){ [void](Read-Host) }`"`r", '--target', $p5Right) | Out-Null
-        $p6SinkUp = $false
-        for ($i = 0; $i -lt 60; $i++) {
-            $t = [string](Invoke-Ctl @('session', 'text', '--target', $p5Right)).result
-            if (($t -replace "`r?`n", '').Contains("$p6Sink-ready")) { $p6SinkUp = $true; break }
-            Start-Sleep -Milliseconds 250
+        # profile is throwaway, the shell is the user's. paste-sink.ps1 has the launch (a program that
+        # reads lines and never runs them, started DIRECTLY by `session new --command`: no shell
+        # underneath, nothing typed, no interpreter for a dying sink to hand the pane back to — its
+        # header says why) and the readiness test (the marker the sink prints, seen in the pane). The
+        # gate (round 9, Codex): NOTHING is pasted until the sink is seen running — a sink not seen is
+        # a FAIL here and NOT RUN for every paste case below, decided before the clipboard is read; a
+        # Check that only records its failure would not have stopped the pastes. The session is
+        # closed at the end of the block. No P6 detail prints the pane's text: the sink echoes what it
+        # reads, which in the race is someone else's copy — details carry replies, booleans and lengths.
+        $p6SinkMarker = 'agw-sink-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $p6Launch = New-PasteSinkLaunch $p6SinkMarker
+        $p6SinkMade = Invoke-Ctl @('session', 'new', '--name', 'p6-paste-sink', '--command', $p6Launch.Command, '--no-select')
+        $p6Sink = if ($p6SinkMade.ok) { [string]$p6SinkMade.result } else { $null }   # the session id: a pane-class target (its one pane)
+        $p6SinkUp = $false; $p6SinkTextLen = 0
+        if ($p6Sink) {
+            for ($i = 0; $i -lt 60; $i++) {
+                $t = [string](Invoke-Ctl @('session', 'text', '--target', $p6Sink)).result
+                $p6SinkTextLen = $t.Length
+                if (Test-PasteSinkReady $t $p6Launch.Ready) { $p6SinkUp = $true; break }
+                Start-Sleep -Milliseconds 250
+            }
         }
-        Check 'p6 fixture: the right pane runs a non-executing sink (reads lines, runs none) before anything is pasted into it' $p6SinkUp "last text: $($t.Substring([Math]::Max(0, $t.Length - 160)))"
+        $p6SinkWhy = if (-not $p6SinkMade.ok) { "the sink session was refused: $($p6SinkMade.error)" } elseif (-not $p6SinkUp) { "the sink was not seen running in its pane within 15 s (text length $p6SinkTextLen, the marker absent)" }
+        Check 'p6 fixture: a sink session (reads lines, runs none; no shell underneath) is seen running before anything is pasted' $p6SinkUp "new=$($p6SinkMade | ConvertTo-Json -Compress) $p6SinkWhy"
         # Round 8: `session paste` reports what happened. A read-only pane is REFUSED (ok:false, "pane
-        # is read-only") and nothing is sent — proven by the same text landing once read-only is off,
-        # and absent before. Explicit text (no clipboard): the guard is not needed here.
-        $p6Ro = 'agw-ro-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-        $p6RoRefused = $null; $p6RoText = ''; $p6RoOn = $null
-        try {
-            $p6RoOn = Invoke-Ctl @('session', 'readonly', 'on', '--target', $p5Right)
-            $p6RoRefused = Invoke-Ctl @('session', 'paste', $p6Ro, '--target', $p5Right)
-            Start-Sleep -Milliseconds 500
-            $p6RoText = [string](Invoke-Ctl @('session', 'text', '--target', $p5Right)).result
-        } finally { Invoke-Ctl @('session', 'readonly', 'off', '--target', $p5Right) | Out-Null }
-        Check 'session paste <text> --target <read-only pane> is refused "pane is read-only" and nothing reaches the pane' ($p6SinkUp -and $p6RoOn.ok -and "$($p6RoOn.result)" -eq 'on' -and (-not $p6RoRefused.ok) -and ([string]$p6RoRefused.error) -eq 'pane is read-only' -and -not ($p6RoText -replace "`r?`n", '').Contains($p6Ro)) "readonly=$($p6RoOn | ConvertTo-Json -Compress) paste=$($p6RoRefused | ConvertTo-Json -Compress)"
-        $p6RoPasted = Invoke-Ctl @('session', 'paste', $p6Ro, '--target', $p5Right)
-        $p6RoSeen = $false
-        for ($i = 0; $i -lt 16; $i++) {
-            Start-Sleep -Milliseconds 250
-            $p6RoText = [string](Invoke-Ctl @('session', 'text', '--target', $p5Right)).result
-            if (($p6RoText -replace "`r?`n", '').Contains($p6Ro)) { $p6RoSeen = $true; break }
+        # is read-only") and nothing is sent — marker A is pasted under read-only and must be absent;
+        # marker B is pasted once read-only is off and must be seen, with A STILL absent (round 9,
+        # Codex: a refused paste that landed late would otherwise pass as the accepted one). Explicit
+        # text (no clipboard): the guard is not needed here.
+        $p6RoName1 = 'session paste <A> --target <read-only sink> is refused "pane is read-only" and A does not reach the pane'
+        $p6RoName2 = 'and <B> is `pasted` once read-only is off, and A is STILL absent (the refusal sent nothing, early or late)'
+        if ($p6SinkUp) {
+            $p6RoA = 'agw-ro-a-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            $p6RoB = 'agw-ro-b-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            $p6RoRefused = $null; $p6RoText = ''; $p6RoOn = $null
+            try {
+                $p6RoOn = Invoke-Ctl @('session', 'readonly', 'on', '--target', $p6Sink)
+                $p6RoRefused = Invoke-Ctl @('session', 'paste', $p6RoA, '--target', $p6Sink)
+                Start-Sleep -Milliseconds 500
+                $p6RoText = [string](Invoke-Ctl @('session', 'text', '--target', $p6Sink)).result
+            } finally { Invoke-Ctl @('session', 'readonly', 'off', '--target', $p6Sink) | Out-Null }
+            $p6RoASeen = ($p6RoText -replace "`r?`n", '').Contains($p6RoA)
+            Check $p6RoName1 ($p6RoOn.ok -and "$($p6RoOn.result)" -eq 'on' -and (-not $p6RoRefused.ok) -and ([string]$p6RoRefused.error) -eq 'pane is read-only' -and -not $p6RoASeen) "readonly=$($p6RoOn | ConvertTo-Json -Compress) paste=$($p6RoRefused | ConvertTo-Json -Compress) a-seen=$p6RoASeen text-length=$($p6RoText.Length)"
+            $p6RoPasted = Invoke-Ctl @('session', 'paste', $p6RoB, '--target', $p6Sink)
+            $p6RoBSeen = $false
+            for ($i = 0; $i -lt 16; $i++) {
+                Start-Sleep -Milliseconds 250
+                $p6RoText = [string](Invoke-Ctl @('session', 'text', '--target', $p6Sink)).result
+                if (($p6RoText -replace "`r?`n", '').Contains($p6RoB)) { $p6RoBSeen = $true; break }
+            }
+            $p6RoASeen = ($p6RoText -replace "`r?`n", '').Contains($p6RoA)
+            Check $p6RoName2 ($p6RoPasted.ok -and "$($p6RoPasted.result)" -eq 'pasted' -and $p6RoBSeen -and -not $p6RoASeen) "paste=$($p6RoPasted | ConvertTo-Json -Compress) b-seen=$p6RoBSeen a-seen=$p6RoASeen text-length=$($p6RoText.Length)"
+        } else {
+            foreach ($n in $p6RoName1, $p6RoName2) {
+                if ($Strict) { Check "$n (NOT RUN: $p6SinkWhy)" $false } else { "  SKIP  $n — $p6SinkWhy" }
+            }
         }
-        Check 'and the same text is `pasted` once read-only is off (the refusal was the only reason it was absent)' ($p6SinkUp -and $p6RoPasted.ok -and "$($p6RoPasted.result)" -eq 'pasted' -and $p6RoSeen) "paste=$($p6RoPasted | ConvertTo-Json -Compress) text=$($p6RoText.Substring([Math]::Max(0, $p6RoText.Length - 160)))"
-        $p6Name = 'session paste --target <right pane> with NO text pastes the clipboard'
+        $p6Name = 'session paste --target <sink> with NO text pastes the clipboard'
         $p6Snap = $null; $p6Why = $null
-        try { $p6Snap = $clipboardGuard::Take() } catch { $p6Why = "the clipboard could not be read: $($_.Exception.Message)" }
+        # The gate first: with no sink the clipboard is not read, saved or written (no snapshot, no file).
+        if (-not $p6SinkUp) { $p6Why = "the sink is not running, so nothing is pasted: $p6SinkWhy" }
+        if (-not $p6Why) { try { $p6Snap = $clipboardGuard::Take() } catch { $p6Why = "the clipboard could not be read: $($_.Exception.Message)" } }
         if ($p6Snap -and $p6Snap.Unsupported) { $p6Why = "the clipboard holds $($p6Snap.Unsupported): it cannot be put back byte for byte, so the case does not run (clear it, copy plain text, or retry when the note names a failed call)" }
         # Codex (round 8): a PASS drops the Check's detail, so the runner's format count was never seen;
         # a plain line records it (ids, names, lengths — never contents).
@@ -990,12 +1016,12 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
             try {
                 $p6Write = $clipboardGuard::WriteSentinel($p6Sentinel, $p6Snap)
                 if ($p6Write.State -eq 'written') {
-                    $p6Paste = Invoke-Ctl @('session', 'paste', '--target', $p5Right)
+                    $p6Paste = Invoke-Ctl @('session', 'paste', '--target', $p6Sink)
                     for ($i = 0; $i -lt 16; $i++) {
                         Start-Sleep -Milliseconds 250
-                        $p6Text = [string](Invoke-Ctl @('session', 'text', '--target', $p5Right)).result
-                        # Rows joined by newlines: on a hosted runner the right pane is ~27 columns and the
-                        # sentinel wraps ("…runneradmin> ag" / "w-paste-…"), so the search ignores row breaks.
+                        $p6Text = [string](Invoke-Ctl @('session', 'text', '--target', $p6Sink)).result
+                        # Rows joined by newlines: on a hosted runner the pane may be narrow and the
+                        # sentinel wraps ("…ag" / "w-paste-…"), so the search ignores row breaks.
                         if (($p6Text -replace "`r?`n", '').Contains($p6Sentinel)) { $p6Seen = $true; break }
                     }
                 }
@@ -1007,7 +1033,9 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
                 # sentinel before its generation could be read (a post-write `changed`: as any copy
                 # would have replaced the snapshot; theirs is kept). After a write (`written`,
                 # `unverified`), Invoke-ClipboardRestore decides: the file goes only on `restored` or
-                # `changed` — neither state reaches this elseif (the if above took both).
+                # `changed`. `written` and `unverified` are taken by the if above, so only `unopened`,
+                # `failed`, a pre- or post-write `changed` and `put back` reach here, and none of those
+                # needs the file.
                 elseif ($p6Write.State -ne 'mutated') { Remove-Item -LiteralPath $p6File -Force -ErrorAction SilentlyContinue }
             }
         }
@@ -1017,14 +1045,31 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         if ($script:clipboardNotRestored) {
             Check "$p6Name — CLIPBOARD NOT RESTORED (fails regardless of -Strict)" $false "$script:clipboardNotRestored; recover with: tests/integration/win32-control.ps1 -RestoreClipboard '$p6File'"
         } elseif ($p6Why -or $p6Write.State -ne 'written') {
-            if ($p6Why -and (Test-Path -LiteralPath $p6File)) { Remove-Item -LiteralPath $p6File -Force -ErrorAction SilentlyContinue }   # saved, then refused before any write
+            if ($p6Why -and (Test-Path -LiteralPath $p6File)) { Remove-Item -LiteralPath $p6File -Force -ErrorAction SilentlyContinue }   # saved, then refused before any write (never reached when the gate or Take() refused: no file was made)
             if (-not $p6Why) { $p6Why = "the sentinel is not known to be on the clipboard: $p6Write" }   # never written, written and replaced (a post-write `changed`), undone (`put back`), or not read back as still there (`unverified`, restore attempted above): the Detail says which
             if ($Strict) { Check "$p6Name (NOT RUN: $p6Why)" $false }
             else { "  SKIP  $p6Name — $p6Why" }
         } else {
-            Check "$p6Name into that shell" ($p6Paste.ok -and "$($p6Paste.result)" -eq 'pasted' -and $p6Seen) "paste=$($p6Paste | ConvertTo-Json -Compress) text=$($p6Text.Substring([Math]::Max(0, $p6Text.Length - 160)))"
+            Check "$p6Name into that sink" ($p6Paste.ok -and "$($p6Paste.result)" -eq 'pasted' -and $p6Seen) "paste=$($p6Paste | ConvertTo-Json -Compress) sentinel-seen=$p6Seen text-length=$($p6Text.Length)"
             Check 'and the clipboard is put back byte for byte, proven by a read-back under the same open (or left alone if it changed under the poll)' ($p6Restore.State -in 'restored', 'changed') "restore=$p6Restore before=$($p6Snap.Names)"
         }
+        if ($p6Sink) { try { Invoke-Ctl @('session', 'close', $p6Sink) | Out-Null } catch { } }   # the sink session, its process with it
+        # Round 9: a single-pane session keeps its exited process on screen, and its input may still
+        # take bytes — a paste into it is refused (ok:false, "the pane's process has exited") before
+        # the clipboard is read; explicit text, so the guard is not needed. The exit is asynchronous:
+        # the poll waits for the refusal (a paste that lands before the exit is `pasted` and ignored).
+        $p6ExitMade = Invoke-Ctl @('session', 'new', '--name', 'p6-exited', '--command', 'cmd /c exit 0', '--no-select')
+        $p6Exited = if ($p6ExitMade.ok) { [string]$p6ExitMade.result } else { $null }
+        $p6ExitPaste = $null
+        if ($p6Exited) {
+            for ($i = 0; $i -lt 60; $i++) {
+                $p6ExitPaste = Invoke-Ctl @('session', 'paste', 'agw-exited-' + $i, '--target', $p6Exited)
+                if (-not $p6ExitPaste.ok) { break }
+                Start-Sleep -Milliseconds 250
+            }
+        }
+        Check 'session paste <text> --target <a session whose process exited> is refused "the pane''s process has exited" (the session is still listed)' ($p6ExitMade.ok -and $p6ExitPaste -and (-not $p6ExitPaste.ok) -and ([string]$p6ExitPaste.error) -eq "the pane's process has exited" -and (Get-SessionSnapshot $p6Exited)) "new=$($p6ExitMade | ConvertTo-Json -Compress) paste=$($p6ExitPaste | ConvertTo-Json -Compress)"
+        if ($p6Exited) { try { Invoke-Ctl @('session', 'close', $p6Exited) | Out-Null } catch { } }
         # The other slot is empty: copy / text / result name the slot; result on the held slot is "still running".
         $p5CopyLeft = Invoke-Ctl @('session', 'overlay', 'copy', '--pane', 'left', '--target', $p5Id)
         $p5TextLeft = Invoke-Ctl @('session', 'overlay', 'text', '--pane', 'left', '--target', $p5Id)

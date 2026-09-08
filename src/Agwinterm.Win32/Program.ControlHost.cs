@@ -801,13 +801,20 @@ internal partial class Program
         // used to answer `pasted` for both. The read-only refusal comes before the clipboard is
         // touched; the missing-pane refusal above comes before everything.
         if (p.ReadOnly) return ISessionHost.RefusePrefix + SessionPastes.ReadOnlyPane;
+        // A single-pane session keeps its exited process on screen (OnPaneProcessExited leaves it; a
+        // split pane is closed and the target resolves to nothing). Its input pipe may still take
+        // bytes, so a paste into it would answer `pasted` for text that reached no program (round 9
+        // of #256): refused, before the clipboard is read, like the read-only pane.
+        if (p.S.HasExited) return ISessionHost.RefusePrefix + SessionPastes.ExitedPane;
         // "text (or the clipboard when text is null/EMPTY)": the CLI always sends text, "" when the
         // caller gave none, so `?? ClipboardGet()` never ran and `session paste` pasted nothing.
         // ClipboardGet answers "" both for a clipboard with no text and for one it could not read.
         string payload = SessionPastes.Payload(text, ClipboardGet);
-        if (payload.Length == 0) return SessionPastes.Nothing;
-        PasteTextInto(p, payload, interactive: false);   // scripted: never prompt (agents)
-        return SessionPastes.Pasted;
+        // The write can throw (a pipe that broke, a session never started); the WM_APP_SYNC handler
+        // would swallow that into ok:true with an empty result, so it is answered as a refusal here.
+        try { if (payload.Length != 0) PasteTextInto(p, payload, interactive: false); }   // scripted: never prompt (agents)
+        catch (Exception ex) { return ISessionHost.RefusePrefix + SessionPastes.Failed(ex.Message); }
+        return SessionPastes.Reply(payload);
     });
 
     // Search operates on the active pane's find bar (a UI-thread concept); run it synchronously
