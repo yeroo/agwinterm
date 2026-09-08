@@ -457,11 +457,15 @@ companion status update must not merge before the implementation and its gates.
   after retained descendants exited, no shell children remain and the prompt proves sole attached
   console ownership, including late orphans; it never appends commands to a draft.
   Readonly/covered/custom-conflicting/changed panes refuse or cancel. Timeout has no relaunch fallback.
+  Interrupt writes are bounded/cancellable; lease offers and acknowledgements are retryable and
+  expire. Receipt notification and binding persistence do not block authorization replies.
 - Claude update runs visibly in an owned overlay. Only a proven newer version requests safe restarts
   of the originally verified eligible panes using that executable/script, preserving conversation and
   explicit startup permission arguments (not interactive mode changes). Fail/no-op/unknown versions
   restart nothing. Queue/dispatch/persistence and successful
   agent startup are distinct outcomes, reported through `agent.update` / `agent.restart` events.
+  Five-minute supervision expiry retains updater exclusion until the owned command ends, without
+  authorizing late restarts.
 
 Detailed behavior: [lite agent integration](https://github.com/yeroo/agliteterm/blob/main/docs/agent-integration.md).
 Tests use private fake agents, redirected files and owned processes, never the user's real Claude CLI.
