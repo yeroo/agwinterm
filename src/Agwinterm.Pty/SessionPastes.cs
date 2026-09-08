@@ -14,10 +14,10 @@ namespace Agwinterm.Pty;
 public static class SessionPastes
 {
     /// <summary>The payload was handed to the pane's input without a synchronous error. Not proof
-    /// that a program read it: a child that has just exited is seen as exited only after its output
-    /// settles (<see cref="TerminalSession.HasExited"/> is set after <c>SettleOutput</c>), and the
-    /// pipe takes bytes without an acknowledgement — a paste in that window is <c>pasted</c> for text
-    /// no program reads. The refusals below cover what the host KNOWS at the time of the call.</summary>
+    /// that a program read it: the pipe takes bytes without an acknowledgement, and a child's exit
+    /// is observed asynchronously (<see cref="ISession.HasExited"/>; how late is per backend — see
+    /// <see cref="ExitedPane"/>), so a write before the observation may be accepted for text no
+    /// program reads. The refusals below cover what the host KNOWS at the time of the call.</summary>
     public const string Pasted = "pasted";
     /// <summary>Nothing was sent: the text was empty and so was what the clipboard gave. NOT proof
     /// that the clipboard is empty — a clipboard that could not be opened or read, or holds no text
@@ -32,11 +32,17 @@ public static class SessionPastes
     public const string ReadOnlyPane = "pane is read-only";
     /// <summary>The refusal for a pane whose process has exited (a single-pane session keeps the
     /// exited surface on screen): its input may still take bytes, but no program reads them.
-    /// Answered before the clipboard is read. It follows the exit by the output-settle window —
-    /// <see cref="TerminalSession.HasExited"/> is set after <c>SettleOutput</c> returns (one quiet
-    /// 50 ms window, at most 500 ms) — so a paste inside that window answers <see cref="Pasted"/>;
-    /// a caller that retries gets the refusal. The enduring state (an exited pane on screen) is
-    /// refused always; only the transition is not.</summary>
+    /// Answered before the clipboard is read, once the host has OBSERVED the exit: the guard is
+    /// <see cref="ISession.HasExited"/>, which lags the exit by an amount that depends on the
+    /// backend (<see cref="ISession.Exited"/> describes both). In-process,
+    /// <see cref="TerminalSession"/> sets it after its settle window (quiet 50 ms windows, at most
+    /// ten) on the paths that settle, and at once on a start that failed; on <c>server</c> /
+    /// <c>server-rust</c> the host settles on its own session, then the client sees the data pipe
+    /// close and completes a <c>list</c> round trip before <see cref="ServerSession.HasExited"/> is
+    /// set — no figure here bounds that. A call before the observation is answered by the other
+    /// rules (a write may be accepted, or refused for another reason), and nothing promises that a
+    /// retry gets this refusal. The enduring state (an exited pane on screen) is refused always;
+    /// only the transition is not, and nothing here proves child consumption.</summary>
     public const string ExitedPane = "the pane's process has exited";
     /// <summary>The refusal for a write that threw (a broken pipe, a session that never started):
     /// what the exception said, after "paste failed: ". Unlike <see cref="ReadOnlyPane"/> and

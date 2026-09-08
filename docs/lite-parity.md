@@ -293,7 +293,8 @@ products. What differs, each recorded in the P6-lite plan:
   it), `nothing to paste` when neither the text nor the clipboard gave any (no claim about why: an
   empty, non-text or unreadable clipboard alike), refusals `ok:false` before the clipboard is read —
   `pane is read-only` (`session readonly on`, the menu item or the `toggle_read_only` binding),
-  `the pane's process has exited` (a single-pane session keeps the exited surface) — and
+  `the pane's process has exited` (a single-pane session keeps the exited surface; the exit is
+  observed a moment after it happens, so a paste right after a child dies can still be `pasted`) — and
   `paste failed: <why>` when the write threw: that one comes after the payload was picked (the
   clipboard may have been read) and says nothing about how much landed. lite's `session.paste` answers
   `pasted` whatever happened — on an exited pane, on an empty payload (it writes only a non-empty

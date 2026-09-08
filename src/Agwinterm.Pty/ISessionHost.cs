@@ -207,9 +207,11 @@ public interface ISessionHost
     /// What "on" blocks: keys typed at the pane and pastes into it — the interactive paste and
     /// <see cref="SessionPaste"/>, which refuses. <c>session type</c> is NOT blocked (ControlServer
     /// writes it to the child's input directly): a script that must not reach a read-only pane
-    /// checks <c>state</c> first; closing that gap is #257's. <c>session write</c> injects into the
-    /// emulator and never reaches the child (<see cref="ISession.Inject"/>), so read-only has
-    /// nothing to block there — it can still repaint a read-only pane.</summary>
+    /// checks <c>state</c> first; closing that gap is #257's. <c>session write</c> feeds terminal
+    /// OUTPUT into the emulator (<see cref="ISession.Inject"/>) rather than typing its payload into
+    /// the child; it is not blocked by read-only either, and the emulator's normal side effects
+    /// still apply — a repaint, and a terminal-query reply (<c>CSI ? u</c>, <c>DECRQM</c>,
+    /// <c>OSC 11 ?</c>) that the host answers on the child's input.</summary>
     string ReadOnlyOp(string? target, string op);
 
     /// <summary>Plain text of the last completed command's output (FTCS/OSC 133 marks).</summary>
@@ -362,9 +364,10 @@ public interface ISessionHost
     /// with nothing sent and the clipboard unread: a pane that is read-only (<see cref="ReadOnlyOp"/>
     /// on, the menu item or the <c>toggle_read_only</c> binding) with <see cref="RefusePrefix"/> +
     /// <see cref="SessionPastes.ReadOnlyPane"/>; a pane whose process has exited (a single-pane
-    /// session keeps it on screen) with <see cref="SessionPastes.ExitedPane"/> — a refusal that
-    /// follows the exit by the output-settle window (one quiet 50 ms window, at most 500 ms), so
-    /// a paste inside it is <see cref="SessionPastes.Pasted"/>. Refused AFTER the
+    /// session keeps it on screen) with <see cref="SessionPastes.ExitedPane"/> — refused once the
+    /// exit has been OBSERVED (<see cref="ISession.HasExited"/>); the observation lags the exit by
+    /// a backend-specific amount, and a call before it may still be accepted (see that constant).
+    /// Refused AFTER the
     /// payload was picked (so the clipboard may have been read) and with delivery unknown: a write
     /// that threw, with <see cref="SessionPastes.Failed"/> — a prefix may have reached the pane, so
     /// a caller must not retry blindly. No pane: the refusal above, first.</summary>

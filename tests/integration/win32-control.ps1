@@ -1654,9 +1654,6 @@ finally {
     foreach ($name in $savedEnv.Keys) {
         [Environment]::SetEnvironmentVariable($name, $savedEnv[$name])
     }
-    foreach ($name in $savedEnv.Keys) {
-        [Environment]::SetEnvironmentVariable($name, $savedEnv[$name])
-    }
 }
 
 if ($script:clipboardNotRestored) { "CLIPBOARD NOT RESTORED: $script:clipboardNotRestored — do not release the suite token as cleanup-confirmed; recover with -RestoreClipboard" }
