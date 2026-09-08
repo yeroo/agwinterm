@@ -52,9 +52,11 @@ P10a-lite [#54](https://github.com/yeroo/agliteterm/pull/54) implements `config.
 `theme.list/set`, `settings.open` and `keymap.reload`, plus configurable new-replica scrollback
 and copy-on-select. Lite uses validated, per-value HKCU persistence, not agwinterm.conf.
 
-Remaining P10b work: `omp.list/set`, `font`, `profiles.list/reload`, and opt-in replay of captured
-commands. Theme names are lite's four UI modes, not the full app's terminal-theme catalog.
-P10 as a whole is not complete.
+P10b [lite #57](https://github.com/yeroo/agliteterm/pull/57) adds `omp.list/set`,
+`profiles.list/reload`, and opt-in replay of captured commands; delivery gates are still pending.
+Font targeting remains excluded under Boris's no-zoom rule. Theme names are lite's four UI modes,
+not the full app's terminal-theme catalog; custom profiles have the explicit subset described below.
+P10 does not claim complete appearance/profile-schema parity.
 
 ### Commands and installers
 `command.list` · `command.run` · `command.leader` · `install.cli` · `install.hooks` ·
@@ -140,9 +142,9 @@ lite's README and its shipped skill text rather than left for a reader to trip o
   could not be "dimmed". The sidebar row — lite's one per-session text surface — draws the context
   dimmed after the name in its post-paint pass, beside the pennant and the unread pill it already
   draws, and the badges do not move (`qa/persistence.md` there has the capture).
-- **`replayOnRestore` is a constant `false`.** It describes replay of captured `K` commands, which
-  lite never types back. P9's explicit `R` pins and `B` bindings are separate and do not change
-  this answer. A future captured-command replay setting belongs to the configuration batch.
+- **P3 shipped `replayOnRestore` as constant `false`.** P10b changes it to the current
+  default-off `restore-commands` setting. P9's explicit `R` pins and `B` bindings remain
+  independent of that setting and take precedence over captured commands.
   The capture itself is in-process (one Toolhelp32 snapshot plus the PEB read lite
   already does for a shell's cwd — milliseconds, no child process, so none of the CIM query's
   timeout-and-kill semantics), with agwinterm's default denylist frozen as a constant: lite has no
@@ -342,7 +344,7 @@ Codex-only confirmation reported no findings from two healthy independent review
 - **Explicit replay.** `restore` pins a command; `bind` supplies a verbatim command that wins over
   the pin. Additive `R`/`B` state fields preserve quotes, backslashes and Unicode. Replay waits
   2500 ms (not a shell-readiness proof), re-resolves current state, and skips adopted or gone shells.
-  Captured `K` commands never replay. Lite accepts a session id/name for binding to its own shell;
+  Captured `K` commands do not replay in P9; P10b adds explicit opt-in. Lite accepts a session id/name for binding to its own shell;
   agwinterm uses pane-id resolution and lower-cases binding text. Lite saves before replying;
   agwinterm posts the update.
 - **Split and navigation.** `resize` persists slot-0's ratio as `G`, clamps to 0.05..0.95, validates
@@ -393,6 +395,34 @@ unchanged from the reviewed revision. Full Windows CI and delivery evidence are 
 and [run 34225641992](https://github.com/yeroo/agliteterm/actions/runs/34225641992).
 No new canonical conformance steps are introduced. Font targeting, profiles, OMP and captured
 command replay remain P10b, not delivered features of P10a.
+
+### P10b-lite shell configuration — delivery pending
+
+agliteterm [#57](https://github.com/yeroo/agliteterm/pull/57) adds four verbs and two settings,
+`restore-commands` (DWORD, default false) and `omp-theme` (REG_SZ). No canonical contract change.
+
+- `profiles.json` is read from lite's app-data directory. Missing files use detected shells in
+  memory; list/reload never seeds, repairs or overwrites the file. A malformed reload retains the
+  last good catalog. Exact names ignore ASCII case. Startup, dialog and API creation resolve the
+  same catalog; existing sessions retain their resolved executable, argv and cwd.
+- The supported profile fields are name/command/args/cwd. Nonempty env/icon, elevation and unknown
+  properties refuse; this is not full agwinterm profile-schema parity. Control-character argv
+  also refuses because legacy S/P records cannot preserve those bytes. Empty argv retains
+  PowerShell prompt integration; explicit nonempty argv remains unchanged.
+- Captured replay is opt-in, only on fresh restored shells, with binding B before pin R before
+  captured K. Dispatch rechecks current eligibility; adopted, exited, gone or read-only panes
+  receive no replay. K2 losslessly stores captures containing tabs/newlines using the R/B codec.
+  Older builds ignore K2 and drop those exceptional captures on their next save.
+- OMP discovery reads local installed themes; it downloads/installs nothing and edits no shell
+  profile. Live initialization requires a writable PowerShell pane at an observed prompt. Replies
+  distinguish bytes written from shell success, and disclose persistence failures. Persisted
+  themes affect eligible new implicit PowerShell setup, not adopted shells or explicit argv.
+  Themes/tool output can execute shell code and must be trusted.
+- Font zoom/targeting is not implemented: Boris's no-zoom decision still stands. There is no
+  silent substitution of a global font change for a targeted one.
+
+Local acceptance and independent Codex-only review/CI evidence are tracked in the PR. This status
+update must not merge before the implementation and its required gates.
 
 ---
 
