@@ -89,7 +89,7 @@ public interface ISession : IDisposable
     /// this contract that is, exhaustively, the alt-screen flag (any alt-screen mode: <c>?47</c>,
     /// <c>?1047</c>, <c>?1049</c>), the scroll generation and history count (they move only when a
     /// line is pushed off the top of the main screen into scrollback: scrollback on, no partial
-    /// region, and a line feed, <c>IND</c>, <c>NEL</c> or <c>SU</c> at the bottom margin — plain
+    /// region, and a line feed, <c>IND</c> or <c>NEL</c> at the bottom margin, or <c>SU</c> — plain
     /// text that wraps or ends a line included; a downward scroll or an <c>IL</c>/<c>DL</c> edit
     /// moves neither) and the scroll region (<c>DECSTBM</c>: while a PARTIAL region is set — a
     /// reserved status line — a selection stays on its cells instead of following its text; a
