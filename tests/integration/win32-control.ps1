@@ -920,7 +920,8 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         # clipboard is still the sentinel's — its generation, or exactly its content (`restored`, proven
         # by a read-back under the same open; a copy made during the poll is `changed`, kept). `mutated`
         # (the clipboard was emptied and the snapshot could not be set or proven), `unread` (whose it is
-        # could not be read) and a restore still `unopened` after its retries (the sentinel still on it)
+        # could not be read) and a restore still `unopened` after its retries (it never got in: nothing
+        # put back, what the clipboard holds now unseen)
         # are CLIPBOARD NOT RESTORED: a FAIL regardless of -Strict, the file kept and named, and the
         # run's summary line says so (the suite token must not be released with --cleanup-confirmed). The case does not
         # run (SKIP; FAIL under -Strict, where a hosted runner's clipboard is empty, the cheapest case)
@@ -928,9 +929,12 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         # metafile, a palette, an owner-display or private-range format), or when the sentinel write was
         # refused before anything was emptied (`unopened`, `failed`, a pre-write `changed`), replaced by
         # someone else's copy before its generation could be read (a post-write `changed`: theirs is
-        # kept, as any copy would have replaced the snapshot) or undone and proven (`put back`). The
-        # file is kept only on those three states and is named on a plain line (Check
-        # drops its detail on PASS). No detail line prints clipboard contents: format names, counts and lengths only.
+        # kept, as any copy would have replaced the snapshot), undone and proven (`put back`), or put
+        # in but not READ back as still there (`unverified`: a paste would consume whatever is there,
+        # so nothing is pasted; the restore runs as after a `written` and proves ownership by content).
+        # The file is kept only on a `mutated` write, an `unread` restore and a restore still
+        # `unopened` after its retries, and is named on a plain line (Check drops its detail on PASS).
+        # No detail line prints clipboard contents: format names, counts and lengths only.
         # The sentinel lands in the RIGHT pane's shell (the pane underneath the overlay, by its own id)
         # and is read back with `session text`.
         $p6Name = 'session paste --target <right pane> with NO text pastes the clipboard'
@@ -955,14 +959,14 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
                     }
                 }
             } finally {
-                if ($p6Write.State -eq 'written') { $p6Restore = Invoke-ClipboardRestore $p6Snap $p6Write $p6File }
+                if ($p6Write.State -eq 'written' -or $p6Write.State -eq 'unverified') { $p6Restore = Invoke-ClipboardRestore $p6Snap $p6Write $p6File }
                 # The file is the only copy after a `mutated` write. Every other non-written state needs
                 # none: the clipboard holds the snapshot (`put back`), was never emptied (`unopened`,
                 # `failed`, a pre-write `changed`), or holds someone else's copy that replaced the
                 # sentinel before its generation could be read (a post-write `changed`: as any copy
-                # would have replaced the snapshot; theirs is kept). After a write,
-                # Invoke-ClipboardRestore decides: the file goes only on `restored` or `changed`.
-                elseif ($p6Write.State -ne 'mutated') { Remove-Item -LiteralPath $p6File -Force -ErrorAction SilentlyContinue }
+                # would have replaced the snapshot; theirs is kept). After a write (`written`,
+                # `unverified`), Invoke-ClipboardRestore decides: the file goes only on `restored` or `changed`.
+                elseif ($p6Write.State -ne 'mutated' -and $p6Write.State -ne 'unverified') { Remove-Item -LiteralPath $p6File -Force -ErrorAction SilentlyContinue }
             }
         }
         if (-not $p6Why -and (Test-Path -LiteralPath $p6File)) { "  (clipboard snapshot kept at $p6File)" }   # a plain line: Check drops its detail on PASS
@@ -972,7 +976,7 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
             Check "$p6Name — CLIPBOARD NOT RESTORED (fails regardless of -Strict)" $false "$script:clipboardNotRestored; recover with: tests/integration/win32-control.ps1 -RestoreClipboard '$p6File'"
         } elseif ($p6Why -or $p6Write.State -ne 'written') {
             if ($p6Why -and (Test-Path -LiteralPath $p6File)) { Remove-Item -LiteralPath $p6File -Force -ErrorAction SilentlyContinue }   # saved, then refused before any write
-            if (-not $p6Why) { $p6Why = "the sentinel was not written: $p6Write" }
+            if (-not $p6Why) { $p6Why = "the sentinel is not known to be on the clipboard: $p6Write" }   # never written, written and replaced (a post-write `changed`), undone (`put back`), or not read back as still there (`unverified`, restore attempted above): the Detail says which
             if ($Strict) { Check "$p6Name (NOT RUN: $p6Why)" $false }
             else { "  SKIP  $p6Name — $p6Why" }
         } else {

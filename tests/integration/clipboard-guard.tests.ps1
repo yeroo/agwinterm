@@ -43,7 +43,7 @@ try {
     $w = $guard::WriteSentinel('agw-paste-1b', $snap)
     $f.FailOpensAfter = 0
     $r = Invoke-ClipboardRestore $snap $w $null
-    Check 'the second open refused → written, generation unverified (the writer''s number, three behind); Restore() proves the sentinel by content → restored' ($w.State -eq 'written' -and $w.Detail -like 'generation unverified:*' -and $w.Sequence -eq $r.Sequence - 3 - 5 -and $r.State -eq 'restored' -and (Same $f $snap)) "w=$w r=$r"
+    Check 'the second open refused → unverified (the case does not run; the writer''s number, three behind); Restore() proves the sentinel by content → restored' ($w.State -eq 'unverified' -and $w.Detail -like '*could not be reopened*' -and $w.Sequence -eq $r.Sequence - 3 - 5 -and $r.State -eq 'restored' -and (Same $f $snap)) "w=$w r=$r"
     $f = New-Fake
     $snap = $guard::Take()
     $f.FailOpensAfter = 2
@@ -143,7 +143,8 @@ try {
     Check 'Take() throws when the clipboard cannot be opened' $threw
 
     # Round 6, Major 1: written, then the clipboard cannot be reopened for the restore — `unopened` five
-    # times over. The sentinel is still on the clipboard, so the file is KEPT (it was deleted, and the
+    # times over. The sentinel was on the clipboard when the write closed and nothing was put back, so the
+    # file is KEPT (it was deleted, and the
     # case passed over a clipboard still holding the sentinel).
     $f = New-Fake
     $snap = $guard::Take()
@@ -176,6 +177,11 @@ try {
     $r = Invoke-ClipboardRestore $snap $w $file
     Check 'a synthesized format that cannot be read → unread too' ($r.State -eq 'unread' -and (Test-Path -LiteralPath $file)) "$r"
     $f.GetFails = 0
+    # Round 7: a failed enumeration is not an empty clipboard (which is positively theirs → changed).
+    $f.FormatsFail = $true
+    $r = Invoke-ClipboardRestore $snap $w $file
+    Check 'the formats cannot be enumerated → unread (not changed: an empty clipboard is), nothing touched, the file kept' ($r.State -eq 'unread' -and $r.Detail -like '*could not be enumerated*' -and $f.Sets -eq $sets -and $f.Empties -eq $empties -and (Test-Path -LiteralPath $file)) "$r"
+    $f.FormatsFail = $false
     $r = Invoke-ClipboardRestore $snap $w $file
     Check 'readable again: the same write restores by content; the file deleted then' ($r.State -eq 'restored' -and (Same $f $snap) -and -not (Test-Path -LiteralPath $file)) "$r"
     Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
@@ -183,10 +189,40 @@ try {
     $snap = $guard::Take()
     $f.GetFails = 13
     $w = $guard::WriteSentinel('agw-paste-10b', $snap)
-    Check 'CF_UNICODETEXT unreadable under the second open → written, generation unverified, the inside number' ($w.State -eq 'written' -and $w.Detail -like 'generation unverified*could not be read*' -and $w.Sequence -eq $f.Seq - 3) "$w seq=$($f.Seq)"
+    Check 'CF_UNICODETEXT unreadable under the second open → unverified (the case does not run), the inside number' ($w.State -eq 'unverified' -and $w.Detail -like '*could not be read*' -and $w.Sequence -eq $f.Seq - 3) "$w seq=$($f.Seq)"
     $f.GetFails = 0
     $r = Invoke-ClipboardRestore $snap $w $null
     Check 'then restored by content' ($r.State -eq 'restored' -and (Same $f $snap)) "$r"
+    $f = New-Fake
+    $snap = $guard::Take()
+    $f.FormatsFail = $true
+    $w = $guard::WriteSentinel('agw-paste-10d', $snap)
+    Check 'the formats cannot be enumerated under the second open → unverified (the case does not run), the inside number' ($w.State -eq 'unverified' -and $w.Detail -like '*could not be enumerated*' -and $w.Sequence -eq $f.Seq - 3) "$w seq=$($f.Seq)"
+    $f.FormatsFail = $false
+    $r = Invoke-ClipboardRestore $snap $w $null
+    Check 'then restored by content' ($r.State -eq 'restored' -and (Same $f $snap)) "$r"
+    $f = New-Fake
+    $f.FormatsFail = $true
+    $snap = $guard::Take()
+    Check 'Take() on a clipboard whose formats cannot be enumerated → Unsupported (the case does not run), not an empty snapshot' ($snap.Unsupported -like '*could not be enumerated*') "unsupported=$($snap.Unsupported) names=$($snap.Names)"
+    $f.FormatsFail = $false
+    # Round 7 (Codex): differing CF_UNICODETEXT read BEFORE a later format fails → the difference is
+    # positive evidence: `changed` at the second open (no paste), `changed` at the restore (theirs kept).
+    $f = New-Fake
+    $snap = $guard::Take()
+    $f.FailOpensAfter = 2
+    $w = $guard::WriteSentinel('agw-paste-10e', $snap)
+    $f.FailOpensAfter = 0
+    $f.UserWrites(13, $U.GetBytes("theirs`0")); $f.Store[16] = [byte[]](0, 0, 0, 0); $f.GetFails = 16
+    $r = Invoke-ClipboardRestore $snap $w $null
+    Check 'other text before an unreadable CF_LOCALE → changed at the restore (not unread), theirs kept' ($w.State -eq 'unverified' -and $r.State -eq 'changed' -and $U.GetString($f.Store[13]) -eq "theirs`0") "w=$w r=$r"
+    $f.GetFails = 0
+    $f = New-Fake
+    $snap = $guard::Take()
+    $f.CopyAtSecondOpen = $U.GetBytes("theirs`0"); $f.GetFails = 16
+    $w = $guard::WriteSentinel('agw-paste-10f', $snap)
+    Check 'other text before an unreadable CF_LOCALE under the SECOND open → changed (no paste, not unverified)' ($w.State -eq 'changed' -and $U.GetString($f.Store[13]) -eq "theirs`0") "$w"
+    $f.GetFails = 0
     # Positively theirs stays `changed`: a format the sentinel never carries beside an unreadable one, an
     # image (an Unsupported id), other text, an emptied clipboard.
     $f = New-Fake

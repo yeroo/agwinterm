@@ -20,21 +20,27 @@
 #                                             a CF_UNICODETEXT — and moves the sequence once per format, so
 #                                             the number read under the writer's open is NOT final: live it
 #                                             is three behind.) The generation is read under a SECOND open
-#                                             that finds the clipboard holding exactly the sentinel; when
-#                                             that open is refused, or the clipboard under it shows only
-#                                             formats of the sentinel's kind but one could not be READ,
-#                                             Sequence is the number read under the writer's open and
-#                                             Detail says `generation unverified` — the restore then
-#                                             proves ownership by content.
+#                                             that finds the clipboard holding exactly the sentinel.
+#                               `unverified` — the sentinel was put and the close completed, but whether
+#                                             it is STILL in could not be read: the second open was
+#                                             refused, or under it every format seen is of the sentinel's
+#                                             kind but one could not be read (or the formats could not be
+#                                             enumerated). Sequence is the number read under the writer's
+#                                             open. The case does NOT run (a paste would consume whatever
+#                                             is there: round 7 — a copy whose text differed but whose
+#                                             later format was unreadable was pasted as if it were ours);
+#                                             the restore MUST still run and proves ownership by content.
 #                               `put back`  — the sentinel could not be set after the clipboard was
 #                                             emptied; the snapshot was put back and PROVEN under the
 #                                             same open. Nothing lost; the case cannot run.
 #                               `mutated`   — emptied, and neither the sentinel nor the snapshot could be
 #                                             set and proven: the clipboard holds neither reliably.
 #   Restore(snap, write)        `unopened`  — nothing touched (retry). NOT the write's `unopened`: the
-#                                             sentinel IS on the clipboard, so a restore still here after
-#                                             its retries has left it there — CLIPBOARD NOT RESTORED for
-#                                             the run, the snapshot file kept, exactly as `mutated`.
+#                                             sentinel was on the clipboard when the write closed, and a
+#                                             restore still here after its retries never got in — it
+#                                             saw nothing of what the clipboard holds now and put
+#                                             nothing back — CLIPBOARD NOT RESTORED for the run, the
+#                                             snapshot file kept, exactly as `mutated`.
 #                               `changed`   — the clipboard is POSITIVELY not ours: the sequence is not
 #                                             the write's generation AND the clipboard holds something
 #                                             the sentinel never has — a format other than CF_UNICODETEXT
@@ -44,7 +50,10 @@
 #                                             nothing touched.
 #                               `unread`    — whose it is is UNKNOWN: the sequence is not the write's
 #                                             generation, every format seen is of the sentinel's kind,
-#                                             but one of them could not be read. Nothing touched, never
+#                                             but one of them could not be read — or the formats could
+#                                             not be enumerated at all (EnumClipboardFormats fails with
+#                                             the same zero as "no more"; only GetLastError tells, and
+#                                             an EMPTY clipboard is `changed`). Nothing touched, never
 #                                             retried, never taken for either side — CLIPBOARD NOT
 #                                             RESTORED for the run, the snapshot file kept; the human
 #                                             decides with -RestoreClipboard.
@@ -65,7 +74,7 @@
 # Add-Type cannot replace a loaded type: a ClipboardGuard from an older run of this file in the same
 # shell would run its old C# under the new source with no warning. Revision below is bumped with every
 # change to the C#, and a loaded type that does not carry it stops the run.
-$clipboardGuardRevision = 3
+$clipboardGuardRevision = 4
 if (('Agwinterm.Win32ControlTest.ClipboardGuard' -as [type]) -and
     ('Agwinterm.Win32ControlTest.ClipboardGuard' -as [type])::Revision -ne $clipboardGuardRevision) {
     throw "a ClipboardGuard type from an older run of this file is loaded in this shell (revision $(('Agwinterm.Win32ControlTest.ClipboardGuard' -as [type])::Revision), source $clipboardGuardRevision); run it from a fresh pwsh"
@@ -88,6 +97,9 @@ namespace Agwinterm.Win32ControlTest
         bool Open();
         void Close();
         bool Empty();
+        /// <summary>Every format id under the open, in enumeration order — or null when the enumeration
+        /// FAILED, which EnumClipboardFormats reports with the same zero as "no more formats" (GetLastError
+        /// tells them apart). An empty clipboard is an empty array, never null.</summary>
         uint[] Formats();
         /// <summary>The bytes of a format, or null when the data cannot be read, sized, or locked
         /// (a non-HGLOBAL, a delayed render whose owner is gone).</summary>
@@ -121,7 +133,11 @@ namespace Agwinterm.Win32ControlTest
         public uint[] Formats()
         {
             var formats = new List<uint>();
-            for (uint f = EnumClipboardFormats(0); f != 0; f = EnumClipboardFormats(f)) formats.Add(f);
+            uint f = EnumClipboardFormats(0);
+            while (f != 0) { formats.Add(f); f = EnumClipboardFormats(f); }
+            // The end of the list and a failure are both zero; only the last error tells them apart
+            // (ERROR_SUCCESS at the end). A failure must not read as an empty clipboard.
+            if (Marshal.GetLastWin32Error() != 0) return null;
             return formats.ToArray();
         }
 
@@ -267,8 +283,9 @@ namespace Agwinterm.Win32ControlTest
     }
 
     /// <summary>What a write left behind: one of the states in the file header, the generation the
-    /// clipboard holds after it (meaningful for `written` only: every other state's number is read
-    /// under the open, before a close that may synthesize formats and move it), and the failure text.</summary>
+    /// clipboard holds after it (meaningful for `written` only: `unverified` and every other state
+    /// carry a number read under an open, before a close that may synthesize formats and move it), and
+    /// the failure text.</summary>
     public sealed class ClipboardWrite
     {
         public string State;
@@ -283,7 +300,7 @@ namespace Agwinterm.Win32ControlTest
     public static class ClipboardGuard
     {
         /// <summary>Bumped with every change to this C#; the .ps1 refuses a loaded type without it.</summary>
-        public const int Revision = 3;
+        public const int Revision = 4;
         public const uint CF_UNICODETEXT = 13;
 
         /// <summary>The clipboard the guard talks to: the native one unless a test swaps in a fake.</summary>
@@ -345,13 +362,14 @@ namespace Agwinterm.Win32ControlTest
         static ClipboardSnapshot TakeOpen()
         {
             uint[] all = Api.Formats();
+            if (all == null) return new ClipboardSnapshot { Unsupported = "the formats could not be enumerated", Seen = new uint[0] };
             var keep = new List<uint>();
             var data = new List<byte[]>();
             foreach (uint f in all)
             {
                 if (IsUnsupported(f)) return new ClipboardSnapshot { Unsupported = "format " + f + " (" + FormatName(f) + ")", Seen = all };
                 byte[] bytes = Api.Get(f);
-                if (bytes == null) return new ClipboardSnapshot { Unsupported = "format " + f + " (" + FormatName(f) + "), whose data could not be read", Seen = all };
+                if (bytes == null) return new ClipboardSnapshot { Unsupported = "format " + f + " (" + FormatName(f) + "), whose data could not be read", Seen = all, Formats = keep.ToArray(), Data = data.ToArray() };   // what WAS read stays: differing text before the failure is positive evidence (round 7)
                 keep.Add(f);
                 data.Add(bytes);
             }
@@ -437,32 +455,34 @@ namespace Agwinterm.Win32ControlTest
         {
             uint after = Api.Sequence();
             if (after == inside) return new ClipboardWrite { State = "written", Sequence = inside, Sentinel = text };
-            if (!TryOpen()) return new ClipboardWrite { State = "written", Sequence = inside, Sentinel = text, Detail = "generation unverified: the close moved the sequence " + inside + " -> " + after + " and the clipboard could not be reopened; the restore proves ownership by content" };
+            if (!TryOpen()) return new ClipboardWrite { State = "unverified", Sequence = inside, Sentinel = text, Detail = "the close moved the sequence " + inside + " -> " + after + " and the clipboard could not be reopened to read whether the sentinel is still in; the case does not run, the restore proves ownership by content" };
             try
             {
                 ClipboardSnapshot back = TakeOpen();
                 uint now = Api.Sequence();
                 string who = Ownership(back, text);
                 if (who == "ours") return new ClipboardWrite { State = "written", Sequence = now, Sentinel = text, Detail = "generation " + now + " (the close moved the sequence " + inside + " -> " + now + "; the sentinel is in)" };
-                if (who == "unread") return new ClipboardWrite { State = "written", Sequence = inside, Sentinel = text, Detail = "generation unverified: the close moved the sequence " + inside + " -> " + now + " and under the second open " + back.Unsupported + "; the restore proves ownership by content" };
+                if (who == "unread") return new ClipboardWrite { State = "unverified", Sequence = inside, Sentinel = text, Detail = "the close moved the sequence " + inside + " -> " + now + " and under the second open " + back.Unsupported + ", so whether the sentinel is still in could not be read; the case does not run, the restore proves ownership by content" };
                 return new ClipboardWrite { State = "changed", Sequence = now, Sentinel = text, Detail = "a copy replaced the sentinel before its generation could be read (sequence " + inside + " -> " + now + "; the clipboard holds " + (back.Unsupported ?? back.Names) + "); theirs is kept" };
             }
             finally { Api.Close(); }
         }
 
-        // Exactly our sentinel: CF_UNICODETEXT is its text and every other format is one the system
-        // synthesizes from it. Any other format, or other text, is someone's copy.
         // Whose the clipboard is, read back under an open. "ours": exactly the sentinel. "theirs":
         // POSITIVELY something else — a format the sentinel never carries (anything but CF_UNICODETEXT
         // and the three the system synthesizes from it: CF_TEXT, CF_OEMTEXT, CF_LOCALE), other text, no
         // text, an empty clipboard, or no sentinel of ours at all. "unread": every id seen is of the
-        // sentinel's kind but a datum could not be read — unknown, and never taken for either side
-        // (round 6: a read failure used to answer "theirs", and the file went with it).
+        // sentinel's kind but a datum could not be read (and what WAS read before it does not differ), or
+        // the formats could not be enumerated at all (Seen empty, Unsupported set) — unknown, and never
+        // taken for either side (round 6: a read failure used to answer "theirs", and the file went with
+        // it; round 7: so did a failed enumeration, which looks like an empty clipboard — and a failure
+        // AFTER differing text hid the difference).
         static string Ownership(ClipboardSnapshot back, string text)
         {
             if (text == null) return "theirs";
             foreach (uint f in back.Seen) if (f != CF_UNICODETEXT && f != 1 && f != 7 && f != 16) return "theirs";
-            if (back.Unsupported != null) return "unread";
+            // What was read is judged before what was not: a CF_UNICODETEXT that differs is positive
+            // evidence even when a later format could not be read.
             bool textSeen = false;
             for (int i = 0; i < back.Formats.Length; i++)
             {
@@ -472,6 +492,7 @@ namespace Agwinterm.Win32ControlTest
                 for (int j = 0; j < want.Length; j++) if (back.Data[i][j] != want[j]) return "theirs";
                 textSeen = true;
             }
+            if (back.Unsupported != null) return "unread";
             return textSeen ? "ours" : "theirs";
         }
 
@@ -531,12 +552,18 @@ namespace Agwinterm.Win32ControlTest
         public bool EmptyFails;
         /// <summary>A format whose Get() returns null (its data cannot be read) while non-zero.</summary>
         public uint GetFails;
+        /// <summary>Formats() returns null (the enumeration failed) while set.</summary>
+        public bool FormatsFail;
+        /// <summary>When set, the next Open() after a close that synthesized formats first replaces the
+        /// clipboard with this CF_UNICODETEXT (plus the three synthesized ids) — a user's copy landing
+        /// between the writer's close and the second open. Consumed once.</summary>
+        public byte[] CopyAtSecondOpen;
         /// <summary>How many Set calls fail (consecutively) from now; each failure counts down.</summary>
         public int SetFailures;
         public int Opens, Empties, Sets;
         bool unicodeSetUnderThisOpen;
 
-        public bool Open() { if (OpenFails || (FailOpensAfter > 0 && Opens >= FailOpensAfter)) return false; if (IsOpen) throw new InvalidOperationException("opened twice"); IsOpen = true; Opens++; unicodeSetUnderThisOpen = false; return true; }
+        public bool Open() { if (OpenFails || (FailOpensAfter > 0 && Opens >= FailOpensAfter)) return false; if (IsOpen) throw new InvalidOperationException("opened twice"); if (CopyAtSecondOpen != null && Opens >= 2) { byte[] c = CopyAtSecondOpen; CopyAtSecondOpen = null; UserWrites(13, c); Store[1] = new byte[] { 0 }; Store[7] = new byte[] { 0 }; Store[16] = new byte[] { 0, 0, 0, 0 }; } IsOpen = true; Opens++; unicodeSetUnderThisOpen = false; return true; }
         public void Close()
         {
             if (!IsOpen) throw new InvalidOperationException("closed while not open");
@@ -549,7 +576,7 @@ namespace Agwinterm.Win32ControlTest
         }
         void Held() { if (!IsOpen) throw new InvalidOperationException("clipboard call while not open"); }
         public bool Empty() { Held(); Empties++; if (EmptyFails) return false; Store.Clear(); Seq++; unicodeSetUnderThisOpen = false; return true; }
-        public uint[] Formats() { Held(); var keys = new List<uint>(Store.Keys); return keys.ToArray(); }
+        public uint[] Formats() { Held(); if (FormatsFail) return null; var keys = new List<uint>(Store.Keys); return keys.ToArray(); }
         public byte[] Get(uint format) { Held(); if (GetFails != 0 && format == GetFails) return null; byte[] b; return Store.TryGetValue(format, out b) ? (byte[])b.Clone() : null; }
         public bool Set(uint format, byte[] bytes)
         {
@@ -575,8 +602,10 @@ namespace Agwinterm.Win32ControlTest
 # the two states that PROVE the clipboard is not ours any more — `restored` (it holds the snapshot,
 # read back) and `changed` (the user's newer copy replaced it, as any copy would have) — and kept on
 # every other: `mutated` (the only copy), `unread` (whose it is is unknown), and `unopened` after the
-# fifth try (the sentinel is still on the clipboard: the restore never got in — round 6: that file was
-# deleted on the reasoning that "nothing was written", which is true of the WRITE's `unopened` only).
+# fifth try (the restore never got in: it saw nothing of what the clipboard holds now and put nothing
+# back; the sentinel was on it when the write closed — round 6: that file was deleted on the reasoning
+# that "nothing was written", which is true of the WRITE's `unopened` only; round 7: the Detail said the
+# sentinel IS still on it, which a refused open cannot know).
 function Invoke-ClipboardRestore($snap, $write, [string]$file) {
     $result = $null
     for ($i = 0; $i -lt 5; $i++) {
@@ -584,7 +613,7 @@ function Invoke-ClipboardRestore($snap, $write, [string]$file) {
         if ($result.State -ne 'unopened') { break }
         Start-Sleep -Milliseconds 200
     }
-    if ($result.State -eq 'unopened') { $result.Detail = 'the clipboard could not be opened in 5 tries; the sentinel is still on it' }
+    if ($result.State -eq 'unopened') { $result.Detail = 'the clipboard could not be opened in 5 tries: nothing was put back, and what it holds now was not seen (the sentinel was on it when the write closed)' }
     if (($result.State -eq 'restored' -or $result.State -eq 'changed') -and $file) { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }
     $result
 }
