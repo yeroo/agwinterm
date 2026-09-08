@@ -426,7 +426,6 @@ and the list should grow as more turn up.
 
 | Feature | Notes |
 | --- | --- |
-| Live scrollback cap changes | P10a configures new replicas; existing buffers and the host cap remain unchanged |
 | Images / graphics | see the `image.*` verbs above |
 | Dashboard, quick-terminal parity, multi-window | agwinterm has a window library; lite has one window plus popups |
 
