@@ -210,8 +210,9 @@ public interface ISessionHost
     /// checks <c>state</c> first; closing that gap is #257's. <c>session write</c> feeds terminal
     /// OUTPUT into the emulator rather than typing its payload into the child; it is not blocked by
     /// read-only either, and everything <see cref="ISession.Inject"/> says an injected payload can
-    /// still do (answer a query on the child's input, set a mode, raise a host action) applies to a
-    /// read-only pane — that doc is the one statement of it.</summary>
+    /// still do (answer a query on the child's input, set a mode, move the screen state the pane
+    /// reads back, raise a host action) applies to a read-only pane — that doc is the one statement
+    /// of it.</summary>
     string ReadOnlyOp(string? target, string op);
 
     /// <summary>Plain text of the last completed command's output (FTCS/OSC 133 marks).</summary>
