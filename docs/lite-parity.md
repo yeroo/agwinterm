@@ -53,7 +53,7 @@ P10a-lite [#54](https://github.com/yeroo/agliteterm/pull/54) implements `config.
 and copy-on-select. Lite uses validated, per-value HKCU persistence, not agwinterm.conf.
 
 P10b [lite #57](https://github.com/yeroo/agliteterm/pull/57) adds `omp.list/set`,
-`profiles.list/reload`, and opt-in replay of captured commands; delivery gates are still pending.
+`profiles.list/reload`, and opt-in replay of captured commands; delivery evidence is in the linked PR.
 Font targeting remains excluded under Boris's no-zoom rule. Theme names are lite's four UI modes,
 not the full app's terminal-theme catalog; custom profiles have the explicit subset described below.
 P10 does not claim complete appearance/profile-schema parity.
@@ -396,7 +396,7 @@ and [run 34225641992](https://github.com/yeroo/agliteterm/actions/runs/342256419
 No new canonical conformance steps are introduced. Font targeting, profiles, OMP and captured
 command replay remain P10b, not delivered features of P10a.
 
-### P10b-lite shell configuration — delivery pending
+### P10b-lite shell configuration
 
 agliteterm [#57](https://github.com/yeroo/agliteterm/pull/57) adds four verbs and two settings,
 `restore-commands` (DWORD, default false) and `omp-theme` (REG_SZ). No canonical contract change.
@@ -424,8 +424,8 @@ agliteterm [#57](https://github.com/yeroo/agliteterm/pull/57) adds four verbs an
 - Font zoom/targeting is not implemented: Boris's no-zoom decision still stands. There is no
   silent substitution of a global font change for a targeted one.
 
-Local acceptance and independent Codex-only review/CI evidence are tracked in the PR. This status
-update must not merge before the implementation and its required gates.
+Local acceptance and independent Codex-only review/CI evidence are tracked in the PR. The
+implementation and its required gates must land before this status update.
 
 ---
 

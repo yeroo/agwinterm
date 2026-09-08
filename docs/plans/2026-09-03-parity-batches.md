@@ -223,7 +223,7 @@ The full Strict Windows CI suite passed, including the same 188 checks. Explicit
 restored shells, never adopted shells; P9 itself does not replay captures (P10b adds opt-in replay). Differences and remaining
 find-bar/divider-drag work are recorded in `docs/lite-parity.md`.
 
-### P10 · lite · the configuration surface — P10a complete, P10b delivery pending
+### P10 · lite · the configuration surface — P10a and P10b shell configuration
 
 P10a [lite #54](https://github.com/yeroo/agliteterm/pull/54) implements `config.get/list/set`,
 `theme.list/set`, `settings.open`, `keymap.reload`, configurable new-replica scrollback and
@@ -236,8 +236,8 @@ The local combined suite passed 287 checks; the isolated driving/configuration m
 two healthy independent reviewers. Exact CI/delivery evidence and deferred metadata are in the PR.
 
 P10b [lite #57](https://github.com/yeroo/agliteterm/pull/57) implements `omp.list/set`,
-`profiles.list/reload`, and opt-in captured-command replay. Delivery remains gated on review and
-full Strict CI. The profile schema explicitly supports name/command/args/cwd, not custom env,
+`profiles.list/reload`, and opt-in captured-command replay. Review and full Strict CI delivery
+evidence is linked from the PR. The profile schema explicitly supports name/command/args/cwd, not custom env,
 icons or elevation. Font targeting is excluded under Boris's fixed-strike/no-zoom decision.
 Current behavior, rollback limits and product differences are recorded in `docs/lite-parity.md`.
 
