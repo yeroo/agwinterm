@@ -187,6 +187,13 @@ the posted `WM_MOUSEWHEEL` that never reaches lite's handler (harness finding, 0
 
 Same model as P6, different surface — split because it is UI work with a different test shape.
 
+**Shipped:** agliteterm [#50](https://github.com/yeroo/agliteterm/pull/50), 2026-09-08,
+main `1e0903a`. Mark mode, seeded/rebindable Select All, word/line mouse selection, drag-autoscroll,
+posted wheel handling and alternate-screen pinning work on frame and popup surfaces. The merged
+P6 contract is mirrored. Local Strict selection acceptance and disposable Windows CI both passed
+70 checks; the full Strict suite also passed. Clipboard/registry and owned-process cleanup are
+guarded in the selection fixture. Remaining legacy shared-desktop fixture safety is lite #51.
+
 ### P8 · lite · mirror Wave 1 — dissolved into per-batch mirrors
 `surface.cursor` · `statusChangedAt` · `version` → **P1-lite — shipped** (agliteterm #20,
 2026-09-04, six revmux rounds; plan `docs/plans/completed/2026-09-03-p1-lite-mirror.md` there) ·

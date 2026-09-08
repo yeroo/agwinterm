@@ -216,8 +216,8 @@ program inside, the chord closing the focused pane's overlay first, the slot mov
 on a swap and dying with its pane — all mirrored. What differs, each recorded in the P5-lite plan:
 
 - **(a)** the session-wide slot is a popup over the window, not a cover inside the content region
-  (P2-lite, unchanged); `copy` on it is always `no selection` — the popup paints no selection and
-  takes no drag (the selection gap above; P6-lite keeps it refusing `selection all`).
+  (P2-lite, unchanged). The former no-selection limitation closed in P7-lite: popup selection
+  paints, takes a drag, and copies its own cells.
 - **(b)** `session text` and `overlay text` default to the WHOLE buffer (scrollback + screen) —
   `--all` is the explicit spelling of lite's bare form, `--lines N` the last N lines of that text
   and `--lines 0` the screen — where agwinterm's and agterm's bare `session text` is the screen
@@ -277,15 +277,15 @@ products. What differs, each recorded in the P6-lite plan:
   difference any more.
 - **(b)** `selection finalize` never answers `finalized (copy-on-select off)`: lite's
   release-copies rule has no off switch (a `CopyOnSelect` knob is P10's, the configuration surface).
-- **(c)** `selection all` on any popup (overlay, quick or scratch — all three share `paintPopup`)
-  is refused `the popup paints no selection`; agwinterm's covers take a selection. P7-lite paints
+- **(c)** Before P7, `selection all` on any popup (overlay, quick or scratch — all three share `paintPopup`)
+  was refused `the popup paints no selection`; agwinterm's covers take a selection. P7-lite paints
   one and lifts this.
 - **(d)** `selection copy`'s clipboard write is posted to the UI thread; the reply counts the text
   posted. A caller reading the clipboard right after waits for the window's next message (the
   suites' 300 ms). When that enqueue fails, `copy` and `finalize` refuse `the clipboard write could
   not be queued; selection unchanged` — the selection is kept for a retry.
-- **(e)** the alt-screen pin covers the VERB; the wheel and the drag still reach main-screen
-  history until P7-lite.
+- **(e)** The P6 alt-screen pin initially covered only the verb. P7-lite extends it to wheel,
+  drag and keyboard selection; none of those routes enters main-screen history from the alt screen.
 - and `copied N chars` counts differently on non-ASCII text: lite counts UTF-8 bytes, agwinterm
   UTF-16 code units (`string.Length`). Same N for ASCII.
 - **(f)** `session.paste` reports what happened in agwinterm only (#256, rounds 8-9): `pasted` when
@@ -309,6 +309,21 @@ shape coverage, not proof that a selection was made — the value is the shell's
 compared, so a no-op `selected all` followed by an empty copy would pass; that proof, and the copy
 itself (`copied N chars`), is each product's own honesty suite's, on a fixture whose content is known.
 
+### Mirrored: P7-lite keyboard and mouse selection shipped
+
+agliteterm [#50](https://github.com/yeroo/agliteterm/pull/50) merged on 2026-09-08 as `1e0903a`.
+Ctrl+Shift+M enters mark mode; arrows/Home/End extend it, Enter or Ctrl+C copies, and Escape cancels.
+Ctrl+Shift+A selects all. Both bindings can be cleared or rebound. Double/triple-click selects a
+word/line; release copies; dragging past a main-screen edge autoscrolls. Posted wheel messages work.
+Frame, split, pane-overlay and overlay/quick/scratch popup surfaces share the selection rules;
+alternate screens stay pinned to their own grid. Captured drags are cancelled on invalidation.
+
+The P6 contract mirror is in step. Local Strict selection acceptance and GitHub Windows CI both
+passed 70 selection checks, and the complete `run-all.ps1 -Strict` passed in CI. The local fixture
+held the shared suite token through owned-process teardown and whole-format clipboard/touched-HKCU
+restoration. Legacy fixture hardening remains [lite #51](https://github.com/yeroo/agliteterm/issues/51);
+those older full-suite fixtures are confined to the disposable CI runner until hardened.
+
 ---
 
 ## Where agliteterm is AHEAD
@@ -325,10 +340,8 @@ Not a one-way list, and these should move the other way.
   elsewhere, so that reply is a guess. lite (P2-lite, its #24) answers `selected` only when
   `GetForegroundWindow` is the window afterwards, and a string starting `not raised:` otherwise —
   still `ok`, the contract's shape, so one script works against both. **agwinterm should copy this.**
-- **Splits scroll into main-screen history on the alt screen.** lite's renderer and hit-test derive
-  their row from the same offset on either screen; agwinterm pins the alt screen to 0. Both are
-  self-consistent (highlight and clipboard agree either way), so this is a difference to decide about
-  rather than a defect — see `qa/product.md` in the lite repo.
+- **Alternate-screen history difference resolved.** Boris chose pinning to the alternate grid.
+  P6-lite applied that rule to selection verbs; P7-lite applied it to wheel, drag and mark mode.
 - ~~**An unknown workspace is refused, not silently swapped** for the active one on `session.new`.
   agwinterm falls back.~~ **Matched in batch P2** (agwinterm **#226**): agwinterm now refuses an
   unknown `--workspace`
@@ -345,13 +358,9 @@ and the list should grow as more turn up.
 
 | Feature | Notes |
 | --- | --- |
-| Mark mode (keyboard selection) | agwinterm: Ctrl+Shift+M, arrows, Enter copies |
-| Select All | no equivalent |
-| Drag-autoscroll | dragging past the pane edge does not extend the selection |
 | Configurable scrollback | lite does not call `agwcore_emu_set_scrollback`; the cap is the core default |
 | Images / graphics | see the `image.*` verbs above |
 | Dashboard, quick-terminal parity, multi-window | agwinterm has a window library; lite has one window plus popups |
-| Wheel over the pane | a posted `WM_MOUSEWHEEL` does not reach lite's handler (harness finding, 0.17.11) |
 
 ---
 
