@@ -453,12 +453,15 @@ companion status update must not merge before the implementation and its gates.
   optional launcher wrapper generates an explicit conversation UUID for a bare invocation.
 - YOLO is explicit and requires lite's per-process PowerShell prompt bridge. Default PowerShell
   launches load it without profile edits; existing/adopted/explicit-argv shells need an explicit load.
-  Input is reserved while interruption is pending; only one Ctrl+C is queued. The host-readline
+  Input is reserved while exit is pending; one documented Ctrl+D exit key is queued, not Ctrl+C
+  cancellation. Unsupported/rebound exit behavior times out without forced termination. The host-readline
   boundary may claim a quoted resume argv only after retained descendants exited, no shell children
   remain and the shell proves sole attached console ownership, including late orphans. It returns the
   command to PowerShell's normal pipeline, never executes inside the prompt or appends to a draft.
   Ordinary input delegates to the prior readline function; unsupported alias/script readers are untouched
   and do not register the bridge.
+  Compatibility limit: bridge probes change the delegated reader's `$?`/predictor status, not the
+  preceding command's exit code or `$LASTEXITCODE`; preserving that side channel is a follow-up.
   Readonly/covered/custom-conflicting/changed panes refuse or cancel. Timeout has no relaunch fallback.
   Interrupt writes are bounded/cancellable; lease offers and acknowledgements are retryable and
   expire, using globally unique authorization IDs across UI adoption. A still-unresolved Windows
