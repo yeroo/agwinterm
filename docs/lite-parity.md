@@ -368,7 +368,7 @@ contract batch follows the remaining agwinterm honesty fixes, with the usual lit
 
 ### Mirrored: P10a-lite configuration
 
-agliteterm [#54](https://github.com/yeroo/agliteterm/pull/54), candidate `a9ece68`, adds seven verbs
+agliteterm [#54](https://github.com/yeroo/agliteterm/pull/54), candidate `32f0d4a`, adds seven verbs
 and fourteen supported keys. Unknown or invalid settings refuse without mutation. Settings apply
 to the current instance and persist for later launches; other running instances retain their
 runtime state. UI toggles and Properties edits persist only their changed fields, preserving
@@ -387,8 +387,10 @@ Local acceptance: 287 combined selection/driving/configuration checks, 118 drivi
 configuration-only checks, plus 142 pure configuration and 30 driving checks. Each interactive run
 released its suite token after verified process/clipboard/registry cleanup. One full Codex-only
 review and one narrow confirmation completed; the final two healthy reviewers found no shipping
-blockers. Full Windows CI and delivery evidence are linked from the PR and
-[run 34222516956](https://github.com/yeroo/agliteterm/actions/runs/34222516956).
+blockers. A subsequent test-only correction replaces a fixed positive replay wait with bounded
+exact-marker polling; all 118 driving checks passed again with verified cleanup. Runtime code is
+unchanged from the reviewed revision. Full Windows CI and delivery evidence are linked from the PR
+and [run 34225641992](https://github.com/yeroo/agliteterm/actions/runs/34225641992).
 No new canonical conformance steps are introduced. Font targeting, profiles, OMP and captured
 command replay remain P10b, not delivered features of P10a.
 
