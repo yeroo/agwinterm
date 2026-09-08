@@ -85,7 +85,7 @@ public interface ISession : IDisposable
     /// again: focus, mouse, bracketed-paste and key-encoding modes change the child's input;
     /// synchronized output (<c>?2026</c>) holds repaints. (3) The screen state the pane reads back
     /// moves. For the selection pin of this contract that is, exhaustively, the alt-screen flag
-    /// (any alt-screen mode: <c>?47</c>, <c>?1047</c>, <c>?1049</c>) the scroll generation and
+    /// (any alt-screen mode: <c>?47</c>, <c>?1047</c>, <c>?1049</c>), the scroll generation and
     /// history count (any output that scrolls — plain text included) and the scroll region
     /// (<c>DECSTBM</c>: inside one, a selection stays on its cells instead of following its text);
     /// otherwise, for example, the title (<c>OSC 0</c>/<c>2</c>), the reported cwd (<c>OSC 7</c>,
