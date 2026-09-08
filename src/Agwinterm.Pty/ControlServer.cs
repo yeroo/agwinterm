@@ -753,8 +753,8 @@ public sealed class ControlServer : IDisposable
     /// session.write injects into the emulator as terminal output — the payload's own bytes never
     /// reach the child's input (ISession.Inject says what an injected payload can still do to the
     /// child and the pane), so as a way to deliver bytes to a program it does not work at all.
-    /// Pointing a caller at a verb that
-    /// silently cannot do the job is worse than the refusal it was meant to soften.</summary>
+    /// Pointing a caller at a verb that silently cannot do the job is worse than the refusal it was
+    /// meant to soften.</summary>
     private static string HandleType(ISession s, JsonElement args)
     {
         string text = (GetString(args, "text") ?? "").Replace("\r\n", "\r").Replace('\n', '\r');

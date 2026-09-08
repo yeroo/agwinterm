@@ -368,10 +368,10 @@ public interface ISessionHost
     /// session keeps it on screen) with <see cref="SessionPastes.ExitedPane"/> — refused once the
     /// exit has been OBSERVED (<see cref="ISession.HasExited"/>); the observation lags the exit by
     /// a backend-specific amount, and a call before it may still be accepted (see that constant).
-    /// Refused AFTER the
-    /// payload was picked (so the clipboard may have been read) and with delivery unknown: a write
-    /// that threw, with <see cref="SessionPastes.Failed"/> — a prefix may have reached the pane, so
-    /// a caller must not retry blindly. No pane: the refusal above, first.</summary>
+    /// Refused AFTER the payload was picked (so the clipboard may have been read) and with delivery
+    /// unknown: a write that threw, with <see cref="SessionPastes.Failed"/> — a prefix may have
+    /// reached the pane, so a caller must not retry blindly. No pane: the refusal above,
+    /// first.</summary>
     string SessionPaste(string? target, string? text);
 
     /// <summary>Open/drive the find bar over the active session; returns "N of M" / "no matches" / "closed".</summary>
