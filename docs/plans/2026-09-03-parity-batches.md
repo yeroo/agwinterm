@@ -177,7 +177,7 @@ agwinterm half is the **contract PR #256** (the sibling of #235 / #252, merged A
 `session copy` read-back, three refusals — and the defect lite's plan found here, the four selection
 verbs and `session.paste` answering `ok:true` `no session` on a target that resolves to no pane
 (and `session.copy` `ok:true` `""`), fixed in the same PR (`HostReply` + `RefusePrefix`; `session.copy`
-refuses with the read verbs). Five recorded differences in
+refuses with the read verbs). Six recorded differences in
 `docs/lite-parity.md`, "Mirrored: what P6 owed lite". Left for their own issue: `session.readonly`
 and `session.search` still answer `ok:true` on no session.
 
