@@ -446,18 +446,21 @@ companion status update must not merge before the implementation and its gates.
 - `app.update` exposes lite's existing verified release updater and refuses developer/portable copies.
   Queued does not mean downloaded, verified or installed. No release/tag is part of the batch.
 - Adoption requires a birth-verified live Claude descendant with one explicit conversation UUID,
-  either native claude.exe or node.exe with the exact installed Claude Code cli.js path suffix.
-  Bare/continue/headless/ambiguous/inaccessible evidence refuses; no newest-folder transcript fallback.
+  either native claude.exe or node.exe with an absolute installed Claude Code cli.js path suffix.
+  Bare/continue/headless/fork-session/unknown-arity/ambiguous/inaccessible evidence refuses;
+  no newest-folder transcript fallback. Initial positional prompts are not replayed on resume.
   Existing bindings and permission modes are preserved. Lite pane IDs are not Claude UUIDs, so its
   optional launcher wrapper generates an explicit conversation UUID for a bare invocation.
 - YOLO is explicit and requires lite's per-process PowerShell prompt bridge. Default PowerShell
   launches load it without profile edits; existing/adopted/explicit-argv shells need an explicit load.
   Input is reserved while interruption is pending. The prompt may claim a quoted resume argv only
-  after retained descendants exited and no shell children remain; it never appends commands to a draft.
+  after retained descendants exited, no shell children remain and the prompt proves sole attached
+  console ownership, including late orphans; it never appends commands to a draft.
   Readonly/covered/custom-conflicting/changed panes refuse or cancel. Timeout has no relaunch fallback.
 - Claude update runs visibly in an owned overlay. Only a proven newer version requests safe restarts
   of the originally verified eligible panes using that executable/script, preserving conversation and
-  permission mode. Fail/no-op/unknown versions restart nothing. Queue/dispatch/persistence and successful
+  explicit startup permission arguments (not interactive mode changes). Fail/no-op/unknown versions
+  restart nothing. Queue/dispatch/persistence and successful
   agent startup are distinct outcomes, reported through `agent.update` / `agent.restart` events.
 
 Detailed behavior: [lite agent integration](https://github.com/yeroo/agliteterm/blob/main/docs/agent-integration.md).
