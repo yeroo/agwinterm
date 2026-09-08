@@ -79,25 +79,29 @@ public interface ISession : IDisposable
     /// dump, raw-output forward and exit settle count see the child's bytes alone; the parser's
     /// callbacks, the VT log included, run for the payload too), so the rule is: a payload can do
     /// whatever the child's output can. That comes in four kinds, illustrated here, not enumerated.
-    /// (1) A terminal query (<c>CSI ? u</c>, <c>DECRQM</c>, <c>OSC 11 ?</c> …) is answered on the
-    /// child's input, and answering counts as pane activity — a Blocked/Completed status clears.
-    /// (2) A mode it sets changes what the pane sends or paints later, until something clears it
-    /// again: focus, mouse, bracketed-paste and key-encoding modes change the child's input;
-    /// synchronized output (<c>?2026</c>) holds repaints. (3) The screen state the pane reads back
-    /// moves. For the selection pin of this contract that is, exhaustively, the alt-screen flag
-    /// (any alt-screen mode: <c>?47</c>, <c>?1047</c>, <c>?1049</c>), the scroll generation and
-    /// history count (any output that scrolls — plain text included) and the scroll region
-    /// (<c>DECSTBM</c>: inside one, a selection stays on its cells instead of following its text);
-    /// otherwise, for example, the title (<c>OSC 0</c>/<c>2</c>), the reported cwd (<c>OSC 7</c>,
-    /// <c>OSC 9;9</c>: shown in the title bar, used by a scratch pane, an overlay, a duplicate and
-    /// <c>new-session-directory = current</c>; a split keeps its launch directory), the per-pane
-    /// background (<c>OSC 11</c>/<c>111</c>) and the shell marks <c>session output</c> reads
-    /// (<c>OSC 133</c>). (4) Every host action (<c>IHostActions</c>) fires as if the child had
-    /// asked: a clipboard-write request (<c>OSC 52</c>, subject to host policy), the bell, a
-    /// notification (<c>OSC 9</c>, <c>OSC 777</c> — its control-API event always, badge and sound
-    /// per focus and config), taskbar progress (<c>OSC 9;4</c>), a VT-log line for an unhandled
-    /// sequence or a denied clipboard write. Read-only does not gate any of it. This is the one
-    /// statement of that; the other docs point here.</summary>
+    /// (1) A terminal query the emulator implements (<c>CSI ? u</c>, <c>DECRQM</c> for
+    /// <c>?1016</c>/<c>?2026</c>, <c>OSC 11 ?</c> …) is answered on the child's input, and
+    /// answering counts as pane activity — a Blocked/Completed status clears. (2) A mode it sets
+    /// changes what the pane sends or paints later, until something clears it again: focus, mouse,
+    /// bracketed-paste and key-encoding modes change the child's input; synchronized output
+    /// (<c>?2026</c>) defers the repaints output itself triggers (a timer repaint can still show
+    /// the partial frame). (3) The screen state the pane reads back moves. For the selection pin of
+    /// this contract that is, exhaustively, the alt-screen flag (any alt-screen mode: <c>?47</c>,
+    /// <c>?1047</c>, <c>?1049</c>), the scroll generation and history count (output that scrolls
+    /// the main screen up with scrollback on and no partial region — plain text included; a
+    /// downward scroll moves neither) and the scroll region (<c>DECSTBM</c>: while a PARTIAL region
+    /// is set — a reserved status line — a selection stays on its cells instead of following its
+    /// text; a full-screen region leaves it tracking); otherwise, for example, the title
+    /// (<c>OSC 0</c>/<c>2</c>), the reported cwd (<c>OSC 7</c>, <c>OSC 9;9</c>: the title bar's
+    /// fallback label when no custom name or program title takes precedence, used by a scratch
+    /// pane, an overlay, a duplicate and <c>new-session-directory = current</c>; a split keeps its
+    /// launch directory), the per-pane background (<c>OSC 11</c>/<c>111</c>) and the shell marks
+    /// <c>session output</c> reads (<c>OSC 133</c>). (4) Every host action (<c>IHostActions</c>)
+    /// fires as if the child had asked: a clipboard-write request (<c>OSC 52</c>, subject to host
+    /// policy), the bell, a notification (<c>OSC 9</c>, <c>OSC 777</c> — its control-API event
+    /// always, badge and sound per focus and config), taskbar progress (<c>OSC 9;4</c>), a VT-log
+    /// line for an unhandled sequence or a denied clipboard write. Read-only does not gate any of
+    /// it. This is the one statement of that; the other docs point here.</summary>
     void Inject(ReadOnlySpan<byte> bytes);
     /// <summary>Run a mutation against the emulator under <see cref="SyncRoot"/>.</summary>
     void MutateLocked(Action<ITerminalCore> mutate);
