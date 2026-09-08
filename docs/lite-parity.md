@@ -59,15 +59,14 @@ not the full app's terminal-theme catalog; custom profiles have the explicit sub
 P10 does not claim complete appearance/profile-schema parity.
 
 ### Commands and installers
-`command.list` · `command.run` · `command.leader` · `install.cli` · `install.hooks` ·
-`install.shell` · `app.update`
-
-lite has `install.skill` only.
+P11 [lite #59](https://github.com/yeroo/agliteterm/pull/59) implements `command.list/run/leader`,
+`install.cli/hooks/shell` and `app.update`, in addition to the existing `install.skill`.
+The command modes, installer safety boundary and deliberate differences are recorded below.
 
 ### Agent integration
-`claude.adopt` · `claude.yolo` · `claude.update`
-
-Adoption is the interesting one: pointing the terminal at an already-running Claude session.
+P11 [lite #59](https://github.com/yeroo/agliteterm/pull/59) implements `claude.adopt/yolo/update`.
+Adoption requires exact process conversation evidence; restart uses a guarded PowerShell prompt bridge.
+This is not a claim of identical unsafe-fallback behavior; the explicit differences follow below.
 
 ### Everything else
 `broadcast` · `notify` · `dashboard` · `restore.clear` · `workspace.move`
@@ -426,6 +425,44 @@ agliteterm [#57](https://github.com/yeroo/agliteterm/pull/57) adds four verbs an
 
 Local acceptance and independent Codex-only review/CI evidence are tracked in the PR. The
 implementation and its required gates must land before this status update.
+
+---
+
+### P11-lite commands, installers and agent integration
+
+[Lite #59](https://github.com/yeroo/agliteterm/pull/59) delivers the complete P11 batch as one PR.
+Its required review/integration/CI gates and token-release evidence are recorded in the PR; this
+companion status update must not merge before the implementation and its gates.
+
+- Custom commands support send/new/overlay/detached, complete ASCII-case-insensitive labels, AGW
+  context tokens/environment, palette entries, actual key bindings and two-second leader state.
+  Lite refuses the whole invalid reload and retains the last catalog; it only accepts its implemented
+  actions. New/overlay use PowerShell, detached uses the system cmd.exe. Oversized host arguments refuse.
+- CLI/hooks/shell installers are opt-in and idempotent, preserve unrelated profile/settings/PATH data,
+  and atomically replace changed existing files with unique backups. Partial multi-file failures
+  report completed writes; they are not a transaction. Codex TOML is never rewritten. The profile
+  target is Windows PowerShell, not PowerShell 7. Shared CLI versions may intercept `install cli`
+  locally; use the lite pipe verb or bundled helper for an unambiguous lite PATH installation.
+- `app.update` exposes lite's existing verified release updater and refuses developer/portable copies.
+  Queued does not mean downloaded, verified or installed. No release/tag is part of the batch.
+- Adoption requires a birth-verified live Claude descendant with one explicit conversation UUID,
+  either native claude.exe or node.exe with the exact installed Claude Code cli.js path suffix.
+  Bare/continue/headless/ambiguous/inaccessible evidence refuses; no newest-folder transcript fallback.
+  Existing bindings and permission modes are preserved. Lite pane IDs are not Claude UUIDs, so its
+  optional launcher wrapper generates an explicit conversation UUID for a bare invocation.
+- YOLO is explicit and requires lite's per-process PowerShell prompt bridge. Default PowerShell
+  launches load it without profile edits; existing/adopted/explicit-argv shells need an explicit load.
+  Input is reserved while interruption is pending. The prompt may claim a quoted resume argv only
+  after retained descendants exited and no shell children remain; it never appends commands to a draft.
+  Readonly/covered/custom-conflicting/changed panes refuse or cancel. Timeout has no relaunch fallback.
+- Claude update runs visibly in an owned overlay. Only a proven newer version requests safe restarts
+  of the originally verified eligible panes using that executable/script, preserving conversation and
+  permission mode. Fail/no-op/unknown versions restart nothing. Queue/dispatch/persistence and successful
+  agent startup are distinct outcomes, reported through `agent.update` / `agent.restart` events.
+
+Detailed behavior: [lite agent integration](https://github.com/yeroo/agliteterm/blob/main/docs/agent-integration.md).
+Tests use private fake agents, redirected files and owned processes, never the user's real Claude CLI.
+Full Strict suite remains a disposable Windows CI gate; local integration uses the shared suite token.
 
 ---
 
