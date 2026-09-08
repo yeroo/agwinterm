@@ -750,7 +750,8 @@ public sealed class ControlServer : IDisposable
     /// sequence for a TUI, a lone ^C - passes allow-control and gets exactly what it asked for.
     ///
     /// It does NOT get sent to session.write, whatever an earlier version of this message said:
-    /// session.write injects into the emulator and never reaches the shell (ISession.Inject), so as
+    /// session.write injects into the emulator as terminal output, not into the child's input
+    /// (ISession.Inject; the emulator's own query replies are the only bytes that reach it), so as
     /// a way to deliver bytes to a program it does not work at all. Pointing a caller at a verb that
     /// silently cannot do the job is worse than the refusal it was meant to soften.</summary>
     private static string HandleType(ISession s, JsonElement args)

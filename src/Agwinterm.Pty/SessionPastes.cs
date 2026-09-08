@@ -37,9 +37,11 @@ public static class SessionPastes
     /// backend (<see cref="ISession.Exited"/> describes both). In-process,
     /// <see cref="TerminalSession"/> sets it after its settle window (quiet 50 ms windows, at most
     /// ten) on the paths that settle, and at once on a start that failed; on <c>server</c> /
-    /// <c>server-rust</c> the host settles on its own session, then the client sees the data pipe
-    /// close and completes a <c>list</c> round trip before <see cref="ServerSession.HasExited"/> is
-    /// set — no figure here bounds that. A call before the observation is answered by the other
+    /// <c>server-rust</c>, for a child that exited, the host settles on its own session, then the
+    /// client sees the data pipe close and completes a <c>list</c> round trip before
+    /// <see cref="ServerSession.HasExited"/> is set — no figure here bounds that; a start that
+    /// failed sets it from the caught failure, and a host that died is inferred after the pipe's
+    /// EOF and a <c>list</c> that failed. A call before the observation is answered by the other
     /// rules (a write may be accepted, or refused for another reason), and nothing promises that a
     /// retry gets this refusal. The enduring state (an exited pane on screen) is refused always;
     /// only the transition is not, and nothing here proves child consumption.</summary>

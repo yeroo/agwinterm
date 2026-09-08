@@ -66,8 +66,8 @@ public class ControlServerTypeTextTests
     }
 
     /// <summary>The escape hatch has to exist, and has to be the one the refusal names. The first
-    /// version of that message sent callers to session.write, which injects into the emulator and
-    /// never reaches the shell — so a caller with a legitimate control byte had nowhere to go.</summary>
+    /// version of that message sent callers to session.write, which injects into the emulator as
+    /// output, not into the child's input — so a caller with a legitimate control byte had nowhere to go.</summary>
     [Fact]
     public void Type_AllowControl_SendsItAnyway()
     {

@@ -73,7 +73,10 @@ public interface ISession : IDisposable
     event Action<int>? Exited;
 
     // ---- I/O ----
-    /// <summary>Feed bytes into the EMULATOR only (display injection; never reaches the shell).</summary>
+    /// <summary>Feed bytes into the emulator as terminal OUTPUT (display injection): they are not
+    /// typed into the child, but the emulator's replies to terminal queries in them (<c>CSI ? u</c>,
+    /// <c>DECRQM</c>, <c>OSC 11 ?</c>) are written to the child's input like any other reply — so
+    /// this is not a way to deliver bytes to a program, and not inert towards it either.</summary>
     void Inject(ReadOnlySpan<byte> bytes);
     /// <summary>Run a mutation against the emulator under <see cref="SyncRoot"/>.</summary>
     void MutateLocked(Action<ITerminalCore> mutate);
