@@ -242,10 +242,16 @@ icons or elevation. Font targeting is excluded under Boris's fixed-strike/no-zoo
 Current behavior, rollback limits and product differences are recorded in `docs/lite-parity.md`.
 
 ### P11 · lite · commands, installers, agent integration
-`command.list/run/leader` · `install.cli/hooks/shell` · `app.update` · `claude.adopt/yolo/update`
+P11 [lite #59](https://github.com/yeroo/agliteterm/pull/59) implements `command.list/run/leader`,
+`install.cli/hooks/shell`, `app.update` and `claude.adopt/yolo/update` as one delivery. Custom commands
+cover all four modes, palette and leader bindings. Installers preserve unrelated data and retain
+backups; Codex configuration is suggested, not rewritten. Agent adoption requires exact live process
+identity, and restarts use a guarded PowerShell prompt bridge after proven descendant exit, never
+a newest-folder guess or fixed-delay command injection. Failed/no-op updates restart nothing.
 
-lite ships `install.skill` only. `claude.adopt` — pointing the terminal at an already-running Claude
-session — is the interesting one.
+Compatibility differences, prompt-bridge requirements and asynchronous outcome semantics are in
+`docs/lite-parity.md`. The implementation PR records Codex-only independent review and integration/CI
+gates; it must merge before this companion status update. No release/tag is part of P11.
 
 ### P12 · lite · the remainder
 `broadcast` · `notify` · `dashboard` · `restore.clear` · `workspace.move`
