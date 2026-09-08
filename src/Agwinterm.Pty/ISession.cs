@@ -85,10 +85,11 @@ public interface ISession : IDisposable
     /// again: focus, mouse, bracketed-paste and key-encoding modes change the child's input;
     /// synchronized output (<c>?2026</c>) holds repaints. (3) The screen state the pane reads back
     /// moves. For the selection pin of this contract that is, exhaustively, the alt-screen flag
-    /// (any alt-screen mode: <c>?47</c>, <c>?1047</c>, <c>?1049</c>) and the scroll generation and
-    /// history count (any output that scrolls — plain text included); otherwise, for example, the
-    /// title (<c>OSC 0</c>/<c>2</c>), the reported cwd (<c>OSC 7</c>, <c>OSC 9;9</c>: shown in the
-    /// title bar, used by a scratch pane, an overlay, a duplicate and
+    /// (any alt-screen mode: <c>?47</c>, <c>?1047</c>, <c>?1049</c>) the scroll generation and
+    /// history count (any output that scrolls — plain text included) and the scroll region
+    /// (<c>DECSTBM</c>: inside one, a selection stays on its cells instead of following its text);
+    /// otherwise, for example, the title (<c>OSC 0</c>/<c>2</c>), the reported cwd (<c>OSC 7</c>,
+    /// <c>OSC 9;9</c>: shown in the title bar, used by a scratch pane, an overlay, a duplicate and
     /// <c>new-session-directory = current</c>; a split keeps its launch directory), the per-pane
     /// background (<c>OSC 11</c>/<c>111</c>) and the shell marks <c>session output</c> reads
     /// (<c>OSC 133</c>). (4) Every host action (<c>IHostActions</c>) fires as if the child had
