@@ -94,8 +94,8 @@ additive keys only, no version field, every loaded value validated. Round-4 left
 (#227 / #228) remain, in `SessionOverlay`. Mirror: agliteterm P3-lite — **shipped** as agliteterm
 #28 (2026-09-05; plan `docs/plans/2026-09-05-p3-lite-mirror.md` there): `session.context` as a `C`
 line type after the `S` lines, `restore.capture` as a `K` line with an in-process Toolhelp32 + PEB
-query instead of the CIM one, `replayOnRestore` a constant `false` for captured commands (P9's
-explicit pin/binding replay is separate), and a
+query instead of the CIM one, `replayOnRestore` initially a constant `false` (P10b adds default-off
+captured replay; P9's explicit pin/binding replay is separate), and a
 hidden pane refusing `session context` (the three divergences are in `docs/lite-parity.md`); its
 checks SKIP against the released `agwintermctl` until the release that carries #233 + #235 is tagged.
 
@@ -220,10 +220,10 @@ candidate `c77b256` (2026-09-08). Six verbs implemented; `focus` already shipped
 remains refused because lite draws no images. Guarded local acceptance passed 188 combined P7/P9
 checks, pure driving checks passed 30, and the final two-reviewer Codex-only confirmation was clean.
 The full Strict Windows CI suite passed, including the same 188 checks. Explicit pins/bindings replay on fresh
-restored shells, never adopted shells; captured commands do not replay. Differences and remaining
+restored shells, never adopted shells; P9 itself does not replay captures (P10b adds opt-in replay). Differences and remaining
 find-bar/divider-drag work are recorded in `docs/lite-parity.md`.
 
-### P10 · lite · the configuration surface — P10a complete, P10b open
+### P10 · lite · the configuration surface — P10a and P10b shell configuration
 
 P10a [lite #54](https://github.com/yeroo/agliteterm/pull/54) implements `config.get/list/set`,
 `theme.list/set`, `settings.open`, `keymap.reload`, configurable new-replica scrollback and
@@ -235,9 +235,11 @@ The local combined suite passed 287 checks; the isolated driving/configuration m
 118/99, plus 172 pure unit checks. The narrow Codex-only confirmation found no blockers from
 two healthy independent reviewers. Exact CI/delivery evidence and deferred metadata are in the PR.
 
-P10b remains: `omp.list/set`, `font`, `profiles.list/reload`, and opt-in captured-command replay.
-P10a does not change lite's fixed-strike/no-zoom font decision or claim those remaining features.
-Current behavior and product differences are recorded in `docs/lite-parity.md`.
+P10b [lite #57](https://github.com/yeroo/agliteterm/pull/57) implements `omp.list/set`,
+`profiles.list/reload`, and opt-in captured-command replay. Review and full Strict CI delivery
+evidence is linked from the PR. The profile schema explicitly supports name/command/args/cwd, not custom env,
+icons or elevation. Font targeting is excluded under Boris's fixed-strike/no-zoom decision.
+Current behavior, rollback limits and product differences are recorded in `docs/lite-parity.md`.
 
 ### P11 · lite · commands, installers, agent integration
 `command.list/run/leader` · `install.cli/hooks/shell` · `app.update` · `claude.adopt/yolo/update`
