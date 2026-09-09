@@ -169,6 +169,23 @@ public sealed class ControlServer : IDisposable
             JsonElement args = root.TryGetProperty("args", out var a) ? a : default;
             // --window <id|prefix|active>: content verbs act on the resolved window (default = frontmost).
             string? windowSel = root.TryGetProperty("window", out var wv) && wv.ValueKind == JsonValueKind.String ? wv.GetString() : null;
+            if (cmd is "pick.open" or "pick.result" or "pick.cancel")
+            {
+                if ((root.TryGetProperty("window", out var pw) && pw.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)) || windowSel == "")
+                    return Err("pick requires a nonempty window selector");
+                if ((_windows as IPickHost ?? _host as IPickHost) is not { } picks) return Err("native picker unavailable");
+                if (cmd == "pick.open")
+                {
+                    if (root.TryGetProperty("target", out var pt) && pt.ValueKind != JsonValueKind.Null)
+                        return Err("pick.open does not accept a session target");
+                    var spec = PickSpec.Parse(args);
+                    return OkRaw(JsonSerializer.Serialize(new { id = picks.OpenPick(spec, windowSel, PickSpec.Boolean(args, "follow")) }));
+                }
+                if (target is null) return Err("pick.result/cancel require an exact picker id");
+                if (cmd == "pick.result") return OkRaw(JsonSerializer.Serialize(new { pick = picks.ReadPick(target, windowSel).Wire() }));
+                picks.CancelPick(target, windowSel);
+                return Ok("cancelled");
+            }
             if (cmd == "workspace.go")
             {
                 if (root.TryGetProperty("target", out var gt) && gt.ValueKind != JsonValueKind.Null)

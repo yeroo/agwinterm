@@ -99,6 +99,9 @@ using System.Text.Json;
 //   agwintermctl install hooks
 // Target defaults to $AGWINTERM_SESSION_ID (the current session) when not given.
 
+if (args.Length > 0 && args[0].Equals("pick", StringComparison.OrdinalIgnoreCase))
+    return Agwinterm.Ctl.PickCli.Run(args);
+
 if (args.Length == 0)
 {
     Console.Error.WriteLine("usage: agwintermctl <ping|version|tree|session|surface|image|install> ... (see README.md, \"Control it from anything\")");

@@ -38,6 +38,7 @@ internal partial class Program
 
     private IntPtr WindowProcCore(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        if (PickerMessage(msg, wParam, lParam)) return IntPtr.Zero;
         if (_isQuickWindow)
         {
             if (msg == WM_CLOSE) { DismissQuick(); return IntPtr.Zero; }
@@ -632,6 +633,7 @@ internal partial class Program
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
 
             case WM_DESTROY:
+                CloseWindowPicker();
                 _uiGone.Cancel();                 // release any pipe thread waiting in InvokeOnUiQueued
                 RemoveTrayIcon();                 // drop the shell tray balloon icon
                 SaveState(captureCommands: true); // persist this window's tree before tearing down its sessions

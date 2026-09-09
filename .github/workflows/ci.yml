@@ -107,6 +107,11 @@ jobs:
         timeout-minutes: 5
         run: ./tests/integration/hud-ui.ps1 -Suite Navigation -Strict
 
+      - name: Native picker integration
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./tests/integration/hud-ui.ps1 -Suite Picker -Strict
+
       - name: Test (Core + Pty)
         # One retry for the known .NET 10 test-host #118 pathology under named-pipe churn, which
         # manifests two ways: a native CRASH ("Test Run Aborted") OR a DEADLOCK that hangs the run

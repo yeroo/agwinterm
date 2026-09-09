@@ -27,7 +27,7 @@ A Windows homage to [umputun's **agterm**](https://github.com/umputun/agterm).
 agwinterm exists because of **[umputun](https://github.com/umputun)** and his terminal
 **[agterm](https://github.com/umputun/agterm)**. agterm's design — a terminal that treats AI coding
 agents as first-class citizens, with per-session status, [workspace navigation](docs/navigation.md), a [detached quick terminal](docs/quick-terminal.md),
-and a language-agnostic control socket — is the blueprint this project follows on Windows.
+a [native API picker](docs/native-picker.md), and a language-agnostic control socket — is the blueprint this project follows on Windows.
 
 This is an **independent, from-scratch implementation** written in C# on a native Win32/Direct2D
 stack (agterm is Swift on libghostty); no agterm code is used. It is a **tribute and a port of the

@@ -130,6 +130,17 @@ public static class AgentSkill
           Tree `foregroundShells` (pane-order, null unknown) and primary/split aliases are conservative Windows shell hints, never idle-prompt or input-safety proof.
         - `agwintermctl workspace collapse [WS] [--target WS]` / `workspace expand [WS]` — collapse/expand a single workspace's session list (default: active)
 
+        ## Native picker (P16, full app; lite mirror pending)
+        - Pipe UTF-8 lines or JSON `[{"id":"a","label":"Alpha","subtitle":"optional consequence"}]` to `agwintermctl pick [open]`.
+        - `--prompt TEXT --query TEXT --allow-custom --window ID --follow --no-block`; no session target. Default display does not steal foreground; follow requests OS activation. Auto input treats leading `[` as JSON; use `--input-format lines` for `[Draft]`-style line labels, or `json` to require JSON.
+        - `--no-block` returns JSON `{id}`. Otherwise waits by exact id without a window selector; picked/custom exit 0, cancelled 2. Ctrl+C/failure best-effort cancels the owned pending picker.
+        - `pick result ID` prints the JSON outcome (`result: pending|picked|custom|cancelled`); pending exits 1. Picked adds item id/label/original index; custom adds trimmed query.
+        - `pick cancel ID` is idempotent for retained answers. Result/cancel optionally restrict `--window`; omit it for global exact-ID lookup across focus/owner closure.
+        - One pending/window, eight completed/window, 32 closed-window answers. Quick refuses. Items never execute; matching searches labels only, custom appears only when no item matches.
+        - Max 1000 items, 4096 UTF-16 units/field, 1 MiB UTF-8 stdin/open args; duplicate IDs and display controls refuse. Open/result JSON is payload even with --json; cancel uses the normal envelope under --json.
+        - Filtering work caps total label UTF-16 units times distinct query terms at 64 Mi. Over-complex edited queries disable choice until corrected. Mouse capture blocks opening; file drops on the owner are discarded.
+        - Initial UI open waits 10s and withdraws/rolls back on timeout. Best-effort cancel needs the received picker ID; a lost successful open reply can require user Escape/Cancel. No exactly-once transport guarantee.
+
         ## Read a session's output
         - `agwintermctl session text [--all|--lines N] [--target <id>]` — dump the pane as plain text. Without a flag that is
           the visible screen; `--lines N` returns the last N lines ending at the bottom of the screen, reaching back into
