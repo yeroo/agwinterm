@@ -125,6 +125,9 @@ public static class AgentSkill
         - `agwintermctl session move --to up|down|top|bottom`     — reorder within its workspace
         - `agwintermctl session move <workspace-id>`             — relocate to another workspace
         - `agwintermctl workspace new [name]` / `workspace rename <name> [--target WS]` / `workspace select [--target WS]` / `workspace move --to <dir> [--target WS]` / `workspace delete [--target WS]`
+        - `agwintermctl workspace go next|prev [--window ID]` (also `--to`, alias `previous`) wraps visible workspaces, including collapsed ones; refuses flagged mode, no other destination, quick windows and explicit `--target`.
+          An empty destination becomes current without closing the selected terminal. New-session explicit workspace/caller placement still wins over this fallback.
+          Tree `foregroundShells` (pane-order, null unknown) and primary/split aliases are conservative Windows shell hints, never idle-prompt or input-safety proof.
         - `agwintermctl workspace collapse [WS] [--target WS]` / `workspace expand [WS]` — collapse/expand a single workspace's session list (default: active)
 
         ## Read a session's output
@@ -340,6 +343,8 @@ public static class AgentSkill
 
         ## Custom commands (keymap.conf) & the launcher
         Define commands in keymap.conf, then run them by chord (Ctrl+Shift+O palette) or the control API:
+        Map heads accept alternatives: `map f5 | f7 = next_workspace`, also `map leader a | b = next_workspace`.
+        An invalid alternative rejects the entire map line. Fixed gestures such as F6 keep precedence; pipes in command bodies are unchanged.
         - `command <Label> = <text>`                    — default "send" mode: types the text into the active session
         - `command [new] <Label> = <text>`              — run in a fresh session's shell (stays interactive after)
         - `command [overlay] <Label> = <text>`          — run in an ephemeral overlay pane over the session

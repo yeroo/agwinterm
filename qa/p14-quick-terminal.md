@@ -63,6 +63,19 @@ not cosmetic residue.
 conformance and Win32 integration, HUD 51, quick 51, Core 265 and Pty 760.
 The send-guard candidate built cleanly and passed 53/53 local quick checks; token 108
 was released after zero owned processes and exact hotkey cleanup. Evidence:
-`.revmux/quick-ui-20260909T165817-a9963b`. Narrow review and exact-head CI remain gates.
+`.revmux/quick-ui-20260909T165817-a9963b`.
 The pre-existing process-wide UIA provider limitation is tracked in
 [#267](https://github.com/yeroo/agwinterm/issues/267); full quick UIA parity is not claimed.
+
+## Final delivery receipt (carried forward in P15)
+
+Round `03-send-confirmation`: 2/2 healthy Codex sources; one verified finding about
+hosted input acceptance racing child exit. Owner disposition: pre-existing protocol
+limitation, accepted as [#268](https://github.com/yeroo/agwinterm/issues/268), not a
+zero-finding review. The hosted backend files are unchanged from the P14 base; quick
+uses the in-process backend. Transport acceptance does not prove child execution.
+
+Exact candidate `4dc24c4` passed [CI 34360590996](https://github.com/yeroo/agwinterm/actions/runs/34360590996):
+conformance, clipboard/paste, Win32 integration, HUD 51, quick 57, Core 265/Pty 760.
+Merged [#266](https://github.com/yeroo/agwinterm/pull/266) as `0a784b4` on 2026-09-09.
+No release, tag or installation performed.

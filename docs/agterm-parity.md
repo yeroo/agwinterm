@@ -134,19 +134,19 @@ HUD with detail, spinners, colors and bounded width; it leaves terminal input an
 unchanged. See [session-hud.md](session-hud.md) for targeting, replacement and validation.
 The agliteterm mirror remains owed in P17; the shared conformance floor is unchanged.
 
-### 3. Quick terminal: screen percentage, and a global hotkey
-**agterm 0.24.0 / 0.25.0.** Sizes as 40–90% of the screen, and a system-wide hotkey summons it over
-any app. Ours is a fixed size with no global hotkey. Size: medium (the hotkey is a `RegisterHotKey`
-and a policy decision about stealing a chord system-wide).
+### 3. Quick terminal — shipped in P14 (#266)
+Detached app-wide shell, monitor work-area percentage and opt-in global hotkey.
+See [quick-terminal.md](quick-terminal.md) for focus, lifetime and refusal policy;
+UIA per-window provider parity remains #267. Lite mirror is P17.
 
-### 4. Workspace navigation and keymap alternatives
-**agterm 0.23.0 / 0.24.0.** `workspace.go next|prev`, `toggle_workspace_collapse`, and keymap entries
-that accept several chords for one action separated by `|` (a native chord *and* a tmux-style
-leader). We have `session go`; workspaces are keyboard-unreachable without a chord. Size: small.
+### 4. Workspace navigation and keymap alternatives — P15
+Implemented in the P15 candidate: wrapped `workspace.go`, collapse action, alternative
+normal/leader map chords. See [navigation.md](navigation.md); QA records delivery gates.
 
 ### 5. Smaller things from 0.26
-Cursor shape and blink settings; sidebar tooltips revealing truncated names; the tree naming the
-shell holding each pane's foreground process. (The other two that were here — `session.restore`
+P15 covers existing cursor shape/blink controls with live acceptance, adds truncated-name
+tooltips and conservative Windows foreground-shell hints (not prompt safety).
+(The other two that were here — `session.restore`
 reporting the pane, and `--size-percent` validated rather than clamped — closed in P2.)
 
 ---

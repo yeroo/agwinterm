@@ -43,7 +43,7 @@ Three contract questions gate their batches. They are cheap to answer and expens
 | --- | --- | --- |
 | 1 | ~~`session.new` with an unknown workspace: **refuse** (lite does) or **fall back to active** (agwinterm does)?~~ **Answered: refuse** (2026-09-04, in P2 #226). lite already refused, every other workspace-taking verb here already refused, and the contract file states the principle in prose for `workspace.select`. A bare `session new` with *no* workspace named now lands in the **caller's** workspace, not the active one (P2 task 5a, from a live agliteterm report). | P2 |
 | 2 | ~~On the alt screen, do selections scroll into main-screen history (lite) or pin to row 0 (agwinterm)? Both are self-consistent; they cannot both stay.~~ **Answered: pin to row 0** (Boris, 2026-09-07) — agwinterm's way and most terminals'. lite stops scrolling into main-screen history while the alt screen is up, and `selection all` on the alt screen is the app's screen only, in both products. Lands in P6-lite (the verb's range) and P7-lite (the wheel and the drag). | P6, P7 |
-| 3 | Is `control.pick` (P16) worth its size, or does the picker stay out of scope? It is the biggest single capability gap and also the biggest plan. | P16 |
+| 3 | Resolved: Boris explicitly requested P14–P17 on 2026-09-09; implement the P16 native picker. | P16 |
 
 ---
 
@@ -286,21 +286,23 @@ remains P17 work; this batch does not expand shared conformance or publish a rel
 ### P14 · agwinterm · quick terminal
 Size as 40–90% of the screen · a system-wide hotkey that summons it over any app
 
-The hotkey is a `RegisterHotKey` plus a policy decision about stealing a chord machine-wide, which
-the plan should state rather than assume.
+Shipped in #266, merge `0a784b4`. [Contract](../quick-terminal.md),
+[QA](../../qa/p14-quick-terminal.md). Registration is opt-in, with no default global chord.
 
 ### P15 · agwinterm · navigation and the small sweep
 `workspace.go next|prev` · `toggle_workspace_collapse` · keymap entries accepting several chords for
 one action separated by `|` · sidebar tooltips revealing truncated names · the tree naming the shell
 holding each pane's foreground process · cursor shape and blink settings
 
-Workspaces are currently keyboard-unreachable without a chord.
+Implemented by [the P15 plan](2026-09-09-p15-navigation.md); see
+[contract](../navigation.md) and [QA](../../qa/p15-navigation.md) for delivery gates.
 
 ### P16 · agwinterm · `control.pick`
 The native picker driven over the API. Half the agterm cookbook is built on it — project launcher,
 workspace picker, conversation picker, backlog picker, SQLite browser — and nothing here can do that
 without shipping a picker binary of its own. **The biggest single capability gap and the biggest
-plan; expect more than two revmux rounds.** *Needs decision 3.*
+plan.** Boris authorized it on 2026-09-09 (decision 3). Use the standing one broad review,
+batched fixes and narrow confirmation rule; extra rounds require a substantive blocker.
 
 ### P17 · lite · mirror Wave 3
 Whatever of P13–P16 survives contact, mirrored. Sized once P13–P16 are real rather than guessed at.

@@ -68,6 +68,7 @@ internal partial class Program
 
             case WM_MOUSELEAVE:
                 _mouseTracking = false;
+                DismissHoverTip();
                 if (_hotBtn is not null) { _hotBtn = null; SetTimer(hwnd, (IntPtr)HoverTimer, 15, IntPtr.Zero); RequestRedraw(); }
                 return IntPtr.Zero;
 
@@ -359,6 +360,7 @@ internal partial class Program
                 }
 
             case WM_LBUTTONDOWN:
+                DismissHoverTip();
                 {
                     int mx = DipX(lParam), my = DipY(lParam);   // device px -> DIP layout
                     if (_chromeFocus) ExitChromeFocus(announce: false);   // a click leaves the F6 sidebar zone

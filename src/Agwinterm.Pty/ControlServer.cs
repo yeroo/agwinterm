@@ -169,6 +169,14 @@ public sealed class ControlServer : IDisposable
             JsonElement args = root.TryGetProperty("args", out var a) ? a : default;
             // --window <id|prefix|active>: content verbs act on the resolved window (default = frontmost).
             string? windowSel = root.TryGetProperty("window", out var wv) && wv.ValueKind == JsonValueKind.String ? wv.GetString() : null;
+            if (cmd == "workspace.go")
+            {
+                if (root.TryGetProperty("target", out var gt) && gt.ValueKind != JsonValueKind.Null)
+                    return Err("workspace go does not accept a target");
+                if ((root.TryGetProperty("window", out var gw) && gw.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)) || windowSel == "")
+                    return Err("workspace go requires a nonempty window selector");
+                if (windowSel is not null && _windows is null) return Err("workspace go: window routing is unavailable in this host");
+            }
             if (cmd.StartsWith("session.hud.", StringComparison.Ordinal))
             {
                 if ((root.TryGetProperty("target", out var ht) && ht.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)) ||
@@ -274,6 +282,11 @@ public sealed class ControlServer : IDisposable
                 case "workspace.rename": return host.WorkspaceRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("workspace not found");
                 case "workspace.delete": return host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found");
                 case "workspace.select": return host.WorkspaceSelect(target) ? Ok("selected") : Err("workspace not found");
+                case "workspace.go":
+                    if (target is not null) return Err("workspace go does not accept a target");
+                    string? direction = GetString(args, "to");
+                    if (!WorkspaceNavigation.TryDirection(direction, out _)) return Err("workspace go requires next or prev");
+                    return HostReply(host.WorkspaceGo(direction!));
                 case "workspace.move": return host.WorkspaceReorder(target, GetString(args, "dir") ?? "down") ? Ok("moved") : Err("workspace not found");
                 case "workspace.collapse": return host.WorkspaceCollapse(target, expand: false) ? Ok("collapsed") : Err("workspace not found");
                 case "workspace.expand": return host.WorkspaceCollapse(target, expand: true) ? Ok("expanded") : Err("workspace not found");
@@ -455,6 +468,7 @@ public sealed class ControlServer : IDisposable
             sb.Append("{\"id\":").Append(JsonSerializer.Serialize(ws.Id))
               .Append(",\"name\":").Append(JsonSerializer.Serialize(ws.Name))
               .Append(",\"active\":").Append(ws.Active ? "true" : "false")
+              .Append(",\"collapsed\":").Append(ws.Collapsed ? "true" : "false")
               .Append(",\"sessions\":[");
             for (int i = 0; i < ws.Sessions.Count; i++)
             {
@@ -470,6 +484,14 @@ public sealed class ControlServer : IDisposable
                   .Append(",\"statusChangedAt\":").Append(n.StatusChangedAt.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 if (n.Overlay) sb.Append(",\"overlay\":true");
                 if (n.Hud is { } hud) sb.Append(",\"hud\":").Append(JsonSerializer.Serialize(hud, SessionHuds.JsonOptions));
+                if (n.ForegroundShells is { } shells)
+                {
+                    sb.Append(",\"foregroundShells\":").Append(JsonSerializer.Serialize(shells));
+                    if (shells.Count > 0 && shells[0] is { } primary)
+                        sb.Append(",\"foregroundShell\":").Append(JsonSerializer.Serialize(primary));
+                    if (n.PaneCount > 1 && shells.Count > 1 && shells[1] is { } split)
+                        sb.Append(",\"splitForegroundShell\":").Append(JsonSerializer.Serialize(split));
+                }
                 if (n.Flagged) sb.Append(",\"flagged\":true");
                 if (n.Background) sb.Append(",\"background\":true");
                 if (n.Notifications > 0) sb.Append(",\"notifications\":").Append(n.Notifications);

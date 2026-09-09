@@ -190,9 +190,12 @@ internal partial class Program
 
     public IReadOnlyList<WorkspaceSnapshot> Tree()
     {
+        Pane[] panes;
+        lock (_workspaces) panes = _workspaces.SelectMany(w => w.Sessions).SelectMany(s => s.Panes).ToArray();
+        var shells = ReadForegroundShells(panes);
         lock (_workspaces)
             return _workspaces.Select(w => new WorkspaceSnapshot(
-                w.Id, w.Name, _active is not null && ReferenceEquals(_active.Ws, w),
+                w.Id, w.Name, ReferenceEquals(CurrentWorkspace(), w),
                 w.Sessions.Select(s =>
                 {
                     var (status, statusChangedAt) = AggStatusAndAt(s);
@@ -211,9 +214,10 @@ internal partial class Program
                         // panes and the slots ride on them, so `["right"]` becomes `["left"]` by
                         // construction. Empty = the server omits the key.
                         PaneOverlays: s.Panes.Select((p, i) => (p, i)).Where(t => t.p.Overlay.Term is not null)
-                                             .Select(t => OverlayPanes.Word(t.i)).ToList(), Hud: s.Hud);
+                                             .Select(t => OverlayPanes.Word(t.i)).ToList(), Hud: s.Hud,
+                        ForegroundShells: s.Panes.Select(p => p.S.HasExited ? null : shells.GetValueOrDefault(p)).ToList());
                 }).ToList()
-            )).ToList();
+            , Collapsed: !w.Expanded)).ToList();
     }
 
     // Read-back snapshot: plain field reads + a Win32 query, safe from the pipe thread (worst case slightly stale).
@@ -224,7 +228,7 @@ internal partial class Program
             SidebarVisible: _sidebarW > 0, Fullscreen: _fullscreen, Maximized: IsZoomed(_hwnd),
             QuickTerminalVisible: _quickHost?._quickVisible == true,
             // ActiveSession is the NAME; session.context is not a name and is not folded in — it is read from the tree (P3).
-            ActiveWorkspace: a?.Ws.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
+            ActiveWorkspace: CurrentWorkspace()?.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
     }
 
     /// <summary>
@@ -510,13 +514,7 @@ internal partial class Program
         return true;
     }
 
-    public bool WorkspaceSelect(string? target)
-    {
-        var ws = FindWs(target);
-        if (ws is null) return false;
-        PostVerb(() => { var s = ws.Sessions.FirstOrDefault(); if (s is not null) SetActive(s); });
-        return true;
-    }
+    public bool WorkspaceSelect(string? target) => InvokeOnUiQueued(() => SelectWorkspaceCore(FindWs(target)));
 
     public bool WorkspaceReorder(string? target, string dir)
     {

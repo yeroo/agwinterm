@@ -1,11 +1,10 @@
-using static Agwinterm.Win32.Win32;
-
-namespace Agwinterm.Win32;
+namespace Agwinterm.Core;
 
 /// <summary>
 /// Parses %LOCALAPPDATA%\agwinterm\keymap.conf into chord→action bindings and custom
 /// commands. Our own simple format (inspired by agterm, not copied):
 ///   map &lt;chord&gt; = &lt;action&gt;          rebind a built-in action
+///   map &lt;chord&gt; | &lt;chord&gt; = &lt;action&gt;  bind alternatives (also after map leader)
 ///   map &lt;chord&gt; = command:&lt;Label&gt;  bind a chord to a custom command
 ///   command &lt;Label&gt; = &lt;text&gt;       run &lt;text&gt; (default: type it into the active session)
 ///   command [new|overlay|detached|send] &lt;Label&gt; = &lt;text&gt;   choose the run mode
@@ -19,7 +18,7 @@ namespace Agwinterm.Win32;
 /// The command &lt;text&gt; may contain {AGW_*} tokens (expanded from the active session) and the
 /// launched process receives $AGW_* environment variables — see the agent skill for the list.
 /// </summary>
-internal static class Keymap
+public static class Keymap
 {
     /// <summary>Built-in action ids and their default chords (overridable by keymap.conf).</summary>
     public static readonly (string Chord, string Action)[] DefaultBindings =
@@ -61,6 +60,7 @@ internal static class Keymap
         // chords: ctrl+alt+up / ctrl+alt+down are previous_attention / next_attention, and a
         // second chord for a walk the first already makes would be a binding nobody asked for.
         "focus_top_pane", "focus_bottom_pane",
+        "next_workspace", "previous_workspace", "toggle_workspace_collapse",
         "toggle_sidebar", "rename_session", "delete_workspace", "session_palette", "action_palette",
         "attention_list", "custom_palette", "next_attention", "previous_attention", "reload_keymap",
         "toggle_search", "toggle_scratch", "quick_terminal", "close_cover", "toggle_fullscreen", "toggle_broadcast", "mark_mode", "toggle_read_only",
@@ -75,6 +75,7 @@ internal static class Keymap
         # agwinterm keymap (our own simple format)
         #
         #   map <chord> = <action>          rebind a built-in action
+        #   map <chord> | <chord> = <action> bind alternatives (also map leader ...)
         #   map <chord> = command:<Label>   bind a chord to a custom command below
         #   command <Label> = <text>        run <text> (default: type it into the active session)
         #   command [new|overlay|detached] <Label> = <text>   choose the run mode
@@ -162,14 +163,17 @@ internal static class Keymap
                 bool isLeader = chordRaw.StartsWith("leader ", StringComparison.OrdinalIgnoreCase);
                 if (isLeader) chordRaw = chordRaw["leader ".Length..].Trim();
 
-                string? chord = Canonicalize(chordRaw);
-                if (chord is null) { p.Diagnostics.Add($"line {lineNo}: bad chord '{chordRaw}'"); continue; }
+                var chords = chordRaw.Split('|').Select(Canonicalize).ToArray();
+                if (chords.Any(chord => chord is null))
+                { p.Diagnostics.Add($"line {lineNo}: bad chord alternatives '{chordRaw}'"); continue; }
                 var into = isLeader ? p.LeaderBindings : p.Bindings;
+                string action;
                 if (target.StartsWith("command:", StringComparison.OrdinalIgnoreCase))
-                    into[chord] = "command:" + target["command:".Length..].Trim();
+                    action = "command:" + target["command:".Length..].Trim();
                 else if (ValidActions.Contains(target))
-                    into[chord] = target.ToLowerInvariant();
-                else { p.Diagnostics.Add($"line {lineNo}: unknown action '{target}'"); }
+                    action = target.ToLowerInvariant();
+                else { p.Diagnostics.Add($"line {lineNo}: unknown action '{target}'"); continue; }
+                foreach (string? chord in chords) into[chord!] = action;
             }
             else if (line.StartsWith("command ", StringComparison.OrdinalIgnoreCase))
             {
@@ -246,14 +250,14 @@ internal static class Keymap
         if (vk >= 0x70 && vk <= 0x7B) return "f" + (vk - 0x70 + 1);
         return vk switch
         {
-            VK_TAB => "tab",
-            VK_RETURN => "enter",
-            VK_ESCAPE => "escape",
-            VK_SPACE => "space",
-            VK_UP => "up",
-            VK_DOWN => "down",
-            VK_LEFT => "left",
-            VK_RIGHT => "right",
+            0x09 => "tab",
+            0x0D => "enter",
+            0x1B => "escape",
+            0x20 => "space",
+            0x26 => "up",
+            0x28 => "down",
+            0x25 => "left",
+            0x27 => "right",
             // OEM punctuation VKs (US layout names)
             0xBA => "semicolon",
             0xBB => "equals",

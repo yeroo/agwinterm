@@ -25,6 +25,7 @@ internal sealed class FakeSessionHost : ISessionHost
         /// so a test asserts a set the way a caller does and a refusal the way it must: unchanged.</summary>
         public string? Context;
         public HudSpec? Hud;
+        public List<string?>? ForegroundShells;
         public int Notifications, PaneCount = 1, FocusedPane, OverlaySize;
         public List<double> Ratios = new() { 1.0 };
         /// <summary>The split's orientation — what the app keeps in Ses.Axis: one of <see cref="SplitAxes"/>'
@@ -166,7 +167,7 @@ internal sealed class FakeSessionHost : ISessionHost
         public string LastResult = OverlayPanes.NoResult;
         public bool Open => Term is not null;
     }
-    internal sealed class Ws { public string Id = "", Name = ""; public List<Sess> Sessions = new(); }
+    internal sealed class Ws { public string Id = "", Name = ""; public bool Collapsed; public List<Sess> Sessions = new(); }
 
     internal readonly List<Ws> Workspaces = new();
     internal Ws ActiveWs;
@@ -321,8 +322,8 @@ internal sealed class FakeSessionHost : ISessionHost
                 Context: s.Context,
                 CapturedCommands: s.PaneIds.Select(id => s.Captured.TryGetValue(id, out var c) ? c : "").ToList(),   // the slot, "" = none, parallel to PaneIds
                 Axis: s.Axis,
-                PaneOverlays: s.PaneOverlayWords(), Hud: s.Hud);
-        }).ToList())).ToList();
+                PaneOverlays: s.PaneOverlayWords(), Hud: s.Hud, ForegroundShells: s.ForegroundShells);
+        }).ToList(), Collapsed: w.Collapsed)).ToList();
 
     public WindowStateSnapshot WindowState() =>
         new(SidebarVisible, Fullscreen: false, Maximized: false, QuickVisible, ActiveWs.Name, ActiveSess?.Name);
@@ -505,6 +506,15 @@ internal sealed class FakeSessionHost : ISessionHost
     public bool WorkspaceRename(string? target, string name) { var w = FindWs(target); if (w is null || string.IsNullOrWhiteSpace(name)) return false; w.Name = name; return true; }
     public bool WorkspaceDelete(string? target) { var w = FindWs(target); if (w is null || Workspaces.Count <= 1) return false; Workspaces.Remove(w); if (ReferenceEquals(ActiveWs, w)) { ActiveWs = Workspaces[0]; ActiveSess = ActiveWs.Sessions.FirstOrDefault(); } return true; }
     public bool WorkspaceSelect(string? target) { var w = FindWs(target); if (w is null) return false; ActiveWs = w; ActiveSess = w.Sessions.FirstOrDefault(); return true; }
+    public string WorkspaceGo(string direction)
+    {
+        if (!WorkspaceNavigation.TryDirection(direction, out int step)) return ISessionHost.RefusePrefix + "bad direction";
+        int index = WorkspaceNavigation.Destination(Workspaces.Count, Workspaces.IndexOf(ActiveWs), step);
+        if (index < 0) return ISessionHost.RefusePrefix + "no other visible workspace to navigate to";
+        ActiveWs = Workspaces[index];
+        if (ActiveWs.Sessions.FirstOrDefault() is { } first) ActiveSess = first;
+        return ActiveWs.Id;
+    }
     public bool WorkspaceReorder(string? target, string dir) => FindWs(target) is not null;
     public string Split(string? target, string op, string? axis)
     {

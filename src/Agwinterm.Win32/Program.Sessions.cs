@@ -28,7 +28,7 @@ internal partial class Program
     {
         lock (_workspaces)
         {
-            if (_active is not null) return _active.Ws;
+            if (CurrentWorkspace() is { } current) return current;
             if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
             return _workspaces[0];
         }
@@ -337,8 +337,8 @@ internal partial class Program
     }
 
     [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern bool Process32FirstW(IntPtr snapshot, ref PROCESSENTRY32W entry);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern bool Process32NextW(IntPtr snapshot, ref PROCESSENTRY32W entry);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Process32FirstW(IntPtr snapshot, ref PROCESSENTRY32W entry);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Process32NextW(IntPtr snapshot, ref PROCESSENTRY32W entry);
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct PROCESSENTRY32W
     {
@@ -556,6 +556,7 @@ internal partial class Program
 
     private void SetActive(Ses ses)
     {
+        _workspaceTarget = null;
         // Navigating to a session outside the multi-selection drops the selection (single-select again).
         if (!_selectedIds.Contains(ses.Id)) _selectedIds.Clear();
         _active = ses;
@@ -1786,7 +1787,7 @@ internal partial class Program
     {
         lock (_workspaces)
         {
-            if (string.IsNullOrEmpty(target) || target == "active") return _active?.Ws ?? _workspaces.FirstOrDefault();
+            if (string.IsNullOrEmpty(target) || target == "active") return CurrentWorkspace();
             return _workspaces.FirstOrDefault(w => w.Id == target) ?? _workspaces.FirstOrDefault(w => w.Id.StartsWith(target));
         }
     }
@@ -1967,6 +1968,8 @@ internal partial class Program
             "off" => null,
             _ => _focusedWorkspaceId is not null ? null : wsId, // toggle
         };
+        if (_workspaceTarget is { } target && _focusedWorkspaceId is not null && _focusedWorkspaceId != target.Id)
+            _workspaceTarget = null;
         RequestRedraw(); SaveState();
     }
 

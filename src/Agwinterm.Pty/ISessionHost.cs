@@ -21,10 +21,11 @@ public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentS
     IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null,
     IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0,
     string? Context = null, IReadOnlyList<string>? CapturedCommands = null,
-    string? Axis = null, IReadOnlyList<string>? PaneOverlays = null, HudSpec? Hud = null);
+    string? Axis = null, IReadOnlyList<string>? PaneOverlays = null, HudSpec? Hud = null,
+    IReadOnlyList<string?>? ForegroundShells = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
-public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
+public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions, bool Collapsed = false);
 
 /// <summary>Where a <c>session.restore</c> call landed: the pane the target resolved to and the session
 /// that owns it, so the reply can name both — a split has several panes and the caller cannot otherwise
@@ -231,6 +232,8 @@ public interface ISessionHost
     /// <summary>Collapse (expand=false) or expand (true) a single workspace by id; null target = active.</summary>
     bool WorkspaceCollapse(string? target, bool expand);
     bool WorkspaceSelect(string? target);
+    /// <summary>Relative visible-workspace navigation; returns destination id or RefusePrefix.</summary>
+    string WorkspaceGo(string direction) => RefusePrefix + "workspace navigation unavailable";
     /// <summary>Reorder a workspace among its siblings: dir = up|down|top|bottom.</summary>
     bool WorkspaceReorder(string? target, string dir);
 

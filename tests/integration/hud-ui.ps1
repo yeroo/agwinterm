@@ -1,7 +1,7 @@
 # Dedicated P13 fixture: private app-data, no clipboard/registry writes, exact owned job teardown.
 param([string]$Exe="$PSScriptRoot/../../src/Agwinterm.Win32/bin/x64/Release/net10.0-windows/win-x64/Agwinterm.Win32.exe",
       [string]$TokenOwner=$env:AGWINTERM_TEST_OWNER,[switch]$Strict,
-      [ValidateSet('Hud','Quick')][string]$Suite='Hud')
+      [ValidateSet('Hud','Quick','Navigation')][string]$Suite='Hud')
 $ErrorActionPreference='Stop'
 $PSNativeCommandUseErrorActionPreference=$false
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
@@ -117,6 +117,10 @@ public sealed class HudOwnedJob {
         @('map f7 = toggle_search','map f8 = command:QuickProbe',
           ('command [send] QuickProbe = echo {AGW_PANE}>"'+(Join-Path $artifact 'keymap-send.txt')+'"'))|Add-Content (Join-Path $appDir 'keymap.conf')
     }
+    if($Suite-eq 'Navigation'){
+        @('map f5 | f7 = next_workspace','map f8 = previous_workspace','map f9 = toggle_workspace_collapse',
+          'leader = f10','map leader a | b = next_workspace')|Add-Content (Join-Path $appDir 'keymap.conf')
+    }
     $savedEnv=@{}
     foreach($name in 'AGWINTERM_APP_ID','AGWINTERM_PIPE','AGWINTERM_SESSION_ID','AGWINTERM_PANE_ID','AGWINTERM_DUMP','AGWINTERM_PERF','AGWINTERM_IMGLOG'){
         $savedEnv[$name]=[Environment]::GetEnvironmentVariable($name)
@@ -125,13 +129,15 @@ public sealed class HudOwnedJob {
     $env:AGWINTERM_APP_ID=$appId+'-fallback'
     $job=[HudOwnedJob]::new()
     $job.Start([IO.Path]::GetFullPath($Exe),"--app-id $appId --pipe $pipe --no-restore",$root)
-    function Rpc([string]$verb,$params=@{},[string]$target='active',[switch]$AllowError,[string]$Window='active'){
+    function Rpc([string]$verb,$params=@{},[string]$target='active',[switch]$AllowError,[string]$Window='active',[switch]$NoTarget){
         $client=[IO.Pipes.NamedPipeClientStream]::new('.',$pipe,[IO.Pipes.PipeDirection]::InOut)
         try {
             $client.Connect(1500)
             $writer=[IO.StreamWriter]::new($client);$writer.AutoFlush=$true
             $reader=[IO.StreamReader]::new($client)
-            $writer.WriteLine((@{cmd=$verb;args=$params;target=$target;window=$Window}|ConvertTo-Json -Compress -Depth 8))
+            $request=@{cmd=$verb;args=$params;target=$target;window=$Window}
+            if($NoTarget){$request.Remove('target')}
+            $writer.WriteLine(($request|ConvertTo-Json -Compress -Depth 8))
             $read=$reader.ReadLineAsync();if(-not $read.Wait(15000)){throw 'HUD RPC deadline exceeded'}
             $answer=$read.Result|ConvertFrom-Json
             if($AllowError){return $answer}
@@ -165,7 +171,8 @@ public sealed class HudOwnedJob {
             }finally{$bitmap.UnlockBits($bits)}
         }finally{$graphics.Dispose();$bitmap.Dispose()}
     }
-    if($Suite-eq 'Quick') { . "$PSScriptRoot/quick-ui-cases.ps1" } else {
+    if($Suite-eq 'Navigation') { . "$PSScriptRoot/navigation-ui-cases.ps1" }
+    elseif($Suite-eq 'Quick') { . "$PSScriptRoot/quick-ui-cases.ps1" } else {
     $ctl=Join-Path $root 'src/Agwinterm.Ctl/bin/Release/net10.0-windows/agwintermctl.exe'
     $null=& $ctl session hud --spinner 'CLI HUD' --detail 'private acceptance' --size-percent 35 --target $session --pipe $pipe --json
     Check 'CLI default open accepts spinner before message and numeric width' ($LASTEXITCODE-eq 0 -and (Node).hud.message-eq 'CLI HUD' -and (Node).hud.sizePercent-eq 35)
