@@ -180,7 +180,7 @@ public static class AgentSkill
 
         ## Scratch & quick terminals
         - `agwintermctl session scratch on|off|toggle [--target <id>]` — a per-session extra shell drawn over that session's content (opens in the session's cwd; stays alive when hidden; not restored)
-        - `agwintermctl quick on|off|toggle`                     — the window's single throwaway shell, dropped over the active session (opens in the home dir; stays alive when hidden; not restored)
+        - `agwintermctl quick on|off|toggle` — one app-level detached shell (home dir; stays alive when hidden; not restored). API shows stay pinned without taking focus; human toggles dismiss on blur. `--window quick --target active` addresses its surface. `quick-terminal-size` is 40–90% of the pointer monitor's work area; `quick-terminal-hotkey` is opt-in, empty by default. See `docs/quick-terminal.md`.
 
         ## Overlays (run a program over a session — or over ONE pane of it — ephemerally)
         The rule, quoted from `ISessionHost.SessionOverlay` (the CLI header quotes it too):

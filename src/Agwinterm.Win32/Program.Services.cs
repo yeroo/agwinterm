@@ -922,6 +922,7 @@ internal partial class Program
         "restore-commands", "restore-buffer", "blocked-sound", "notification-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges", "workspace-add-button",
         "show-scratch-button", "show-split-button", "show-dashboard-button", "show-quick-button",
+        "quick-terminal-size", "quick-terminal-hotkey",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
         "paste-protection", "clipboard-write", "notification-flash", "claude-update-check", "update-check",
         "session-host", "fresh-env", "emulator-core",
@@ -933,7 +934,7 @@ internal partial class Program
         string path = ConfigPath;
         string text = File.Exists(path) ? File.ReadAllText(path) : TerminalConfig.DefaultText;
         var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
-        int idx = lines.FindIndex(l =>
+        int idx = lines.FindLastIndex(l =>
         {
             var t = l.TrimStart();
             int eq = l.IndexOf('=');
@@ -942,7 +943,15 @@ internal partial class Program
         string ln = $"{key} = {value}";
         if (idx >= 0) lines[idx] = ln; else { lines.Add(ln); }
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, string.Join(Environment.NewLine, lines));
+        // A failed write must never truncate the user's existing configuration. The sibling
+        // temporary file keeps replacement on the same volume; a failed move leaves path intact.
+        string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temp, string.Join(Environment.NewLine, lines));
+            File.Move(temp, path, overwrite: true);
+        }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
     }
 
     /// <summary>Current value of a config key as a string (for config get/list + the Settings window).</summary>
@@ -991,6 +1000,8 @@ internal partial class Program
         "show-split-button" => _config.ShowSplitButton ? "true" : "false",
         "show-dashboard-button" => _config.ShowDashboardButton ? "true" : "false",
         "show-quick-button" => _config.ShowQuickButton ? "true" : "false",
+        "quick-terminal-size" => _config.QuickTerminalSize.ToString(),
+        "quick-terminal-hotkey" => _config.QuickTerminalHotkey,
         "notification-flash" => _config.NotificationFlash,
         "claude-update-check" => _config.ClaudeUpdateCheck ? "true" : "false",
         "update-check" => _config.UpdateCheck ? "true" : "false",
@@ -1011,8 +1022,15 @@ internal partial class Program
     {
         key = key.Trim().ToLowerInvariant();
         if (Array.IndexOf(ConfigKeys, key) < 0) return "error: unknown key '" + key + "'";
-        WriteConfigKey(key, value.Trim());
+        if (key == "quick-terminal-size" && (!int.TryParse(value.Trim(), out int qs) || qs is < 40 or > 90))
+            return "error: quick-terminal-size must be an integer from 40 through 90";
+        if (key == "quick-terminal-hotkey")
+        {
+            if (SetQuickHotkey(value.Trim(), () => WriteConfigKey(key, value.Trim())) is { } error) return error;
+        }
+        else WriteConfigKey(key, value.Trim());
         _config = TerminalConfig.Load(ConfigPath);       // reparse so clamping/validation is centralized
+        if (key == "quick-terminal-size" && _quickHost?._quickVisible == true) _quickHost.PositionQuick();
         if (key == "theme") _theme = FindTheme(_config.Theme);
         if (key is "theme" or "theme-follow-system" or "theme-dark" or "theme-light") ApplySystemTheme();
         if (key == "session-host")
@@ -1421,6 +1439,7 @@ internal partial class Program
     private bool TrySaveState(out string? why, bool captureCommands = false)
     {
         why = null;
+        if (_isQuickWindow) { why = "quick terminal is not restored"; return false; }
         if (_restoring) { why = "the window is still restoring its saved state"; return false; }
         try
         {

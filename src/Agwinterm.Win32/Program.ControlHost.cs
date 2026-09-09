@@ -17,11 +17,15 @@ namespace Agwinterm.Win32;
 /// <summary>Control-API host: the IWindowHost + ISessionHost bridges the control server drives.</summary>
 internal partial class Program
 {
+    public bool IsQuickSurface => _isQuickWindow;
+    public ISessionHost? AuxiliaryTarget(string? target) => target?.StartsWith("quick:", StringComparison.Ordinal) == true
+        && _quickHost?._quick is { } q && q.Id.StartsWith(target, StringComparison.Ordinal) ? _quickHost : null;
     // ---- IWindowHost bridge (Wave F1b): app-level window management for the control API. Content
     // verbs resolve through ResolveWindow(--window); window.* verbs act on the library. These use
     // static library state + Frontmost, so they work regardless of which instance the server holds. ----
     public ISessionHost? ResolveWindow(string? selector)
     {
+        if (selector == "quick") return _quickHost;
         if (string.IsNullOrEmpty(selector) || selector == "active") return Frontmost;
         return ResolveOpen(selector);
     }
@@ -218,7 +222,7 @@ internal partial class Program
         var a = _active;
         return new WindowStateSnapshot(
             SidebarVisible: _sidebarW > 0, Fullscreen: _fullscreen, Maximized: IsZoomed(_hwnd),
-            QuickTerminalVisible: _coverKind == 2 && _cover is not null && ReferenceEquals(_cover, _quick),
+            QuickTerminalVisible: _quickHost?._quickVisible == true,
             // ActiveSession is the NAME; session.context is not a name and is not folded in — it is read from the tree (P3).
             ActiveWorkspace: a?.Ws.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
     }
@@ -386,6 +390,11 @@ internal partial class Program
         int delta = op switch { "inc" => 1, "dec" => -1, _ => 0 }; // reset otherwise
         if (string.IsNullOrEmpty(target) || target == "active")
         {
+            if (_isQuickWindow) return InvokeOnUiQueued(() =>
+            {
+                if (ActiveSurface() is not { } p) return false;
+                ZoomPane((p, null, true), delta); return true;
+            });
             var ses = Find(target);
             if (ses is null) return false;
             PostVerb(() => ChangeFontSizeOf(ses, delta));
@@ -664,7 +673,7 @@ internal partial class Program
 
     public string KeymapReload() { PostVerb(ReloadKeymap); return "keymap reload requested"; }
 
-    public string ConfigSet(string key, string value) => InvokeOnUi(() => ConfigSetInternal(key, value));
+    public string ConfigSet(string key, string value) => InvokeOnUiQueued(() => ConfigSetInternal(key, value));
     public string ConfigGet(string key) => InvokeOnUi(() => ConfigValue(key.Trim().ToLowerInvariant()));
     public string ConfigList() => InvokeOnUi(() => string.Join("\n", ConfigKeys.Select(k => $"{k} = {ConfigValue(k)}")));
     public string SettingsOpen() { PostVerb(OpenSettingsWindow); return "settings opened"; }
@@ -822,7 +831,7 @@ internal partial class Program
     // searches the active session.)
     public string SessionSearch(string? target, string? query, string? action) => InvokeOnUi(() =>
     {
-        if (_active is null) return "no session";
+        if (ActiveSurface() is null) return "no session";
         if (action == "close") { CloseSearch(); return "closed"; }
         if (!_searchActive) _searchActive = true;
         if (!string.IsNullOrEmpty(query)) { _searchQuery = query!; RecomputeSearch(); _searchCur = 0; ScrollToMatch(); }
@@ -841,7 +850,7 @@ internal partial class Program
         return true;
     }
 
-    public void Quick(string op) => PostVerb(() => QuickOp(op));
+    public void Quick(string op) => InvokeOnUiQueued(() => { QuickOp(op, control: true); return 0; });
 
     /// <summary>An overlay covers a whole SESSION. When the caller named one pane of a split, that
     /// is not what they asked for - say so rather than widen it in silence and blank the pane the
@@ -1388,13 +1397,14 @@ internal partial class Program
 
     public string SessionSwitch(string op) => InvokeOnUi(() => SwitchOp(op));
 
-    public string CommandRun(string nameOrCommand, string? mode) => InvokeOnUi(() =>
+    public string CommandRun(string nameOrCommand, string? mode) => InvokeOnUiQueued(() =>
     {
         var cmd = _commands.FirstOrDefault(c => string.Equals(c.Label, nameOrCommand, StringComparison.OrdinalIgnoreCase));
         string text = cmd?.Text ?? nameOrCommand;
         // A configured command uses its mode unless overridden; a raw command defaults to a new session.
         string useMode = mode ?? cmd?.Mode ?? "new";
         string expanded = RunCommandText(text, useMode);
+        if (expanded.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)) return expanded;
         return $"{useMode}: {expanded}";
     });
 

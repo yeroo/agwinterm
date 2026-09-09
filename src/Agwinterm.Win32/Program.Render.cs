@@ -626,8 +626,7 @@ internal partial class Program
             brush.Color = new Color4(0f, 0f, 0f, Math.Clamp(_config.UnfocusedDim, 0, 90) / 100f);
             rt.FillRectangle(new Rect(dx, dy, dw, dh), brush);
         }
-        DrawSidebar(rt, brush);
-        DrawTitleBar(rt, brush);
+        if (!_isQuickWindow) { DrawSidebar(rt, brush); DrawTitleBar(rt, brush); }
         DrawSearchBar(rt, brush);
         DrawToast(rt, brush);
         DrawButtonTip(rt, brush);
@@ -641,9 +640,9 @@ internal partial class Program
     /// <summary>The normal terminal content: the active session's pane grid, or a cover/quick/overlay panel.</summary>
     private void DrawWindowContent(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
-        // Quick terminal (kind 2) and a sized floating overlay (kind 3) both render as a centered
-        // panel over the live main window — a "tool window" look. Scratch (1) / full overlay fill.
-        bool floatingPanel = _cover is not null && ((_coverKind == 3 && _ovlOwner is { Overlay.SizePercent: > 0 }) || _coverKind == 2);
+        // Sized program overlays float over normal content. The detached quick host (kind 2)
+        // fills its own tool window, as scratch/full overlays fill their normal content region.
+        bool floatingPanel = !_isQuickWindow && _cover is not null && ((_coverKind == 3 && _ovlOwner is { Overlay.SizePercent: > 0 }) || _coverKind == 2);
         if (_cover is not null && !floatingPanel)
         {
             var (ox, oy, cw0, ch0) = ContentArea();

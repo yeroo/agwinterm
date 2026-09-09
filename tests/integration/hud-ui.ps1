@@ -1,10 +1,11 @@
 # Dedicated P13 fixture: private app-data, no clipboard/registry writes, exact owned job teardown.
 param([string]$Exe="$PSScriptRoot/../../src/Agwinterm.Win32/bin/x64/Release/net10.0-windows/win-x64/Agwinterm.Win32.exe",
-      [string]$TokenOwner=$env:AGWINTERM_TEST_OWNER,[switch]$Strict)
+      [string]$TokenOwner=$env:AGWINTERM_TEST_OWNER,[switch]$Strict,
+      [ValidateSet('Hud','Quick')][string]$Suite='Hud')
 $ErrorActionPreference='Stop'
 $PSNativeCommandUseErrorActionPreference=$false
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-$run='hud-ui-'+(Get-Date -Format yyyyMMddTHHmmss)+'-'+[guid]::NewGuid().ToString('N').Substring(0,6)
+$run=$Suite.ToLowerInvariant()+'-ui-'+(Get-Date -Format yyyyMMddTHHmmss)+'-'+[guid]::NewGuid().ToString('N').Substring(0,6)
 $artifact=Join-Path $root ".revmux/$run"
 New-Item -ItemType Directory $artifact|Out-Null
 Start-Transcript (Join-Path $artifact 'transcript.log')|Out-Null
@@ -15,7 +16,7 @@ function Check([string]$name,[bool]$ok,[string]$detail='') {
 try {
     if(Test-Path $hub){
         if([string]::IsNullOrWhiteSpace($TokenOwner)){throw 'Local HUD tests require -TokenOwner'}
-        $raw=& python $hub acquire --owner $TokenOwner --run $run --worktree $root --holder-pid $PID --purpose 'P13 private HUD UI acceptance'
+        $raw=& python $hub acquire --owner $TokenOwner --run $run --worktree $root --holder-pid $PID --purpose "$Suite private UI acceptance"
         $state=$raw|ConvertFrom-Json
         if($LASTEXITCODE-ne 0 -or -not $state.ok){throw "Suite token unavailable: $raw"}
         $lease=$state
@@ -59,6 +60,10 @@ public sealed class HudOwnedJob {
     public static IntPtr InputWindow(IntPtr h,bool capture) {
         uint pid;uint t=GetWindowThreadProcessId(h,out pid);var info=new GUI {size=Marshal.SizeOf<GUI>()};
         if(!GetGUIThreadInfo(t,ref info))throw new Exception("GetGUIThreadInfo");return capture?info.capture:info.focus;
+    }
+    public static RECT CaretRect(IntPtr h) {
+        uint pid;uint t=GetWindowThreadProcessId(h,out pid);var info=new GUI {size=Marshal.SizeOf<GUI>()};
+        if(!GetGUIThreadInfo(t,ref info))throw new Exception("GetGUIThreadInfo");return info.rect;
     }
     IntPtr job,process; bool assigned; public uint Pid { get; private set; }
     public void Start(string exe,string args,string cwd) {
@@ -108,6 +113,10 @@ public sealed class HudOwnedJob {
     @{default='HUD-test';profiles=@(@{name='HUD-test';command='cmd.exe';args=@('/d');cwd=$artifact})}|ConvertTo-Json -Depth 5|Set-Content (Join-Path $appDir 'profiles.json')
     @('session-host = in-process','claude-update-check = false','update-check = false','fresh-env = false','copy-on-select = false')|Set-Content (Join-Path $appDir 'agwinterm.conf')
     'map f12 = close_pane'|Set-Content (Join-Path $appDir 'keymap.conf')
+    if($Suite-eq 'Quick'){
+        @('map f7 = toggle_search','map f8 = command:QuickProbe',
+          ('command [send] QuickProbe = echo {AGW_PANE}>"'+(Join-Path $artifact 'keymap-send.txt')+'"'))|Add-Content (Join-Path $appDir 'keymap.conf')
+    }
     $savedEnv=@{}
     foreach($name in 'AGWINTERM_APP_ID','AGWINTERM_PIPE','AGWINTERM_SESSION_ID','AGWINTERM_PANE_ID','AGWINTERM_DUMP','AGWINTERM_PERF','AGWINTERM_IMGLOG'){
         $savedEnv[$name]=[Environment]::GetEnvironmentVariable($name)
@@ -116,13 +125,13 @@ public sealed class HudOwnedJob {
     $env:AGWINTERM_APP_ID=$appId+'-fallback'
     $job=[HudOwnedJob]::new()
     $job.Start([IO.Path]::GetFullPath($Exe),"--app-id $appId --pipe $pipe --no-restore",$root)
-    function Rpc([string]$verb,$params=@{},[string]$target='active',[switch]$AllowError){
+    function Rpc([string]$verb,$params=@{},[string]$target='active',[switch]$AllowError,[string]$Window='active'){
         $client=[IO.Pipes.NamedPipeClientStream]::new('.',$pipe,[IO.Pipes.PipeDirection]::InOut)
         try {
             $client.Connect(1500)
             $writer=[IO.StreamWriter]::new($client);$writer.AutoFlush=$true
             $reader=[IO.StreamReader]::new($client)
-            $writer.WriteLine((@{cmd=$verb;args=$params;target=$target}|ConvertTo-Json -Compress -Depth 8))
+            $writer.WriteLine((@{cmd=$verb;args=$params;target=$target;window=$Window}|ConvertTo-Json -Compress -Depth 8))
             $read=$reader.ReadLineAsync();if(-not $read.Wait(15000)){throw 'HUD RPC deadline exceeded'}
             $answer=$read.Result|ConvertFrom-Json
             if($AllowError){return $answer}
@@ -130,7 +139,7 @@ public sealed class HudOwnedJob {
         }finally{$client.Dispose()}
     }
     $ready=$false
-    for($i=0;$i-lt 60;$i++){try{$null=Rpc 'ping';$ready=$true;break}catch{Start-Sleep -Milliseconds 200}}
+    for($i=0;$i-lt 60;$i++){try{if(@((Rpc 'tree').workspaces[0].sessions).Count-gt 0){$ready=$true;break}}catch{};Start-Sleep -Milliseconds 200}
     if(-not $ready){throw 'Private app did not answer'}
     if(Test-Path ($appDir+'-fallback')){throw 'App ignored --app-id'}
     $proc=[Diagnostics.Process]::GetProcessById($job.Pid);$hwnd=[IntPtr]::Zero
@@ -156,6 +165,7 @@ public sealed class HudOwnedJob {
             }finally{$bitmap.UnlockBits($bits)}
         }finally{$graphics.Dispose();$bitmap.Dispose()}
     }
+    if($Suite-eq 'Quick') { . "$PSScriptRoot/quick-ui-cases.ps1" } else {
     $ctl=Join-Path $root 'src/Agwinterm.Ctl/bin/Release/net10.0-windows/agwintermctl.exe'
     $null=& $ctl session hud --spinner 'CLI HUD' --detail 'private acceptance' --size-percent 35 --target $session --pipe $pipe --json
     Check 'CLI default open accepts spinner before message and numeric width' ($LASTEXITCODE-eq 0 -and (Node).hud.message-eq 'CLI HUD' -and (Node).hud.sizePercent-eq 35)
@@ -250,12 +260,18 @@ public sealed class HudOwnedJob {
     $null=Rpc 'session.close' @{} $session
     for($i=0;$i-lt 50 -and $null-ne (Node);$i++){Start-Sleep -Milliseconds 50}
     Check 'session close removes HUD state' ($null-eq (Node))
+    }
 }catch{$failed++;"FAIL fixture: $($_.Exception.Message)"}
 finally {
     if($job){
         try{
             if($hwnd){[void][HudOwnedJob]::PostMessageW($hwnd,0x10,[IntPtr]::Zero,[IntPtr]::Zero)}
             $job.Finish();'Cleanup: owned job has zero live processes; no name-based cleanup.'
+            if($verifyQuickShutdown){
+                $probe=[QuickProbe]::RegisterHotKey([IntPtr]::Zero,0x615,0x4007,0x78)
+                try{Check 'last library window shutdown releases quick hotkey' $probe}
+                finally{if($probe -and -not [QuickProbe]::UnregisterHotKey([IntPtr]::Zero,0x615)){throw 'Cannot release shutdown hotkey probe'}}
+            }
         }catch{$cleanup=$false;"CLEANUP INCOMPLETE: $_"}
     }
     if($savedEnv){foreach($name in $savedEnv.Keys){[Environment]::SetEnvironmentVariable($name,$savedEnv[$name])}}
@@ -265,7 +281,7 @@ finally {
         $raw|Set-Content (Join-Path $artifact 'release.json');$raw
         if($LASTEXITCODE-ne 0){$cleanup=$false}
     }
-    "hud-ui: $checks checks, $failed failed; cleanup complete: $cleanup; artifacts $artifact"
+    "$Suite-ui: $checks checks, $failed failed; cleanup complete: $cleanup; artifacts $artifact"
     Stop-Transcript|Out-Null
 }
-if(-not $cleanup){exit 2};if($failed){exit 1};exit 0
+if(-not $cleanup){exit 2};if($failed -or ($Strict -and $checks-eq 0)){exit 1};exit 0

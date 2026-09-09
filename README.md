@@ -26,7 +26,7 @@ A Windows homage to [umputun's **agterm**](https://github.com/umputun/agterm).
 
 agwinterm exists because of **[umputun](https://github.com/umputun)** and his terminal
 **[agterm](https://github.com/umputun/agterm)**. agterm's design — a terminal that treats AI coding
-agents as first-class citizens, with per-session status, a sidebar of workspaces, a quick terminal,
+agents as first-class citizens, with per-session status, a sidebar of workspaces, a [detached quick terminal](docs/quick-terminal.md),
 and a language-agnostic control socket — is the blueprint this project follows on Windows.
 
 This is an **independent, from-scratch implementation** written in C# on a native Win32/Direct2D

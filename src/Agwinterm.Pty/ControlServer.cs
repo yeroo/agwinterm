@@ -204,6 +204,16 @@ public sealed class ControlServer : IDisposable
             if (windowSel is not null && _windows is not null && _windows.ResolveWindow(windowSel) is null)
                 return Err("window not found: " + windowSel);
 
+            host = host.AuxiliaryTarget(target) ?? host;
+
+            if (host.IsQuickSurface && cmd is not ("quick" or "window.state" or "tree"
+                or "session.write" or "session.type" or "session.text" or "session.copy" or "session.status"
+                or "session.metrics" or "surface.cursor" or "font" or "selection.all" or "selection.clear"
+                or "selection.copy" or "selection.finalize" or "session.paste" or "session.readonly"
+                or "config.get" or "config.list" or "config.set" or "session.search" or "command.run"
+                or "image.show" or "image.sixel" or "image.clear" or "image.frame" or "image.frameshm"))
+                return Err("quick terminal has no workspace/session tree; target a library window for this command");
+
             switch (cmd)
             {
                 case "tree": return HandleTree(host);
@@ -299,7 +309,11 @@ public sealed class ControlServer : IDisposable
                 case "keymap.reload": return Ok(host.KeymapReload());
                 case "restore.clear": return Ok(host.RestoreClear());
                 case "restore.capture": return HandleRestoreCapture(host, target);
-                case "config.set": return Ok(host.ConfigSet(GetString(args, "key") ?? "", GetString(args, "value") ?? ""));
+                case "config.set":
+                    {
+                        string reply = host.ConfigSet(GetString(args, "key") ?? "", GetString(args, "value") ?? "");
+                        return reply.StartsWith("error:", StringComparison.Ordinal) ? Err(reply[6..].TrimStart()) : HostReply(reply);
+                    }
                 case "config.get": return Ok(host.ConfigGet(GetString(args, "key") ?? ""));
                 case "config.list": return Ok(host.ConfigList());
                 case "settings.open": return Ok(host.SettingsOpen());
@@ -327,7 +341,12 @@ public sealed class ControlServer : IDisposable
                 case "session.paste": return HostReply(host.SessionPaste(target, GetString(args, "text")));
                 case "session.search": return Ok(host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
                 case "session.scratch": return host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
-                case "quick": host.Quick(GetString(args, "op") ?? "toggle"); return Ok("quick");
+                case "quick":
+                    {
+                        string op = GetString(args, "op") ?? "toggle";
+                        if (op is not ("on" or "off" or "toggle")) return Err("quick: op must be on, off or toggle");
+                        host.Quick(op); return Ok("quick");
+                    }
                 case "session.overlay": return HandleSessionOverlay(host, target, args);   // the guards and their order: see the method
                 case "notify":
                     return host.Notify(target, GetString(args, "title"), GetString(args, "body") ?? "")
@@ -359,7 +378,7 @@ public sealed class ControlServer : IDisposable
                     {
                         string? nameOrCmd = GetString(args, "name") ?? GetString(args, "command");
                         if (string.IsNullOrWhiteSpace(nameOrCmd)) return Err("command.run needs args.name or args.command");
-                        return Ok(host.CommandRun(nameOrCmd!, GetString(args, "mode")));
+                        return HostReply(host.CommandRun(nameOrCmd!, GetString(args, "mode")));
                     }
                 case "command.list": return Ok(host.CommandList());
                 case "command.leader": return Ok(host.CommandLeader(GetString(args, "op") ?? "state"));

@@ -72,6 +72,10 @@ public sealed record PaneMetricsSnapshot(int Cols, int Rows, int CellWidth, int 
 /// </summary>
 public interface ISessionHost
 {
+    /// <summary>A detached quick surface has no workspace/library tree to mutate.</summary>
+    bool IsQuickSurface => false;
+    /// <summary>Route an explicit app-level auxiliary pane id to its detached owner, if any.</summary>
+    ISessionHost? AuxiliaryTarget(string? target) => null;
     /// <summary>Passive session-wide HUD. The host returns JSON {session,hud}, or RefusePrefix.
     /// Resolve and mutate together on the UI thread; do not change focus, terminal input or geometry.</summary>
     string SessionHud(string? target, string action, HudSpec? spec)

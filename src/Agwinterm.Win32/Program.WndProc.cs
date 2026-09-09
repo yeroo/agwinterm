@@ -38,6 +38,18 @@ internal partial class Program
 
     private IntPtr WindowProcCore(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        if (_isQuickWindow)
+        {
+            if (msg == WM_CLOSE) { DismissQuick(); return IntPtr.Zero; }
+            if (msg == WM_NCHITTEST) return (IntPtr)HTCLIENT;
+            if (msg == WM_NCCALCSIZE) return IntPtr.Zero;
+            if (msg == QuickHotkeyMessage)
+            {
+                if ((int)wParam == _quickHotkeyId && _quickHotkeyId != 0) QuickOp("toggle", global: true);
+                return IntPtr.Zero;
+            }
+            if (msg == WM_DESTROY) { _uiGone.Cancel(); return IntPtr.Zero; }
+        }
         switch (msg)
         {
             case 0x003D: // WM_GETOBJECT — expose the terminal to screen readers (UIA, T2-14)
@@ -151,6 +163,7 @@ internal partial class Program
                 return IntPtr.Zero;
 
             case WM_KILLFOCUS:
+                if (_isQuickWindow) ReleaseQuickKeys();
                 DropCaret();
                 return IntPtr.Zero;
 
@@ -219,6 +232,12 @@ internal partial class Program
                     _dpi = (ushort)((long)wParam & 0xFFFF);       // wParam packs the new DPI in both words
                     if (_dpi <= 0) _dpi = 96f;
                     if (_rt is not null) _rt.Dpi = new Vortice.Mathematics.Size(_dpi, _dpi);
+                    if (_isQuickWindow)
+                    {
+                        // Quick geometry is a physical monitor percentage, not a logical normal
+                        // window size. Do not scale PositionQuick's already-sized rectangle again.
+                        RegridCover(); RequestRedraw(); return IntPtr.Zero;
+                    }
                     // Take the SUGGESTED rect. It is the contract for this message: it already accounts
                     // for the new scaling, and a window that sizes itself here instead lands wrong.
                     var sug = System.Runtime.InteropServices.Marshal.PtrToStructure<RECT>(lParam);
@@ -599,7 +618,9 @@ internal partial class Program
                 if (_windowActive != wasActive && _session is { } fs && fs.Emulator.FocusReporting)
                     fs.Write(_windowActive ? "\x1b[I"u8.ToArray() : "\x1b[O"u8.ToArray());
                 if (_config.UnfocusedDim > 0) RequestRedraw();
-                if (_windowActive && _frontmostId != Id) // this window is frontmost
+                if (_isQuickWindow && !_windowActive && _quickVisible && !_quickPinned
+                    && (lParam == IntPtr.Zero || GetAncestor(lParam, 3 /* GA_ROOTOWNER */) != _hwnd)) DismissQuick(blur: true);
+                if (!_isQuickWindow && _windowActive && _frontmostId != Id) // this library window is frontmost
                 {
                     Frontmost = this; _frontmostId = Id; SaveIndex();
                 }
@@ -615,7 +636,8 @@ internal partial class Program
                 // App-quit (last window, or an update-quit closing all of them) DETACHES panes —
                 // server-hosted sessions keep running and the next start adopts them (#105 2c).
                 // An explicit window close (others remain) still disposes = kills, like a pane
-                // close. Scratch/overlay/quick are never restored, so they always dispose.
+                // close. Scratch/overlay always dispose; the app-level quick shell survives until
+                // the LAST library window closes, when DestroyQuickHost disposes it too.
                 bool quitting;
                 lock (_windowIndex) quitting = _updateQuitting || _byId.Count <= 1;
                 foreach (var s in AllSessions())
@@ -650,7 +672,7 @@ internal partial class Program
                     }
                 }
                 SaveIndex();
-                if (lastWindow) PostQuitMessage(0);
+                if (lastWindow) { DestroyQuickHost(); PostQuitMessage(0); }
                 return IntPtr.Zero;
         }
         return DefWindowProcW(hwnd, msg, wParam, lParam);

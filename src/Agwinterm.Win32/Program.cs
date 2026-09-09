@@ -152,7 +152,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private static string ToolbarModeResolved =>
         _config?.ToolbarMode is "normal" or "compact" or "hidden" ? _config.ToolbarMode!
         : (_config is { CompactToolbar: true } ? "compact" : "normal");
-    private static float TitleBarH => ToolbarModeResolved switch { "hidden" => 0f, "compact" => 30f, _ => 40f };
+    private float TitleBarH => _isQuickWindow ? 0f : ToolbarModeResolved switch { "hidden" => 0f, "compact" => 30f, _ => 40f };
     private static bool ToolbarHidden => ToolbarModeResolved == "hidden";
     private const float FooterH = 34f;       // toolbar at the bottom of the sidebar
     // The default and the 120..600 range live in Agwinterm.Pty.SidebarWidths, with the chrome
@@ -665,7 +665,10 @@ internal partial class Program : ISessionHost, IWindowHost
         // leaving the window invisible and unreachable — clamp it onto the nearest visible work area first.
         if (_geoValid) ClampGeoToVisibleScreen(ref _geoX, ref _geoY, ref _geoW, ref _geoH);
         _creating = this;                    // so the WindowProc trampoline can resolve us during CreateWindowExW
-        _hwnd = _geoValid
+        _hwnd = _isQuickWindow
+            ? CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, ClassName, "agwinterm quick terminal", WS_POPUP,
+                0, 0, 640, 480, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero)
+            : _geoValid
             ? CreateWindowExW(0, ClassName, AppName, WS_OVERLAPPEDWINDOW,
                 _geoX, _geoY, _geoW, _geoH, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero)
             : CreateWindowExW(0, ClassName, AppName, WS_OVERLAPPEDWINDOW,
@@ -702,7 +705,7 @@ internal partial class Program : ISessionHost, IWindowHost
         DragAcceptFiles(_hwnd, true);   // drop files/folders onto a pane -> quoted paths pasted
 
         CreateRenderTarget();
-        StartSession();
+        if (!_isQuickWindow) StartSession();
 
         ApplySystemTheme();   // if "follow Windows light/dark" is on, pick light/dark before the first paint
 
@@ -713,12 +716,19 @@ internal partial class Program : ISessionHost, IWindowHost
         // runs unconditionally; the cursor render itself stays solid when cursor-blink is disabled.
         SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
 
+        if (_isQuickWindow) return; // auxiliary window is shown only by a deliberate summon
+
         ShowWindow(_hwnd, _argMaximized || (_geoValid && _geoMax) ? SW_MAXIMIZE : SW_SHOW);
         if (_argFullscreen) { _argFullscreen = false; ToggleFullscreen(); }   // first window only
         _argMaximized = false;
         _wasMaximized = IsZoomed(_hwnd);
         ApplyWindowOpacity();
         UpdateWindow(_hwnd);
+        if (_quickHost is null)
+        {
+            EnsureQuickHost();
+            if (SetQuickHotkey(_config.QuickTerminalHotkey) is { } why) ShowToast(why, 7000);
+        }
     }
 
     private static IDWriteTextFormat CreateTextFormat(TerminalConfig cfg)
@@ -1223,7 +1233,7 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>Move the hidden system caret onto the active pane's text cursor (client px).</summary>
     private void UpdateCaretPos()
     {
-        if (!_caretOwned || _active is null) return;
+        if (!_caretOwned || ActiveSurface() is null) return;
         var (ox, oy, cw, ch) = ActivePaneView();
         var p = ActiveSurface();
         if (p is null) return;
@@ -1248,6 +1258,7 @@ internal partial class Program : ISessionHost, IWindowHost
         MeasureCell();
         foreach (var s in AllSessions()) RegridSession(s);
         if (_cover is not null) RegridCover();
+        if (!_isQuickWindow && _quickHost?._cover is not null) _quickHost.RegridCover();
         RequestRedraw();
     }
 
