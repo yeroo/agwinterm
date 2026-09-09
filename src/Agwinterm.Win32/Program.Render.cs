@@ -619,6 +619,7 @@ internal partial class Program
         // and title bar still render below.
         if (_dashboardOpen) DrawDashboard(rt, brush);
         else DrawWindowContent(rt, brush);
+        if (!_dashboardOpen && _cover is null && _active?.Hud is { } hud) DrawHud(rt, brush, hud);
         if (!_windowActive && _config.UnfocusedDim > 0)   // dim the content region when the window isn't focused
         {
             var (dx, dy, dw, dh) = ContentArea();

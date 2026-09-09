@@ -48,6 +48,9 @@ using System.Text.Json;
 //   agwintermctl session metrics [<pane-id>] [--json] (live cell + pane pixel metrics)
 //   agwintermctl session text [--all|--lines N] [--target ID]   (N reaches into scrollback; --all = the whole
 //       buffer, screen + scrollback; default = screen; --all with --lines is refused)
+//   agwintermctl session hud [open|update] <message...> [--detail TEXT] [--spinner|--spinner-style STYLE]
+//       [--position ANCHOR] [--size-percent N] [--background-color HEX] [--text-color HEX] [--target ID]
+//   agwintermctl session hud close [--target ID]   (see docs/session-hud.md)
 //   agwintermctl session overlay open <command...> [--pane left|right] [--wait|--block] [--size-percent N] [--target ID]
 //   agwintermctl session overlay close|result|copy [--pane left|right] [--target ID]
 //   agwintermctl session overlay text [--all|--lines N] [--pane left|right] [--target ID]
@@ -122,7 +125,7 @@ for (int i = 0; i < args.Length; i++)
     else if (a.StartsWith("--"))
     {
         string key = a[2..];
-        bool takes = i + 1 < args.Length && !args[i + 1].StartsWith("--");
+        bool takes = !key.Equals("spinner", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length && !args[i + 1].StartsWith("--");
         string val = takes ? args[++i] : "true";
         options[key] = val;
         if (takes) { valued.Add(key); bareLast.Remove(key); } else bareLast.Add(key);
@@ -203,6 +206,34 @@ switch (area)
         target = DefaultTarget();
         switch (sub)
         {
+            case "hud":
+            {
+                string action = rest.Count > 0 && rest[0] is "open" or "update" or "close" ? rest[0] : "open";
+                if (rest.Count > 0 && rest[0] is "open" or "update" or "close") rest.RemoveAt(0);
+                string[] allowed = ["target", "window", "pipe", "socket", "detail", "spinner", "spinner-style", "position", "size-percent", "background-color", "text-color"];
+                foreach (var key in options.Keys)
+                {
+                    if (!allowed.Contains(key, StringComparer.OrdinalIgnoreCase)) { Console.Error.WriteLine("hud: unknown option --" + key); return 2; }
+                    if (!key.Equals("spinner", StringComparison.OrdinalIgnoreCase) && bareLast.Contains(key)) { Console.Error.WriteLine("hud: --" + key + " needs a value"); return 2; }
+                }
+                if (action == "close" && (rest.Count != 0 || options.Keys.Any(k => !new[] { "target", "window", "pipe", "socket" }.Contains(k, StringComparer.OrdinalIgnoreCase))))
+                { Console.Error.WriteLine("hud close takes no message or display options"); return 2; }
+                if (action != "close")
+                {
+                    cargs["message"] = string.Join(' ', rest);
+                    foreach (var key in new[] { "detail", "position", "size-percent", "text-color" })
+                        if (Opt(key) is { } value) cargs[key] = value;
+                    if (Opt("background-color") is { } bg) cargs["color"] = bg;
+                    if (Opt("spinner-style") is { } style) cargs["spinner"] = style;
+                    else if (options.ContainsKey("spinner")) cargs["spinner"] = "bar";
+                }
+                using var hudArgs = JsonDocument.Parse(JsonSerializer.Serialize(cargs));
+                if (!Agwinterm.Pty.SessionHuds.TryParse(action, hudArgs.RootElement, out _, out var error))
+                { Console.Error.WriteLine(error); return 2; }
+                cmd = "session.hud." + action;
+                target = DefaultTarget();
+                break;
+            }
             case "new":
                 if (Opt("cwd") is { } cwd) cargs["cwd"] = cwd;
                 if (Opt("name") is { } name) cargs["name"] = name;

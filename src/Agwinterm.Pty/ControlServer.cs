@@ -169,6 +169,13 @@ public sealed class ControlServer : IDisposable
             JsonElement args = root.TryGetProperty("args", out var a) ? a : default;
             // --window <id|prefix|active>: content verbs act on the resolved window (default = frontmost).
             string? windowSel = root.TryGetProperty("window", out var wv) && wv.ValueKind == JsonValueKind.String ? wv.GetString() : null;
+            if (cmd.StartsWith("session.hud.", StringComparison.Ordinal))
+            {
+                if ((root.TryGetProperty("target", out var ht) && ht.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)) ||
+                    (root.TryGetProperty("window", out var hw) && hw.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)))
+                    return Err("hud: target and window must be string selectors");
+                if (windowSel is not null && _windows is null) return Err("hud: window routing is unavailable in this host");
+            }
 
             // App-level, window-agnostic verbs first.
             switch (cmd)
@@ -241,6 +248,14 @@ public sealed class ControlServer : IDisposable
                         ? Ok("moved") : Err("not found");
                 case "session.rename": return host.SessionRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("session not found / blank name");
                 case "session.context": return HandleSessionContext(host, target, args);
+                case "session.hud.open": case "session.hud.update": case "session.hud.close":
+                    {
+                        string action = cmd[12..];
+                        if (!SessionHuds.TryParse(action, args, out var hud, out var hudError)) return Err(hudError!);
+                        string reply = host.SessionHud(target, action, hud);
+                        return reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+                            ? Err(reply[ISessionHost.RefusePrefix.Length..]) : OkRaw(reply);
+                    }
                 case "session.seen": return host.SessionSeen(target) ? Ok("seen") : Err("session not found");
                 case "broadcast": return Ok(host.BroadcastOp(GetString(args, "op") ?? "toggle"));
                 case "session.readonly": return Ok(host.ReadOnlyOp(target, GetString(args, "op") ?? "toggle"));
@@ -434,6 +449,7 @@ public sealed class ControlServer : IDisposable
                   // absent field, and would have to guess which of the two absence meant.
                   .Append(",\"statusChangedAt\":").Append(n.StatusChangedAt.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 if (n.Overlay) sb.Append(",\"overlay\":true");
+                if (n.Hud is { } hud) sb.Append(",\"hud\":").Append(JsonSerializer.Serialize(hud, SessionHuds.JsonOptions));
                 if (n.Flagged) sb.Append(",\"flagged\":true");
                 if (n.Background) sb.Append(",\"background\":true");
                 if (n.Notifications > 0) sb.Append(",\"notifications\":").Append(n.Notifications);

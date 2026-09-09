@@ -199,6 +199,17 @@ public static class AgentSkill
           The slot moves with its pane (a swap, a split close of the other pane) and dies with it (split
           close, split off, the shell exiting when that removes the pane - a single-pane session keeps an
           exited shell on screen, and its overlay with it - session close, the window closing).
+        - `agwintermctl session hud [open] "message" [--detail "text"] [--spinner] [--position top-right] [--target <session id>]`
+          — passive session-wide text; shell input, mouse, history and dimensions are unchanged. Nine anchors:
+          top-left/top-center/top-right, center-left/center/center-right, bottom-left/bottom-center/bottom-right;
+          top/bottom aliases normalize, default center. Optional --size-percent 1..100 bounds width to 10..80%,
+          --spinner-style bar|braille|circle|blocks|dot|none, --background-color and --text-color #rrggbb.
+          `hud update "message"` replaces the whole spec except its original background; omitted options reset.
+          `hud close` dismisses only the HUD. Open replaces a HUD but refuses over a program overlay; program
+          overlay open replaces a HUD. Overlay close/the ordinary close shortcut dismiss a HUD too. Tree's hud
+          object is its read-back. No timeout or persistence. Max 256 normalized Unicode scalars per text field,
+          no control characters, nonblank message. Split-pane-only/auxiliary ids refuse: name the owning session.
+          Scratch/quick/dashboard obscure it. See docs/session-hud.md for exact wire fields and clipping limits.
         - `agwintermctl session overlay open "<command>" [--pane left|right] [--size-percent N] [--wait] [--block] [--target <id>]`
           — run `<command>` in a throwaway terminal over the session (or, with `--pane`, over that one pane's box); it vanishes when the program exits, leaving the session untouched. Returns the overlay id.
           `--size-percent N` (1..100) makes it a centered floating panel over a dimmed session (default = full content region). The session gets a `* (overlay)` tag in `tree`.

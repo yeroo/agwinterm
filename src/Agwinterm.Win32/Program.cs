@@ -383,6 +383,7 @@ internal partial class Program : ISessionHost, IWindowHost
         // active. Per session, so another session's open cannot reset its exit. The per-PANE slots are
         // Pane.Overlay (P5); the type is the same.
         public readonly OverlaySlot Overlay = new();
+        public HudSpec? Hud;      // passive session-wide presentation, never restored or a PTY
         // Wave F2: per-session background watermark (a faint image drawn behind the terminal of every pane).
         public string? BgPath;      // absolute path to the copied image under AppDir\backgrounds (null = none)
         public int BgOpacity = 15;  // 0..100 (drawn opacity of the watermark)

@@ -134,6 +134,7 @@ internal partial class Program
             case "close_session": case "close_pane":
                 if (_coverKind == 3) CloseActiveOverlay();
                 else if (_cover is not null) HideCover();
+                else if (_active is { Hud: not null } hudOwner) ClearHud(hudOwner);
                 else if (FocusedPaneWithOverlay() is { } fpo) ClosePaneOverlay(_active!, fpo);
                 else CloseActivePane();
                 break;

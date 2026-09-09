@@ -115,7 +115,7 @@ reaches. The agliteterm mirrors are the per-batch `P<n>-lite` plans, tracked in
 
 Nothing left here: the control-API items closed with P1–P5. What remains of the overlay verbs is
 agterm's `--cwd`, `--follow` and `--background-color` on `open`, deliberately left out of P5
-(tracked as #139 / #88), and `session.hud` below.
+(tracked as #139 / #88). P13 adds `session.hud` in agwinterm (see below).
 
 ---
 
@@ -127,9 +127,12 @@ conversation picker, backlog picker, SQLite browser. Nothing here can do that wi
 picker binary of its own.
 **The biggest single capability gap.** Size: large.
 
-### 2. `session.hud` and `--position`
+### 2. `session.hud` and `--position` — implemented in P13
 **agterm 0.22.0 / 0.24.0.** A transient overlay for status an agent wants seen without printing into
-the terminal, anchored to one of nine positions. Size: medium.
+the terminal, anchored to one of nine positions. Agwinterm now draws a passive native
+HUD with detail, spinners, colors and bounded width; it leaves terminal input and geometry
+unchanged. See [session-hud.md](session-hud.md) for targeting, replacement and validation.
+The agliteterm mirror remains owed in P17; the shared conformance floor is unchanged.
 
 ### 3. Quick terminal: screen percentage, and a global hotkey
 **agterm 0.24.0 / 0.25.0.** Sizes as 40–90% of the screen, and a system-wide hotkey summons it over

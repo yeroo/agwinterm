@@ -21,7 +21,7 @@ public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentS
     IReadOnlyList<double>? SplitRatios = null, IReadOnlyList<string>? PaneIds = null,
     IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0,
     string? Context = null, IReadOnlyList<string>? CapturedCommands = null,
-    string? Axis = null, IReadOnlyList<string>? PaneOverlays = null);
+    string? Axis = null, IReadOnlyList<string>? PaneOverlays = null, HudSpec? Hud = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions);
@@ -72,6 +72,10 @@ public sealed record PaneMetricsSnapshot(int Cols, int Rows, int CellWidth, int 
 /// </summary>
 public interface ISessionHost
 {
+    /// <summary>Passive session-wide HUD. The host returns JSON {session,hud}, or RefusePrefix.
+    /// Resolve and mutate together on the UI thread; do not change focus, terminal input or geometry.</summary>
+    string SessionHud(string? target, string action, HudSpec? spec)
+        => RefusePrefix + "session HUD is unavailable in this host";
     /// <summary>Marker a host puts in front of a verb's result to mean "refused, and here is why" —
     /// the control server turns it into an ok:false error. Needed where the host returns a string
     /// rather than a bool, so a refusal cannot be mistaken for a result.</summary>
