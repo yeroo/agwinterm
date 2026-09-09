@@ -579,7 +579,7 @@ try {
         Start-Sleep -Seconds 2
         $captureLiteral = $captureFile.Replace("'", "''")
         $captureCommand = "Set-Content -LiteralPath '$captureLiteral' -Value `$env:AGWINTERM_SESSION_ID -Encoding utf8`r"
-        Invoke-Ctl @('session', 'type', $captureCommand, '--target', 'active') | Out-Null
+        Invoke-Ctl @('session', 'type', $captureCommand, '--target', 'active', '--window', 'quick') | Out-Null
         for ($i = 0; $i -lt 40 -and -not (Test-Path -LiteralPath $captureFile); $i++) {
             Start-Sleep -Milliseconds 250
         }
@@ -596,11 +596,13 @@ try {
                 "quick=$($quickReadonly.result); background=$($backgroundReadonly.result)"
 
             $coverMetrics = Invoke-Ctl @('session', 'metrics', '--target', $quickId)
+            $directQuickMetrics = Invoke-Ctl @('session', 'metrics', '--target', 'active', '--window', 'quick')
             $coverIsDistinct = $coverMetrics.ok -and $sessionMetrics.ok -and
                 $coverMetrics.result.widthPx -gt 0 -and $coverMetrics.result.heightPx -gt 0 -and
-                $coverMetrics.result.widthPx -lt $sessionMetrics.result.widthPx -and
-                $coverMetrics.result.heightPx -lt $sessionMetrics.result.heightPx
-            Check 'session.metrics measures the quick cover rectangle' $coverIsDistinct
+                $directQuickMetrics.ok -and
+                $coverMetrics.result.widthPx -eq $directQuickMetrics.result.widthPx -and
+                $coverMetrics.result.heightPx -eq $directQuickMetrics.result.heightPx
+            Check 'session.metrics resolves the detached quick rectangle through either selector' $coverIsDistinct
 
             $quickMarker = 'quick-cover-' + [guid]::NewGuid().ToString('N')
             Invoke-Ctl @('session', 'type', "Write-Output '$quickMarker'`r", '--target', $quickId) | Out-Null

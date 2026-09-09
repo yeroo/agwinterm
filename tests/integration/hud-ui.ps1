@@ -61,6 +61,10 @@ public sealed class HudOwnedJob {
         uint pid;uint t=GetWindowThreadProcessId(h,out pid);var info=new GUI {size=Marshal.SizeOf<GUI>()};
         if(!GetGUIThreadInfo(t,ref info))throw new Exception("GetGUIThreadInfo");return capture?info.capture:info.focus;
     }
+    public static RECT CaretRect(IntPtr h) {
+        uint pid;uint t=GetWindowThreadProcessId(h,out pid);var info=new GUI {size=Marshal.SizeOf<GUI>()};
+        if(!GetGUIThreadInfo(t,ref info))throw new Exception("GetGUIThreadInfo");return info.rect;
+    }
     IntPtr job,process; bool assigned; public uint Pid { get; private set; }
     public void Start(string exe,string args,string cwd) {
         job=CreateJobObjectW(IntPtr.Zero,null); if(job==IntPtr.Zero)throw new Exception("CreateJobObject");
@@ -109,6 +113,10 @@ public sealed class HudOwnedJob {
     @{default='HUD-test';profiles=@(@{name='HUD-test';command='cmd.exe';args=@('/d');cwd=$artifact})}|ConvertTo-Json -Depth 5|Set-Content (Join-Path $appDir 'profiles.json')
     @('session-host = in-process','claude-update-check = false','update-check = false','fresh-env = false','copy-on-select = false')|Set-Content (Join-Path $appDir 'agwinterm.conf')
     'map f12 = close_pane'|Set-Content (Join-Path $appDir 'keymap.conf')
+    if($Suite-eq 'Quick'){
+        @('map f7 = toggle_search','map f8 = command:QuickProbe',
+          ('command [send] QuickProbe = echo {AGW_PANE}>"'+(Join-Path $artifact 'keymap-send.txt')+'"'))|Add-Content (Join-Path $appDir 'keymap.conf')
+    }
     $savedEnv=@{}
     foreach($name in 'AGWINTERM_APP_ID','AGWINTERM_PIPE','AGWINTERM_SESSION_ID','AGWINTERM_PANE_ID','AGWINTERM_DUMP','AGWINTERM_PERF','AGWINTERM_IMGLOG'){
         $savedEnv[$name]=[Environment]::GetEnvironmentVariable($name)
@@ -259,6 +267,11 @@ finally {
         try{
             if($hwnd){[void][HudOwnedJob]::PostMessageW($hwnd,0x10,[IntPtr]::Zero,[IntPtr]::Zero)}
             $job.Finish();'Cleanup: owned job has zero live processes; no name-based cleanup.'
+            if($verifyQuickShutdown){
+                $probe=[QuickProbe]::RegisterHotKey([IntPtr]::Zero,0x615,0x4007,0x78)
+                try{Check 'last library window shutdown releases quick hotkey' $probe}
+                finally{if($probe -and -not [QuickProbe]::UnregisterHotKey([IntPtr]::Zero,0x615)){throw 'Cannot release shutdown hotkey probe'}}
+            }
         }catch{$cleanup=$false;"CLEANUP INCOMPLETE: $_"}
     }
     if($savedEnv){foreach($name in $savedEnv.Keys){[Environment]::SetEnvironmentVariable($name,$savedEnv[$name])}}

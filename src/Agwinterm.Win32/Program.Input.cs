@@ -114,6 +114,7 @@ internal partial class Program
     /// <summary>Dispatch a keymap action id (or "command:&lt;Label&gt;") to the matching behavior.</summary>
     private void RunAction(string action)
     {
+        if (_isQuickWindow && !QuickActionAllowed(action)) { ShowToast("This action needs a library window"); return; }
         if (action.StartsWith("command:", StringComparison.OrdinalIgnoreCase))
         {
             string label = action["command:".Length..];
@@ -208,6 +209,9 @@ internal partial class Program
     private string RunCommandText(string text, string? mode)
     {
         var ctx = _active;
+        mode = (mode ?? "send").ToLowerInvariant();
+        if (_isQuickWindow && mode is not ("send" or "detached"))
+            return ISessionHost.RefusePrefix + "quick terminal commands support send or detached mode only";
         string expanded = ExpandAgwTokens(text, ctx);
         switch ((mode ?? "send").ToLowerInvariant())
         {
@@ -220,7 +224,7 @@ internal partial class Program
                 else ShowToast("no session for overlay command");
                 break;
             case "detached":
-                RunDetached(expanded, RawCwdOf(ctx), AgwEnv(ctx));
+                RunDetached(expanded, CommandCwd(ctx), AgwEnv(ctx));
                 break;
             default: // send — type it into the active session, as if the user typed it + Enter
                 Send(expanded.Replace("\r", "").Replace("\n", "") + "\r");
@@ -237,6 +241,13 @@ internal partial class Program
         return live.Length > 0 ? live : (ses.StartCwd ?? "");
     }
 
+    private string CommandCwd(Ses? ses)
+    {
+        if (!_isQuickWindow || ActiveSurface() is not { } p) return RawCwdOf(ses);
+        string live = PrettyCwd(SafeCwd(p));
+        return live.Length > 0 ? live : p.StartCwd ?? "";
+    }
+
     /// <summary>Best-effort path to agwintermctl.exe (next to us), else just "agwintermctl" (assume PATH).</summary>
     private static string CtlPath()
     {
@@ -251,7 +262,7 @@ internal partial class Program
     private Dictionary<string, string> AgwValues(Ses? ses)
     {
         var surface = ActiveSurface();
-        string paneName = "";
+        string paneName = _isQuickWindow && surface is not null ? "quick" : "";
         if (surface is not null && ses is not null)
         {
             if (_coverKind == 1 && ReferenceEquals(surface, ses.Scratch)) paneName = "scratch";
@@ -272,7 +283,7 @@ internal partial class Program
             ["AGW_SESSION"] = ses?.Name ?? "",
             ["AGW_SESSION_ID"] = ses?.Id ?? "",
             ["AGW_WORKSPACE"] = ses?.Ws.Name ?? "",
-            ["AGW_CWD"] = RawCwdOf(ses),
+            ["AGW_CWD"] = CommandCwd(ses),
             ["AGW_PANE_ID"] = surface?.Id ?? ses?.ActivePane.Id ?? "",
             ["AGW_PANE"] = paneName,
             ["AGW_APP"] = CtlPath(),
@@ -581,7 +592,7 @@ internal partial class Program
     /// which kind it is.</summary>
     private (Pane pane, float ox, float oy, float cw, float ch)? PaneAt(int px, int py)
     {
-        if (px < (int)_sidebarW || py < (int)TitleBarH || py >= ClientH() - (int)FooterH) return null;
+        if (px < (int)_sidebarW || py < (int)TitleBarH || py >= ClientH() - (_isQuickWindow ? 0 : (int)FooterH)) return null;
         if (_cover is not null) { var (cx, cy, _, _) = CoverRect(); var (_, ccw, cch) = Metrics(_cover.FontSize); return (_cover, cx, cy, ccw, cch); }
         if (_active is null) return null;
         if (PaneAlongAxisAt(_active, px, py) is { } hit)
@@ -1158,7 +1169,7 @@ internal partial class Program
         // F1 help overlay: modal while open; plain F1 opens it from the shell prompt (full-screen
         // TUIs on the alt screen — Far, vim — keep their own F1).
         if (_helpOpen) return HelpKey(vk);
-        if (!_isQuickWindow && vk == 0x70 /* F1 */ && !ctrl && !alt && !shift)
+        if (vk == 0x70 /* F1 */ && !ctrl && !alt && !shift)
         {
             var helpSurf = ActiveSurface();
             bool altScreen = helpSurf is not null && helpSurf.S.Emulator.IsAltScreen;
@@ -1189,12 +1200,12 @@ internal partial class Program
                 return true;
             }
         }
-        if (!_isQuickWindow && _leader is not null && Keymap.ChordFor(vk, ctrl, alt, shift) == _leader) { BeginLeader(); return true; }
+        if (_leader is not null && Keymap.ChordFor(vk, ctrl, alt, shift) == _leader) { BeginLeader(); return true; }
 
         // Shift+PageUp/PageDown (and Home/End) scroll this pane's scrollback; never reach the PTY.
-        if (shift && !ctrl && !alt && _active is not null)
+        if (shift && !ctrl && !alt && ActiveSurface() is { } scrollPane)
         {
-            int page = Math.Max(1, _active.ActivePane.S.Rows - 1);
+            int page = Math.Max(1, scrollPane.S.Rows - 1);
             switch (vk)
             {
                 case VK_PRIOR: return ScrollActivePane(page);        // Shift+PageUp — older
@@ -1250,8 +1261,6 @@ internal partial class Program
         string? chord = Keymap.ChordFor(vk, ctrl, alt, shift);
         if (chord is not null && _keymap.TryGetValue(chord, out var action))
         {
-            if (_isQuickWindow && action is not ("quick_terminal" or "close_cover" or "close_pane" or "close_session"
-                or "select_all" or "copy_selection" or "paste" or "mark_mode")) return true;
             // close_cover only applies while a cover is up, or the focused pane holds an overlay (P5)
             // — otherwise its chord (typically a bare Escape) falls through so the key still reaches
             // the terminal.

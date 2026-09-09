@@ -785,11 +785,6 @@ internal partial class Program
         ShowCover(ses.Scratch, 1);
     }
 
-    private void ShowQuick()
-    {
-        SummonQuick(pin: false);
-    }
-
     /// <summary>scratch op on|off|toggle for a session's scratch cover.</summary>
     private void ScratchOp(Ses ses, string op)
     {
@@ -801,6 +796,11 @@ internal partial class Program
 
     private void QuickOp(string op, bool control = false, bool global = false)
     {
+        if (_quickHost is { } host && !IsWindowEnabled(host._hwnd))
+        {
+            if (control) throw new InvalidOperationException("quick terminal has a modal dialog open");
+            return;
+        }
         bool showing = _quickHost?._quickVisible == true;
         if (op == "off") { DismissQuick(); return; }
         if (op == "on") { SummonQuick(control, global); return; }

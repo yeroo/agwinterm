@@ -640,8 +640,8 @@ internal partial class Program
     /// <summary>The normal terminal content: the active session's pane grid, or a cover/quick/overlay panel.</summary>
     private void DrawWindowContent(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
-        // Quick terminal (kind 2) and a sized floating overlay (kind 3) both render as a centered
-        // panel over the live main window — a "tool window" look. Scratch (1) / full overlay fill.
+        // Sized program overlays float over normal content. The detached quick host (kind 2)
+        // fills its own tool window, as scratch/full overlays fill their normal content region.
         bool floatingPanel = !_isQuickWindow && _cover is not null && ((_coverKind == 3 && _ovlOwner is { Overlay.SizePercent: > 0 }) || _coverKind == 2);
         if (_cover is not null && !floatingPanel)
         {

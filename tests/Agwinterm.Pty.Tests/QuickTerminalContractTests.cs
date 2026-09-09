@@ -7,7 +7,7 @@ public class QuickTerminalContractTests
 {
     [Theory]
     [InlineData("session.new")][InlineData("workspace.new")][InlineData("session.split")]
-    [InlineData("restore.capture")][InlineData("dashboard")][InlineData("command.run")]
+    [InlineData("restore.capture")][InlineData("dashboard")]
     public void AuxiliaryHostRefusesTreeMutations(string cmd)
     {
         var host = new FakeSessionHost { IsQuickSurface = true };

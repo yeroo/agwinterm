@@ -37,7 +37,9 @@ agwintermctl quick off
 `--window quick` addresses the auxiliary host, not a library window. Its shell
 inherits that selector and its unique `quick:...` pane id. Explicit quick pane ids
 or the `quick:` prefix route content verbs to the same host from normal windows.
-Text/input/selection/images/font/read-only and config verbs work there; workspace,
+Text/input/selection/images/font/search/read-only and config verbs work there;
+surface-local keymap actions (including leader bindings) and custom commands in
+`send` or `detached` mode work too. Workspace,
 split, restore and normal-window UI mutations refuse rather than creating a hidden
 session tree. `window.state.quickTerminalVisible` reports shared visibility from
 any window. `window list` never includes the auxiliary host.

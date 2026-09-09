@@ -934,7 +934,7 @@ internal partial class Program
         string path = ConfigPath;
         string text = File.Exists(path) ? File.ReadAllText(path) : TerminalConfig.DefaultText;
         var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
-        int idx = lines.FindIndex(l =>
+        int idx = lines.FindLastIndex(l =>
         {
             var t = l.TrimStart();
             int eq = l.IndexOf('=');
@@ -943,7 +943,15 @@ internal partial class Program
         string ln = $"{key} = {value}";
         if (idx >= 0) lines[idx] = ln; else { lines.Add(ln); }
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, string.Join(Environment.NewLine, lines));
+        // A failed write must never truncate the user's existing configuration. The sibling
+        // temporary file keeps replacement on the same volume; a failed move leaves path intact.
+        string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temp, string.Join(Environment.NewLine, lines));
+            File.Move(temp, path, overwrite: true);
+        }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
     }
 
     /// <summary>Current value of a config key as a string (for config get/list + the Settings window).</summary>
@@ -1016,10 +1024,11 @@ internal partial class Program
         if (Array.IndexOf(ConfigKeys, key) < 0) return "error: unknown key '" + key + "'";
         if (key == "quick-terminal-size" && (!int.TryParse(value.Trim(), out int qs) || qs is < 40 or > 90))
             return "error: quick-terminal-size must be an integer from 40 through 90";
-        string oldHotkey = _config.QuickTerminalHotkey;
-        if (key == "quick-terminal-hotkey" && SetQuickHotkey(value.Trim()) is { } error) return error;
-        try { WriteConfigKey(key, value.Trim()); }
-        catch { if (key == "quick-terminal-hotkey") SetQuickHotkey(oldHotkey); throw; }
+        if (key == "quick-terminal-hotkey")
+        {
+            if (SetQuickHotkey(value.Trim(), () => WriteConfigKey(key, value.Trim())) is { } error) return error;
+        }
+        else WriteConfigKey(key, value.Trim());
         _config = TerminalConfig.Load(ConfigPath);       // reparse so clamping/validation is centralized
         if (key == "quick-terminal-size" && _quickHost?._quickVisible == true) _quickHost.PositionQuick();
         if (key == "theme") _theme = FindTheme(_config.Theme);

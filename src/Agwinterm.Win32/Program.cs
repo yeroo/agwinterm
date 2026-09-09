@@ -1233,7 +1233,7 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>Move the hidden system caret onto the active pane's text cursor (client px).</summary>
     private void UpdateCaretPos()
     {
-        if (!_caretOwned || _active is null) return;
+        if (!_caretOwned || ActiveSurface() is null) return;
         var (ox, oy, cw, ch) = ActivePaneView();
         var p = ActiveSurface();
         if (p is null) return;
@@ -1258,6 +1258,7 @@ internal partial class Program : ISessionHost, IWindowHost
         MeasureCell();
         foreach (var s in AllSessions()) RegridSession(s);
         if (_cover is not null) RegridCover();
+        if (!_isQuickWindow && _quickHost?._cover is not null) _quickHost.RegridCover();
         RequestRedraw();
     }
 

@@ -210,7 +210,7 @@ public sealed class ControlServer : IDisposable
                 or "session.write" or "session.type" or "session.text" or "session.copy" or "session.status"
                 or "session.metrics" or "surface.cursor" or "font" or "selection.all" or "selection.clear"
                 or "selection.copy" or "selection.finalize" or "session.paste" or "session.readonly"
-                or "config.get" or "config.list" or "config.set"
+                or "config.get" or "config.list" or "config.set" or "session.search" or "command.run"
                 or "image.show" or "image.sixel" or "image.clear" or "image.frame" or "image.frameshm"))
                 return Err("quick terminal has no workspace/session tree; target a library window for this command");
 
@@ -378,7 +378,7 @@ public sealed class ControlServer : IDisposable
                     {
                         string? nameOrCmd = GetString(args, "name") ?? GetString(args, "command");
                         if (string.IsNullOrWhiteSpace(nameOrCmd)) return Err("command.run needs args.name or args.command");
-                        return Ok(host.CommandRun(nameOrCmd!, GetString(args, "mode")));
+                        return HostReply(host.CommandRun(nameOrCmd!, GetString(args, "mode")));
                     }
                 case "command.list": return Ok(host.CommandList());
                 case "command.leader": return Ok(host.CommandLeader(GetString(args, "op") ?? "state"));
