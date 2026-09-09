@@ -1,7 +1,8 @@
 # Native picker
 
 P16 adds a native, window-owned picker to agwinterm. Item data is never executed.
-The agliteterm mirror and shared conformance expansion are P17 work.
+P17 expands shared conformance; the agliteterm companion has process-local retention
+and explicit pipe routing (see [lite parity](lite-parity.md#p17-wave-3-mirror)).
 
 ```powershell
 'Alpha','Beta' | agwintermctl pick --prompt 'Choose a project'

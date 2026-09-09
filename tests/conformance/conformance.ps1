@@ -87,16 +87,30 @@ function Expand-Args($argv) {
 
 # One control call. Returns the parsed envelope, or $null when the output was not JSON at all —
 # which is itself a contract violation worth reporting distinctly from ok:false.
-function Invoke-Ctl($argv) {
-    $argv = [string[]]@($argv)          # same unwrapping trap on the way in
-    $out = (& $ctl @argv --pipe $pipe --json 2>&1) -join "`n"
-    try { return $out | ConvertFrom-Json } catch { return [pscustomobject]@{ __raw = $out } }
+function Invoke-Ctl($argv, $InputText = $null) {
+    $start=[Diagnostics.ProcessStartInfo]::new($ctl)
+    $start.UseShellExecute=$false;$start.CreateNoWindow=$true
+    $start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true;$start.RedirectStandardInput=$true
+    $start.StandardOutputEncoding=[Text.UTF8Encoding]::new($false)
+    $start.StandardErrorEncoding=[Text.UTF8Encoding]::new($false)
+    $start.StandardInputEncoding=[Text.UTF8Encoding]::new($false)
+    foreach($arg in @($argv)+@('--pipe',$pipe,'--json')){$start.ArgumentList.Add([string]$arg)}
+    $child=[Diagnostics.Process]::new();$child.StartInfo=$start
+    try {
+        if(-not $child.Start()){throw 'CLI did not start'}
+        $stdout=$child.StandardOutput.ReadToEndAsync();$stderr=$child.StandardError.ReadToEndAsync()
+        if($null -ne $InputText){$child.StandardInput.Write([string]$InputText)}
+        $child.StandardInput.Close()
+        if(-not $child.WaitForExit(30000)){$child.Kill($true);$child.WaitForExit();throw 'CLI timed out'}
+        $script:ctlExit=$child.ExitCode;$script:ctlError=$stderr.GetAwaiter().GetResult();$out=$stdout.GetAwaiter().GetResult()
+        try{return $out|ConvertFrom-Json}catch{return [pscustomobject]@{__raw=$out}}
+    }finally{$child.Dispose()}
 }
 
-function Test-Shape($resp, [string]$kind, $fields) {
+function Test-Shape($resp, [string]$kind, $fields, [bool]$Payload = $false) {
     if ($null -eq $resp -or $resp.PSObject.Properties.Name -contains '__raw') { return "not JSON: $($resp.__raw)" }
-    if (-not $resp.ok) { return "ok:false — $($resp.error)" }
-    $r = $resp.result
+    if (-not $Payload -and -not $resp.ok) { return "ok:false — $($resp.error)" }
+    $r = if($Payload){$resp}else{$resp.result}
     switch ($kind) {
         'string' { if ($r -isnot [string]) { return "result is $($r.GetType().Name), expected string" } }
         # A bare JSON number with no fraction. ConvertFrom-Json gives [long] for a whole number and
@@ -136,11 +150,15 @@ try {
             if ($parts[0] -eq 'window.new') { Invoke-Ctl @('window', 'new', '--name', $parts[1]) | Out-Null; Start-Sleep -Seconds 6 }
         }
         $argv = Expand-Args $step.args
-        $resp = Invoke-Ctl $argv
-        $why = Test-Shape $resp $step.result $step.fields
+        $resp = Invoke-Ctl $argv $step.stdin
+        $payload=$step.output -eq 'payload'
+        $why = Test-Shape $resp $step.result $step.fields $payload
+        if($null -ne $step.exit -and $script:ctlExit -ne $step.exit){$why="exit $script:ctlExit, expected $($step.exit): $script:ctlError"}
+        $value=if($payload){$resp}else{$resp.result}
+        if(-not $why -and $step.values){foreach($property in $step.values.PSObject.Properties){if($value.($property.Name) -cne $property.Value){$why="unexpected $($property.Name) value";break}}}
         Check $step.verb ($null -eq $why) $why
         $checked++
-        if (-not $why -and $step.capture) { $vars[$step.capture] = [string]$resp.result }
+        if (-not $why -and $step.capture) { $vars[$step.capture] = if($step.captureField){[string]$value.($step.captureField)}else{[string]$value} }
         if ($step.settle) { Start-Sleep -Seconds $step.settle }
     }
 

@@ -69,8 +69,8 @@ The session's `tree` node includes the same `hud` object while set:
 Absent optional values are null; no HUD means the tree omits `hud`.
 
 This is the native Win32 implementation. Hosts without HUD support explicitly refuse.
-The shared lite conformance floor is unchanged until the Wave-3 mirror; lite does not
-yet implement these verbs. No release/tag is included in P13.
+P17 expands the shared conformance floor alongside the Wave-3 lite companion; see
+[lite parity](lite-parity.md#p17-wave-3-mirror). No release/tag is included.
 
 Reference: [agterm v0.26.0 HUD implementation](https://github.com/umputun/agterm/blob/v0.26.0/agtermCore/Sources/agtermCore/Hud.swift).
 The nine positions, passive behavior and replacement semantics follow that interface;
