@@ -508,13 +508,16 @@ The implementation must merge before this companion. No new canonical conformanc
   clipped at the existing strike without PTY resize or auto-zoom. Nonzero font-size and malformed,
   duplicate, hidden or missing selectors refuse. The grid refuses over visible popups; opening a
   popup closes it. `args.op=state` is a lite read-back extension returning open/selected/ids.
+  Close cannot be combined with selectors; nonzero font-size refuses even with close.
 - `workspace.move` supports up/down/top/bottom, remaps live/hidden sessions, active/focused workspace
   and reopen history, and saves the new order. Numeric workspace IDs remain order indices and change
   after a move. Exact names beat unique substring matches; ambiguous/missing selectors and invalid
   directions refuse. Boundary moves do nothing; failed persistence reports the in-memory change.
+  Workspace moves and dashboard opening refuse while menus or sidebar drags are active.
 - `restore.clear` serializes against saves and fences older snapshots. It removes only this instance's
   primary, `.bak` fallback and `.tmp` files, not live sessions, pins, bindings or historical diagnostics.
-  Later structure changes/normal exit recreate state; it is not persistent restore disabling.
+  A per-instance `.cleared` marker prevents legacy re-import after clearing the last state file.
+  Later ordinary app saves/normal exit recreate state; it is not persistent restore disabling.
   Partial filesystem failure is an error with the deletion count, not a false success.
 
 Palette/keymap actions expose Broadcast and Dashboard without reassigning existing split shortcuts.
