@@ -972,7 +972,7 @@ internal partial class Program : ISessionHost, IWindowHost
             Kind = Uia.NodeKind.Terminal,
             Name = "terminal",
             Parent = 0,
-            Focused = !_chromeFocus && !_setOpen,
+            Focused = !_chromeFocus && !_setOpen && _nativePick is null,
             Rect = ScreenRect(_sidebarW, TitleBarH, ClientW() - _sidebarW, contentBottom - TitleBarH),
         });
 
@@ -1052,6 +1052,7 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>UIA Invoke on a button/control — run the same action a click/keypress would.</summary>
     private void HandleUiaInvoke(Uia.NodeKind kind, int index)
     {
+        if (_nativePick is not null) return;
         if (kind == Uia.NodeKind.ChromeButton)
         {
             var b = ChromeButtonsForUia();
@@ -1074,6 +1075,7 @@ internal partial class Program : ISessionHost, IWindowHost
     /// <summary>A UIA client (or Narrator) called SetFocus on a tree element — move our internal focus.</summary>
     private void HandleUiaSetFocus(Uia.NodeKind kind, int index)
     {
+        if (_nativePick is not null) { _nativePick.FocusIfForeground(); return; }
         switch (kind)
         {
             case Uia.NodeKind.Terminal: ExitChromeFocus(announce: false); break;

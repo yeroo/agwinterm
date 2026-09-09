@@ -121,11 +121,10 @@ agterm's `--cwd`, `--follow` and `--background-color` on `open`, deliberately le
 
 ## Open — UI
 
-### 1. `control.pick` — the native picker, driven over the API
-**agterm 2026-07-28.** Half the agterm cookbook is built on it: project launcher, workspace picker,
-conversation picker, backlog picker, SQLite browser. Nothing here can do that without shipping a
-picker binary of its own.
-**The biggest single capability gap.** Size: large.
+### 1. Native picker — P16
+`pick.open/result/cancel` and `agwintermctl pick` provide bounded native controls,
+label filtering, custom results, exact-ID waiting and window-owned lifetime.
+See [native-picker.md](native-picker.md). Lite mirror/conformance remain P17.
 
 ### 2. `session.hud` and `--position` — implemented in P13
 **agterm 0.22.0 / 0.24.0.** A transient overlay for status an agent wants seen without printing into
@@ -140,7 +139,7 @@ See [quick-terminal.md](quick-terminal.md) for focus, lifetime and refusal polic
 UIA per-window provider parity remains #267. Lite mirror is P17.
 
 ### 4. Workspace navigation and keymap alternatives — P15
-Implemented in the P15 candidate: wrapped `workspace.go`, collapse action, alternative
+Merged in #269: wrapped `workspace.go`, collapse action, alternative
 normal/leader map chords. See [navigation.md](navigation.md); QA records delivery gates.
 
 ### 5. Smaller things from 0.26

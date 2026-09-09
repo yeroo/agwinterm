@@ -298,6 +298,8 @@ Implemented by [the P15 plan](2026-09-09-p15-navigation.md); see
 [contract](../navigation.md) and [QA](../../qa/p15-navigation.md) for delivery gates.
 
 ### P16 · agwinterm · `control.pick`
+Implemented by [the P16 plan](2026-09-09-p16-native-picker.md); see
+[contract](../native-picker.md) and [QA](../../qa/p16-native-picker.md).
 The native picker driven over the API. Half the agterm cookbook is built on it — project launcher,
 workspace picker, conversation picker, backlog picker, SQLite browser — and nothing here can do that
 without shipping a picker binary of its own. **The biggest single capability gap and the biggest

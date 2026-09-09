@@ -669,7 +669,11 @@ internal partial class Program
     public string ConfigSet(string key, string value) => InvokeOnUiQueued(() => ConfigSetInternal(key, value));
     public string ConfigGet(string key) => InvokeOnUi(() => ConfigValue(key.Trim().ToLowerInvariant()));
     public string ConfigList() => InvokeOnUi(() => string.Join("\n", ConfigKeys.Select(k => $"{k} = {ConfigValue(k)}")));
-    public string SettingsOpen() { PostVerb(OpenSettingsWindow); return "settings opened"; }
+    public string SettingsOpen() => InvokeOnUiQueued(() =>
+    {
+        if (_nativePick is not null) throw new InvalidOperationException("a picker owns this window");
+        OpenSettingsWindow(); return "settings opened";
+    });
 
     public string ProfilesList() => InvokeOnUi(() => string.Join("\n", _profileCfg.Profiles.Select(p =>
         $"{(p.Name.Equals(_profileCfg.Default, StringComparison.OrdinalIgnoreCase) ? "*" : " ")} {p.Name}\t{p.Command}{(p.Args is { Length: > 0 } a ? " " + string.Join(" ", a) : "")}")));

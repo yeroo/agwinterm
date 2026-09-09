@@ -1,7 +1,7 @@
 # Dedicated P13 fixture: private app-data, no clipboard/registry writes, exact owned job teardown.
 param([string]$Exe="$PSScriptRoot/../../src/Agwinterm.Win32/bin/x64/Release/net10.0-windows/win-x64/Agwinterm.Win32.exe",
       [string]$TokenOwner=$env:AGWINTERM_TEST_OWNER,[switch]$Strict,
-      [ValidateSet('Hud','Quick','Navigation')][string]$Suite='Hud')
+      [ValidateSet('Hud','Quick','Navigation','Picker')][string]$Suite='Hud')
 $ErrorActionPreference='Stop'
 $PSNativeCommandUseErrorActionPreference=$false
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
@@ -138,6 +138,7 @@ public sealed class HudOwnedJob {
             $reader=[IO.StreamReader]::new($client)
             $request=@{cmd=$verb;args=$params;target=$target;window=$Window}
             if($NoTarget){$request.Remove('target')}
+            if($Window-eq ''){$request.Remove('window')}
             $writer.WriteLine(($request|ConvertTo-Json -Compress -Depth 8))
             $read=$reader.ReadLineAsync();if(-not $read.Wait(15000)){throw 'HUD RPC deadline exceeded'}
             $answer=$read.Result|ConvertFrom-Json
@@ -172,7 +173,8 @@ public sealed class HudOwnedJob {
             }finally{$bitmap.UnlockBits($bits)}
         }finally{$graphics.Dispose();$bitmap.Dispose()}
     }
-    if($Suite-eq 'Navigation') { . "$PSScriptRoot/navigation-ui-cases.ps1" }
+    if($Suite-eq 'Picker') { . "$PSScriptRoot/picker-ui-cases.ps1" }
+    elseif($Suite-eq 'Navigation') { . "$PSScriptRoot/navigation-ui-cases.ps1" }
     elseif($Suite-eq 'Quick') { . "$PSScriptRoot/quick-ui-cases.ps1" } else {
     $ctl=Join-Path $root 'src/Agwinterm.Ctl/bin/Release/net10.0-windows/agwintermctl.exe'
     $null=& $ctl session hud --spinner 'CLI HUD' --detail 'private acceptance' --size-percent 35 --target $session --pipe $pipe --json
