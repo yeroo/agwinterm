@@ -18,7 +18,8 @@ namespace Agwinterm.Win32;
 internal partial class Program
 {
     // ---- Broadcast input (WT's toggleBroadcastInput analog): keyboard input mirrors to every
-    // pane of every session in the ACTIVE WORKSPACE. Paste stays targeted (safety). ----
+    // pane of every session in the SELECTED TERMINAL'S WORKSPACE. Empty-workspace
+    // navigation leaves that terminal visible and does not retarget its input. Paste stays targeted. ----
     private bool _broadcast;
 
     private void ToggleBroadcast()
@@ -151,7 +152,7 @@ internal partial class Program
             case "previous_session": CycleSession(-1); break;
             case "toggle_sidebar": ToggleSidebar(); break;
             case "rename_session": if (_active is not null) StartRename(_active); break;
-            case "delete_workspace": if (_active is not null) DeleteWorkspace(_active.Ws); break;
+            case "delete_workspace": DeleteCurrentWorkspace(); break;
             case "session_palette": TogglePalette(PaletteKind.Sessions); break;
             case "action_palette": TogglePalette(PaletteKind.Actions); break;
             case "attention_list": TogglePalette(PaletteKind.Attention); break;
@@ -170,6 +171,9 @@ internal partial class Program
             case "toggle_flag": if (_active is not null) FlagOp(_active, "toggle"); break;
             case "toggle_flagged_view": ToggleFlaggedView(); break;
             case "focus_workspace": WorkspaceFocusOp("toggle"); break;
+            case "next_workspace": NavigateWorkspace("next"); break;
+            case "previous_workspace": NavigateWorkspace("prev"); break;
+            case "toggle_workspace_collapse": ToggleWorkspaceCollapse(); break;
             case "close_cover": CloseCover(); break;
             case "toggle_fullscreen": ToggleFullscreen(); break;
             case "toggle_broadcast": ToggleBroadcast(); break;
@@ -234,8 +238,8 @@ internal partial class Program
             default: // send — type it into the active session, as if the user typed it + Enter
                 // Send's human-key path may quietly reject input. A command acknowledgement must
                 // instead report that refusal, for library and quick surfaces alike. These checks
-                // and Send run together on the UI thread; an exit/write race throws through the
-                // queued CommandRun bridge and becomes an API error, not a successful empty write.
+                // and Send run together on the UI thread; local write failures propagate through
+                // queued CommandRun. Accepted transport input is not proof of child execution (#268).
                 var surface = ActiveSurface();
                 if (surface is null || _session is null || surface.S.HasExited)
                     return ISessionHost.RefusePrefix + "no live pane for send command";

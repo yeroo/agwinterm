@@ -187,6 +187,14 @@ switch (area)
                 break;
             case "delete": cmd = "workspace.delete"; break;
             case "select": cmd = "workspace.select"; break;
+            case "go":
+                if (options.ContainsKey("target") || rest.Count > 1 || (rest.Count > 0 && options.ContainsKey("to")))
+                { Console.Error.WriteLine("workspace go accepts one direction and no target"); return 2; }
+                string? direction = Opt("to") ?? rest.FirstOrDefault();
+                if (!Agwinterm.Core.WorkspaceNavigation.TryDirection(direction, out _))
+                { Console.Error.WriteLine("workspace go requires next or prev"); return 2; }
+                cmd = "workspace.go"; target = null; cargs["to"] = direction;
+                break;
             case "collapse": cmd = "workspace.collapse"; if (rest.Count > 0) target = rest[0]; break;
             case "expand": cmd = "workspace.expand"; if (rest.Count > 0) target = rest[0]; break;
             case "focus":

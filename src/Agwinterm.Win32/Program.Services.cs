@@ -1022,6 +1022,12 @@ internal partial class Program
     {
         key = key.Trim().ToLowerInvariant();
         if (Array.IndexOf(ConfigKeys, key) < 0) return "error: unknown key '" + key + "'";
+        if (key == "cursor-style" && value.Trim().ToLowerInvariant() is not ("bar" or "beam" or "line" or "block" or "box" or "underline" or "underscore"))
+            return "error: cursor-style must be bar, block or underline";
+        if (key == "cursor-blink" && value.Trim().ToLowerInvariant() is not ("true" or "false" or "on" or "off" or "yes" or "no" or "1" or "0"))
+            return "error: cursor-blink must be a boolean";
+        if (key == "cursor-blink-ms" && (!int.TryParse(value.Trim(), out int blinkMs) || blinkMs <= 0))
+            return "error: cursor-blink-ms must be a positive integer";
         if (key == "quick-terminal-size" && (!int.TryParse(value.Trim(), out int qs) || qs is < 40 or > 90))
             return "error: quick-terminal-size must be an integer from 40 through 90";
         if (key == "quick-terminal-hotkey")
@@ -1053,7 +1059,9 @@ internal partial class Program
             ShowToast(_emulatorCoreNote ?? "emulator-core = managed — new sessions use the C# emulator", 6000);
             _emulatorCoreNote = null;   // startup path only announces once
         }
-        if (key == "cursor-blink-ms" && _hwnd != IntPtr.Zero) SetTimer(_hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
+        if (key == "cursor-blink-ms")
+            foreach (var window in _registry.Values.ToArray())
+                if (window._hwnd != IntPtr.Zero) SetTimer(window._hwnd, (IntPtr)1, (uint)_config.CursorBlinkMs, IntPtr.Zero);
         RecomputeChrome();
         ApplyWindowOpacity();
         if (key is "compact-toolbar" or "toolbar-mode")   // title-bar height changed → reflow the terminal grid

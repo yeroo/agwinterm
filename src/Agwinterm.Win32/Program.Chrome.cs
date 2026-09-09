@@ -50,6 +50,7 @@ internal partial class Program
     private void DrawSidebar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         _sidebarRows.Clear();
+        _sidebarNames.Clear();
         _footerButtons.Clear();
         if (_sidebarW <= 0) return;
 
@@ -99,8 +100,11 @@ internal partial class Program
             brush.Color = SbHeaderText;
             rt.DrawText(expanded ? "▾" : "▸", _format, TextRect(6f, y, 18f, rowH), brush); // chevron (mono, top-aligned)
             if (!ReferenceEquals(_editing, ws)) // the rename box covers the name while editing
+            {
                 // Clip + ellipsis so a long workspace name (or enlarged font) stops before the session count.
                 rt.DrawText(ws.Name, _sidebarFont, new Rect(24f, y, _sidebarW - 56f, rowH), brush, DrawTextOptions.Clip);
+                RecordSidebarName(ws, ws.Name, 24f, y, _sidebarW - 56f, rowH);
+            }
             rt.DrawText(sessions.Count.ToString(), _sidebarSmall, new Rect(_sidebarW - 28f, y, 22f, rowH), brush);
             if (_config.WorkspaceAddButton)   // "+" to add a session in this workspace (#233/#252)
                 rt.DrawText("+", _sidebarFont, new Rect(_sidebarW - 46f, y, 16f, rowH), brush);
@@ -187,6 +191,7 @@ internal partial class Program
             float nameAvail = _sidebarW - nameX - 22f;
             // Clip + ellipsis-trim so a long name (or an enlarged sidebar font) never spills over the dot.
             rt.DrawText(s.Name, _sidebarFont, new Rect(nameX, y, nameAvail, rowH), brush, DrawTextOptions.Clip);
+            RecordSidebarName(s, s.Name, nameX, y, nameAvail, rowH);
             // session.context (P3): a dimmer, smaller suffix after the name in the SAME row, clipped to
             // the name rect. The name keeps its full width and the context takes what is left; it is
             // never a second line and never changes rowH — DrawSidebar computes ONE rowH per paint and
@@ -587,9 +592,9 @@ internal partial class Program
         }
     }
 
-    private void DeleteWorkspace(Workspace ws)
+    private bool DeleteWorkspace(Workspace ws)
     {
-        lock (_workspaces) if (_workspaces.Count <= 1) return; // agterm: can't delete the last workspace
+        lock (_workspaces) if (_workspaces.Count <= 1 || !_workspaces.Contains(ws)) return false;
         List<Ses> sessions;
         bool hadActive = _active is not null && ReferenceEquals(_active.Ws, ws);
         lock (_workspaces)
@@ -598,6 +603,8 @@ internal partial class Program
             CaptureClosedWorkspace(ws, sessions);   // remember it so Reopen Closed can bring the whole workspace back
             ws.Sessions.Clear();
             _workspaces.Remove(ws);
+            if (_focusedWorkspaceId == ws.Id) _focusedWorkspaceId = null;
+            if (ReferenceEquals(_workspaceTarget, ws)) _workspaceTarget = null;
             if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
         }
         RefreshHudTimer(); // a removed workspace may have owned the last animated HUD
@@ -611,6 +618,7 @@ internal partial class Program
         RequestRedraw();
         SaveState();
         EmitEvent("tree");   // control-API event log (#273)
+        return true;
     }
 
     /// <summary>Modal folder picker (native shell). Returns the chosen path or null.</summary>
@@ -820,10 +828,13 @@ internal partial class Program
                     bool stacked = _active is { Axis: SplitAxes.Horizontal };
                     A(stacked ? "Focus Top Pane" : "Focus Left Pane", "Ctrl+Alt+Left", () => FocusPane(-1));
                     A(stacked ? "Focus Bottom Pane" : "Focus Right Pane", "Ctrl+Alt+Right", () => FocusPane(1));
-                    A("Delete Active Workspace", "", () => { if (_active is not null) DeleteWorkspace(_active.Ws); });
+                    A("Delete Active Workspace", "", DeleteCurrentWorkspace);
                     A("Flag / Unflag Session", "Ctrl+Shift+F", () => { if (_active is not null) FlagOp(_active, "toggle"); });
                     A("Show Flagged / All Sessions", "", ToggleFlaggedView);
                     A("Focus Workspace", "", () => WorkspaceFocusOp("toggle"));
+                    A("Next Workspace", "", () => NavigateWorkspace("next"));
+                    A("Previous Workspace", "", () => NavigateWorkspace("prev"));
+                    A("Toggle Workspace Collapse", "", ToggleWorkspaceCollapse);
                     A("Toggle Sidebar", "", ToggleSidebar);
                     A("Select All", "Ctrl+Shift+A", () => { if (ActiveSurface() is { } p) SelectAll(p); });
                     A("Copy Selection", "Ctrl+C", () => { if (ActiveSurface() is { } p && HasLiveSel(p)) CopySelection(p); });
@@ -1384,41 +1395,81 @@ internal partial class Program
         string? hit = null;
         if (my < (int)TitleBarH) hit = ChromeHit(_titleButtons, mx);
         else if (mx < (int)_sidebarW && my >= ClientH() - (int)FooterH) hit = ChromeHit(_footerButtons, mx);
-        if (hit == _hotBtn) return;
+        SidebarNameHit? name = hit is null ? _sidebarNames.FirstOrDefault(n => mx >= n.X && mx < n.X + n.Width && my >= n.Y && my < n.Y + n.Height) : null;
+        if (hit == _hotBtn && Equals(name, _sidebarTip)) return;
         _hotBtn = hit;
+        _sidebarTip = name;
+        _tipText = null;
         if (hit is not null)
         {
             _hotPaint = hit; _hotAlpha = 1f;   // light instantly on hover-in
             if (Uia.ClientsListening) Uia.Announce(ChromeButtonLabel(hit) + " button");   // speak the hovered button
-            _tipText = null;
-            SetTimer(_hwnd, (IntPtr)TipTimer, 550, IntPtr.Zero);    // tooltip after a short hover dwell
         }
         else
         {
-            KillTimer(_hwnd, (IntPtr)TipTimer);
-            _tipText = null;
             SetTimer(_hwnd, (IntPtr)HoverTimer, 15, IntPtr.Zero);   // fade out when leaving
         }
+        if (hit is not null || name is not null) SetTimer(_hwnd, (IntPtr)TipTimer, 550, IntPtr.Zero);
+        else KillTimer(_hwnd, (IntPtr)TipTimer);
         RequestRedraw();
     }
 
     // ---- Hover tooltips for chrome buttons ----
     private const int TipTimer = 12;      // WM_TIMER id: show the tip after a hover dwell
     private string? _tipText;             // visible tooltip text (null = none)
+    private sealed record SidebarNameHit(object Owner, string Text, float X, float Y, float Width, float Height);
+    private readonly List<SidebarNameHit> _sidebarNames = new();
+    private SidebarNameHit? _sidebarTip;
 
-    /// <summary>TipTimer fired: show the tooltip for the still-hovered button.</summary>
-    private void TipTick()
+    private void RecordSidebarName(object owner, string text, float x, float y, float width, float height)
     {
+        if (width > 0 && MeasureText(text, _sidebarFont) > width)
+            _sidebarNames.Add(new(owner, text, x, y, width, height));
+    }
+
+    private void DismissHoverTip()
+    {
+        _tipText = null; _sidebarTip = null;
         KillTimer(_hwnd, (IntPtr)TipTimer);
-        if (_hotBtn is null) return;
-        _tipText = ChromeButtonLabel(_hotBtn);
         RequestRedraw();
     }
 
-    /// <summary>Draw the hover tooltip near its button (below title-bar buttons, above footer ones).</summary>
+    /// <summary>TipTimer fired: show the still-hovered chrome button or truncated row name.</summary>
+    private void TipTick()
+    {
+        KillTimer(_hwnd, (IntPtr)TipTimer);
+        _tipText = _hotBtn is not null ? ChromeButtonLabel(_hotBtn) : _sidebarTip?.Text;
+        RequestRedraw();
+    }
+
+    /// <summary>Draw a passive tooltip near its chrome button or truncated sidebar row.</summary>
     private void DrawButtonTip(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
-        if (_tipText is null || _hotBtn is null) return;
+        if (_tipText is null) return;
+        if (_sidebarTip is { } name)
+        {
+            // Hit data is rebuilt each frame: moving, renaming, collapsing or resizing a row
+            // invalidates its old tooltip without waiting for another mouse message.
+            if (_editing is not null || _dragging || !_sidebarNames.Contains(name))
+            { _tipText = null; _sidebarTip = null; return; }
+            float width = Math.Max(1f, Math.Min(600f, ClientW() - 24f));
+            float height = Math.Max(1f, ClientH() - 32f);
+            using var layout = _dwrite.CreateTextLayout(name.Text, _uiSmall, Math.Max(1, width - 16), height);
+            layout.WordWrapping = WordWrapping.EmergencyBreak;
+            layout.TextAlignment = TextAlignment.Leading;
+            layout.ParagraphAlignment = ParagraphAlignment.Near;
+            height = Math.Min(height + 16, layout.Metrics.Height + 16);
+            float x = Math.Clamp(name.X, 8, Math.Max(8, ClientW() - width - 8));
+            float y = Math.Clamp(name.Y + name.Height + 4, 8, Math.Max(8, ClientH() - height - 8));
+            brush.Color = Mix(PalBg, ChromeText, 0.10f);
+            rt.FillRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, y, width, height), RadiusX = 5, RadiusY = 5 }, brush);
+            brush.Color = PalBorder;
+            rt.DrawRoundedRectangle(new RoundedRectangle { Rect = new Rect(x, y, width, height), RadiusX = 5, RadiusY = 5 }, brush, 1);
+            brush.Color = ChromeText;
+            rt.DrawTextLayout(new System.Numerics.Vector2(x + 8, y + 8), layout, brush, DrawTextOptions.Clip);
+            return;
+        }
+        if (_hotBtn is null) return;
         float bx0 = -1, bx1 = -1; bool footer = false;
         foreach (var b in _titleButtons) if (b.action == _hotBtn) { bx0 = b.x0; bx1 = b.x1; }
         if (bx0 < 0) foreach (var b in _footerButtons) if (b.action == _hotBtn) { bx0 = b.x0; bx1 = b.x1; footer = true; }
