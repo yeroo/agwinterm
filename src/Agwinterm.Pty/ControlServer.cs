@@ -174,6 +174,7 @@ public sealed class ControlServer : IDisposable
                 if ((root.TryGetProperty("target", out var ht) && ht.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)) ||
                     (root.TryGetProperty("window", out var hw) && hw.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)))
                     return Err("hud: target and window must be string selectors");
+                if (target == "" || windowSel == "") return Err("hud: target and window selectors must not be empty");
                 if (windowSel is not null && _windows is null) return Err("hud: window routing is unavailable in this host");
             }
 

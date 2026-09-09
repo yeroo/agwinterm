@@ -215,14 +215,22 @@ switch (area)
                 {
                     if (!allowed.Contains(key, StringComparer.OrdinalIgnoreCase)) { Console.Error.WriteLine("hud: unknown option --" + key); return 2; }
                     if (!key.Equals("spinner", StringComparison.OrdinalIgnoreCase) && bareLast.Contains(key)) { Console.Error.WriteLine("hud: --" + key + " needs a value"); return 2; }
+                    if ((key.Equals("target", StringComparison.OrdinalIgnoreCase) || key.Equals("window", StringComparison.OrdinalIgnoreCase)) && options[key].Length == 0)
+                    { Console.Error.WriteLine("hud: --" + key + " must not be empty"); return 2; }
                 }
                 if (action == "close" && (rest.Count != 0 || options.Keys.Any(k => !new[] { "target", "window", "pipe", "socket" }.Contains(k, StringComparer.OrdinalIgnoreCase))))
                 { Console.Error.WriteLine("hud close takes no message or display options"); return 2; }
                 if (action != "close")
                 {
                     cargs["message"] = string.Join(' ', rest);
-                    foreach (var key in new[] { "detail", "position", "size-percent", "text-color" })
+                    foreach (var key in new[] { "detail", "position", "text-color" })
                         if (Opt(key) is { } value) cargs[key] = value;
+                    if (Opt("size-percent") is { } width)
+                    {
+                        if (!int.TryParse(width, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int n))
+                        { Console.Error.WriteLine("hud: size-percent must be a whole number in 1..100"); return 2; }
+                        cargs["size-percent"] = n;
+                    }
                     if (Opt("background-color") is { } bg) cargs["color"] = bg;
                     if (Opt("spinner-style") is { } style) cargs["spinner"] = style;
                     else if (options.ContainsKey("spinner")) cargs["spinner"] = "bar";

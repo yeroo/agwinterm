@@ -60,7 +60,7 @@ public sealed class HudOwnedJob {
         uint pid;uint t=GetWindowThreadProcessId(h,out pid);var info=new GUI {size=Marshal.SizeOf<GUI>()};
         if(!GetGUIThreadInfo(t,ref info))throw new Exception("GetGUIThreadInfo");return capture?info.capture:info.focus;
     }
-    IntPtr job,process; public uint Pid { get; private set; }
+    IntPtr job,process; bool assigned; public uint Pid { get; private set; }
     public void Start(string exe,string args,string cwd) {
         job=CreateJobObjectW(IntPtr.Zero,null); if(job==IntPtr.Zero)throw new Exception("CreateJobObject");
         var limit=new LIMIT(); limit.basic.flags=0x2000; // kill-on-close, no breakaway permission
@@ -71,7 +71,8 @@ public sealed class HudOwnedJob {
             throw new Exception("CreateProcess: "+Marshal.GetLastWin32Error());
         process=pi.process; Pid=pi.pid;
         try {
-            if(!AssignProcessToJobObject(job,process)) { TerminateProcess(process,1); throw new Exception("AssignProcessToJobObject"); }
+            if(!AssignProcessToJobObject(job,process))throw new Exception("AssignProcessToJobObject");
+            assigned=true;
             if(ResumeThread(pi.thread)==uint.MaxValue)throw new Exception("ResumeThread");
         } finally { CloseHandle(pi.thread); }
     }
@@ -81,7 +82,10 @@ public sealed class HudOwnedJob {
     }
     public void Finish() {
         if(job==IntPtr.Zero)return;
-        if(process!=IntPtr.Zero && WaitForSingleObject(process,5000)!=0)TerminateJobObject(job,1);
+        if(process!=IntPtr.Zero && WaitForSingleObject(process,5000)!=0) {
+            if(assigned)TerminateJobObject(job,1);else TerminateProcess(process,1);
+            if(WaitForSingleObject(process,10000)!=0)throw new Exception("Owned primary process still live; retain suite token");
+        }
         for(int i=0;i<100 && Count()!=0;i++)Thread.Sleep(100);
         if(Count()!=0) { TerminateJobObject(job,1); for(int i=0;i<100 && Count()!=0;i++)Thread.Sleep(100); }
         if(Count()!=0)throw new Exception("Owned job still contains live processes; retain suite token");
@@ -103,6 +107,7 @@ public sealed class HudOwnedJob {
     # Every pane uses a harmless cmd /d shell: never the user's PowerShell profile or agent hooks.
     @{default='HUD-test';profiles=@(@{name='HUD-test';command='cmd.exe';args=@('/d');cwd=$artifact})}|ConvertTo-Json -Depth 5|Set-Content (Join-Path $appDir 'profiles.json')
     @('session-host = in-process','claude-update-check = false','update-check = false','fresh-env = false','copy-on-select = false')|Set-Content (Join-Path $appDir 'agwinterm.conf')
+    'map f12 = close_pane'|Set-Content (Join-Path $appDir 'keymap.conf')
     $savedEnv=@{}
     foreach($name in 'AGWINTERM_APP_ID','AGWINTERM_PIPE','AGWINTERM_SESSION_ID','AGWINTERM_PANE_ID','AGWINTERM_DUMP','AGWINTERM_PERF','AGWINTERM_IMGLOG'){
         $savedEnv[$name]=[Environment]::GetEnvironmentVariable($name)
@@ -152,8 +157,12 @@ public sealed class HudOwnedJob {
         }finally{$graphics.Dispose();$bitmap.Dispose()}
     }
     $ctl=Join-Path $root 'src/Agwinterm.Ctl/bin/Release/net10.0-windows/agwintermctl.exe'
-    $null=& $ctl session hud --spinner 'CLI HUD' --detail 'private acceptance' --target $session --pipe $pipe --json
-    Check 'CLI default open accepts spinner before message' ($LASTEXITCODE-eq 0 -and (Node).hud.message-eq 'CLI HUD')
+    $null=& $ctl session hud --spinner 'CLI HUD' --detail 'private acceptance' --size-percent 35 --target $session --pipe $pipe --json
+    Check 'CLI default open accepts spinner before message and numeric width' ($LASTEXITCODE-eq 0 -and (Node).hud.message-eq 'CLI HUD' -and (Node).hud.sizePercent-eq 35)
+    foreach($selector in 'target','window'){
+        $null=& $ctl session hud close "--$selector" '' --pipe $pipe --json
+        Check "CLI empty $selector refuses without clearing HUD" ($LASTEXITCODE-eq 2 -and (Node).hud.message-eq 'CLI HUD')
+    }
     $null=Rpc 'session.hud.close' @{} $session
     for($i=0;$i-lt 50 -and ([string](Rpc 'session.text' @{} $session))-notmatch '>'; $i++){Start-Sleep -Milliseconds 100}
     $text=Rpc 'session.text' @{all=$true} $session;$metrics=Rpc 'session.metrics' @{} $session|ConvertTo-Json -Compress
@@ -201,6 +210,8 @@ public sealed class HudOwnedJob {
     Check 'session id still addresses whole split HUD' ((Node).hud.message-eq 'Whole split')
     $paneOverlay=Rpc 'session.overlay' @{action='open';pane='left';command='cmd /d /k'} $session
     Check 'pane overlay coexists under session HUD' ((Node).hud.message-eq 'Whole split' -and (Node).paneOverlays.Count-eq 1)
+    [void][HudOwnedJob]::SendMessageW($hwnd,0x100,[IntPtr]123,[IntPtr]1) # private F12 binding: ordinary close action
+    Check 'ordinary close shortcut removes HUD but preserves panes and pane overlay' ($null-eq (Node).hud -and (Node).paneCount-eq 2 -and (Node).paneOverlays.Count-eq 1)
     $null=Rpc 'session.overlay' @{action='close';pane='left'} $session
     $other=[string](Rpc 'session.new' @{name='hud-background';'no-select'=$true})
     for($i=0;$i-lt 50 -and $null-eq (Node $other);$i++){Start-Sleep -Milliseconds 50}
@@ -228,6 +239,14 @@ public sealed class HudOwnedJob {
     Check 'unknown close target refuses' (-not $a.ok)
     $null=Rpc 'session.hud.open' @{message='transient';spinner='bar'} $session
     Check 'HUD creates no extra terminal panes' ((Node).paneCount-eq 2)
+    $survivor=Rpc 'session.split.close' @{} $session
+    foreach($action in 'open','update','close'){
+        $hudArgs=if($action-eq 'close'){@{}}else{@{message='wrong'}}
+        $answer=Rpc "session.hud.$action" $hudArgs $survivor -AllowError
+        Check "$action refuses surviving secondary pane id" (-not $answer.ok -and (Node).hud.message-eq 'transient')
+    }
+    $null=Rpc 'session.hud.update' @{message='session identity survives'} $session
+    Check 'owning session id remains usable without its original pane' ((Node).hud.message-eq 'session identity survives')
     $null=Rpc 'session.close' @{} $session
     for($i=0;$i-lt 50 -and $null-ne (Node);$i++){Start-Sleep -Milliseconds 50}
     Check 'session close removes HUD state' ($null-eq (Node))

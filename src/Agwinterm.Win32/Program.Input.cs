@@ -128,7 +128,7 @@ internal partial class Program
             case "duplicate_session": DuplicateSession(_active); break;
             case "reopen_session": ReopenMostRecent(); break;
             case "new_workspace": CreateWorkspace(Guid.NewGuid().ToString(), null); break;
-            // Ctrl+Shift+W: the cover first (an overlay closes, scratch/quick hide), then the focused
+            // Ctrl+Shift+W: the cover first (an overlay closes, scratch/quick hide), then the HUD, then the focused
             // pane's own overlay (P5 — agterm's Cmd+W closes the overlay before it would close the pane),
             // then the pane.
             case "close_session": case "close_pane":

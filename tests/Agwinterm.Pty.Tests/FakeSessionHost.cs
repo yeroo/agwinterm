@@ -455,13 +455,14 @@ internal sealed class FakeSessionHost : ISessionHost
     public bool SessionReorder(string? target, string dir) => Find(target) is not null;
     public bool SessionToWorkspace(string? target, string workspace) { var s = Find(target); var w = FindWs(workspace); if (s is null || w is null) return false; Workspaces.First(x => x.Sessions.Contains(s)).Sessions.Remove(s); w.Sessions.Add(s); return true; }
     public bool SessionRename(string? target, string name) { var s = FindSes(target); if (s is null || string.IsNullOrWhiteSpace(name)) return false; s.Name = name; return true; }
-    // Real, not a stub: resolves as rename does (FindSes, so a cover id lands on its session and an
-    // unknown target is the app's "session not found"), stores what the server already validated,
-    // and replies with the value read back off the session — the app's InvokeOnUiQueued reply.
     public string SessionHud(string? target, string action, HudSpec? spec)
     {
-        var s = FindSes(target);
+        var all = Workspaces.SelectMany(w => w.Sessions).ToArray();
+        var id = target is null or "active" ? ActiveSess?.Id : SessionHuds.ResolveTarget(target,
+            all.Select(s => new SessionHuds.Target(s.Id, s.Name, s.PaneIds.Concat(s.CoverPanes.Select(c => c.Id)))), []);
+        var s = all.FirstOrDefault(s => s.Id == id);
         if (s is null) return ISessionHost.RefusePrefix + "hud: no session matches that target";
+        if ((target is null or "active") && (QuickVisible || s.Overlay)) return ISessionHost.RefusePrefix + "hud: active surface is a cover";
         if (action == "close") s.Hud = null;
         else
         {
@@ -472,6 +473,9 @@ internal sealed class FakeSessionHost : ISessionHost
         return SessionHuds.Reply(s.Id, s.Hud);
     }
 
+    // Real, not a stub: resolves as rename does (FindSes, so a cover id lands on its session and an
+    // unknown target is the app's "session not found"), stores what the server already validated,
+    // and replies with the value read back off the session — the app's InvokeOnUiQueued reply.
     public string SessionContext(string? target, string? context)
     {
         var s = FindSes(target);

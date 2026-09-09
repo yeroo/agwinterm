@@ -16,18 +16,16 @@ internal partial class Program
     {
         // Session identity must be explicit if a split/auxiliary pane was named. A HUD is not
         // a pane overlay and has no PTY id of its own. Resolve/check/write in this same UI hop.
-        var ses = FindSesForTarget(target);
+        var ses = target is null or "active" ? _active : FindSessionByExactId(
+            SessionHuds.ResolveTarget(target, AllSessions().Select(s => new SessionHuds.Target(s.Id, s.Name,
+                s.Panes.Select(p => p.Id).Concat(s.Panes.Select(p => p.Overlay.Term?.Id).OfType<string>())
+                    .Concat(new[] { s.Scratch?.Id, s.Overlay.Term?.Id }.OfType<string>()))),
+                new[] { _quick?.Id }.OfType<string>()) ?? "");
         if (ses is null) return ISessionHost.RefusePrefix + "hud: no session matches that target";
-        if (string.IsNullOrEmpty(target) || target == "active")
+        if (target is null or "active")
         {
             if (_cover is not null) return ISessionHost.RefusePrefix + "hud: active surface is a cover; pass the session id";
         }
-        else if (FindControlPane(target) is { } resolved &&
-                 (!ses.Panes.Contains(resolved.pane) ||
-                  (ses.Panes.Count > 1 && target != ses.Id && !ses.Id.StartsWith(target, StringComparison.Ordinal) &&
-                   ses.Panes.Any(p => p.Id == target || p.Id.StartsWith(target, StringComparison.Ordinal)))))
-            return ISessionHost.RefusePrefix + "hud: target names a pane or cover; pass the owning session id";
-
         if (action == "close") ClearHud(ses); // never touches a program overlay
         else
         {

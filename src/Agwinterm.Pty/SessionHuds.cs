@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -30,8 +29,7 @@ public static class SessionHuds
             if (action == "close") { error = "hud close takes no display options"; return false; }
             if (field.Name == "size-percent")
             {
-                var raw = field.Value.ValueKind == JsonValueKind.String ? field.Value.GetString() : field.Value.GetRawText();
-                if (!int.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out int n) || n is < 1 or > 100)
+                if (field.Value.ValueKind != JsonValueKind.Number || !field.Value.TryGetInt32(out int n) || n is < 1 or > 100)
                 { error = "hud: size-percent must be a whole number in 1..100"; return false; }
                 width = Math.Clamp(n, 10, 80); continue;
             }
@@ -74,6 +72,26 @@ public static class SessionHuds
     }
 
     public static string Reply(string session, HudSpec? hud) => JsonSerializer.Serialize(new { session, hud }, JsonOptions);
+
+    public sealed record Target(string Id, string Name, IEnumerable<string> SurfaceIds);
+
+    /// <summary>HUD-only session routing, shared with the contract fake. Exact session IDs win;
+    /// other surface IDs never widen, and a prefix must identify one owning session's own ID.</summary>
+    public static string? ResolveTarget(string target, IEnumerable<Target> candidates, IEnumerable<string> standaloneIds)
+    {
+        if (string.IsNullOrEmpty(target)) return null;
+        var sessions = candidates.ToArray();
+        var standalone = standaloneIds.ToArray();
+        if (sessions.Any(s => s.Id == target)) return target;
+        if (sessions.Any(s => s.SurfaceIds.Contains(target)) || standalone.Contains(target)) return null;
+        var prefixes = sessions.Where(s => s.Id.StartsWith(target, StringComparison.Ordinal) ||
+            s.SurfaceIds.Any(id => id.StartsWith(target, StringComparison.Ordinal))).ToArray();
+        if (standalone.Any(id => id.StartsWith(target, StringComparison.Ordinal))) return null;
+        if (prefixes.Length != 0)
+            return prefixes.Length == 1 && prefixes[0].Id.StartsWith(target, StringComparison.Ordinal) ? prefixes[0].Id : null;
+        var named = sessions.Where(s => string.Equals(s.Name, target, StringComparison.OrdinalIgnoreCase)).ToArray();
+        return named.Length == 1 ? named[0].Id : null;
+    }
     public readonly record struct Box(float X, float Y, float Width, float Height);
     public static Box Place(float x, float y, float width, float height, float neededWidth, float neededHeight, HudSpec spec)
     {

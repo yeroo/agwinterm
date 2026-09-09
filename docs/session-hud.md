@@ -14,7 +14,8 @@ agwintermctl session hud close
 `open`, `update` or `close`. `--target ID` and `--window ID` use normal control routing.
 Use the owning **session** id, not the secondary split pane or an auxiliary cover's id.
 A session name is accepted; an ambiguous/unknown target refuses. With `--target active`,
-an active scratch/quick/program cover refuses; name the session explicitly instead.
+an active scratch/quick/session-wide program cover refuses; name the session explicitly instead.
+Pane overlays may coexist, including on the focused pane. Empty target/window selectors refuse.
 
 ## Options and state
 
@@ -59,7 +60,7 @@ with `overlay resize`, or awaited with `overlay --block`; inspect `tree` instead
 ## Wire API
 
 `session.hud.open`, `session.hud.update`, `session.hud.close`. Open/update args:
-`message`, optional `detail`, `spinner` (style string), `position`, `size-percent`,
+`message`, optional `detail`, `spinner` (style string), `position`, `size-percent` (JSON integer),
 `color` (background), `text-color`. Close accepts no display arguments. Invalid types,
 unknown arguments and unsupported options refuse before mutation. Replies are
 `{session, hud}` inside the usual `ok/result` envelope; close reports `hud:null`.

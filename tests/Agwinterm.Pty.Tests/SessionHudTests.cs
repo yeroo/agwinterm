@@ -42,6 +42,7 @@ public class SessionHudTests
     [InlineData("{\"message\":\"ok\",\"size-percent\":101}")]
     [InlineData("{\"message\":\"ok\",\"size-percent\":0}")]
     [InlineData("{\"message\":\"ok\",\"size-percent\":null}")]
+    [InlineData("{\"message\":\"ok\",\"size-percent\":\"50\"}")]
     [InlineData("{\"message\":\"ok\",\"color\":\"#ffff\"}")]
     [InlineData("{\"message\":\"ok\",\"text-color\":\"bad\"}")]
     [InlineData("{\"message\":\"ok\",\"pane\":\"right\"}")]
@@ -111,11 +112,55 @@ public class SessionHudTests
     [Theory]
     [InlineData("\"target\":false")] [InlineData("\"target\":[]")]
     [InlineData("\"window\":123")] [InlineData("\"window\":\"unavailable\"")]
+    [InlineData("\"target\":\"\"")] [InlineData("\"window\":\"\"")]
     public void MalformedOrUnsupportedRoutingNeverFallsBackToActive(string routing)
     {
         var host = new FakeSessionHost(); var server = new ControlServer(host);
         var result = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.hud.open\",\"args\":{\"message\":\"wrong\"}," + routing + "}"));
         Assert.False(result.RootElement.GetProperty("ok").GetBoolean());
         Assert.Null(host.ActiveSess!.Hud);
+    }
+
+    [Theory] [InlineData("open")] [InlineData("update")] [InlineData("close")]
+    public void PaneAndCoverIdsNeverWidenEvenAfterOriginalPaneCloses(string action)
+    {
+        var host = new FakeSessionHost(); var server = new ControlServer(host); var s = host.ActiveSess!;
+        Call(server, "open", new { message = "keep" });
+        s.AddPane(); string pane = s.PaneIds[1], cover = s.AddCoverPane();
+        foreach (var target in new[] { pane, pane[..5], cover })
+        {
+            Assert.False(Call(server, action, action == "close" ? null : new { message = "wrong" }, target).GetProperty("ok").GetBoolean());
+            Assert.Equal("keep", s.Hud!.Message);
+        }
+        s.RemovePane(0);
+        Assert.False(Call(server, action, action == "close" ? null : new { message = "wrong" }, pane).GetProperty("ok").GetBoolean());
+        Assert.Equal("keep", s.Hud!.Message);
+        Assert.True(Call(server, action, action == "close" ? null : new { message = "right" }, s.Id).GetProperty("ok").GetBoolean());
+    }
+
+    [Theory] [InlineData("open")] [InlineData("update")] [InlineData("close")]
+    public void AmbiguousOwnersRefuseWithoutChangingEitherSession(string action)
+    {
+        var host = new FakeSessionHost(); var server = new ControlServer(host);
+        var other = new FakeSessionHost.Sess { Id = "s10", Name = "other" }.Seed();
+        host.ActiveWs.Sessions.Add(other);
+        Call(server, "open", new { message = "first" }, "s1");
+        Call(server, "open", new { message = "second" }, "s10");
+        Assert.False(Call(server, action, action == "close" ? null : new { message = "wrong" }, "s").GetProperty("ok").GetBoolean());
+        Assert.Equal("first", host.ActiveSess!.Hud!.Message); Assert.Equal("second", other.Hud!.Message);
+        Assert.True(Call(server, "update", new { message = "named" }, "OTHER").GetProperty("ok").GetBoolean());
+        Assert.Equal("first", host.ActiveSess.Hud.Message); Assert.Equal("named", other.Hud.Message);
+    }
+
+    [Theory]
+    [InlineData("abc", "abc")] [InlineData("ab", "abc")] [InlineData("a", null)]
+    [InlineData("pane-a", null)] [InlineData("pane", null)] [InlineData("abc:scratch:x", null)]
+    [InlineData("first", "abc")] [InlineData("quick:x", null)] [InlineData("qui", null)]
+    [InlineData("missing", null)] [InlineData("", null)]
+    public void SessionSelectorMatrix(string target, string? expected)
+    {
+        SessionHuds.Target[] choices = [new("abc", "first", ["abc", "pane-a", "abc:scratch:x"]), new("axz", "second", ["axz", "pane-b"])];
+        Assert.Equal(expected, SessionHuds.ResolveTarget(target, choices, ["quick:x"]));
+        Assert.Null(SessionHuds.ResolveTarget("duplicate", [new("a", "duplicate", []), new("b", "duplicate", [])], []));
     }
 }

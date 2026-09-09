@@ -600,6 +600,7 @@ internal partial class Program
             _workspaces.Remove(ws);
             if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
         }
+        RefreshHudTimer(); // a removed workspace may have owned the last animated HUD
         foreach (var s in sessions) { try { s.S.Dispose(); } catch { } }
         if (hadActive)
         {
