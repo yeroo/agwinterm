@@ -27,6 +27,25 @@ purpose justifies it.
 
 ## Control API: remaining gaps and batch status
 
+### P17 Wave 3 mirror
+
+The `feat/p17-lite-wave3` companion mirrors P13 HUD, P14 quick, P15 navigation/cursor
+and P16 native picker contracts. The shared spec now checks HUD open/update/close,
+workspace navigation, cursor/quick config reads and the nonblocking picker lifecycle.
+Picker CLI output is explicitly payload JSON, with stdin, captured ID fields and exact
+pending/cancelled exit expectations; it is not silently treated as an envelope.
+
+Lite remains one library window per process/pipe. Its quick popup is per process;
+explicit foreign window selectors refuse instead of routing to another process. Picker
+answers retain eight completed results only in the originating process, not across
+closed library windows. Native tree tooltips request 600-pixel wrapping but may exceed
+it for an unbroken word; full uses a client-clipped custom tooltip. Cursor/quick options
+are live config keys in lite, not full Settings UI parity. Neither shell hints nor
+hosted input acknowledgements establish prompt readiness or command execution.
+The native ABI pin and unsupported image/raster-font-zoom boundaries are unchanged.
+The companion must pass exact-head strict CI before merging; this contract merge alone
+does not certify or release a lite binary.
+
 Grouped by what they cost an agent, not alphabetically. The four `selection.*` verbs — the
 sharpest gap, the one where a QA setup step silently did nothing — closed in P6-lite (see
 "Mirrored: what P6 owed lite" below).
@@ -600,8 +619,8 @@ and the list should grow as more turn up.
   - **`tree`.** A lite node is `active` when the displayed session is it, whichever pane has focus;
     the split's shell has no node. A split side whose shell exits collapses to the survivor in both
     products; a one-pane session's exit stays on screen as `(exited)` in lite.
-  Not a divergence, checked both ways: `session select` never moves the active workspace in either
-  product.
+  In both products, `session select` restores that session's workspace as current and clears an
+  intentional empty-workspace selection.
 - **The native core is shared.** Both load `agwinterm_core.dll` across the same C ABI, so emulator
   behaviour — widths, scrollback, alt screen — is common by construction. A difference there is a
   bug in one of the clients, not a parity gap.

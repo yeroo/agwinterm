@@ -57,4 +57,5 @@ block/box or underline/underscore; `cursor-blink` accepts true/false, on/off, ye
 without changing the prior value. File parsing remains compatible. Terminal DECSCUSR
 cursor overrides still take precedence. Shape changes do not resize terminal cells.
 
-P17 mirrors this contract to lite. Shared conformance is unchanged until then.
+P17 mirrors this contract to lite and expands shared conformance; native tooltip,
+config UI and process boundaries are recorded in [lite parity](lite-parity.md#p17-wave-3-mirror).

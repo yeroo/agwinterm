@@ -70,7 +70,10 @@ jobs:
       - name: Control-API conformance
         shell: pwsh
         timeout-minutes: 15
-        run: ./tests/conformance/conformance.ps1 -Strict
+        run: |
+          ./tests/conformance/conformance-validator.unit.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./tests/conformance/conformance.ps1 -Strict
 
       # The clipboard guard the integration suite writes the runner's clipboard through, against a
       # fake clipboard: every state it can leave the clipboard in, including the ones a real run
