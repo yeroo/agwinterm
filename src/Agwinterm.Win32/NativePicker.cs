@@ -21,9 +21,10 @@ internal sealed class NativePicker : IDisposable
     private readonly IntPtr _owner;
     private readonly Action<PickOutcome> _finish;
     private readonly Action _activated;
+    private readonly Action<string> _diagnostic;
     private readonly PickSelection _selection;
     private IntPtr _hwnd, _edit, _list, _accept, _cancel, _label, _font;
-    private bool _ended, _disposing;
+    private bool _ended, _disposing, _queryError;
     private int _dpi = 96;
     public PendingPick Request { get; }
 
@@ -35,9 +36,9 @@ internal sealed class NativePicker : IDisposable
     [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr CreateFontW(int height, int width, int escapement, int orientation, int weight,
         uint italic, uint underline, uint strikeout, uint charset, uint outPrecision, uint clipPrecision, uint quality, uint pitch, string family);
 
-    public NativePicker(IntPtr owner, PendingPick request, Action<PickOutcome> finish, Action activated)
+    public NativePicker(IntPtr owner, PendingPick request, Action<PickOutcome> finish, Action activated, Action<string> diagnostic)
     {
-        _owner = owner; Request = request; _finish = finish; _activated = activated;
+        _owner = owner; Request = request; _finish = finish; _activated = activated; _diagnostic = diagnostic;
         _selection = new(request.Spec); _childProc = ChildProc;
     }
 
@@ -126,7 +127,13 @@ internal sealed class NativePicker : IDisposable
         if (_list == IntPtr.Zero) return;
         var query = new StringBuilder(PickSpec.MaxFieldLength + 1);
         GetWindowTextW(_edit, query, query.Capacity);
-        _selection.SetQuery(query.ToString());
+        try { _selection.SetQuery(query.ToString()); _queryError = false; }
+        catch (ArgumentException ex)
+        {
+            _queryError = true; SendMessageW(_list, LbReset, IntPtr.Zero, IntPtr.Zero);
+            EnableWindow(_accept, false); SetWindowTextW(_label, ex.Message); return;
+        }
+        SetWindowTextW(_label, Request.Spec.Prompt ?? "Select…");
         SendMessageW(_list, LbReset, IntPtr.Zero, IntPtr.Zero);
         foreach (int index in _selection.Matches)
         {
@@ -142,6 +149,7 @@ internal sealed class NativePicker : IDisposable
 
     private void Choose()
     {
+        if (_queryError) return;
         _selection.Select((int)SendMessageW(_list, LbGetSel, IntPtr.Zero, IntPtr.Zero));
         if (_selection.Choose() is { } outcome) End(outcome);
     }
@@ -201,7 +209,7 @@ internal sealed class NativePicker : IDisposable
             }
             return DefWindowProcW(hwnd, msg, w, l);
         }
-        catch { picker.End(new("cancelled")); return IntPtr.Zero; }
+        catch (Exception ex) { picker.Fail(msg, ex); return IntPtr.Zero; }
     }
 
     private IntPtr ChildProc(IntPtr hwnd, uint msg, IntPtr w, IntPtr l)
@@ -229,7 +237,14 @@ internal sealed class NativePicker : IDisposable
             if (msg == NcDestroy) { Children.Remove(hwnd); _original.Remove(hwnd); }
             return CallWindowProcW(original, hwnd, msg, w, l);
         }
-        catch { End(new("cancelled")); return IntPtr.Zero; }
+        catch (Exception ex) { Fail(msg, ex); return IntPtr.Zero; }
+    }
+
+    private void Fail(uint message, Exception ex)
+    {
+        _diagnostic($"picker wndproc ex msg=0x{message:X}: {ex.GetType().Name} {ex.Message}");
+        try { End(new("cancelled")); }
+        catch (Exception cleanup) { _diagnostic($"picker cleanup ex: {cleanup.GetType().Name} {cleanup.Message}"); }
     }
 
     public void Dispose()

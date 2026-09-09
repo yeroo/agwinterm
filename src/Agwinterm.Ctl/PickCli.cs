@@ -22,7 +22,7 @@ public static class PickCli
             string key = word[2..];
             if (key is "allow-custom" or "follow" or "no-block" or "json")
             { if (!flags.Add(key)) throw new ArgumentException("duplicate picker option: " + word); continue; }
-            if (key is not ("prompt" or "query" or "window" or "pipe" or "socket")) throw new ArgumentException("unknown picker option: " + word);
+            if (key is not ("prompt" or "query" or "window" or "pipe" or "socket" or "input-format")) throw new ArgumentException("unknown picker option: " + word);
             if (++i >= argv.Length || argv[i].StartsWith("--", StringComparison.Ordinal) || !values.TryAdd(key, argv[i]))
                 throw new ArgumentException("missing or duplicate picker option: " + word);
         }
@@ -31,24 +31,33 @@ public static class PickCli
         if ((verb == "open" && positionals.Count > 1) || (verb != "open" && positionals.Count != 2))
             throw new ArgumentException("pick result/cancel require one exact id; open reads items from stdin");
         if (values.TryGetValue("window", out var window) && window.Length == 0) throw new ArgumentException("empty window selector");
-        if (verb != "open" && (flags.Any(f => f != "json") || values.ContainsKey("prompt") || values.ContainsKey("query")))
+        if (verb != "open" && (flags.Any(f => f != "json") || values.ContainsKey("prompt") || values.ContainsKey("query") || values.ContainsKey("input-format")))
             throw new ArgumentException("open-only picker option on result/cancel");
         if (values.ContainsKey("pipe") && values.ContainsKey("socket")) throw new ArgumentException("choose --pipe or --socket");
+        if (values.GetValueOrDefault("input-format", "auto") is not ("auto" or "lines" or "json")) throw new ArgumentException("input-format must be auto, lines or json");
         return new(verb, verb == "open" ? null : positionals[1], values, flags);
     }
 
-    public static PickItem[] ParseItems(byte[] input)
+    public static PickItem[] ParseItems(byte[] input, string format = "auto")
     {
         if (input.Length > PickSpec.MaxBytes) throw new ArgumentException("picker stdin exceeds 1 MiB");
         string text = Utf8.GetString(input);
-        if (text.TrimStart(' ', '\t', '\r', '\n').StartsWith('['))
+        if (format == "json" || (format == "auto" && text.TrimStart(' ', '\t', '\r', '\n').StartsWith('[')))
         {
             using var items = JsonDocument.Parse(text);
             using var args = JsonDocument.Parse("{\"allowCustom\":true,\"items\":" + items.RootElement.GetRawText() + "}");
             return PickSpec.Parse(args.RootElement).Items.ToArray();
         }
-        return text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n')
-            .Where(line => !string.IsNullOrWhiteSpace(line)).Select(line => new PickItem(line, line)).ToArray();
+        var result = new List<PickItem>(); var ids = new HashSet<string>(StringComparer.Ordinal);
+        using var lines = new StringReader(text);
+        while (lines.ReadLine() is { } line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            if (result.Count == PickSpec.MaxItems) throw new ArgumentException("too many items (max 1000)");
+            if (!PickSpec.DisplayText(line) || !ids.Add(line)) throw new ArgumentException("invalid or duplicate plain-line item");
+            result.Add(new(line, line));
+        }
+        return result.ToArray();
     }
 
     private static string Request(string verb, string? id = null, string? window = null, object? args = null)
@@ -79,7 +88,7 @@ public static class PickCli
                 var outcome = Outcome(result); output(outcome.GetRawText()); return ExitCode(outcome);
             }
             object[] items;
-            try { items = ParseItems(input).Select(i => (object)new { id = i.Id, label = i.Label, subtitle = i.Subtitle }).ToArray(); }
+            try { items = ParseItems(input, options.Values.GetValueOrDefault("input-format", "auto")).Select(i => (object)new { id = i.Id, label = i.Label, subtitle = i.Subtitle }).ToArray(); }
             catch (Exception ex) { error(ex.Message); return 2; }
             var arguments = new { items, prompt = options.Values.GetValueOrDefault("prompt"), query = options.Values.GetValueOrDefault("query"),
                 allowCustom = options.Flags.Contains("allow-custom"), follow = options.Flags.Contains("follow") };

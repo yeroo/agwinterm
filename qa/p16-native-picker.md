@@ -19,6 +19,38 @@
   Focused new Pty/CLI/dispatch tests pass 19/19. Full clean CI remains a merge gate.
 - Review/CI exact-head receipts are recorded on the PR before merge.
 
+## Broad review fix batch
+
+- Four of four Codex sources reported; no degraded sources or open questions.
+- Duplicate complexity findings: tokenize/deduplicate once, retain repeated-term
+  ranking weights, stop completed subsequences, cap aggregate label/term work.
+  Initial over-budget queries refuse; edited queries disable choice and recover.
+- Timed-out opens withdraw queued work; in-flight construction rolls back unless
+  publication won the deadline race. Failed construction aborts without retaining
+  an unexposed answer or evicting old results. Native callback failures log diagnostics.
+- Owner keyboard, mouse motion and file-drop routes cannot enter the PTY while a
+  picker is pending. File drops explicitly release HDROP. Opening during any held
+  capture refuses without creating state. The capture regression failed against
+  the old binary, then passed with the guard.
+- Cancellation accepts an exact retained terminal outcome after owner shutdown.
+  Picker window selection requires exact IDs or unique prefixes; the pre-existing
+  general window resolver ambiguity remains outside this picker change.
+- CLI adds explicit auto/lines/json input format (bracket-prefixed labels can use
+  lines), validates plain items incrementally and refuses excess/duplicate input.
+- Accepted residual: a transport failure after successful open but before the ID
+  reaches the client cannot cancel that unknown ID; Escape/Cancel remains available.
+  This is documented, not advertised as exactly-once delivery.
+- Local fix validation: full headless Core 326 and Pty 794 pass; focused new Core
+  29 and Pty 20 pass. Private GUI generation 118: 32/32, zero owned processes,
+  clipboard/registry untouched, no queued launches; token released. Artifact
+  `.revmux/picker-ui-20260909T193146-a04086`.
+- Final input-route rebuild: private GUI 32/32 again, generation 119 released on
+  the same zero-process proof; `.revmux/picker-ui-20260909T193752-a9b607`.
+- Initial CI 34372905725 passed other integrations but failed a picker foreground
+  assertion that incorrectly required a foreground picker not to restore its owner.
+  The corrected assertion distinguishes that case from background cancellation.
+  The final exact-head CI remains required; no unchanged-head rerun is substituted.
+
 ## P15 final receipt carried forward
 
 - PR #269 merged at `482612b`; candidate `309222ca0055b3c238d5ef17e542ab860e733a34`.

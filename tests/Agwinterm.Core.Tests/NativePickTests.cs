@@ -73,6 +73,66 @@ public class NativePickTests
         Assert.Equal("b",registry.Find(b.Id)!.Window); Assert.Null(registry.Find("active"));
     }
 
+    [Fact] public void RepeatedTermsKeepRankingButDoNotMultiplyMatchingWork()
+    {
+        var items=Enumerable.Range(0,240).Select(i=>new PickItem(i.ToString(),"ab"+new string('x',4092)+"a")).ToArray();
+        string query=string.Join(' ',Enumerable.Repeat("aa",1365));
+        var watch=System.Diagnostics.Stopwatch.StartNew();
+        var model=new PickSelection(new(items,null,query,false));
+        Assert.Equal(240,model.Count);Assert.True(watch.Elapsed<TimeSpan.FromSeconds(3));
+        Assert.Equal(PickSelection.Score("aa",items[0].Label)*1365,PickSelection.Score(query,items[0].Label));
+    }
+
+    [Fact] public void AggregateWorkRejectsBeforeChangingSelection()
+    {
+        var items=Enumerable.Range(0,240).Select(i=>new PickItem(i.ToString(),new string('a',4096))).ToArray();
+        var model=new PickSelection(new(items,null,"a",false));
+        string query=string.Join(' ',Enumerable.Range(0,70).Select(i=>"term"+i));
+        Assert.Throws<ArgumentException>(()=>model.SetQuery(query));Assert.Equal("a",model.Query);Assert.Equal(240,model.Count);
+    }
+
+    [Fact] public void AbortedConstructionDoesNotEvictAnswers()
+    {
+        var registry=new PickRegistry();var ids=new List<string>();
+        for(int i=0;i<8;i++){var p=registry.Open("w",Spec())!;ids.Add(p.Id);registry.Resolve(p.Id,new("cancelled"));}
+        var aborted=registry.Open("w",Spec())!;registry.Abort(aborted.Id);
+        Assert.False(registry.Resolve(aborted.Id,new("cancelled")));Assert.Null(registry.Find(aborted.Id));
+        Assert.All(ids,id=>Assert.NotNull(registry.Find(id)));
+    }
+
+    [Fact] public async Task WithdrawnQueuedOpenNeverRunsAndInFlightOpenRollsBack()
+    {
+        var before=new PickOpenCall<string>();Assert.True(before.Withdraw());
+        before.Run(()=>throw new Exception("must not run"),_=>Assert.Fail("nothing to roll back"));
+        Assert.True(before.Task.IsCanceled);
+        var during=new PickOpenCall<string>();var rolledBack=new List<string>();
+        during.Run(()=>{Assert.True(during.Withdraw());return "created";},rolledBack.Add);
+        Assert.True(during.Task.IsCanceled);Assert.Equal("created",Assert.Single(rolledBack));
+        var completed=new PickOpenCall<string>();completed.Run(()=>"published",_=>Assert.Fail("published result retained"));
+        Assert.False(completed.Withdraw());Assert.Equal("published",await completed.Task);
+    }
+
+    [Fact] public void PickerWindowsRequireExactOrUniquePrefix()
+    {
+        string[] ids=["abc-one","abc-two","z-last"];
+        Assert.Null(PickWindowSelector.Resolve("abc",ids,"abc-one"));
+        Assert.Equal("abc-two",PickWindowSelector.Resolve("abc-two",ids,"abc-one"));
+        Assert.Equal("z-last",PickWindowSelector.Resolve("z",ids,"abc-one"));
+        Assert.Equal("abc-one",PickWindowSelector.Resolve(null,ids,"abc-one"));
+        Assert.Null(PickWindowSelector.Resolve("",ids,"abc-one"));
+    }
+
+    [Fact] public void InputPolicySeparatesDropCleanupFromKeyboardAndFocus()
+    {
+        Assert.Equal(PickInputRoute.Drop,PickInputPolicy.Route(0x233));
+        Assert.Equal(PickInputRoute.Ignore,PickInputPolicy.Route(0x200));
+        foreach(uint message in new uint[]{0x100,0x101,0x102,0x104,0x105,0x106})
+            Assert.Equal(PickInputRoute.Keyboard,PickInputPolicy.Route(message));
+        foreach(uint message in new uint[]{7,0x201,0x202,0x203,0x204,0x205,0x207,0x208,0x20a,0x7b})
+            Assert.Equal(PickInputRoute.Focus,PickInputPolicy.Route(message));
+        foreach(uint message in new uint[]{0xf,0x10,0x82}) Assert.Equal(PickInputRoute.None,PickInputPolicy.Route(message));
+    }
+
     [Fact] public void LiveResultsRetainEightAndClosedResultsRetainNewestThirtyTwoByAnswerTime()
     {
         var registry=new PickRegistry(); var ids=new List<string>();

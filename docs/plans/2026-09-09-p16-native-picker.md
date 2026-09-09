@@ -14,6 +14,8 @@ PR merge. No release/install. P17 mirrors the resulting contract afterward.
   C0/DEL in displayed text. Native safety bounds: 4096 UTF-16 units per field and
   1 MiB UTF-8 open payload/stdin. Refuse malformed/oversize input before UI mutation.
   Empty items require allowCustom. Prompt/query also reject display controls.
+  Review refinement: aggregate label-unit × distinct-query-term work is capped at 64 Mi;
+  repeated terms share matching work while retaining ranking weight.
 - Open returns `{id}`; result returns `{pick:{result:pending|picked|custom|cancelled,
   id?,label?,index?,query?}}`. Picked ID identifies the item, index its original
   zero-based position. Cancel is idempotent for retained terminal outcomes.
@@ -37,6 +39,10 @@ PR merge. No release/install. P17 mirrors the resulting contract afterward.
   other line spelling retained; label=id). `--no-block` prints `{id}`. Otherwise poll
   exact ID without carrying the moving window selector: ten 100ms waits, then 500ms.
   No implicit answer deadline. Best-effort cancel on Ctrl+C/protocol/transport failure.
+  The initial UI open has a withdrawable 10s wait. Once its reply exposes the ID,
+  failures can cancel exactly; a lost open reply before ID receipt still needs user
+  Escape/Cancel (no exactly-once transport guarantee). `--input-format lines|json`
+  disambiguates bracket-prefixed plain lines; default auto recognizes leading `[`.
   Picked/custom exit0, cancelled2, one-shot pending1, transport/refusal1. Successful
   open/result output is JSON payload even under --json; cancel uses normal ack envelope.
 

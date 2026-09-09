@@ -73,4 +73,16 @@ public class PickCliTests
         foreach(string input in new[]{"A\nA", "A\tB", ""})
             Assert.Equal(2,PickCli.Execute(["pick"],Encoding.UTF8.GetBytes(input),_=>throw new Exception("must not connect"),_=>{},_=>{},_=>{}));
     }
+
+    [Fact] public void ExplicitLineFormatSupportsBracketLabelsAndInputCapsAreEarly()
+    {
+        Assert.Equal("[Draft]",Assert.Single(PickCli.ParseItems(Encoding.UTF8.GetBytes("[Draft]"),"lines")).Label);
+        Assert.ThrowsAny<JsonException>(()=>PickCli.ParseItems(Encoding.UTF8.GetBytes("[Draft]")));
+        Assert.Throws<ArgumentException>(()=>PickCli.ParseItems(Encoding.UTF8.GetBytes(string.Join('\n',Enumerable.Range(0,1001)))));
+        Assert.Throws<ArgumentException>(()=>PickCli.ParseItems(Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("A\n",500000)))));
+        int sends=0;
+        Assert.Equal(0,PickCli.Execute(["pick","--input-format","lines","--no-block"],Encoding.UTF8.GetBytes("[Draft]"),_=>{sends++;return Opened;},_=>{},_=>{},Assert.Fail));
+        Assert.Equal(1,sends);
+        Assert.Equal(2,PickCli.Execute(["pick","--input-format","bad"],[],_=>throw new Exception("no send"),_=>{},_=>{},_=>{}));
+    }
 }

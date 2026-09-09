@@ -12,34 +12,58 @@ internal partial class Program : IPickHost
     public string OpenPick(PickSpec spec, string? window, bool follow)
     {
         if (window == "quick") throw new InvalidOperationException("quick terminal has no picker");
-        var owner = ResolveOpen(window) ?? throw new InvalidOperationException("picker window not found");
-        return owner.InvokeOnUiQueued(() => owner.OpenPickCore(spec, follow));
+        var owner = ResolveOpen(PickOwnerId(window, true) ?? throw new InvalidOperationException("picker window not found or ambiguous"))
+            ?? throw new InvalidOperationException("picker window not found");
+        var call = new PickOpenCall<string>();
+        if (!owner.Post(() => call.Run(() => owner.OpenPickCore(spec, follow, () => call.Pending), owner.AbortPick)))
+            throw new InvalidOperationException(owner.NothingApplied());
+        try { return call.Task.WaitAsync(TimeSpan.FromSeconds(10), owner._uiGone.Token).GetAwaiter().GetResult(); }
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+        {
+            if (!call.Withdraw()) return call.Task.GetAwaiter().GetResult(); // publication won the deadline race
+            throw new InvalidOperationException("picker open withdrawn; any in-flight native construction will be discarded", ex);
+        }
     }
 
-    private string OpenPickCore(PickSpec spec, bool follow)
+    private static string? PickOwnerId(string? selector, bool openOnly)
     {
+        lock (_windowIndex)
+            return PickWindowSelector.Resolve(selector, _windowIndex.Where(m => !openOnly || m.IsOpen).Select(m => m.Id), _frontmostId ?? "");
+    }
+
+    private void AbortPick(string id)
+    {
+        Picks.Abort(id);
+        if (_nativePick?.Request.Id == id) { var ui = _nativePick; _nativePick = null; ui.Dispose(); RequestRedraw(); }
+    }
+
+    private string OpenPickCore(PickSpec spec, bool follow, Func<bool> wanted)
+    {
+        if (!wanted()) throw new InvalidOperationException("picker open was withdrawn");
         if (_nativePick is not null) throw new InvalidOperationException("pick already pending");
-        if (_setOpen || _editing is not null || _menuHwnd != IntPtr.Zero || _dashboardOpen || _dragging)
+        if (_setOpen || _editing is not null || _menuHwnd != IntPtr.Zero || _dashboardOpen || _dragging || GetCapture() != IntPtr.Zero)
             throw new InvalidOperationException("another modal UI operation owns this window");
         var request = Picks.Open(Id, spec) ?? throw new InvalidOperationException("pick already pending");
+        bool initialized = false;
         try
         {
             ClosePalette(); CancelLeader(); ExitChromeFocus(announce: false); DismissHoverTip();
             _nativePick = new NativePicker(_hwnd, request, outcome =>
             {
-                Picks.Resolve(request.Id, outcome);
+                if (initialized) Picks.Resolve(request.Id, outcome); else Picks.Abort(request.Id);
                 var ui = _nativePick;
                 if (ui?.Request.Id == request.Id) { _nativePick = null; ui.Dispose(); }
                 RequestRedraw();
-            }, () => { Frontmost = this; _frontmostId = Id; });
+            }, () => { Frontmost = this; _frontmostId = Id; }, Perf);
+            if (!wanted()) throw new InvalidOperationException("picker open was withdrawn");
             _nativePick.Show(follow);
+            initialized = true;
             RequestRedraw();
             return request.Id;
         }
         catch
         {
-            Picks.Resolve(request.Id, new("cancelled"));
-            var ui = _nativePick; _nativePick = null; ui?.Dispose();
+            AbortPick(request.Id);
             throw;
         }
     }
@@ -49,7 +73,7 @@ internal partial class Program : IPickHost
         var found = Picks.Find(id) ?? throw new InvalidOperationException("unknown pick: " + id);
         if (window is not null)
         {
-            if (window == "quick" || ResolveMeta(window) is not { } target || target.Id != found.Window)
+            if (window == "quick" || PickOwnerId(window, false) != found.Window)
                 throw new InvalidOperationException("pick does not belong to the selected window");
         }
         return found;
@@ -63,12 +87,14 @@ internal partial class Program : IPickHost
         if (found.Outcome.Result != "pending") return;
         var owner = ResolveOpen(found.Window);
         if (owner is null) return; // WM_DESTROY settled and retained it after the lookup
-        owner.InvokeOnUiQueued(() =>
+        try { owner.InvokeOnUiQueued(() =>
         {
             if (Picks.Resolve(id, new("cancelled")) && owner._nativePick?.Request.Id == id)
             { var ui = owner._nativePick; owner._nativePick = null; ui.Dispose(); owner.RequestRedraw(); }
             return true;
-        });
+        }); }
+        catch when (owner._uiGone.IsCancellationRequested && Picks.Find(id)?.Outcome.Result is "picked" or "custom" or "cancelled")
+        { /* Owner shutdown already settled this exact retained picker. */ }
     }
 
     private void CloseWindowPicker()
@@ -80,11 +106,13 @@ internal partial class Program : IPickHost
     private bool PickerMessage(uint msg, IntPtr w, IntPtr l)
     {
         if (_nativePick is not { } picker) return false;
-        if (msg is WM_KEYDOWN or WM_SYSKEYDOWN or WM_KEYUP or WM_SYSKEYUP or WM_CHAR or WM_SYSCHAR)
-        { picker.Forward(msg, w, l); return true; }
-        if (msg is WM_SETFOCUS or WM_LBUTTONDOWN or WM_LBUTTONUP or WM_LBUTTONDBLCLK or WM_RBUTTONDOWN or WM_RBUTTONUP
-            or WM_MBUTTONDOWN or WM_MBUTTONUP or WM_MOUSEWHEEL or WM_CONTEXTMENU)
-        { picker.FocusIfForeground(); return true; }
-        return false;
+        switch (PickInputPolicy.Route(msg))
+        {
+            case PickInputRoute.Ignore: return true;
+            case PickInputRoute.Drop: DragFinish(w); return true;
+            case PickInputRoute.Keyboard: picker.Forward(msg, w, l); return true;
+            case PickInputRoute.Focus: picker.FocusIfForeground(); return true;
+            default: return false;
+        }
     }
 }

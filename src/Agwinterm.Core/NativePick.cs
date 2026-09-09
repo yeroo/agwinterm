@@ -36,6 +36,7 @@ public sealed record PickSpec(IReadOnlyList<PickItem> Items, string? Prompt, str
         string? prompt = Text(args, "prompt"), query = Text(args, "query");
         if ((prompt is not null && !DisplayText(prompt)) || (query is not null && !DisplayText(query)))
             throw new ArgumentException("pick prompt/query must not contain controls");
+        PickSelection.ValidateWork(query ?? "", items);
         return new(items.AsReadOnly(), prompt, query, custom);
     }
 
@@ -78,6 +79,15 @@ public sealed record PickOutcome(string Result, string? Id = null, string? Label
 /// <summary>UI-thread query/selection state. Filtering never searches consequence subtitles.</summary>
 public sealed class PickSelection
 {
+    public const long MaxMatchWork = 64 * 1024 * 1024;
+    private static KeyValuePair<string, int>[] Terms(string query) => query.ToLowerInvariant()
+        .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).GroupBy(t => t, StringComparer.Ordinal)
+        .Select(g => new KeyValuePair<string,int>(g.Key,g.Count())).ToArray();
+    public static void ValidateWork(string query, IReadOnlyList<PickItem> items)
+    {
+        if (items.Sum(i => (long)i.Label.Length) * Terms(query).Length > MaxMatchWork)
+            throw new ArgumentException("picker query is too complex (64 Mi UTF-16 label-unit/unique-term work limit)");
+    }
     public PickSpec Spec { get; }
     public string Query { get; private set; } = "";
     public IReadOnlyList<int> Matches { get; private set; } = Array.Empty<int>();
@@ -89,10 +99,12 @@ public sealed class PickSelection
     public void SetQuery(string query)
     {
         if (!PickSpec.DisplayText(query)) throw new ArgumentException("invalid picker query");
+        ValidateWork(query, Spec.Items);
         Query = query; Selected = 0;
         string trimmed = query.Trim();
+        var terms = Terms(trimmed);
         var indices = Enumerable.Range(0, Spec.Items.Count);
-        Matches = (trimmed.Length == 0 ? indices : indices.Select(i => (Index: i, Score: Score(trimmed, Spec.Items[i].Label)))
+        Matches = (trimmed.Length == 0 ? indices : indices.Select(i => (Index: i, Score: ScoreTerms(terms, Spec.Items[i].Label)))
             .Where(x => x.Score.HasValue).OrderBy(x => x.Score).ThenBy(x => Spec.Items[x.Index].Label, StringComparer.OrdinalIgnoreCase)
             .ThenBy(x => x.Index).Select(x => x.Index)).ToArray();
     }
@@ -107,18 +119,20 @@ public sealed class PickSelection
         return new("picked", item.Id, item.Label, index);
     }
 
-    public static int? Score(string query, string label)
+    public static int? Score(string query, string label) => ScoreTerms(Terms(query), label);
+    private static int? ScoreTerms(KeyValuePair<string,int>[] terms, string label)
     {
         string text = label.ToLowerInvariant(); int total = 0;
-        foreach (string term in query.ToLowerInvariant().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var entry in terms)
         {
+            string term = entry.Key;
             if (text.StartsWith(term, StringComparison.Ordinal)) continue;
             int offset = text.IndexOf(term, StringComparison.Ordinal);
-            if (offset >= 0) { total += 5 + Math.Min(offset, 34); continue; }
+            if (offset >= 0) { total += (5 + Math.Min(offset, 34)) * entry.Value; continue; }
             int cursor = 0;
-            foreach (char c in text) if (cursor < term.Length && c == term[cursor]) cursor++;
+            foreach (char c in text) if (c == term[cursor] && ++cursor == term.Length) break;
             if (cursor != term.Length) return null;
-            total += 40 + text.Length - term.Length;
+            total += (40 + text.Length - term.Length) * entry.Value;
         }
         return total;
     }
@@ -174,6 +188,13 @@ public sealed class PickRegistry
         }
     }
 
+    public void Abort(string id)
+    {
+        lock (_gate)
+            foreach (var state in _windows.Values)
+                if (state.Pending?.Id == id) { state.Pending = null; return; }
+    }
+
     public void CloseWindow(string window)
     {
         lock (_gate)
@@ -185,4 +206,45 @@ public sealed class PickRegistry
             if (_closed.Count > 32) _closed.RemoveRange(0, _closed.Count - 32);
         }
     }
+}
+
+/// <summary>A queued open can be withdrawn; an in-flight open rolls back on the UI thread.</summary>
+public sealed class PickOpenCall<T>
+{
+    private readonly TaskCompletionSource<T> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Task<T> Task => _completion.Task;
+    public bool Pending => !Task.IsCompleted;
+    public bool Withdraw() => _completion.TrySetCanceled();
+    public void Run(Func<T> create, Action<T> rollback)
+    {
+        if (!Pending) return;
+        try { var value = create(); if (!_completion.TrySetResult(value)) rollback(value); }
+        catch (Exception ex) { if (!_completion.TrySetException(ex)) throw; }
+    }
+}
+
+public static class PickWindowSelector
+{
+    public static string? Resolve(string? selector, IEnumerable<string> ids, string active)
+    {
+        string wanted = selector is null or "active" ? active : selector;
+        var candidates = ids.ToArray();
+        if (candidates.Contains(wanted, StringComparer.Ordinal)) return wanted;
+        if (wanted.Length == 0) return null;
+        var matches = candidates.Where(id => id.StartsWith(wanted, StringComparison.Ordinal)).Take(2).ToArray();
+        return matches.Length == 1 ? matches[0] : null;
+    }
+}
+
+public enum PickInputRoute { None, Keyboard, Focus, Drop, Ignore }
+public static class PickInputPolicy
+{
+    public static PickInputRoute Route(uint message) => message switch
+    {
+        0x100 or 0x101 or 0x102 or 0x104 or 0x105 or 0x106 => PickInputRoute.Keyboard,
+        0x7 or 0x201 or 0x202 or 0x203 or 0x204 or 0x205 or 0x207 or 0x208 or 0x20a or 0x7b => PickInputRoute.Focus,
+        0x233 => PickInputRoute.Drop, // WM_DROPFILES requires DragFinish, never terminal paste
+        0x200 => PickInputRoute.Ignore, // passive motion must neither reach the PTY nor activate the picker
+        _ => PickInputRoute.None
+    };
 }

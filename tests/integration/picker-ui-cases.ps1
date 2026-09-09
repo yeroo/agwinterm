@@ -10,6 +10,8 @@ public static class PickerProbe {
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h,int id);
     [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] public static extern bool SetWindowTextW(IntPtr h,string t);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageW(IntPtr h,uint m,IntPtr w,string t);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern IntPtr SendMessageW(IntPtr h,uint m,IntPtr w,System.Text.StringBuilder t);
+    public static string Text(IntPtr h) { var text=new System.Text.StringBuilder(4097);SendMessageW(h,13,(IntPtr)text.Capacity,text);return text.ToString(); }
     public static IntPtr Find(IntPtr owner) {
         IntPtr found=IntPtr.Zero;EnumWindows((h,p)=>{var b=new System.Text.StringBuilder(100);GetClassNameW(h,b,100);
             if(GetWindow(h,4)==owner && b.ToString()=="Agwinterm.NativePicker"){found=h;return false;}return true;},IntPtr.Zero);return found;
@@ -35,6 +37,16 @@ for($i=0;$i-lt 50 -and ([string](Rpc 'session.text' @{} $session))-notmatch '>';
 $text=Rpc 'session.text' @{all=$true} $session
 $metrics=Rpc 'session.metrics' @{} $session|ConvertTo-Json -Compress
 $front=[HudOwnedJob]::GetForegroundWindow()
+$bounds=[HudOwnedJob+RECT]::new();[void][HudOwnedJob]::GetClientRect($hwnd,[ref]$bounds)
+$point=([int]($bounds.bottom/2)-shl 16)-bor [int]($bounds.right*0.75)
+[void][HudOwnedJob]::SendMessageW($hwnd,0x201,[IntPtr]1,[IntPtr]$point)
+try {
+    Check 'terminal press owns capture before picker request' ([HudOwnedJob]::InputWindow($hwnd,$true)-eq $hwnd)
+    $duringDrag=Rpc 'pick.open' @{items=@();allowCustom=$true} -NoTarget -AllowError
+    Check 'picker refuses every held capture before creating state' (-not $duringDrag.ok -and [HudOwnedJob]::InputWindow($hwnd,$true)-eq $hwnd)
+    if($duringDrag.ok){$null=Rpc 'pick.cancel' @{} $duringDrag.result.id -Window ''}
+}finally{[void][HudOwnedJob]::SendMessageW($hwnd,0x202,[IntPtr]::Zero,[IntPtr]$point)}
+$front=[HudOwnedJob]::GetForegroundWindow()
 $null=Open-Pick
 Check 'open is pending and has native controls' ((Pick-Result).result-eq 'pending' -and $edit-ne [IntPtr]::Zero -and (Pick-Count)-eq 3)
 Check 'default open never steals foreground' ([HudOwnedJob]::GetForegroundWindow()-eq $front)
@@ -44,6 +56,9 @@ $settings=Rpc 'settings.open' @{} -AllowError
 Check 'settings refuses while picker owns input' (-not $settings.ok)
 Pick-Query 'dangerous';Check 'subtitle consequences do not match' ((Pick-Count)-eq 0)
 Pick-Query 'al';Check 'query filters labels' ((Pick-Count)-eq 2)
+Pick-Query ''
+foreach($letter in 'al'.ToCharArray()){[void][HudOwnedJob]::SendMessageW($hwnd,0x102,[IntPtr][int]$letter,[IntPtr]1)}
+Check 'owner keyboard forwarding updates picker edit' ([PickerProbe]::Text($edit)-ceq 'al' -and (Pick-Count)-eq 2)
 Pick-Key 0x28;Pick-Key 0x28
 Check 'down clamps to last filtered item' ([int][HudOwnedJob]::SendMessageW($list,0x188,[IntPtr]::Zero,[IntPtr]::Zero)-eq 1)
 # Capture the actual native controls while the picker is open.
@@ -70,7 +85,9 @@ $null=Open-Pick
 $cancelFront=[HudOwnedJob]::GetForegroundWindow()
 $null=Rpc 'pick.cancel' @{} $pickId -Window ''
 Check 'API cancel resolves exact id' ((Pick-Result).result-eq 'cancelled')
-Check 'background API cancellation leaves foreground unchanged' ([HudOwnedJob]::GetForegroundWindow()-eq $cancelFront)
+$expectedFront=if($cancelFront-eq $picker){$hwnd}else{$cancelFront}
+for($i=0;$i-lt 20 -and [HudOwnedJob]::GetForegroundWindow()-ne $expectedFront;$i++){Start-Sleep -Milliseconds 25}
+Check 'cancellation restores its foreground owner or leaves other foreground unchanged' ([HudOwnedJob]::GetForegroundWindow()-eq $expectedFront) "before=$cancelFront picker=$picker owner=$hwnd after=$([HudOwnedJob]::GetForegroundWindow())"
 $bad=Rpc 'pick.result' @{} 'active' -AllowError -Window ''
 Check 'active is not a picker-id alias' (-not $bad.ok)
 Check 'picker input never enters terminal text' ((Rpc 'session.text' @{all=$true} $session)-ceq $text)
@@ -80,6 +97,15 @@ try{$null=Open-Pick;Pick-Key 0x0d;Check 'readonly terminal does not block indepe
 finally{$null=Rpc 'session.readonly' @{op='off'} $session}
 $quick=Rpc 'pick.open' @{items=@();allowCustom=$true} -NoTarget -Window 'quick' -AllowError
 Check 'quick is not a picker owner' (-not $quick.ok)
+$largeItems=@(0..99|ForEach-Object{@{id="$_";label=('a'*4096)}})
+$complexQuery=(0..169|ForEach-Object{"term$_"})-join ' '
+$tooComplex=Rpc 'pick.open' @{items=$largeItems;query=$complexQuery} -NoTarget -AllowError
+Check 'over-complex initial query refuses before native creation' (-not $tooComplex.ok -and [PickerProbe]::Find($hwnd)-eq [IntPtr]::Zero)
+$null=Open-Pick @{items=$largeItems}
+Pick-Query $complexQuery;Pick-Key 0x0d
+Check 'over-complex edited query disables choice but stays pending' ((Pick-Count)-eq 0 -and (Pick-Result).result-eq 'pending')
+Pick-Query 'a';Check 'valid query recovers the pending picker' ((Pick-Count)-eq 100)
+Pick-Key 0x0d;Check 'recovered query can choose original item' ((Pick-Result).result-eq 'picked' -and (Pick-Result).index-eq 0)
 $ctl=Join-Path $root 'src/Agwinterm.Ctl/bin/Release/net10.0-windows/agwintermctl.exe'
 $opened='Alpha'|& $ctl pick --no-block --pipe $pipe|ConvertFrom-Json
 Check 'real CLI stdin no-block returns id payload' ($LASTEXITCODE-eq 0 -and $opened.id)
