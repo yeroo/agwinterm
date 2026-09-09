@@ -69,7 +69,10 @@ Adoption requires exact process conversation evidence; restart uses a guarded Po
 This is not a claim of identical unsafe-fallback behavior; the explicit differences follow below.
 
 ### Everything else
-`broadcast` · `notify` · `dashboard` · `restore.clear` · `workspace.move`
+P12 [lite #62](https://github.com/yeroo/agliteterm/pull/62) implements `broadcast`, `notify`,
+`dashboard`, `restore.clear` and `workspace.move`. Its gates must land before this status update;
+behavior and deliberate differences are detailed below. This does not erase the separate documented
+graphics/font/profile-schema exclusions or claim universal verb parity.
 
 ### Being mirrored now: the read-only trio agwinterm shipped in P1
 `surface.cursor` — the only *verb* of the three, and so the only one counted above. The other two
@@ -484,6 +487,43 @@ Full Strict suite remains a disposable Windows CI gate; local integration uses t
 
 ---
 
+### P12-lite workspace input and attention
+
+[Lite #62](https://github.com/yeroo/agliteterm/pull/62) completes this five-verb batch; the PR records
+Codex-only independent review, local guarded integration/cleanup and exact-head full Windows CI.
+The implementation must merge before this companion. No new canonical conformance steps or release.
+
+- `broadcast` is runtime-only and starts off. Human keyboard input targets the displayed session's
+  workspace, including split panes, with a persistent red warning. Readonly/exited/covered recipients
+  are skipped; a blocked or restart-reserved source prevents fanout. Popup/covered-source input stays
+  targeted, as do paste, API typing, mouse reports and terminal replies. Bounded writes retain their
+  input lease through unresolved cancellation; failed recipients can make delivery partial.
+- `notify` adds a distinct badge, event and clickable eight-second banner, and requests a bounded
+  desktop balloon without stealing focus. Windows may suppress the balloon. Body/title caps are
+  4096/256 UTF-8 bytes; newer banners replace older ones without dropping their badge/event evidence.
+  Split IDs map to their owning session; popup/cover targets refuse. Seen/select clears the badge.
+- `dashboard` shows up to nine distinct tree sessions, explicitly selected or recent by default.
+  Arrow/Home/End navigation and Enter/Space/click activation are view-only until the grid closes;
+  Escape closes without switching. Previews show the primary shell viewport, not its split/cover,
+  clipped at the existing strike without PTY resize or auto-zoom. Nonzero font-size and malformed,
+  duplicate, hidden or missing selectors refuse. The grid refuses over visible popups; opening a
+  popup closes it. `args.op=state` is a lite read-back extension returning open/selected/ids.
+- `workspace.move` supports up/down/top/bottom, remaps live/hidden sessions, active/focused workspace
+  and reopen history, and saves the new order. Numeric workspace IDs remain order indices and change
+  after a move. Exact names beat unique substring matches; ambiguous/missing selectors and invalid
+  directions refuse. Boundary moves do nothing; failed persistence reports the in-memory change.
+- `restore.clear` serializes against saves and fences older snapshots. It removes only this instance's
+  primary, `.bak` fallback and `.tmp` files, not live sessions, pins, bindings or historical diagnostics.
+  Later structure changes/normal exit recreate state; it is not persistent restore disabling.
+  Partial filesystem failure is an error with the deletion count, not a false success.
+
+Palette/keymap actions expose Broadcast and Dashboard without reassigning existing split shortcuts.
+Unlike agwinterm's permissive operation/fallback handling, lite refuses invalid requests and protects
+each broadcast recipient. The fixed-strike dashboard follows Boris's no-zoom rule, not full-app font
+auto-sizing. Detailed behavior: [workspace and attention](https://github.com/yeroo/agliteterm/blob/main/docs/workspace-attention.md).
+
+---
+
 ## Where agliteterm is AHEAD
 
 Not a one-way list, and these should move the other way.
@@ -517,7 +557,7 @@ and the list should grow as more turn up.
 | Feature | Notes |
 | --- | --- |
 | Images / graphics | see the `image.*` verbs above |
-| Dashboard, quick-terminal parity, multi-window | agwinterm has a window library; lite has one window plus popups |
+| Quick-terminal parity, multi-window | agwinterm has a window library; lite has one window plus popups. P12 adds a fixed-strike dashboard. |
 
 ---
 

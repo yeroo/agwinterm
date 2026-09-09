@@ -256,7 +256,18 @@ gates; it must merge before this companion status update. No release/tag is part
 ### P12 · lite · the remainder
 `broadcast` · `notify` · `dashboard` · `restore.clear` · `workspace.move`
 
-Closes the verb list except images. **After this, lite answers every agwinterm verb but `image.*`.**
+P12 [lite #62](https://github.com/yeroo/agliteterm/pull/62) implements the five remaining verbs in
+this batch. Broadcast is opt-in human-keyboard fanout with per-recipient readonly/reservation
+checks; paste/API/mouse input remains targeted. Notifications add badges, events and a clickable
+banner without raising the app. The dashboard uses live fixed-strike previews, never shell resizing
+or auto-zoom. Workspace reordering preserves membership and active/focused identity. Restore clear
+removes this instance's primary/fallback/temp files without closing live sessions; later saves may
+recreate them. The plan and exact review/integration/CI evidence live in the implementation PR.
+
+Implementation and its gates must merge before this companion. No release/tag or canonical contract
+expansion is part of P12. This closes the five-verb batch, **not every parity gap**: images/background,
+font targeting under Boris's no-zoom rule, profile-schema subsets and other documented differences
+remain. The former blanket “every verb except images” sentence was not an accurate capability claim.
 
 ---
 
