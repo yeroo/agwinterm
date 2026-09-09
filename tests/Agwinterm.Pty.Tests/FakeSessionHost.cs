@@ -23,6 +23,7 @@ internal sealed class FakeSessionHost : ISessionHost
         /// <summary>session.context — what the app keeps in Ses.Context. Read back through the tree,
         /// so a test asserts a set the way a caller does and a refusal the way it must: unchanged.</summary>
         public string? Context;
+        public HudSpec? Hud;
         public int Notifications, PaneCount = 1, FocusedPane, OverlaySize;
         public List<double> Ratios = new() { 1.0 };
         /// <summary>The split's orientation — what the app keeps in Ses.Axis: one of <see cref="SplitAxes"/>'
@@ -319,7 +320,7 @@ internal sealed class FakeSessionHost : ISessionHost
                 Context: s.Context,
                 CapturedCommands: s.PaneIds.Select(id => s.Captured.TryGetValue(id, out var c) ? c : "").ToList(),   // the slot, "" = none, parallel to PaneIds
                 Axis: s.Axis,
-                PaneOverlays: s.PaneOverlayWords());   // the open pane slots as words; empty = the tree omits the key (P5)
+                PaneOverlays: s.PaneOverlayWords(), Hud: s.Hud);
         }).ToList())).ToList();
 
     public WindowStateSnapshot WindowState() =>
@@ -454,6 +455,24 @@ internal sealed class FakeSessionHost : ISessionHost
     public bool SessionReorder(string? target, string dir) => Find(target) is not null;
     public bool SessionToWorkspace(string? target, string workspace) { var s = Find(target); var w = FindWs(workspace); if (s is null || w is null) return false; Workspaces.First(x => x.Sessions.Contains(s)).Sessions.Remove(s); w.Sessions.Add(s); return true; }
     public bool SessionRename(string? target, string name) { var s = FindSes(target); if (s is null || string.IsNullOrWhiteSpace(name)) return false; s.Name = name; return true; }
+    public string SessionHud(string? target, string action, HudSpec? spec)
+    {
+        var all = Workspaces.SelectMany(w => w.Sessions).ToArray();
+        var id = target is null or "active" ? ActiveSess?.Id : SessionHuds.ResolveTarget(target,
+            all.Select(s => new SessionHuds.Target(s.Id, s.Name, s.PaneIds.Concat(s.CoverPanes.Select(c => c.Id)))), []);
+        var s = all.FirstOrDefault(s => s.Id == id);
+        if (s is null) return ISessionHost.RefusePrefix + "hud: no session matches that target";
+        if ((target is null or "active") && (QuickVisible || s.Overlay)) return ISessionHost.RefusePrefix + "hud: active surface is a cover";
+        if (action == "close") s.Hud = null;
+        else
+        {
+            if (s.Overlay) return ISessionHost.RefusePrefix + "hud: a program overlay occupies the slot";
+            if (action == "update" && s.Hud is null) return ISessionHost.RefusePrefix + "hud: no HUD to update";
+            s.Hud = action == "update" ? spec! with { BackgroundColor = s.Hud!.BackgroundColor } : spec;
+        }
+        return SessionHuds.Reply(s.Id, s.Hud);
+    }
+
     // Real, not a stub: resolves as rename does (FindSes, so a cover id lands on its session and an
     // unknown target is the app's "session not found"), stores what the server already validated,
     // and replies with the value read back off the session — the app's InvokeOnUiQueued reply.
@@ -783,7 +802,8 @@ internal sealed class FakeSessionHost : ISessionHost
         {
             case "close":
                 if (s is null) return named ? NoOverlaySession : "no overlay";
-                if (!s.Overlay) return "no overlay";
+                if (!s.Overlay && s.Hud is null) return "no overlay";
+                s.Hud = null;
                 s.Overlay = false; s.OverlaySize = 0; return "closed";
             case "resize":
                 if (s is null) return NoOverlaySession;
@@ -797,7 +817,7 @@ internal sealed class FakeSessionHost : ISessionHost
             default:
                 if (string.IsNullOrWhiteSpace(command)) return ISessionHost.RefusePrefix + "overlay open needs a command; nothing opened";
                 if (s is null) return NoOverlaySession;
-                s.Overlay = true; s.OverlaySize = sizePercent; return s.Id;
+                s.Hud = null; s.Overlay = true; s.OverlaySize = sizePercent; return s.Id;
         }
     }
 

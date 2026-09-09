@@ -229,6 +229,9 @@ agwintermctl session type "npm test`n"       # type into the active session
 say "hi"
 "@ | agwintermctl session type --stdin   # text with quotes/newlines: stdin as bytes (see below)
 agwintermctl session overlay open "git diff" --size-percent 60
+agwintermctl session hud "Reviewing" --spinner --position top-right  # passive status, shell stays usable
+agwintermctl session hud update "Ready"                             # replace message in place
+agwintermctl session hud close
 agwintermctl session overlay open "lazygit" --pane right    # over the right pane only; the left pane stays live
 agwintermctl session overlay text --pane right --all        # the overlay's own screen + scrollback (session text reads the shell under it)
 agwintermctl session restore "npm run dev" --target <pane>   # re-run on every restart; reply names the pane

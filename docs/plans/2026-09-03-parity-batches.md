@@ -277,6 +277,12 @@ remain. The former blanket “every verb except images” sentence was not an ac
 A transient overlay for status an agent wants seen without printing into the terminal, anchored to
 one of nine positions.
 
+Implemented by [the P13 plan](2026-09-09-p13-session-hud.md): native passive drawing,
+`session.hud.open/update/close`, CLI shorthand, detail/spinners/colors and bounded width.
+See [the API contract](../session-hud.md). Dedicated dispatcher/layout tests and an owned-process
+Win32 fixture cover placement, click/type-through, targeting and overlay lifecycle. The lite mirror
+remains P17 work; this batch does not expand shared conformance or publish a release.
+
 ### P14 · agwinterm · quick terminal
 Size as 40–90% of the screen · a system-wide hotkey that summons it over any app
 

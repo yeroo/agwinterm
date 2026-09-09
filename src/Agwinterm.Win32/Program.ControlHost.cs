@@ -207,7 +207,7 @@ internal partial class Program
                         // panes and the slots ride on them, so `["right"]` becomes `["left"]` by
                         // construction. Empty = the server omits the key.
                         PaneOverlays: s.Panes.Select((p, i) => (p, i)).Where(t => t.p.Overlay.Term is not null)
-                                             .Select(t => OverlayPanes.Word(t.i)).ToList());
+                                             .Select(t => OverlayPanes.Word(t.i)).ToList(), Hud: s.Hud);
                 }).ToList()
             )).ToList();
     }
@@ -923,7 +923,7 @@ internal partial class Program
                     // close in an empty window is not contract-dependent on a session existing.
                     var ses = FindSesForTarget(target);
                     if (ses is null && !string.IsNullOrEmpty(target) && target != "active") return NoSessionRefusal;
-                    if (ses is null || ses.Overlay.Term is null) return "no overlay";
+                    if (ses is null || (ses.Overlay.Term is null && ses.Hud is null)) return "no overlay";
                     PostVerb(() => CloseOverlayOf(ses));
                     return "closed";
                 }

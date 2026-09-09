@@ -151,17 +151,20 @@ public class RustPtyHostTests : IDisposable
     {
         if (ExePath is null) return;
         using var client = Start();
-        // Non-interactive: the colour line, 14 scroll fillers and a READY marker are all produced by
-        // -Command — no typing, so no ConPTY input-echo races and no dependence on how fast an
-        // interactive PowerShell spins up on a cold runner (input typed while the shell initializes
-        // can be silently discarded; this starved the test on CI). Single-quoted so the argument
-        // carries no embedded double quotes through the host's command-line quoting.
-        const string script =
+        string gateName = @"Local\agwinterm-color-" + Guid.NewGuid().ToString("N");
+        using var outputGate = new EventWaitHandle(false, EventResetMode.ManualReset, gateName);
+        // Same create/attach barrier as ServerSessionTests (#258): synthetic output must start
+        // after the host installed the sink, not race its scheduling. No interactive input echo.
+        string script = $"$g=[Threading.EventWaitHandle]::OpenExisting('{gateName}'); if (-not $g.WaitOne(60000)) {{ exit 41 }}; $g.Dispose(); " +
             "$e=[char]27; Write-Host ($e+'[31mCOLORLINE'+$e+'[0m'); 1..14|%{'.'}; 'SCROLL-READY'; Start-Sleep 3600";
         string id = client.Create(Guid.NewGuid().ToString(), 60, 10, "powershell.exe",
                                   new[] { "-NoLogo", "-NoProfile", "-Command", script });
         using (var first = client.Attach(id))
+        {
+            Assert.True(WaitFor(() => client.List().Any(s => s.Id == id && s.Attached), 10000), "Rust host never attached the output sink");
+            outputGate.Set();
             Assert.Contains("SCROLL-READY", ReadUntil(first.Data, "SCROLL-READY", 60000));
+        }
         Thread.Sleep(300);   // small grace for the host emulator to ingest the final bytes
 
         using var second = client.Attach(id, repaint: true);

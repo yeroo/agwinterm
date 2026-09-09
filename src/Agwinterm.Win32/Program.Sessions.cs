@@ -871,10 +871,11 @@ internal partial class Program
         return id;
     }
 
-    /// <summary>Tear down a session's SESSION-WIDE overlay (hiding its cover if shown, disposing its PTY).
+    /// <summary>Clear the session-wide HUD/program-overlay slot. A program's cover is hidden and its PTY disposed.
     /// The pane slots are <see cref="ClosePaneOverlay"/>'s.</summary>
     private void CloseOverlayOf(Ses ses)
     {
+        ClearHud(ses);
         var slot = ses.Overlay;
         var term = slot.Term;
         if (term is null) return;
