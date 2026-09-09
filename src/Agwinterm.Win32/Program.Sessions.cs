@@ -62,7 +62,7 @@ internal partial class Program
         // — the still-running shell reconnects instead of a fresh one spawning.
         ISession session;
         bool adopted = false;
-        if (handoff is not null) session = InProcessSessionBackend.Instance.Create(paneId, cols, rows);
+        if (handoff is not null || _isQuickWindow) session = InProcessSessionBackend.Instance.Create(paneId, cols, rows);
         else if (ReferenceEquals(_sessionBackend, InProcessSessionBackend.Instance)) session = _sessionBackend.Create(paneId, cols, rows);
         else
             try
@@ -705,6 +705,7 @@ internal partial class Program
     /// active session's panes, which stay partially visible behind floating overlays — so both count.</summary>
     private bool IsSurfaceVisible(Pane p)
     {
+        if (_isQuickWindow && !_quickVisible) return false;
         if (_dashboardOpen) return true;
         if (_cover is { } c && ReferenceEquals(c, p)) return true;
         var act = _active;
@@ -734,6 +735,7 @@ internal partial class Program
 
     private void HideCover()
     {
+        if (_isQuickWindow) { DismissQuick(); return; }
         _cover = null; _coverKind = 0; SyncSession();
         if (_active is not null) RegridSession(_active);
         RequestRedraw();
@@ -753,6 +755,7 @@ internal partial class Program
     private (float x, float y, float w, float h) CoverRect()
     {
         var (x0, y0, w, h) = ContentArea();
+        if (_isQuickWindow) return (x0, y0, w, h);
         if (_coverKind == 3 && _ovlOwner is { Overlay.SizePercent: > 0 and <= 100 } o)
         {
             float fw = w * o.Overlay.SizePercent / 100f, fh = h * o.Overlay.SizePercent / 100f;
@@ -784,9 +787,7 @@ internal partial class Program
 
     private void ShowQuick()
     {
-        _quick ??= CreatePane("quick:" + Guid.NewGuid().ToString("N")[..6], ActiveWorkspace(),
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), (float)_config.FontSize);
-        ShowCover(_quick, 2);
+        SummonQuick(pin: false);
     }
 
     /// <summary>scratch op on|off|toggle for a session's scratch cover.</summary>
@@ -798,12 +799,12 @@ internal partial class Program
         if (showing) HideCover(); else ShowScratch(ses); // toggle
     }
 
-    private void QuickOp(string op)
+    private void QuickOp(string op, bool control = false, bool global = false)
     {
-        bool showing = _coverKind == 2;
-        if (op == "off") { if (showing) HideCover(); return; }
-        if (op == "on") { if (!showing) ShowQuick(); return; }
-        if (showing) HideCover(); else ShowQuick(); // toggle
+        bool showing = _quickHost?._quickVisible == true;
+        if (op == "off") { DismissQuick(); return; }
+        if (op == "on") { SummonQuick(control, global); return; }
+        if (showing) DismissQuick(); else SummonQuick(control, global);
     }
 
     // ---- Overlays (Wave B3): an ephemeral program run over a session ----
@@ -1505,6 +1506,11 @@ internal partial class Program
     /// (promote it into the main pane). Single-pane sessions keep the exited shell visible. (agterm #121.)</summary>
     private void OnPaneProcessExited(Pane p)
     {
+        if (_isQuickWindow && ReferenceEquals(p, _quick))
+        {
+            DismissQuick(); _quick = null; _cover = null; _coverKind = 0; _session = null;
+            p.S.Dispose(); return;
+        }
         Ses? ses;
         lock (_workspaces) ses = _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Panes.Contains(p));
         if (ses is null || ses.Panes.Count <= 1) return;   // not a live split pane → leave the shell as-is

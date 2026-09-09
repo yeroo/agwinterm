@@ -38,6 +38,18 @@ internal partial class Program
 
     private IntPtr WindowProcCore(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        if (_isQuickWindow)
+        {
+            if (msg == WM_CLOSE) { DismissQuick(); return IntPtr.Zero; }
+            if (msg == WM_NCHITTEST) return (IntPtr)HTCLIENT;
+            if (msg == WM_NCCALCSIZE) return IntPtr.Zero;
+            if (msg == QuickHotkeyMessage)
+            {
+                if ((int)wParam == _quickHotkeyId && _quickHotkeyId != 0) QuickOp("toggle", global: true);
+                return IntPtr.Zero;
+            }
+            if (msg == WM_DESTROY) { _uiGone.Cancel(); return IntPtr.Zero; }
+        }
         switch (msg)
         {
             case 0x003D: // WM_GETOBJECT — expose the terminal to screen readers (UIA, T2-14)
@@ -599,7 +611,8 @@ internal partial class Program
                 if (_windowActive != wasActive && _session is { } fs && fs.Emulator.FocusReporting)
                     fs.Write(_windowActive ? "\x1b[I"u8.ToArray() : "\x1b[O"u8.ToArray());
                 if (_config.UnfocusedDim > 0) RequestRedraw();
-                if (_windowActive && _frontmostId != Id) // this window is frontmost
+                if (_isQuickWindow && !_windowActive && _quickVisible && !_quickPinned) DismissQuick(blur: true);
+                if (!_isQuickWindow && _windowActive && _frontmostId != Id) // this library window is frontmost
                 {
                     Frontmost = this; _frontmostId = Id; SaveIndex();
                 }
@@ -650,7 +663,7 @@ internal partial class Program
                     }
                 }
                 SaveIndex();
-                if (lastWindow) PostQuitMessage(0);
+                if (lastWindow) { DestroyQuickHost(); PostQuitMessage(0); }
                 return IntPtr.Zero;
         }
         return DefWindowProcW(hwnd, msg, wParam, lParam);

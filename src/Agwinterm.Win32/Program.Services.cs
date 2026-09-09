@@ -922,6 +922,7 @@ internal partial class Program
         "restore-commands", "restore-buffer", "blocked-sound", "notification-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
         "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges", "workspace-add-button",
         "show-scratch-button", "show-split-button", "show-dashboard-button", "show-quick-button",
+        "quick-terminal-size", "quick-terminal-hotkey",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
         "paste-protection", "clipboard-write", "notification-flash", "claude-update-check", "update-check",
         "session-host", "fresh-env", "emulator-core",
@@ -991,6 +992,8 @@ internal partial class Program
         "show-split-button" => _config.ShowSplitButton ? "true" : "false",
         "show-dashboard-button" => _config.ShowDashboardButton ? "true" : "false",
         "show-quick-button" => _config.ShowQuickButton ? "true" : "false",
+        "quick-terminal-size" => _config.QuickTerminalSize.ToString(),
+        "quick-terminal-hotkey" => _config.QuickTerminalHotkey,
         "notification-flash" => _config.NotificationFlash,
         "claude-update-check" => _config.ClaudeUpdateCheck ? "true" : "false",
         "update-check" => _config.UpdateCheck ? "true" : "false",
@@ -1011,8 +1014,14 @@ internal partial class Program
     {
         key = key.Trim().ToLowerInvariant();
         if (Array.IndexOf(ConfigKeys, key) < 0) return "error: unknown key '" + key + "'";
-        WriteConfigKey(key, value.Trim());
+        if (key == "quick-terminal-size" && (!int.TryParse(value.Trim(), out int qs) || qs is < 40 or > 90))
+            return "error: quick-terminal-size must be an integer from 40 through 90";
+        string oldHotkey = _config.QuickTerminalHotkey;
+        if (key == "quick-terminal-hotkey" && SetQuickHotkey(value.Trim()) is { } error) return error;
+        try { WriteConfigKey(key, value.Trim()); }
+        catch { if (key == "quick-terminal-hotkey") SetQuickHotkey(oldHotkey); throw; }
         _config = TerminalConfig.Load(ConfigPath);       // reparse so clamping/validation is centralized
+        if (key == "quick-terminal-size" && _quickHost?._quickVisible == true) _quickHost.PositionQuick();
         if (key == "theme") _theme = FindTheme(_config.Theme);
         if (key is "theme" or "theme-follow-system" or "theme-dark" or "theme-light") ApplySystemTheme();
         if (key == "session-host")
@@ -1421,6 +1430,7 @@ internal partial class Program
     private bool TrySaveState(out string? why, bool captureCommands = false)
     {
         why = null;
+        if (_isQuickWindow) { why = "quick terminal is not restored"; return false; }
         if (_restoring) { why = "the window is still restoring its saved state"; return false; }
         try
         {

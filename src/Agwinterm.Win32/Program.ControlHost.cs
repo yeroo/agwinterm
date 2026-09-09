@@ -17,11 +17,15 @@ namespace Agwinterm.Win32;
 /// <summary>Control-API host: the IWindowHost + ISessionHost bridges the control server drives.</summary>
 internal partial class Program
 {
+    public bool IsQuickSurface => _isQuickWindow;
+    public ISessionHost? AuxiliaryTarget(string? target) => target?.StartsWith("quick:", StringComparison.Ordinal) == true
+        && _quickHost?._quick is { } q && q.Id.StartsWith(target, StringComparison.Ordinal) ? _quickHost : null;
     // ---- IWindowHost bridge (Wave F1b): app-level window management for the control API. Content
     // verbs resolve through ResolveWindow(--window); window.* verbs act on the library. These use
     // static library state + Frontmost, so they work regardless of which instance the server holds. ----
     public ISessionHost? ResolveWindow(string? selector)
     {
+        if (selector == "quick") return _quickHost;
         if (string.IsNullOrEmpty(selector) || selector == "active") return Frontmost;
         return ResolveOpen(selector);
     }
@@ -218,7 +222,7 @@ internal partial class Program
         var a = _active;
         return new WindowStateSnapshot(
             SidebarVisible: _sidebarW > 0, Fullscreen: _fullscreen, Maximized: IsZoomed(_hwnd),
-            QuickTerminalVisible: _coverKind == 2 && _cover is not null && ReferenceEquals(_cover, _quick),
+            QuickTerminalVisible: _quickHost?._quickVisible == true,
             // ActiveSession is the NAME; session.context is not a name and is not folded in — it is read from the tree (P3).
             ActiveWorkspace: a?.Ws.Name, ActiveSession: a is null ? null : (a.CustomName ?? a.Name));
     }
@@ -841,7 +845,7 @@ internal partial class Program
         return true;
     }
 
-    public void Quick(string op) => PostVerb(() => QuickOp(op));
+    public void Quick(string op) => PostVerb(() => QuickOp(op, control: true));
 
     /// <summary>An overlay covers a whole SESSION. When the caller named one pane of a split, that
     /// is not what they asked for - say so rather than widen it in silence and blank the pane the

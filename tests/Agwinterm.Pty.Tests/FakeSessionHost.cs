@@ -9,6 +9,7 @@ namespace Agwinterm.Pty.Tests;
 /// asserted end-to-end. Peripheral verbs return sensible constants.</summary>
 internal sealed class FakeSessionHost : ISessionHost
 {
+    public bool IsQuickSurface { get; set; }
     internal sealed class Sess
     {
         public string Id = "", Name = "";

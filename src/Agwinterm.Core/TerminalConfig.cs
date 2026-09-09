@@ -196,6 +196,8 @@ public sealed class TerminalConfig
     public bool ShowSplitButton { get; set; } = true;
     public bool ShowDashboardButton { get; set; } = true;
     public bool ShowQuickButton { get; set; } = true;
+    public int QuickTerminalSize { get; set; } = QuickTerminalGeometry.DefaultPercent;
+    public string QuickTerminalHotkey { get; set; } = "";
 
     /// <summary>Show the title-bar attention bell (hidden entirely when off). On by default.</summary>
     public bool AttentionButton { get; set; } = true;
@@ -381,6 +383,12 @@ public sealed class TerminalConfig
         show-split-button = true
         show-dashboard-button = true
         show-quick-button = true
+
+        # Detached quick terminal: percent of the pointer monitor's usable width and height (40..90).
+        quick-terminal-size = 70
+        # Optional SYSTEM-WIDE shortcut; empty claims nothing. Example: ctrl+alt+backtick.
+        # Ctrl/Alt required; optional Shift; letter/digit, F1..F11 or backtick. No Win or F12.
+        quick-terminal-hotkey =
         attention-button = true
 
         # Terminal bell (BEL, 0x07): audible (system beep) | visual (brief window flash) | both | none.
@@ -472,6 +480,8 @@ public sealed class TerminalConfig
                 case "show-split-button": cfg.ShowSplitButton = ParseBool(val, cfg.ShowSplitButton); break;
                 case "show-dashboard-button": cfg.ShowDashboardButton = ParseBool(val, cfg.ShowDashboardButton); break;
                 case "show-quick-button": cfg.ShowQuickButton = ParseBool(val, cfg.ShowQuickButton); break;
+                case "quick-terminal-size": if (int.TryParse(val, out var qp)) cfg.QuickTerminalSize = Math.Clamp(qp, 40, 90); break;
+                case "quick-terminal-hotkey": cfg.QuickTerminalHotkey = val; break;
                 case "attention-button": cfg.AttentionButton = ParseBool(val, cfg.AttentionButton); break;
                 case "status-color-active": if (val.Length > 0) cfg.StatusColorActive = val; break;
                 case "status-color-blocked": if (val.Length > 0) cfg.StatusColorBlocked = val; break;

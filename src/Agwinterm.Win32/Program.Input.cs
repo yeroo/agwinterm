@@ -1158,7 +1158,7 @@ internal partial class Program
         // F1 help overlay: modal while open; plain F1 opens it from the shell prompt (full-screen
         // TUIs on the alt screen — Far, vim — keep their own F1).
         if (_helpOpen) return HelpKey(vk);
-        if (vk == 0x70 /* F1 */ && !ctrl && !alt && !shift)
+        if (!_isQuickWindow && vk == 0x70 /* F1 */ && !ctrl && !alt && !shift)
         {
             var helpSurf = ActiveSurface();
             bool altScreen = helpSurf is not null && helpSurf.S.Emulator.IsAltScreen;
@@ -1166,13 +1166,13 @@ internal partial class Program
         }
 
         // Dashboard grid overlay (agterm #202): Ctrl+Shift+D toggles it; while open it owns the keyboard.
-        if (ctrl && shift && !alt && vk == 0x44 /* D */) { ToggleDashboard(); return true; }
+        if (!_isQuickWindow && ctrl && shift && !alt && vk == 0x44 /* D */) { ToggleDashboard(); return true; }
         if (_dashboardOpen) return DashboardKey(vk);
 
         // Focus zones (F6): the sidebar zone owns the keyboard while active; plain F6 from the terminal
         // lifts focus out to the sidebar (the accessible "leave the terminal" gesture).
         if (_chromeFocus) return SidebarZoneKey(vk);
-        if (vk == 0x75 /* F6 */ && !ctrl && !alt && !shift) { EnterChromeFocus(); return true; }
+        if (!_isQuickWindow && vk == 0x75 /* F6 */ && !ctrl && !alt && !shift) { EnterChromeFocus(); return true; }
 
         // Leader/prefix sequence (tmux-style). When pending, the next chord resolves against the leader
         // bindings; Esc / timeout cancels; modifier-only keydowns stay pending. Checked before the normal
@@ -1189,7 +1189,7 @@ internal partial class Program
                 return true;
             }
         }
-        if (_leader is not null && Keymap.ChordFor(vk, ctrl, alt, shift) == _leader) { BeginLeader(); return true; }
+        if (!_isQuickWindow && _leader is not null && Keymap.ChordFor(vk, ctrl, alt, shift) == _leader) { BeginLeader(); return true; }
 
         // Shift+PageUp/PageDown (and Home/End) scroll this pane's scrollback; never reach the PTY.
         if (shift && !ctrl && !alt && _active is not null)
@@ -1238,7 +1238,7 @@ internal partial class Program
         // Ctrl+Tab / Ctrl+Shift+Tab drive the MRU session walk (needs WM_KEYUP to commit, so it lives
         // here rather than the keymap dispatch). Honoured only while the chord is still bound to the
         // session-cycle action (default) — a user rebind of the chord falls through to keymap dispatch.
-        if (ctrl && !alt && vk == VK_TAB)
+        if (!_isQuickWindow && ctrl && !alt && vk == VK_TAB)
         {
             string mruChord = shift ? "ctrl+shift+tab" : "ctrl+tab";
             if (!_keymap.TryGetValue(mruChord, out var mruAct) || mruAct is "next_session" or "previous_session")
@@ -1250,6 +1250,8 @@ internal partial class Program
         string? chord = Keymap.ChordFor(vk, ctrl, alt, shift);
         if (chord is not null && _keymap.TryGetValue(chord, out var action))
         {
+            if (_isQuickWindow && action is not ("quick_terminal" or "close_cover" or "close_pane" or "close_session"
+                or "select_all" or "copy_selection" or "paste" or "mark_mode")) return true;
             // close_cover only applies while a cover is up, or the focused pane holds an overlay (P5)
             // — otherwise its chord (typically a bare Escape) falls through so the key still reaches
             // the terminal.
