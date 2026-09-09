@@ -63,6 +63,12 @@ internal partial class Program
         RequestRedraw(); SaveState(); EmitEvent("tree");
     }
 
+    private void DeleteCurrentWorkspace()
+    {
+        if (CurrentWorkspace() is not { } ws || !DeleteWorkspace(ws))
+            ShowToast("cannot delete the last workspace");
+    }
+
     // One Toolhelp pass per tree read, no subprocess/CIM and never under _workspaces.
     // Windows has no Unix foreground process group: report only a recognized, live root
     // shell with no child processes. A builtin/loop may still be busy; this is not a prompt gate.

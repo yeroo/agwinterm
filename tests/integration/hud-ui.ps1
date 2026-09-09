@@ -118,7 +118,8 @@ public sealed class HudOwnedJob {
           ('command [send] QuickProbe = echo {AGW_PANE}>"'+(Join-Path $artifact 'keymap-send.txt')+'"'))|Add-Content (Join-Path $appDir 'keymap.conf')
     }
     if($Suite-eq 'Navigation'){
-        @('map f5 | f7 = next_workspace','map f8 = previous_workspace','map f9 = toggle_workspace_collapse',
+        @('map f5 | f7 = next_workspace','map f6 = next_workspace',
+          'map f3 = delete_workspace','map f4 = action_palette','map f8 = previous_workspace','map f9 = toggle_workspace_collapse',
           'leader = f10','map leader a | b = next_workspace')|Add-Content (Join-Path $appDir 'keymap.conf')
     }
     $savedEnv=@{}

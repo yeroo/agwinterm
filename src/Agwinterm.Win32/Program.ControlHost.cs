@@ -507,12 +507,7 @@ internal partial class Program
     }
 
     public bool WorkspaceDelete(string? target)
-    {
-        var ws = FindWs(target);
-        if (ws is null) return false;
-        PostVerb(() => DeleteWorkspace(ws));
-        return true;
-    }
+        => InvokeOnUiQueued(() => FindWs(target) is { } ws && DeleteWorkspace(ws));
 
     public bool WorkspaceSelect(string? target) => InvokeOnUiQueued(() => SelectWorkspaceCore(FindWs(target)));
 

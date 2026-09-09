@@ -592,9 +592,9 @@ internal partial class Program
         }
     }
 
-    private void DeleteWorkspace(Workspace ws)
+    private bool DeleteWorkspace(Workspace ws)
     {
-        lock (_workspaces) if (_workspaces.Count <= 1) return; // agterm: can't delete the last workspace
+        lock (_workspaces) if (_workspaces.Count <= 1 || !_workspaces.Contains(ws)) return false;
         List<Ses> sessions;
         bool hadActive = _active is not null && ReferenceEquals(_active.Ws, ws);
         lock (_workspaces)
@@ -603,6 +603,8 @@ internal partial class Program
             CaptureClosedWorkspace(ws, sessions);   // remember it so Reopen Closed can bring the whole workspace back
             ws.Sessions.Clear();
             _workspaces.Remove(ws);
+            if (_focusedWorkspaceId == ws.Id) _focusedWorkspaceId = null;
+            if (ReferenceEquals(_workspaceTarget, ws)) _workspaceTarget = null;
             if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
         }
         RefreshHudTimer(); // a removed workspace may have owned the last animated HUD
@@ -616,6 +618,7 @@ internal partial class Program
         RequestRedraw();
         SaveState();
         EmitEvent("tree");   // control-API event log (#273)
+        return true;
     }
 
     /// <summary>Modal folder picker (native shell). Returns the chosen path or null.</summary>
@@ -825,7 +828,7 @@ internal partial class Program
                     bool stacked = _active is { Axis: SplitAxes.Horizontal };
                     A(stacked ? "Focus Top Pane" : "Focus Left Pane", "Ctrl+Alt+Left", () => FocusPane(-1));
                     A(stacked ? "Focus Bottom Pane" : "Focus Right Pane", "Ctrl+Alt+Right", () => FocusPane(1));
-                    A("Delete Active Workspace", "", () => { if (_active is not null) DeleteWorkspace(_active.Ws); });
+                    A("Delete Active Workspace", "", DeleteCurrentWorkspace);
                     A("Flag / Unflag Session", "Ctrl+Shift+F", () => { if (_active is not null) FlagOp(_active, "toggle"); });
                     A("Show Flagged / All Sessions", "", ToggleFlaggedView);
                     A("Focus Workspace", "", () => WorkspaceFocusOp("toggle"));
@@ -1431,7 +1434,7 @@ internal partial class Program
         RequestRedraw();
     }
 
-    /// <summary>TipTimer fired: show the tooltip for the still-hovered button.</summary>
+    /// <summary>TipTimer fired: show the still-hovered chrome button or truncated row name.</summary>
     private void TipTick()
     {
         KillTimer(_hwnd, (IntPtr)TipTimer);
@@ -1439,7 +1442,7 @@ internal partial class Program
         RequestRedraw();
     }
 
-    /// <summary>Draw the hover tooltip near its button (below title-bar buttons, above footer ones).</summary>
+    /// <summary>Draw a passive tooltip near its chrome button or truncated sidebar row.</summary>
     private void DrawButtonTip(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         if (_tipText is null) return;

@@ -24,6 +24,7 @@ function PixelDifference($a,$b,[int]$x=0,[int]$y=0,[int]$w=0,[int]$h=0){
 }
 $first=[string](CurrentWs);$beforeText=Rpc 'session.text' @{} $session
 Check 'one workspace navigation refuses' (-not (Rpc 'workspace.go' @{to='next'} -NoTarget -AllowError).ok)
+Check 'last workspace deletion refuses without removing its terminal' (-not (Rpc 'workspace.delete' @{} $first -AllowError).ok -and @(NavTree).Count-eq 1 -and $null-ne (Node $session))
 $second=[string](Rpc 'workspace.new' @{name='P15-empty'})
 Check 'empty workspace created' (NavWait {@(NavTree|Where-Object id -eq $second).Count-eq 1})
 Check 'go reaches empty workspace and reports id' ((Rpc 'workspace.go' @{to='next'} -NoTarget)-eq $second -and (CurrentWs)-eq $second)
@@ -50,6 +51,11 @@ NavKey 121;NavKey 65 # leader F10, A
 Check 'first leader alternative navigates' ((CurrentWs)-eq $first)
 NavKey 121;NavKey 66 # leader F10, B
 Check 'second leader alternative navigates' ((CurrentWs)-eq $second)
+NavKey 117 # reserved F6 enters sidebar, despite its conflicting map
+NavKey 116 # F5 would navigate if the sidebar did not own input
+Check 'reserved F6 owns sidebar keys ahead of conflicting mappings' ((CurrentWs)-eq $second)
+NavKey 117 # back to terminal; must not execute next_workspace
+Check 'reserved F6 returns without executing its map' ((CurrentWs)-eq $second)
 $null=Rpc 'workspace.focus' @{op='on'}
 Check 'single focused workspace refuses navigation' (-not (Rpc 'workspace.go' @{to='next'} -NoTarget -AllowError).ok)
 $null=Rpc 'workspace.focus' @{op='off'}
@@ -71,8 +77,21 @@ $null=Rpc 'workspace.select' @{} $empty
 Check 'explicit empty selection reports current workspace' ((CurrentWs)-eq $empty)
 $callerPlaced=[string](Rpc 'session.new' @{name='P15-caller';caller=$session;'no-select'=$true})
 Check 'valid caller wins over empty placement without selecting' (NavWait {@((NavTree|Where-Object id -eq $first).sessions|Where-Object id -eq $callerPlaced).Count-eq 1 -and (CurrentWs)-eq $empty})
+NavKey 114 # F3 = delete_workspace: current empty workspace, not selected terminal's workspace
+Check 'delete action removes current empty workspace and preserves selected terminal' (NavWait {@(NavTree|Where-Object id -eq $empty).Count-eq 0 -and (CurrentWs)-eq $second -and $null-ne (Node $placed) -and $null-ne (Node $session)})
+$empty=[string](Rpc 'workspace.new' @{name='P15-palette-delete'})
+$null=NavWait {@(NavTree|Where-Object id -eq $empty).Count-eq 1}
+$null=Rpc 'workspace.select' @{} $empty
+NavKey 115 # F4 = action palette
+foreach($letter in 'Delete Active Workspace'.ToCharArray()){[void][HudOwnedJob]::SendMessageW($hwnd,0x102,[IntPtr][int]$letter,[IntPtr]1)}
+NavKey 13
+Check 'palette delete uses current workspace and preserves both live workspaces' (NavWait {@(NavTree|Where-Object id -eq $empty).Count-eq 0 -and @(NavTree).Count-eq 2 -and $null-ne (Node $placed) -and $null-ne (Node $session)})
+$empty=[string](Rpc 'workspace.new' @{name='P15-focused-delete'})
+$null=NavWait {@(NavTree|Where-Object id -eq $empty).Count-eq 1}
+$null=Rpc 'workspace.select' @{} $empty
+$null=Rpc 'workspace.focus' @{op='on'}
 $null=Rpc 'workspace.delete' @{} $empty
-Check 'deleting empty current workspace restores selected-session workspace' (NavWait {@(NavTree|Where-Object id -eq $empty).Count-eq 0 -and (CurrentWs)-eq $second})
+Check 'deleting focused workspace clears navigation filter' ((Rpc 'workspace.go' @{to='next'} -NoTarget)-eq $first)
 $null=Rpc 'workspace.select' @{} $first
 Check 'live shell name appears per pane and primary alias' (NavWait {(Node $session).foregroundShell-eq 'cmd' -and (Node $session).foregroundShells[0]-eq 'cmd'})
 $split=[string](Rpc 'session.split' @{op='on'} $session)
@@ -103,6 +122,14 @@ Check 'disabled blinking keeps cursor stable' ((PixelDifference $under $steady $
 $null=Rpc 'config.set' @{key='cursor-blink';value='true'}
 $a=NavPixels 'cursor-blink-a';[void][HudOwnedJob]::SendMessageW($hwnd,0x113,[IntPtr]1,[IntPtr]::Zero);$b=NavPixels 'cursor-blink-b'
 Check 'enabled blinking changes rendered cursor' ((PixelDifference $a $b $caret.left $caret.top ($metrics.cellWidth+2) ($metrics.cellHeight+2))-gt 0)
+$null=Rpc 'session.write' @{text=([string][char]27+'[2 q')} $session # steady block overrides both config fields
+$null=Rpc 'config.set' @{key='cursor-style';value='bar'}
+$override=NavPixels 'cursor-decscusr-block'
+Check 'DECSCUSR block overrides configured bar' ((PixelDifference $block $override $caret.left $caret.top ($metrics.cellWidth+2) ($metrics.cellHeight+2))-eq 0)
+[void][HudOwnedJob]::SendMessageW($hwnd,0x113,[IntPtr]1,[IntPtr]::Zero)
+$overrideTick=NavPixels 'cursor-decscusr-steady'
+Check 'DECSCUSR steady overrides enabled configured blinking' ((PixelDifference $override $overrideTick $caret.left $caret.top ($metrics.cellWidth+2) ($metrics.cellHeight+2))-eq 0)
+$null=Rpc 'session.write' @{text=([string][char]27+'[0 q')} $session
 $null=Rpc 'config.set' @{key='cursor-blink';value='false'}
 [void][HudOwnedJob]::SendMessageW($hwnd,8,[IntPtr]::Zero,[IntPtr]::Zero)
 # Sidebar tooltip checks use only owned-window posted hover and screenshots, no desktop mouse movement.

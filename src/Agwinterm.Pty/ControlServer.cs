@@ -280,7 +280,7 @@ public sealed class ControlServer : IDisposable
                 case "session.readonly": return Ok(host.ReadOnlyOp(target, GetString(args, "op") ?? "toggle"));
                 case "session.output": return Ok(host.SessionOutput(target)); // last completed command's output (FTCS)
                 case "workspace.rename": return host.WorkspaceRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("workspace not found");
-                case "workspace.delete": return host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found");
+                case "workspace.delete": return host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found / cannot delete last workspace");
                 case "workspace.select": return host.WorkspaceSelect(target) ? Ok("selected") : Err("workspace not found");
                 case "workspace.go":
                     if (target is not null) return Err("workspace go does not accept a target");

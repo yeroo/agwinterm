@@ -11,6 +11,9 @@ terminal remains visible. `tree` and `window state` report that current workspac
 Subsequent `session new` uses it only when neither an explicit workspace nor a valid
 caller pane supplies a workspace (the CLI sends its `AGWINTERM_SESSION_ID`). Selecting
 a session clears this transient empty-workspace target. It is not restore state.
+Delete-current actions use the current workspace, not the still-selected terminal's
+workspace. Terminal input (including broadcast) continues to follow that visible
+selected terminal; empty navigation does not silently retarget it.
 
 ## Keymaps and sidebar
 

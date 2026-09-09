@@ -4,6 +4,14 @@ namespace Agwinterm.Core.Tests;
 
 public class NavigationTests
 {
+    [Fact] public void DefaultBindingsCannotBeMutatedByConsumers()
+    {
+        var collection = Assert.IsAssignableFrom<IList<(string Chord, string Action)>>(Keymap.DefaultBindings);
+        Assert.True(collection.IsReadOnly);
+        Assert.Throws<NotSupportedException>(() => collection[0] = ("f1", "delete_workspace"));
+        Assert.Equal("new_session", Keymap.Parse("").Bindings["ctrl+shift+t"]);
+    }
+
     [Theory]
     [InlineData("next", 1)][InlineData("prev", -1)][InlineData("previous", -1)]
     [InlineData(null, 0)][InlineData("", 0)][InlineData("up", 0)][InlineData("Next", 0)]

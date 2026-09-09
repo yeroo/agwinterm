@@ -24,3 +24,32 @@ Final pre-review private navigation fixture: **44/44**, artifact
 processes. Includes empty explicit selection, caller placement precedence, deletion
 fallback, flagged-session tooltip and rename invalidation. Earlier corrected fixture
 passed 38/38 (token 111). The retained tooltip screenshot was visually inspected.
+
+## Broad review and one fix batch
+
+Round `01-initial`, candidate `4389171`: 4 expected/4 reported Codex sources, no
+degradation. Runner, reviewers, synthesis and verification all Codex. Final report:
+two Critical entries for the same wrong-workspace deletion mechanism (keymap/palette,
+independently found by bugs+impl and adversarial), one Major stale-focus navigation
+failure, four Minors (parser globals, DECSCUSR test, reserved F6 test, tooltip comments).
+One pre-existing Major and two Immaterials; no open questions.
+
+- Both delete-current actions now share a CurrentWorkspace-based helper. Named-row
+  context deletion still uses its named workspace; terminal broadcast intentionally
+  follows the visible selected terminal. Swept all `_active.Ws` and deletion call sites.
+- Workspace deletion clears matching focus and empty-placement state. The existing
+  last-workspace false-success defect is fixed in the same deletion path: queued UI
+  execution returns the actual membership/count refusal before mutation.
+- Parser rule sets are private/frozen and exposed defaults are read-only.
+- Added live F6 conflict/ownership, both delete action paths, focused deletion,
+  last-workspace refusal, and nonzero DECSCUSR shape/blink precedence acceptance.
+- Broadened the two tooltip comments while editing the same file.
+- Immaterials left unchanged: duplicate-but-equal cursor grammar and redundant target
+  check. Neither changes execution; no extra polish round is warranted.
+
+Initial candidate passed [CI 34365129644](https://github.com/yeroo/agwinterm/actions/runs/34365129644):
+conformance, clipboard/paste, Win32, HUD 51, quick 57, navigation 44, Core 296/Pty 774.
+Fix batch: Release build passed; Core 297/Pty 774 passed; private navigation **51/51**.
+Artifact `.revmux/navigation-ui-20260909T180805-03bb23`, token 113 released after zero
+owned processes. Clipboard/registry untouched, no queued launches. Narrow Codex
+confirmation and exact-head CI remain the final gates.

@@ -18,7 +18,8 @@ namespace Agwinterm.Win32;
 internal partial class Program
 {
     // ---- Broadcast input (WT's toggleBroadcastInput analog): keyboard input mirrors to every
-    // pane of every session in the ACTIVE WORKSPACE. Paste stays targeted (safety). ----
+    // pane of every session in the SELECTED TERMINAL'S WORKSPACE. Empty-workspace
+    // navigation leaves that terminal visible and does not retarget its input. Paste stays targeted. ----
     private bool _broadcast;
 
     private void ToggleBroadcast()
@@ -151,7 +152,7 @@ internal partial class Program
             case "previous_session": CycleSession(-1); break;
             case "toggle_sidebar": ToggleSidebar(); break;
             case "rename_session": if (_active is not null) StartRename(_active); break;
-            case "delete_workspace": if (_active is not null) DeleteWorkspace(_active.Ws); break;
+            case "delete_workspace": DeleteCurrentWorkspace(); break;
             case "session_palette": TogglePalette(PaletteKind.Sessions); break;
             case "action_palette": TogglePalette(PaletteKind.Actions); break;
             case "attention_list": TogglePalette(PaletteKind.Attention); break;

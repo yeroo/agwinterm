@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+
 namespace Agwinterm.Core;
 
 /// <summary>
@@ -21,8 +23,8 @@ namespace Agwinterm.Core;
 public static class Keymap
 {
     /// <summary>Built-in action ids and their default chords (overridable by keymap.conf).</summary>
-    public static readonly (string Chord, string Action)[] DefaultBindings =
-    {
+    public static IReadOnlyList<(string Chord, string Action)> DefaultBindings { get; } =
+        Array.AsReadOnly<(string Chord, string Action)>(new (string, string)[] {
         ("ctrl+shift+t", "new_session"),
         ("ctrl+shift+n", "new_workspace"),
         ("ctrl+shift+w", "close_pane"),
@@ -48,10 +50,9 @@ public static class Keymap
         ("ctrl+shift+down", "next_prompt"),
         ("ctrl+shift+m", "mark_mode"),
         ("ctrl+shift+r", "reopen_session"),
-    };
+    });
 
-    public static readonly HashSet<string> ValidActions = new(StringComparer.OrdinalIgnoreCase)
-    {
+    private static readonly FrozenSet<string> ValidActions = new[] {
         "new_session", "duplicate_session", "new_workspace", "close_session", "close_pane", "split_pane",
         "focus_left_pane", "focus_right_pane", "next_session", "previous_session",
         // P4: aliases of focus_left_pane / focus_right_pane for a horizontal split (top/bottom panes).
@@ -68,7 +69,7 @@ public static class Keymap
         "toggle_flag", "toggle_flagged_view", "focus_workspace",
         "select_all", "copy_selection", "paste",
         "new_window", "close_window", "switch_window",
-    };
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     public const string StarterText =
         """
@@ -115,8 +116,8 @@ public static class Keymap
     /// <param name="Mode">send | new | overlay | detached.</param>
     public sealed record CmdDef(string Label, string Text, string Mode);
 
-    public static readonly HashSet<string> ValidModes = new(StringComparer.OrdinalIgnoreCase)
-    { "send", "new", "overlay", "detached" };
+    private static readonly FrozenSet<string> ValidModes = new[]
+    { "send", "new", "overlay", "detached" }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     public sealed class Parsed
     {
