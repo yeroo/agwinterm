@@ -178,15 +178,20 @@ public class ServerSessionTests : IDisposable
     public async Task Reattach_PreservesScrollbackColors()
     {
         string paneId = Guid.NewGuid().ToString();
-        var gen1 = _backend.Create(paneId, 60, 10);
-        // Non-interactive (same rationale as RustPtyHostTests): the colour line, scroll fillers and
-        // READY marker are all produced by -Command, so the test never depends on interactive
-        // typing echo or cold-start readline latency (both flaked on cold CI runners).
-        const string script =
+        using var gen1 = _backend.Create(paneId, 60, 10);
+        string gateName = @"Local\agwinterm-color-" + Guid.NewGuid().ToString("N");
+        using var outputGate = new EventWaitHandle(false, EventResetMode.ManualReset, gateName);
+        // Create starts the child BEFORE Attach installs its output sink. A fast -Command can
+        // otherwise emit the entire fixture into that gap (#258). Gate synthetic output on the
+        // host's Attached acknowledgement; no timing sleep or interactive command echo is involved.
+        string script = $"$g=[Threading.EventWaitHandle]::OpenExisting('{gateName}'); if (-not $g.WaitOne(60000)) {{ exit 41 }}; $g.Dispose(); " +
             "$e=[char]27; Write-Host ($e+'[31mCOLORLINE'+$e+'[0m'); 1..14|%{'.'}; 'SCROLL-READY'; Start-Sleep 3600";
         await gen1.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoProfile", "-Command", script });
+        using (var probe = PtyHostClient.Connect(_appId))
+            Assert.True(WaitFor(() => probe.List().Any(s => s.Id == paneId && s.Attached), 10000), "host never attached the output sink");
+        outputGate.Set();
         Assert.True(WaitFor(() => GridText(gen1).Contains("SCROLL-READY"), 60000),
-                    "PS -Command output never reached the replica emulator");
+                    "gated PS output never reached the replica; exited=" + gen1.HasExited + "; grid:\n" + GridText(gen1));
         gen1.Detach();
 
         using var gen2 = (ServerSession)_backend.Create(paneId, 60, 10);
