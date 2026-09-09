@@ -619,8 +619,8 @@ and the list should grow as more turn up.
   - **`tree`.** A lite node is `active` when the displayed session is it, whichever pane has focus;
     the split's shell has no node. A split side whose shell exits collapses to the survivor in both
     products; a one-pane session's exit stays on screen as `(exited)` in lite.
-  Not a divergence, checked both ways: `session select` never moves the active workspace in either
-  product.
+  In both products, `session select` restores that session's workspace as current and clears an
+  intentional empty-workspace selection.
 - **The native core is shared.** Both load `agwinterm_core.dll` across the same C ABI, so emulator
   behaviour — widths, scrollback, alt screen — is common by construction. A difference there is a
   bug in one of the clients, not a parity gap.

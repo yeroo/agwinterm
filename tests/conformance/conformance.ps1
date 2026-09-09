@@ -9,8 +9,8 @@
 # Every verb in tests/conformance/control-api.json is driven through the REAL agwintermctl against
 # a sandbox instance, and the response SHAPE is checked.
 #
-# Shape, not values: "session.text returns a string" is a contract; "it returns exactly these
-# bytes" is a snapshot of one machine's shell prompt.
+# Shape is the default; steps can also pin specific values and CLI exits.
+# Machine-dependent shell text is not compared to a fixed snapshot.
 #
 # Suite rules (shared with the rest of the checks):
 #   - always a sandbox instance (--pipe <name>); never the default instance, which owns real state
@@ -66,6 +66,7 @@ if (-not $Exe) { "  SKIP  agwinterm not found (pass -Exe)"; exit ($Strict ? 1 : 
 $env:AGWINTERM_SESSION_ID = $null
 $env:AGWINTERM_PANE_ID = $null
 $env:AGWINTERM_PIPE = $null
+$env:AGWINTERM_WINDOW_ID = $null
 
 $contract = Get-Content $Spec -Raw | ConvertFrom-Json
 $pipe = 'conform'
@@ -107,16 +108,28 @@ function Invoke-Ctl($argv, $InputText = $null) {
     }finally{$child.Dispose()}
 }
 
+# Session creation is acknowledged before the full UI publishes the target. Retry reads only.
+function Wait-Session([string]$Id, [switch]$Prompt) {
+    $deadline=[DateTime]::UtcNow.AddSeconds(45)
+    do {
+        $probe=Invoke-Ctl @('session','text','--target',$Id)
+        if($probe.ok -and (-not $Prompt -or [string]$probe.result -match '(?m)^PS [^\r\n]*>')){return $true}
+        Start-Sleep -Milliseconds 250
+    } while([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
 function Test-Shape($resp, [string]$kind, $fields, [bool]$Payload = $false) {
     if ($null -eq $resp -or $resp.PSObject.Properties.Name -contains '__raw') { return "not JSON: $($resp.__raw)" }
     if (-not $Payload -and -not $resp.ok) { return "ok:false — $($resp.error)" }
-    $r = if($Payload){$resp}else{$resp.result}
+    $r = $resp.result
+    if ($Payload) { $r = $resp }
     switch ($kind) {
-        'string' { if ($r -isnot [string]) { return "result is $($r.GetType().Name), expected string" } }
+        'string' { if ($r -isnot [string]) { return "result is not a string" } }
         # A bare JSON number with no fraction. ConvertFrom-Json gives [long] for a whole number and
         # [double] once there is a decimal point, and a quoted "12" stays a [string] — so the type
         # check alone separates `12` from `"12"` and `12.0`, which is the whole contract here.
-        'integer' { if ($r -isnot [int] -and $r -isnot [long]) { return "result is $($r.GetType().Name), expected a bare integer" } }
+        'integer' { if ($r -isnot [int] -and $r -isnot [long]) { return "result is not a bare integer" } }
         'object' {
             if ($r -isnot [psobject]) { return "result is not an object" }
             foreach ($f in $fields) { if ($r.PSObject.Properties.Name -notcontains $f) { return "result is missing '$f'" } }
@@ -154,11 +167,15 @@ try {
         $payload=$step.output -eq 'payload'
         $why = Test-Shape $resp $step.result $step.fields $payload
         if($null -ne $step.exit -and $script:ctlExit -ne $step.exit){$why="exit $script:ctlExit, expected $($step.exit): $script:ctlError"}
-        $value=if($payload){$resp}else{$resp.result}
+        $value=$resp.result
+        if($payload){$value=$resp}
         if(-not $why -and $step.values){foreach($property in $step.values.PSObject.Properties){if($value.($property.Name) -cne $property.Value){$why="unexpected $($property.Name) value";break}}}
         Check $step.verb ($null -eq $why) $why
         $checked++
         if (-not $why -and $step.capture) { $vars[$step.capture] = if($step.captureField){[string]$value.($step.captureField)}else{[string]$value} }
+        if (-not $why -and $step.verb -in 'session.new','session.duplicate') {
+            Check "$($step.verb) target published" (Wait-Session ([string]$value))
+        }
         if ($step.settle) { Start-Sleep -Seconds $step.settle }
     }
 
@@ -168,7 +185,7 @@ try {
     # contract rather than an implementation detail — and they are asked of the SHELL, not of the
     # app, because what matters is that the child process actually received them.
     $envSession = [string](Invoke-Ctl @('session', 'new', '--name', 'conf-env')).result
-    Start-Sleep -Seconds 4
+    if (-not (Wait-Session $envSession -Prompt)) { throw 'Environment session prompt did not become ready' }
     foreach ($v in $contract.sessionEnv) {
         Invoke-Ctl @('session', 'type', "echo [$v=`$env:$v]`r", '--target', $envSession) | Out-Null
         Start-Sleep -Seconds 2
