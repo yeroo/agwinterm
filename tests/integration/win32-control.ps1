@@ -1390,9 +1390,9 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
                 Move-Item -LiteralPath $capStateBak -Destination $capState.FullName -Force
             }
         }
-        Check 'a capture whose state file cannot be written is refused: captured into memory, not on disk, will not survive a restart (#246)' `
+        Check 'a failed capture save reports only that this save did not persist the checkpoint (#246)' `
             ($capNoSave -and (-not $capNoSave.ok) -and ("$($capNoSave.error)" -match 'captured into memory') -and
-             ("$($capNoSave.error)" -match 'could not be written') -and ("$($capNoSave.error)" -match 'will not survive a restart')) `
+             ("$($capNoSave.error)" -match 'could not be written') -and ("$($capNoSave.error)" -match 'this save did not put the checkpoint on disk')) `
             "reply=$($capNoSave | ConvertTo-Json -Compress -Depth 5)"
         Check 'and the slot was left as captured: tree still shows it' `
             ($capNodeNoSave -and ("$($capNodeNoSave.capturedCommands.$survivorId)" -match $pingPattern)) `

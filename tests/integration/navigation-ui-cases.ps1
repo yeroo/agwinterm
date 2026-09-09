@@ -23,6 +23,24 @@ function PixelDifference($a,$b,[int]$x=0,[int]$y=0,[int]$w=0,[int]$h=0){
     }};return $different
 }
 $first=[string](CurrentWs);$beforeText=Rpc 'session.text' @{} $session
+Check 'readonly rejects an unknown operation without changing protection' (-not (Rpc 'session.readonly' @{op='typo'} $session -AllowError).ok -and (Rpc 'session.readonly' @{op='state'} $session)-eq 'off')
+$null=Rpc 'session.readonly' @{op='on'} $session
+Check 'readonly typo cannot remove existing protection' (-not (Rpc 'session.readonly' @{op='typo'} $session -AllowError).ok -and (Rpc 'session.readonly' @{op='get'} $session)-eq 'on')
+$null=Rpc 'session.readonly' @{op='off'} $session
+Check 'missing readonly target refuses' (-not (Rpc 'session.readonly' @{op='on'} 'missing-pane' -AllowError).ok)
+Check 'missing search target refuses' (-not (Rpc 'session.search' @{query='needle'} 'missing-pane' -AllowError).ok)
+Check 'unknown switch operation refuses' (-not (Rpc 'session.switch' @{op='typo'} -NoTarget -AllowError).ok)
+$mixedCommand='Tool --Path C:/CaseSensitive/Project --Key AbC'
+$null=Rpc 'session.bind' @{agent=$mixedCommand} $session
+Check 'binding preserves command case in the saved pane' (NavWait {
+    foreach($file in Get-ChildItem (Join-Path $appDir 'windows') -Filter '*.json') {
+        try {$saved=Get-Content $file.FullName -Raw|ConvertFrom-Json} catch {continue}
+        foreach($ws in $saved.Workspaces){foreach($ses in $ws.Sessions){foreach($pane in $ses.Panes){
+            if($pane.Id-eq $session -and $pane.AgentResume-ceq $mixedCommand){return $true}
+        }}}
+    };return $false
+})
+$null=Rpc 'session.bind' @{agent='NoNe'} $session
 Check 'one workspace navigation refuses' (-not (Rpc 'workspace.go' @{to='next'} -NoTarget -AllowError).ok)
 Check 'last workspace deletion refuses without removing its terminal' (-not (Rpc 'workspace.delete' @{} $first -AllowError).ok -and @(NavTree).Count-eq 1 -and $null-ne (Node $session))
 $second=[string](Rpc 'workspace.new' @{name='P15-empty'})

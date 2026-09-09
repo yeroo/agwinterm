@@ -177,4 +177,31 @@ public class ControlServerTypeTextTests
         // 0 and a plain integer still read.
         Assert.Contains("\"ok\":true", server.Dispatch("{\"cmd\":\"session.text\",\"args\":{\"lines\":0}}"));
     }
+
+    [Theory]
+    [InlineData("0", 0)]
+    [InlineData("123", 123)]
+    [InlineData("2147483647", int.MaxValue)]
+    [InlineData("2147483648", int.MaxValue)]
+    [InlineData("999999999999999999999999999999999999", int.MaxValue)]
+    public void Text_LargeWholeCountsSaturate(string raw, int expected)
+    {
+        Assert.True(OverlayPanes.TryLines(raw, out int lines));
+        Assert.Equal(expected, lines);
+        var (server, session) = New(rows: 4);
+        session.Emulator.Feed(System.Text.Encoding.UTF8.GetBytes("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n"));
+        var reply = server.Dispatch("{\"cmd\":\"session.text\",\"args\":{\"lines\":" + raw + "}}");
+        Assert.Contains("\"ok\":true", reply);
+        if (expected == int.MaxValue)
+            Assert.Equal(server.Dispatch("{\"cmd\":\"session.text\",\"args\":{\"all\":true}}"), reply);
+    }
+
+    [Theory]
+    [InlineData("999999999999999x")]
+    [InlineData("-99999999999999")]
+    [InlineData("1e30")]
+    [InlineData("99999999999.5")]
+    [InlineData("")]
+    public void Text_SaturationStillValidatesEveryDigit(string raw)
+        => Assert.False(OverlayPanes.TryLines(raw, out _));
 }

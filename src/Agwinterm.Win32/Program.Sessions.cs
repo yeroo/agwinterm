@@ -661,7 +661,7 @@ internal partial class Program
             case "advance-back": case "back": case "prev": case "previous": MruWalk(-1); break;
             case "commit": MruCommit(); break;
             case "cancel": MruCancel(); break;
-            default: return $"unknown op '{op}'";
+            default: return SessionOperations.UnknownOp(op);
         }
         return _active?.Name ?? "(none)";
     }

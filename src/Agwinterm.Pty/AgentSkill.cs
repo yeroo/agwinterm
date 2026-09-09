@@ -447,7 +447,7 @@ public static class AgentSkill
           or a scratch/overlay/quick pane (never restored, so no slot), is refused and nothing is captured or saved; a
           process query that fails or times out is a refusal too, never an empty answer for every pane. ONE refusal
           leaves something behind and says so: "captured into memory but the state file could not be written" — the
-          slots are filled (`tree` shows them) but the checkpoint is not on disk and will not survive a restart; fix
+          slots are filled (`tree` shows them) but this save did not put the checkpoint on disk; fix
           the state directory and capture again. `session context` / `session rename` replies describe the value in
           memory the same way — their save is best-effort and silent.
         - `agwintermctl install hooks|skill|shell`               — install agent-status hooks / this skill / shell-integration (live cwd)

@@ -501,7 +501,7 @@ internal sealed class FakeSessionHost : ISessionHost
         return new SidebarWidthSnapshot(SidebarW, SidebarVisible);
     }
     public string BroadcastOp(string op) { Broadcast = op switch { "on" => true, "off" => false, "toggle" => !Broadcast, _ => Broadcast }; return Broadcast ? "on" : "off"; }
-    public string ReadOnlyOp(string? target, string op) { var s = FindSes(target); if (s is null) return "off"; s.ReadOnly = op switch { "on" => true, "off" => false, "toggle" => !s.ReadOnly, _ => s.ReadOnly }; return s.ReadOnly ? "on" : "off"; }
+    public string ReadOnlyOp(string? target, string op) { if (!SessionOperations.IsReadOnlyOp(op)) return SessionOperations.UnknownOp(op); var s = FindSes(target); if (s is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession; s.ReadOnly = op switch { "on" => true, "off" => false, "toggle" => !s.ReadOnly, _ => s.ReadOnly }; return s.ReadOnly ? "on" : "off"; }
     public string SessionOutput(string? target) => "";
     public bool WorkspaceRename(string? target, string name) { var w = FindWs(target); if (w is null || string.IsNullOrWhiteSpace(name)) return false; w.Name = name; return true; }
     public bool WorkspaceDelete(string? target) { var w = FindWs(target); if (w is null || Workspaces.Count <= 1) return false; Workspaces.Remove(w); if (ReferenceEquals(ActiveWs, w)) { ActiveWs = Workspaces[0]; ActiveSess = ActiveWs.Sessions.FirstOrDefault(); } return true; }
@@ -761,7 +761,7 @@ internal sealed class FakeSessionHost : ISessionHost
     /// match every cover), and a real pane's id resolves before a cover's, as in FindPaneBy.</summary>
     private (Sess s, string id, ISession pane)? CoverTarget(string? target)
         => string.IsNullOrEmpty(target) || target == "active" || FindPane(target) is not null ? null : FindCover(target);
-    public string SessionSearch(string? target, string? query, string? action) => "no matches";
+    public string SessionSearch(string? target, string? query, string? action) => FindSes(target) is null ? ISessionHost.RefusePrefix + SessionContexts.NoSession : "no matches";
     public bool SessionScratch(string? target, string op) => FindSes(target) is not null;
     public void Quick(string op) { QuickVisible = op switch { "on" => true, "off" => false, "toggle" => !QuickVisible, _ => QuickVisible }; }
     // Mirrors the app: no clamp, because ControlServer.TryOverlaySize refuses out-of-range before the
@@ -916,14 +916,14 @@ internal sealed class FakeSessionHost : ISessionHost
     }
     public bool Notify(string? target, string? title, string body) { var s = FindSes(target); if (s is null) return false; s.Notifications++; return true; }
     public bool SessionFlag(string? target, string op) { if (op == "clear") { foreach (var s in Workspaces.SelectMany(w => w.Sessions)) s.Flagged = false; return true; } var x = FindSes(target); if (x is null) return false; x.Flagged = op switch { "on" => true, "off" => false, "toggle" => !x.Flagged, _ => x.Flagged }; return true; }
-    public bool SessionBind(string? target, string agent) { var s = FindSes(target); /* the app: FindPaneById, a pane, so pane-capable */ if (s is null) return false; s.AgentResume = string.IsNullOrWhiteSpace(agent) || agent == "none" ? null : agent; return true; }
+    public bool SessionBind(string? target, string agent) { var s = FindSes(target); /* the app: FindPaneById, a pane, so pane-capable */ if (s is null) return false; s.AgentResume = SessionOperations.Binding(agent); return true; }
     public string AdoptClaude() { int n = 0; foreach (var s in Workspaces.SelectMany(w => w.Sessions)) { s.AgentResume = "claude --resume x"; n++; } return $"adopted {n}"; }
     public string RestartClaudeYolo(string? target) { var s = FindSes(target); if (s is null) return "no pane"; s.AgentResume = "claude --resume x --dangerously-skip-permissions"; return "restarting Claude in YOLO mode (resumed)"; }
     public string UpdateClaude() => "updating Claude Code…";
     public string UpdateApp() => "updating agwinterm…";
     public void WorkspaceFocus(string op) { }
     public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => FindSes(target) is not null ? "ok" : "no session";
-    public string SessionSwitch(string op) => ActiveSess?.Name ?? "";
+    public string SessionSwitch(string op) => SessionOperations.IsSwitchOp(op) ? ActiveSess?.Name ?? "" : SessionOperations.UnknownOp(op);
     public string CommandRun(string nameOrCommand, string? mode) => $"{mode ?? "new"}: {nameOrCommand}";
     public string CommandList() => "";
     public string CommandLeader(string op) => "idle";
