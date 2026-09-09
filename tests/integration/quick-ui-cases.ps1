@@ -41,6 +41,7 @@ $normalRect=[QuickProbe]::Rect($hwnd)
 $normalMetrics=Rpc 'session.metrics' @{} $session|ConvertTo-Json -Compress
 $library=Rpc 'window.list'|ConvertTo-Json -Compress
 Check 'quick shell is lazy and panel initially hidden' (-not [QuickProbe]::IsWindowVisible($q) -and -not (Rpc 'session.text' -Window quick -AllowError).ok)
+Check 'send command refuses before quick shell exists' (-not (Rpc 'command.run' @{name='echo dropped';mode='send'} -Window quick -AllowError).ok)
 $fg=[HudOwnedJob]::GetForegroundWindow()
 $null=Rpc 'quick' @{op='on'}
 for($i=0;$i-lt 50 -and -not (Rpc 'window.state').quickTerminalVisible;$i++){Start-Sleep -Milliseconds 100}
@@ -91,9 +92,18 @@ $keymapSink=Join-Path $artifact 'keymap-send.txt'
 for($i=0;$i-lt 50 -and -not (Test-Path $keymapSink);$i++){Start-Sleep -Milliseconds 100}
 Check 'surface-local custom keymap command runs in quick' ((Test-Path $keymapSink) -and (Get-Content $keymapSink -Raw).Trim()-eq 'quick')
 $commandSink=Join-Path $artifact 'quick-command.txt'
+$blockedSink=Join-Path $artifact 'quick-command-blocked.txt'
+$null=Rpc 'session.readonly' @{op='on'} -Window quick
+Check 'read-only quick refuses raw send command' (-not (Rpc 'command.run' @{name="echo forbidden>`"$blockedSink`"";mode='send'} -Window quick -AllowError).ok)
+Check 'read-only quick refuses named send command' (-not (Rpc 'command.run' @{name='QuickProbe'} -Window quick -AllowError).ok)
+$null=Rpc 'session.readonly' @{op='off'} -Window quick
 $null=Rpc 'command.run' @{name="echo {AGW_PANE}>`"$commandSink`"";mode='send'} -Window quick
 for($i=0;$i-lt 50 -and -not (Test-Path $commandSink);$i++){Start-Sleep -Milliseconds 100}
 Check 'surface-local send command retains quick context' ((Test-Path $commandSink) -and (Get-Content $commandSink -Raw).Trim()-eq 'quick')
+Check 'refused send wrote nothing before subsequent accepted command' ((Test-Path $commandSink) -and -not (Test-Path $blockedSink))
+$null=Rpc 'session.readonly' @{op='on'} $session
+Check 'library read-only send uses the same refusal guard' (-not (Rpc 'command.run' @{name='echo forbidden';mode='send'} -AllowError).ok)
+$null=Rpc 'session.readonly' @{op='off'} $session
 Check 'quick refuses new-session custom command mode' (-not (Rpc 'command.run' @{name='echo forbidden';mode='new'} -Window quick -AllowError).ok)
 # Posted logical DPI transition: no monitor setting is changed and no foreground is taken.
 $realDpi=[QuickProbe]::GetDpiForWindow($q);$beforeDpi=[QuickProbe]::Rect($q)
@@ -185,6 +195,7 @@ $null=Rpc 'quick' @{op='on'}
 $null=Rpc 'session.type' @{text="exit`r"} -Window quick
 for($i=0;$i-lt 50 -and (Rpc 'window.state').quickTerminalVisible;$i++){Start-Sleep -Milliseconds 100}
 Check 'shell exit dismisses and discards quick surface' (-not (Rpc 'window.state').quickTerminalVisible -and -not (Rpc 'session.text' -Window quick -AllowError).ok)
+Check 'send command refuses after quick shell exit' (-not (Rpc 'command.run' @{name='echo dropped';mode='send'} -Window quick -AllowError).ok)
 $null=Rpc 'quick' @{op='on'}
 for($i=0;$i-lt 50 -and -not (Rpc 'session.text' -Window quick -AllowError).ok;$i++){Start-Sleep -Milliseconds 100}
 Check 'summon after exit creates fresh shell' ((Rpc 'session.text' -Window quick -AllowError).ok)

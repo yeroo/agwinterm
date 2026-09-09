@@ -202,7 +202,12 @@ internal partial class Program
         => System.Threading.Tasks.Task.Run(() => { string r = installer(); Post(() => ShowToast(r)); });
 
     /// <summary>Run a configured custom command per its mode (send|new|overlay|detached), expanding {AGW_*}.</summary>
-    private void RunCustomCommand(Keymap.CmdDef cmd) => RunCommandText(cmd.Text, cmd.Mode);
+    private void RunCustomCommand(Keymap.CmdDef cmd)
+    {
+        string result = RunCommandText(cmd.Text, cmd.Mode);
+        if (result.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal))
+            ShowToast(result[ISessionHost.RefusePrefix.Length..]);
+    }
 
     /// <summary>Run an arbitrary command string in a mode, expanding {AGW_*} tokens and injecting $AGW_*
     /// env from the active session. Returns the expanded command line (for the control API / observability).</summary>
@@ -227,6 +232,14 @@ internal partial class Program
                 RunDetached(expanded, CommandCwd(ctx), AgwEnv(ctx));
                 break;
             default: // send — type it into the active session, as if the user typed it + Enter
+                // Send's human-key path may quietly reject input. A command acknowledgement must
+                // instead report that refusal, for library and quick surfaces alike. These checks
+                // and Send run together on the UI thread; an exit/write race throws through the
+                // queued CommandRun bridge and becomes an API error, not a successful empty write.
+                var surface = ActiveSurface();
+                if (surface is null || _session is null || surface.S.HasExited)
+                    return ISessionHost.RefusePrefix + "no live pane for send command";
+                if (surface.ReadOnly) return ISessionHost.RefusePrefix + "pane is read-only";
                 Send(expanded.Replace("\r", "").Replace("\n", "") + "\r");
                 break;
         }

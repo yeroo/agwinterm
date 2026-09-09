@@ -48,4 +48,21 @@ Latest local receipts: token 103 (32 quick), 104 (51 HUD), 105 (43 quick),
 proof of zero live processes and exact temporary hotkey cleanup. Clipboard and
 registry untouched. Private app-data and transcripts retained, no queued launches.
 
-Focused review and exact-head CI remain merge gates; neither is claimed complete here.
+## Focused confirmation and final send guard
+
+Round `02-after-fix` reviewed `7a758dc...d87314f`: 2/2 healthy Codex sources,
+2 confirmed Majors, no other findings/questions. Both expose send-command false success:
+no quick shell, or a read-only surface. One guard in RunCommandText now refuses either
+before Send, on normal and quick windows; write exceptions already propagate through
+the queued API bridge. Keymap commands display the refusal. Regression coverage includes
+lazy/closed quick, named/raw readonly sends, a subsequent accepted-write fence and the
+normal-window readonly path. A further narrow round is justified by this delivery blocker,
+not cosmetic residue.
+
+`d87314f` passed [CI](https://github.com/yeroo/agwinterm/actions/runs/34357718306):
+conformance and Win32 integration, HUD 51, quick 51, Core 265 and Pty 760.
+The send-guard candidate built cleanly and passed 53/53 local quick checks; token 108
+was released after zero owned processes and exact hotkey cleanup. Evidence:
+`.revmux/quick-ui-20260909T165817-a9963b`. Narrow review and exact-head CI remain gates.
+The pre-existing process-wide UIA provider limitation is tracked in
+[#267](https://github.com/yeroo/agwinterm/issues/267); full quick UIA parity is not claimed.
