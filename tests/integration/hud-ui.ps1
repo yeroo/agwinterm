@@ -43,6 +43,7 @@ public sealed class HudOwnedJob {
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateJobObjectW(IntPtr a,string n);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetInformationJobObject(IntPtr j,int c,ref LIMIT l,int n);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr j,int c,out ACCOUNT a,int n,IntPtr r);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr j,int c,IntPtr a,int n,IntPtr r);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessW(string app,StringBuilder cmd,IntPtr pa,IntPtr ta,bool inherit,uint flags,IntPtr env,string cwd,ref STARTUP si,out PROCESS pi);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr j,IntPtr p);
     [DllImport("kernel32.dll")] static extern uint ResumeThread(IntPtr t);
@@ -84,6 +85,21 @@ public sealed class HudOwnedJob {
     public uint Count() {
         ACCOUNT a; if(!QueryInformationJobObject(job,1,out a,Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero))throw new Exception("Job accounting");
         return a.active;
+    }
+    public string Members() {
+        // Read only members of THIS private job; never infer ownership from a process name.
+        int bytes=65536;IntPtr buffer=Marshal.AllocHGlobal(bytes);
+        try {
+            if(!QueryInformationJobObject(job,3,buffer,bytes,IntPtr.Zero))throw new Exception("Job members: "+Marshal.GetLastWin32Error());
+            int count=Marshal.ReadInt32(buffer,4);var names=new System.Collections.Generic.List<string>();
+            if(count<0||count>(bytes-8)/IntPtr.Size)throw new Exception("Invalid job member count");
+            for(int i=0;i<count;i++){
+                int pid=checked((int)Marshal.ReadIntPtr(buffer,8+i*IntPtr.Size).ToInt64());
+                try{using(var p=System.Diagnostics.Process.GetProcessById(pid)){names.Add(pid+":"+p.ProcessName);}}
+                catch(ArgumentException){names.Add(pid+":exited");}
+            }
+            return string.Join(", ",names);
+        }finally{Marshal.FreeHGlobal(buffer);}
     }
     public void Finish() {
         if(job==IntPtr.Zero)return;

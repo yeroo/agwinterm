@@ -257,8 +257,9 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
     if c.de_elevate {
         return err_reply("spawn failed: de-elevate unsupported by rust host");
     }
-    let cols = c.cols.clamp(1, 10000) as i64;
-    let rows = c.rows.clamp(1, 10000) as i64;
+    let Some((cols, rows)) = resize::create_dimensions(c.cols, c.rows) else {
+        return err_reply("create cols/rows must not exceed 10000");
+    };
     {
         let sessions = host.sessions.lock().unwrap();
         if sessions.contains_key(&c.id) {

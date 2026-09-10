@@ -842,12 +842,12 @@ internal partial class Program
     });
 
     public bool SessionScratch(string? target, string op)
-    {
+        => InvokeOnUiQueued(() => {
         var ses = FindSesForTarget(target);
         if (ses is null) return false;
-        PostVerb(() => ScratchOp(ses, op));
+        ScratchOp(ses, op);
         return true;
-    }
+    });
 
     public void Quick(string op) => InvokeOnUiQueued(() => { QuickOp(op, control: true); return 0; });
 
