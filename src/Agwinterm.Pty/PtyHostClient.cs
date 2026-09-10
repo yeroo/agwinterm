@@ -30,6 +30,7 @@ public sealed class PtyHostClient : IDisposable
     private bool _unusable;
     public bool IsUsable => !Volatile.Read(ref _unusable);
     public uint CreationRevision { get; private set; }
+    public uint HostPid { get; private set; }
 
     internal PtyHostClient(Stream pipe, uint creationRevision = 0) { _pipe = pipe; CreationRevision = creationRevision; }
 
@@ -62,12 +63,16 @@ public sealed class PtyHostClient : IDisposable
             if (reply.Hello.Protocol != PtyHostServer.ProtocolVersion)
                 throw new InvalidOperationException("pty-host protocol mismatch");
             client.CreationRevision = reply.Hello.CreationRevision;
+            client.HostPid = reply.Hello.Pid;
             return client;
         }
         catch { client.Dispose(); throw; }
     }
 
-    /// <summary>Create a session on the host (not attached yet — call <see cref="Attach"/>).</summary>
+    /// <summary>Create a session on the host (not attached yet — call <see cref="Attach"/>).
+    /// With a creationTicket, a duplicate live request returns the original attempt without spawning.
+    /// After an ambiguous failure, reconcile that same ticket on this same host; never replay with
+    /// a new ticket or infer non-execution from a missing reply. Empty tickets use legacy behavior.</summary>
     public string Create(string id, int cols, int rows, string app, string[] args,
         string? cwd = null, IReadOnlyDictionary<string, string>? env = null, bool verbatim = false, bool deElevate = false,
         bool freshEnv = true, string creationTicket = "")
@@ -91,6 +96,8 @@ public sealed class PtyHostClient : IDisposable
         return Request(new Request { Create = create }).Create.Id;
     }
 
+    /// <summary>Reserve expiring metadata, not a child. A lost preparation reply cannot spawn.
+    /// Bind the returned ticket to this HostPid before issuing the one create attempt.</summary>
     public string PrepareCreate(string id)
     {
         if (CreationRevision < 1) throw new NotSupportedException("Host does not support exact create reconciliation");
@@ -101,7 +108,11 @@ public sealed class PtyHostClient : IDisposable
         return reply.Ticket;
     }
 
+    /// <summary>Query the exact ticket on its original host. Only CreationUnknown proves absence;
+    /// CreationCancelling means cleanup is still pending, not completed.</summary>
     public CreationPhase QueryCreate(string id, string ticket) => CreationState(id, ticket, false);
+    /// <summary>Revoke this attempt and request exact cleanup. Repeated cancellation is safe on
+    /// the same host. CreationCancelling is acceptance only; CreationUnknown proves absence.</summary>
     public CreationPhase CancelCreate(string id, string ticket) => CreationState(id, ticket, true);
     private CreationPhase CreationState(string id, string ticket, bool cancel)
     {

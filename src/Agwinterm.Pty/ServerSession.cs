@@ -97,6 +97,7 @@ public sealed class ServerSession : ISession
     private readonly SessionStartFence _startFence = new();
     private volatile bool _disposed;
     private volatile string _creationTicket = "";
+    private uint _creationHostPid;
 
     public ITerminalCore Emulator { get; }
     public int Cols { get; private set; }
@@ -180,6 +181,7 @@ public sealed class ServerSession : ISession
                 {
                     // A lost preparation reply owns no child. Once this ticket is known, close
                     // can cancel even while the following create is still blocked on its reply.
+                    _creationHostPid = client.HostPid;
                     _creationTicket = client.PrepareCreate(_id);
                     if (_startFence.Created()) KillHosted();
                     if (_startFence.IsClosed) return;
@@ -239,6 +241,7 @@ public sealed class ServerSession : ISession
             try
             {
                 using var client = _backend.ConnectExisting();
+                if (_creationHostPid == 0 || client.HostPid != _creationHostPid) continue;
                 var state = client.CancelCreate(_id, _creationTicket);
                 if (state == Proto.CreationPhase.CreationUnknown) return; // exact attempt proven absent
                 if (state == Proto.CreationPhase.CreationCancelling)
@@ -269,7 +272,7 @@ public sealed class ServerSession : ISession
     {
         if (_startFence.IsClosed) return false;
         PtyHostAttachment att;
-        try { att = _backend.Client.Attach(_id, repaint: true); }
+        try { var client = _backend.Client; att = client.Attach(_id, repaint: true); _creationHostPid = client.HostPid; }
         catch { return false; }                       // no such session (or host unreachable)
         _creationTicket = att.CreationTicket;
         if (att.HasExited)

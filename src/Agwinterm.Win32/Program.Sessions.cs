@@ -1067,7 +1067,7 @@ internal partial class Program
             using var probe = Agwinterm.Pty.PtyHostClient.Connect(appId);
             foreach (var info in probe.List())
                 if (!claimed.Contains(info.Id) || info.HasExited)
-                    try { probe.Kill(info.Id); } catch { }
+                    try { probe.Kill(info.Id, info.CreationTicket); } catch { }
         }
         catch { }   // host not running / racing shutdown — nothing to reap
     }

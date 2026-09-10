@@ -33,8 +33,12 @@ Implementation and validation plan; shipping remains gated on review and exact-h
   stays unchanged here; ticket behavior activates only with a host advertising the capability.
   Releasing/staging a newer host is separate work, not authority to replace a running user's host.
 - Cancellation acceptance (`CREATION_CANCELLING`) is not disposal proof. `CREATION_UNKNOWN`
-  after cancellation means this ticket cannot create and no child is still owned by its attempt.
-  Unproven disposal stays pending. C# host completion waits for its creation ledger to drain.
+  after cancellation on the issuing host means this ticket cannot create and no child is still owned
+  by its attempt. Fresh recovery connections must handshake and match the original Hello host PID;
+  another process serving the same pipe name cannot prove that original host's ticket absent.
+  Unproven disposal retains the exact hosted object, releases exclusive cleanup ownership and is
+  retried by the host cleanup worker. Both hosts wait for the ledger to drain before shutdown;
+  Rust's 30-second warning is diagnostic, not an abandonment deadline.
 
 ## Evidence before review
 
@@ -43,3 +47,13 @@ Implementation and validation plan; shipping remains gated on review and exact-h
   Canonical token generation 136 released after the exact owned job reached zero descendants;
   clipboard, HKCU and foreground were untouched. This does not substitute for full integration CI.
 - Lite's actual single-attempt coordinator passes 90 private fake-exchange checks; native build passes.
+
+## Review-fix evidence
+
+- 39 private C# checks and five Rust ledger checks pass, including failed cleanup handoff/reclaim
+  before and after publication, double-disposal exclusion and shutdown drain.
+- Three managed real-host checks plus Rust's real-ConPTY publication-barrier test pass. Both hosts
+  now exercise cancellation after a real child starts but before publication, asserting no published
+  session, exact-ticket absence and original-process exit. Canonical token generation 137 released
+  after owned job zero; no clipboard, HKCU or foreground access.
+- Orphan reaping carries the listed incarnation. C# and Lite fresh cancellation both bind host PID.

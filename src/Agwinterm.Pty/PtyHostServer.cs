@@ -14,7 +14,8 @@ namespace Agwinterm.Pty;
 /// Rust host, the C# client, and the C++ lite client — JSON removed by decision on #134):
 ///  - ONE control pipe (<c>&lt;appId&gt;-ptyhost</c>): 4-byte little-endian length prefix + encoded
 ///    Request/Reply, strict request/response. Verbs: hello (hard version handshake), create,
-///    attach, detach, resize, kill, list, shutdown.
+///    attach, detach, resize, kill, list, shutdown; creation revision 1 adds prepare-create,
+///    query-create and cancel-create.
 ///  - Per ATTACH, one full-duplex DATA pipe (name in the attach reply): raw bytes both ways —
 ///    client→host is child stdin, host→client is raw ConPTY output. One attached client per
 ///    session; a new attach supersedes. Host-side close = child exited (code via list); client-side
@@ -34,6 +35,7 @@ public sealed class PtyHostServer : IDisposable
     private readonly CreationTickets<Hosted> _creations = new();
     private object _lock => _creations.Gate;                     // guards sessions + creation publication
     private readonly Dictionary<string, Hosted> _sessions = new(StringComparer.OrdinalIgnoreCase);
+    internal Action<int?>? BeforeCreationPublication; // deterministic test barrier; never supplied by wire/environment
 
     private sealed class Hosted
     {
@@ -58,6 +60,7 @@ public sealed class PtyHostServer : IDisposable
     public PtyHostServer(string appId)
     {
         _appId = appId;
+        _ = RetryPendingCleanupAsync();
         _ = AcceptLoopAsync(_cts.Token);
     }
 
@@ -200,6 +203,7 @@ public sealed class PtyHostServer : IDisposable
                     extraEnv: env, cwd: c.Cwd.Length > 0 ? c.Cwd : null, deElevate: c.DeElevate,
                     freshEnv: !c.FreshEnvOff)
                 .GetAwaiter().GetResult();
+            BeforeCreationPublication?.Invoke(session.ChildProcessId);
             bool publish;
             lock (_lock)
             {
@@ -208,7 +212,7 @@ public sealed class PtyHostServer : IDisposable
             }
             if (!publish)
             {
-                if (DisposeHosted(hosted)) { lock (_lock) _creations.Cleaned(creation); }
+                FinishCleanup(creation, hosted);
                 return Err("creation cancelled; query the exact ticket for cleanup completion");
             }
             return CreatedReply(creation);
@@ -221,7 +225,7 @@ public sealed class PtyHostServer : IDisposable
             {
                 if (_sessions.TryGetValue(id, out var current) && ReferenceEquals(current, hosted)) _sessions.Remove(id);
                 if (cleaned) _creations.Cleaned(creation);
-                else _creations.Cancel(creation);
+                else if (hosted is not null) _creations.CleanupFailed(creation, hosted);
             }
             return Err("spawn failed: " + ex.Message);
         }
@@ -272,7 +276,7 @@ public sealed class PtyHostServer : IDisposable
             claimed = _creations.Cancel(e);
             if (claimed is not null && _sessions.TryGetValue(e.Id, out var current) && ReferenceEquals(current, claimed)) _sessions.Remove(e.Id);
         }
-        if (claimed is not null && DisposeHosted(claimed)) { lock (_lock) _creations.Cleaned(e); }
+        if (claimed is not null) FinishCleanup(e, claimed);
         return HandleQuery(request);
     }
 
@@ -280,6 +284,27 @@ public sealed class PtyHostServer : IDisposable
     {
         try { CloseData(h); return h.S.DisposeHosted(); }
         catch { return false; } // keep the exact cleanup obligation queryable, never claim completion
+    }
+
+    private void FinishCleanup(CreationTickets<Hosted>.Entry e, Hosted h)
+    {
+        bool cleaned = DisposeHosted(h);
+        lock (_lock)
+        {
+            if (cleaned) _creations.Cleaned(e);
+            else _creations.CleanupFailed(e, h);
+        }
+    }
+
+    private async Task RetryPendingCleanupAsync()
+    {
+        while (!_creations.Drained.IsCompleted)
+        {
+            await Task.Delay(500).ConfigureAwait(false);
+            IReadOnlyList<(CreationTickets<Hosted>.Entry Attempt, Hosted Value)> pending;
+            lock (_lock) pending = _creations.ClaimPendingCleanup();
+            foreach (var (attempt, h) in pending) FinishCleanup(attempt, h);
+        }
     }
 
     private Reply HandleAttach(Attach a) => WithSession(a.Id, hosted =>
@@ -453,7 +478,7 @@ public sealed class PtyHostServer : IDisposable
         IReadOnlyList<(CreationTickets<Hosted>.Entry Attempt, Hosted Value)> all;
         lock (_lock) { all = _creations.Stop(); _sessions.Clear(); }
         foreach (var (attempt, h) in all)
-            if (DisposeHosted(h)) { lock (_lock) _creations.Cleaned(attempt); }
+            FinishCleanup(attempt, h);
         // A creator may still own a child not yet published in _sessions. Keep the host alive
         // until that exact attempt finishes cleanup; cancellation acceptance is not completion.
         _ = CompleteShutdownWhenDrained();

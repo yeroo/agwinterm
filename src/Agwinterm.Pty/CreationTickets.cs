@@ -11,6 +11,7 @@ internal sealed class CreationTickets<T> where T : class
         public readonly DateTimeOffset PreparedAt = preparedAt;
         public Phase State = Phase.Prepared;
         public T? Value;
+        public bool CleanupOwned;
     }
 
     public object Gate { get; } = new();
@@ -69,6 +70,7 @@ internal sealed class CreationTickets<T> where T : class
             StringComparer.OrdinalIgnoreCase.Equals(other.Id, e.Id)))
         { _entries.Remove(e.Ticket); return false; }
         e.State = Phase.Creating;
+        e.CleanupOwned = true; // creator owns all resources until publication or cleanup handoff
         return true;
     }
 
@@ -83,6 +85,7 @@ internal sealed class CreationTickets<T> where T : class
         e.Value = value;
         if (_stopped || e.State == Phase.Cancelling) { e.State = Phase.Cancelling; return false; }
         e.State = Phase.Live;
+        e.CleanupOwned = false;
         return true;
     }
 
@@ -93,10 +96,32 @@ internal sealed class CreationTickets<T> where T : class
         RequireGate();
         if (!_entries.TryGetValue(e.Ticket, out var current) || !ReferenceEquals(e, current)) return null;
         if (e.State == Phase.Prepared) { _entries.Remove(e.Ticket); return null; }
-        if (e.State == Phase.Cancelling) return null;
-        var value = e.State == Phase.Live ? e.Value : null;
         e.State = Phase.Cancelling;
-        return value;
+        if (e.CleanupOwned || e.Value is null) return null;
+        e.CleanupOwned = true;
+        return e.Value;
+    }
+
+    /// <summary>The exclusive disposer failed. Retain its exact object and make the obligation
+    /// claimable again; no caller may dispose it after releasing ownership here.</summary>
+    public void CleanupFailed(Entry e, T value)
+    {
+        RequireGate();
+        if (!_entries.TryGetValue(e.Ticket, out var current) || !ReferenceEquals(e, current)) return;
+        if (!e.CleanupOwned || (e.Value is not null && !ReferenceEquals(e.Value, value)))
+            throw new InvalidOperationException("Cleanup failure does not belong to the owner");
+        e.Value = value;
+        e.State = Phase.Cancelling;
+        e.CleanupOwned = false;
+    }
+
+    public IReadOnlyList<(Entry Attempt, T Value)> ClaimPendingCleanup()
+    {
+        RequireGate();
+        var result = new List<(Entry, T)>();
+        foreach (var e in _entries.Values.Where(e => e.State == Phase.Cancelling).ToArray())
+            if (Cancel(e) is { } value) result.Add((e, value));
+        return result;
     }
 
     /// <summary>Call only after the exact attempt's child/resources are proven disposed (or spawn

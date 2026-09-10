@@ -33,6 +33,108 @@ use proto::{
 
 const PROTOCOL_VERSION: u32 = 2;
 
+#[cfg(test)]
+mod creation_host_tests {
+    use super::*;
+    // Real ConPTY test: run only under the integration-suite lease locally.
+    #[test]
+    fn cancellation_between_spawn_and_publication_cleans_exact_child() {
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let host = Arc::new(Host {
+            app_id: "private-creation-barrier".into(),
+            state: Mutex::new(HostState {
+                sessions: HashMap::new(),
+                creations: creation::Tickets::new(),
+            }),
+            attach_seq: AtomicU64::new(0),
+            before_publication: Some(Box::new(move |h| {
+                reached_tx.send(h.clone()).unwrap();
+                let _ = release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(15));
+            })),
+        });
+        let ticket = "0123456789abcdef0123456789abcdef";
+        host.state
+            .lock()
+            .unwrap()
+            .creations
+            .prepare("barrier", ticket.into(), Instant::now())
+            .unwrap();
+        let creator = host.clone();
+        let join = std::thread::spawn(move || {
+            handle_create(
+                &creator,
+                proto::Create {
+                    id: "barrier".into(),
+                    creation_ticket: ticket.into(),
+                    app: "powershell.exe".into(),
+                    args: vec![
+                        "-NoLogo".into(),
+                        "-NoProfile".into(),
+                        "-NonInteractive".into(),
+                        "-Command".into(),
+                        "Start-Sleep -Seconds 120".into(),
+                    ],
+                    cols: 80,
+                    rows: 24,
+                    fresh_env_off: true,
+                    ..Default::default()
+                },
+            )
+        });
+        let reference = proto::CreationRef {
+            id: "barrier".into(),
+            ticket: ticket.into(),
+        };
+        let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let h = reached_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            {
+                let mut state = host.state.lock().unwrap();
+                assert!(state.sessions.is_empty());
+                assert_eq!(
+                    state
+                        .creations
+                        .find("barrier", ticket, Instant::now())
+                        .unwrap()
+                        .phase,
+                    creation::Phase::Creating
+                );
+            }
+            let reply = handle_cancel(&host, &reference);
+            assert!(
+                matches!(reply.body, Some(reply::Body::Creation(c)) if c.phase == proto::CreationPhase::CreationCancelling as i32)
+            );
+            h
+        }));
+        let _ = release_tx.send(());
+        let created = join.join();
+        let cleaned = handle_cancel(&host, &reference);
+        let h = match observed {
+            Ok(h) => h,
+            Err(e) => std::panic::resume_unwind(e),
+        };
+        assert!(!created.unwrap().ok);
+        assert!(
+            matches!(cleaned.body, Some(reply::Body::Creation(c)) if c.phase == proto::CreationPhase::CreationUnknown as i32)
+        );
+        assert!(host.state.lock().unwrap().sessions.is_empty());
+        // h retains the ORIGINAL process handle; never reopen its PID after cancellation.
+        let child = h.pty.lock().unwrap().child;
+        unsafe {
+            assert_eq!(
+                windows_sys::Win32::System::Threading::WaitForSingleObject(child, 5000),
+                windows_sys::Win32::Foundation::WAIT_OBJECT_0
+            );
+        }
+    }
+}
+
 struct Hosted {
     id: String,
     creation_ticket: String,
@@ -53,6 +155,8 @@ struct Host {
     app_id: String,
     state: Mutex<HostState>,
     attach_seq: AtomicU64,
+    #[cfg(test)]
+    before_publication: Option<Box<dyn Fn(&Arc<Hosted>) + Send + Sync>>,
 }
 struct HostState {
     sessions: HashMap<String, Arc<Hosted>>,
@@ -78,8 +182,28 @@ fn main() {
             creations: creation::Tickets::new(),
         }),
         attach_seq: AtomicU64::new(0),
+        #[cfg(test)]
+        before_publication: None,
     });
 
+    let cleanup_host = host.clone();
+    std::thread::Builder::new()
+        .name("creation-cleanup".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let pending = cleanup_host
+                    .state
+                    .lock()
+                    .unwrap()
+                    .creations
+                    .claim_pending_cleanup();
+                for (ticket, h) in pending {
+                    finish_cleanup(&cleanup_host, &ticket, &h);
+                }
+            }
+        })
+        .expect("creation cleanup worker must start before accepting requests");
     let control = format!("{app_id}-ptyhost");
     loop {
         let server = match PipeServer::create(&control) {
@@ -142,17 +266,16 @@ fn handle_control_client(host: Arc<Host>, stream: File) {
                 cleanup
             };
             for (ticket, s) in cleanup {
-                if dispose_hosted(&s) {
-                    host.state.lock().unwrap().creations.cleaned(&ticket);
-                }
+                finish_cleanup(&host, &ticket, &s);
             }
             let deadline = Instant::now();
+            let mut warned = false;
             while !host.state.lock().unwrap().creations.is_empty() {
-                if deadline.elapsed().as_secs() >= 30 {
+                if !warned && deadline.elapsed().as_secs() >= 30 {
                     eprintln!(
                         "shutdown cleanup remains pending; host retained for exact-ticket queries"
                     );
-                    return;
+                    warned = true; // diagnostic deadline, not abandonment of eventual shutdown
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
@@ -385,24 +508,17 @@ fn handle_cancel(host: &Arc<Host>, request: &proto::CreationRef) -> Reply {
         claimed
     };
     if let Some(h) = claimed {
-        if dispose_hosted(&h) {
-            host.state
-                .lock()
-                .unwrap()
-                .creations
-                .cleaned(&request.ticket);
-        }
+        finish_cleanup(host, &request.ticket, &h);
     }
     handle_query(host, request)
 }
-fn failed_creation_cleanup(host: &Arc<Host>, ticket: &str, h: &Arc<Hosted>) {
+fn finish_cleanup(host: &Arc<Host>, ticket: &str, h: &Arc<Hosted>) {
     let cleaned = dispose_hosted(h);
     let mut state = host.state.lock().unwrap();
     if cleaned {
         state.creations.cleaned(ticket);
     } else {
-        state.creations.complete(ticket, h.clone());
-        state.creations.cancel(ticket);
+        state.creations.cleanup_failed(ticket, h.clone());
     }
 }
 
@@ -542,7 +658,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         })
         .is_err()
     {
-        failed_creation_cleanup(host, &ticket, &hosted);
+        finish_cleanup(host, &ticket, &hosted);
         return err_reply("output drainer thread could not start");
     }
 
@@ -565,10 +681,14 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         })
         .is_err()
     {
-        failed_creation_cleanup(host, &ticket, &hosted);
+        finish_cleanup(host, &ticket, &hosted);
         return err_reply("exit watcher thread could not start");
     }
 
+    #[cfg(test)]
+    if let Some(barrier) = &host.before_publication {
+        barrier(&hosted);
+    }
     let publish = {
         let mut state = host.state.lock().unwrap();
         let publish = state.creations.complete(&ticket, hosted.clone());
@@ -578,9 +698,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         publish
     };
     if !publish {
-        if dispose_hosted(&hosted) {
-            host.state.lock().unwrap().creations.cleaned(&ticket);
-        }
+        finish_cleanup(host, &ticket, &hosted);
         return err_reply("creation cancelled; query exact ticket for cleanup completion");
     }
     ok_reply(Some(reply::Body::Create(CreateReply {

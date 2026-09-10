@@ -13,6 +13,7 @@ pub struct Entry<T> {
     pub id: String,
     pub phase: Phase,
     pub value: Option<T>,
+    cleanup_owned: bool,
     prepared: Instant,
 }
 pub struct Tickets<T> {
@@ -52,6 +53,7 @@ impl<T: Clone> Tickets<T> {
                 id: id.into(),
                 phase: Phase::Prepared,
                 value: None,
+                cleanup_owned: false,
                 prepared: now,
             },
         );
@@ -77,7 +79,9 @@ impl<T: Clone> Tickets<T> {
             self.entries.remove(ticket);
             return false;
         }
-        self.entries.get_mut(ticket).unwrap().phase = Phase::Creating;
+        let e = self.entries.get_mut(ticket).unwrap();
+        e.phase = Phase::Creating;
+        e.cleanup_owned = true;
         true
     }
     pub fn complete(&mut self, ticket: &str, value: T) -> bool {
@@ -92,6 +96,7 @@ impl<T: Clone> Tickets<T> {
             false
         } else {
             e.phase = Phase::Live;
+            e.cleanup_owned = false;
             true
         }
     }
@@ -102,16 +107,31 @@ impl<T: Clone> Tickets<T> {
             self.entries.remove(ticket);
             return None;
         }
-        if e.phase == Phase::Cancelling {
+        e.phase = Phase::Cancelling;
+        if e.cleanup_owned || e.value.is_none() {
             return None;
         }
-        let value = if e.phase == Phase::Live {
-            e.value.clone()
-        } else {
-            None
-        };
-        e.phase = Phase::Cancelling;
-        value
+        e.cleanup_owned = true;
+        e.value.clone()
+    }
+    pub fn cleanup_failed(&mut self, ticket: &str, value: T) {
+        if let Some(e) = self.entries.get_mut(ticket) {
+            assert!(e.cleanup_owned);
+            e.value = Some(value);
+            e.phase = Phase::Cancelling;
+            e.cleanup_owned = false;
+        }
+    }
+    pub fn claim_pending_cleanup(&mut self) -> Vec<(String, T)> {
+        let keys: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.phase == Phase::Cancelling)
+            .map(|(key, _)| key.clone())
+            .collect();
+        keys.into_iter()
+            .filter_map(|key| self.cancel(&key).map(|value| (key, value)))
+            .collect()
     }
     pub fn cleaned(&mut self, ticket: &str) {
         self.entries.remove(ticket);
@@ -131,6 +151,31 @@ impl<T: Clone> Tickets<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_cleanup_retains_exact_value_and_is_claimed_once() {
+        for published in [false, true] {
+            let now = Instant::now();
+            let mut t = Tickets::new();
+            t.prepare("pane", "a".into(), now).unwrap();
+            assert!(t.begin("pane", "a", now));
+            if published {
+                assert!(t.complete("a", 17));
+                assert_eq!(t.cancel("a"), Some(17));
+            } else {
+                assert_eq!(t.cancel("a"), None);
+            }
+            t.cleanup_failed("a", 17);
+            assert_eq!(t.find("pane", "a", now).unwrap().value, Some(17));
+            assert_eq!(t.claim_pending_cleanup(), vec![("a".into(), 17)]);
+            assert_eq!(t.cancel("a"), None);
+            assert!(t.claim_pending_cleanup().is_empty());
+            t.cleanup_failed("a", 17);
+            assert_eq!(t.stop(), vec![("a".into(), 17)]);
+            assert!(!t.is_empty());
+            t.cleaned("a");
+            assert!(t.is_empty());
+        }
+    }
     #[test]
     fn unknown_expired_and_cancelled_never_start() {
         let now = Instant::now();

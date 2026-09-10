@@ -143,4 +143,27 @@ public class CreationTicketsTests
         var ledger = new CreationTickets<object>();
         Assert.Throws<InvalidOperationException>(() => ledger.Prepare("pane", Now));
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FailedCleanupRetainsExactValueAndCanBeReclaimedOnce(bool published)
+    {
+        var ledger = new CreationTickets<object>(); var child = new object();
+        lock (ledger.Gate)
+        {
+            var e = ledger.Prepare("pane", Now)!; Assert.True(ledger.Begin(e));
+            if (published) { Assert.True(ledger.Complete(e, child)); Assert.Same(child, ledger.Cancel(e)); }
+            else Assert.Null(ledger.Cancel(e)); // failed spawn before Complete still belongs to creator
+            ledger.CleanupFailed(e, child);
+            Assert.Same(child, e.Value);
+            Assert.Equal(CreationTickets<object>.Phase.Cancelling, e.State);
+            var claimed = Assert.Single(ledger.ClaimPendingCleanup()); Assert.Same(child, claimed.Value);
+            Assert.Null(ledger.Cancel(e)); Assert.Empty(ledger.ClaimPendingCleanup());
+            ledger.CleanupFailed(e, child); // a second failure remains retryable through shutdown
+            Assert.Same(child, Assert.Single(ledger.Stop()).Value);
+            Assert.False(ledger.Drained.IsCompleted);
+            ledger.Cleaned(e); Assert.True(ledger.Drained.IsCompletedSuccessfully);
+        }
+    }
 }
