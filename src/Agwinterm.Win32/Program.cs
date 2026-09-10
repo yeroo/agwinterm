@@ -362,6 +362,8 @@ internal partial class Program : ISessionHost, IWindowHost
 
     private sealed class Ses
     {
+        private static int _nextUiaIdentity;
+        public readonly int UiaIdentity = Interlocked.Increment(ref _nextUiaIdentity);
         public required string Id;
         public required string Name;
         public required Workspace Ws;
@@ -1010,7 +1012,7 @@ internal partial class Program : ISessionHost, IWindowHost
             nodes.Add(new Uia.Node
             {
                 Kind = Uia.NodeKind.Session,
-                Index = i,
+                Index = s.UiaIdentity,
                 Name = s.Name,   // the name only — session.context is a note beside it, not a name; a reader gets it from tree --json / the palette line (P3)
                 Parent = list,
                 Focused = _chromeFocus && ReferenceEquals(_focusRow, s),
@@ -1091,11 +1093,11 @@ internal partial class Program : ISessionHost, IWindowHost
             case Uia.NodeKind.Terminal: ExitChromeFocus(announce: false); break;
             case Uia.NodeKind.Sidebar: EnterChromeFocus(); break;
             case Uia.NodeKind.Session:
-                var list = AllSessions();
-                if (index >= 0 && index < list.Count)
+                var session = AllSessions().FirstOrDefault(s => s.UiaIdentity == index);
+                if (session is not null)
                 {
                     if (_sidebarW <= 0) ToggleSidebar();
-                    _chromeFocus = true; _focusRow = list[index]; RequestRedraw();
+                    _chromeFocus = true; _focusRow = session; RequestRedraw();
                 }
                 break;
         }
@@ -1104,8 +1106,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private void RaiseUiaFocusForRow()
     {
         if (_focusRow is null) return;
-        int idx = AllSessions().IndexOf(_focusRow);
-        if (idx >= 0) _uia.RaiseFocus(Uia.NodeKind.Session, idx);
+        if (AllSessions().Contains(_focusRow)) _uia.RaiseFocus(Uia.NodeKind.Session, _focusRow.UiaIdentity);
     }
 
     /// <summary>Build the UIA text-pattern snapshot: the active pane's buffer (recent scrollback + the
@@ -1389,8 +1390,14 @@ internal partial class Program : ISessionHost, IWindowHost
 
     // UIA may call back synchronously while the UI thread raises an accessibility event.
     // Queue only foreign-thread reads; queueing and waiting on ourselves would deadlock.
-    private T ReadUia<T>(Func<T> read) => Environment.CurrentManagedThreadId == _uiaThreadId
-        ? read() : InvokeOnUiQueued(read);
+    private T ReadUia<T>(Func<T> read)
+    {
+        try { return Environment.CurrentManagedThreadId == _uiaThreadId ? read() : InvokeOnUiQueued(read); }
+        catch (Exception) when (_uia.IsClosed || _uiGone.IsCancellationRequested)
+        {
+            throw new COMException("The accessibility window is closed.", unchecked((int)0x80040201));
+        }
+    }
 
     private void ConfigureUia()
     {

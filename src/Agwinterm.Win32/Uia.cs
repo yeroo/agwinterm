@@ -6,8 +6,8 @@ namespace Agwinterm.Win32;
 /// <summary>
 /// UIA accessibility (T2-14): a minimal UI Automation provider so screen readers (Narrator, NVDA) can
 /// see agwinterm as a document control and read the visible terminal content. Exposed via WM_GETOBJECT.
-/// Raw source-generated COM — NO WPF/UIAutomationProvider dependency (which would bloat the exe). A full
-/// ITextProvider (line/caret navigation) is the follow-on stage.
+/// Raw source-generated COM — no WPF/UIAutomationProvider dependency. Includes the fragment tree,
+/// invoke pattern and ITextProvider/ITextRangeProvider for line/caret navigation.
 /// </summary>
 internal partial class Uia : IDisposable
 {

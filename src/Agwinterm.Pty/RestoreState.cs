@@ -42,7 +42,7 @@ namespace Agwinterm.Pty;
 /// <summary>One pane of a session. <c>Command</c> is the captured foreground command (restore-commands;
 /// <c>""</c> = nothing captured), <c>RestoreCommand</c> the explicit pin (independent of the toggle),
 /// <c>AgentResume</c> the bound resumable agent. Cwd/FontSize are per pane since splits.</summary>
-public sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } public bool? FontZoomed { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public string? RestoreCommand { get; set; } public List<string>? Buffer { get; set; } public string? BufferBlob { get; set; } }
+public sealed class PaneState { public string Id { get; set; } = ""; public string Cwd { get; set; } = ""; public float FontSize { get; set; } [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? FontZoomed { get; set; } public float Ratio { get; set; } = 1f; public string Command { get; set; } = ""; public string? AgentResume { get; set; } public string? RestoreCommand { get; set; } public List<string>? Buffer { get; set; } public string? BufferBlob { get; set; } }
 
 // Cwd/FontSize kept for backward-compat with pre-splits state.json (one pane per session).
 public sealed class SessionState

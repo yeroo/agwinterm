@@ -162,9 +162,9 @@ internal partial class UiaTextRange : ITextRangeProvider
     public UiaTextRange(Uia owner, int start, int end) { Owner = owner; _start = Math.Min(start, end); _end = Math.Max(start, end); }
 
 
-    public nint Clone() => Uia.AsInterface(new UiaTextRange(Owner, _start, _end), Uia.IID_ITextRangeProvider);
+    public nint Clone() { Owner.EnsureAlive(); return Uia.AsInterface(new UiaTextRange(Owner, _start, _end), Uia.IID_ITextRangeProvider); }
 
-    public int Compare(ITextRangeProvider range) => range is UiaTextRange r && ReferenceEquals(Owner, r.Owner) && !Owner.IsClosed && r._start == _start && r._end == _end ? 1 : 0;
+    public int Compare(ITextRangeProvider range) { Owner.EnsureAlive(); return range is UiaTextRange r && ReferenceEquals(Owner, r.Owner) && r._start == _start && r._end == _end ? 1 : 0; }
 
     public int CompareEndpoints(TextPatternRangeEndpoint endpoint, ITextRangeProvider targetRange, TextPatternRangeEndpoint targetEndpoint)
     {

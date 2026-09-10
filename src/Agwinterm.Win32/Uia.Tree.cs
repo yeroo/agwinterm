@@ -44,7 +44,7 @@ partial class Uia
     internal sealed class Node
     {
         public NodeKind Kind;
-        public int Index;                 // per-kind ordinal (session / button / settings-row index)
+        public int Index;                 // session lifetime token; per-kind ordinal for fixed controls
         public string Name = "";
         public bool Focused, Selected;
         public UiaRect Rect;              // screen px (all zero → fall back to the host/window rect)
@@ -122,7 +122,13 @@ internal abstract class UiaNodeBase
     protected readonly int Index;
     protected UiaNodeBase(Uia owner, Uia.NodeKind kind, int index) { Owner = owner; Kind = kind; Index = index; }
 
-    protected Uia.Node? Self(Uia.TreeSnapshot t) => Uia.Find(t, Kind, Index);
+    protected Uia.Node? Self(Uia.TreeSnapshot t)
+    {
+        var node = Uia.Find(t, Kind, Index);
+        if (node is null && Kind == Uia.NodeKind.Session)
+            throw new COMException("The accessibility session is closed.", unchecked((int)0x80040201));
+        return node;
+    }
 
     public nint Navigate(NavigateDirection direction)
     {
@@ -153,13 +159,18 @@ internal abstract class UiaNodeBase
 
     private nint NodePtr(Uia.TreeSnapshot t, int nodeIdx) => Owner.FragmentPtr(t.Nodes[nodeIdx].Kind, t.Nodes[nodeIdx].Index);
 
-    public nint GetRuntimeId() => UiaArrays.IntArray(new[] { 42, Owner.Identity, (int)Kind, Index });   // stable identity
+    public nint GetRuntimeId()
+    {
+        Owner.EnsureAlive();
+        // HWND roots use the host identity; children append to it (UiaAppendRuntimeId = 3).
+        return Kind == Uia.NodeKind.Root ? 0 : UiaArrays.IntArray(new[] { 3, Owner.Identity, (int)Kind, Index });
+    }
 
     public UiaRect GetBoundingRectangle() { var n = Self(Owner.Tree()); return n?.Rect ?? default; }
 
     public nint GetEmbeddedFragmentRoots() => 0;
 
-    public void SetFocus() { Owner.EnsureAlive(); Owner.OnSetFocus?.Invoke(Kind, Index); }
+    public void SetFocus() { Owner.EnsureAlive(); if (Kind == Uia.NodeKind.Session) Self(Owner.Tree()); Owner.OnSetFocus?.Invoke(Kind, Index); }
 
     public nint GetFragmentRoot() => Owner.FragmentRootPtr();
 

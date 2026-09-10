@@ -59,11 +59,32 @@ public class UiaContextTests
             Assert.IsType<ArgumentException>(Assert.Throws<TargetInvocationException>(() => Call(ra, "CompareEndpoints", start, rb, start)).InnerException);
             aText = "A-updated"; Assert.Equal(aText, Call(ra, "GetText", -1));
             ((IDisposable)b).Dispose(); Closed(() => Call(rb, "GetText", -1));
+            Closed(() => Call(rb, "Clone")); Closed(() => Call(rb, "Compare", rb));
             Assert.Equal(aText, Call(ra, "GetText", -1)); Assert.Equal("quick-pane", Call(rq, "GetText", -1));
             ((IDisposable)a).Dispose(); Closed(() => Call(ra, "GetText", -1));
             Assert.Equal("quick-pane", Call(rq, "GetText", -1));
         }
         finally { ((IDisposable)a).Dispose(); ((IDisposable)b).Dispose(); ((IDisposable)quick).Dispose(); }
+    }
+
+    [Fact]
+    public void SessionFragmentsKeepTokensAcrossReorderingAndRetireOnRemoval()
+    {
+        var owner = New("Uia"); var kind = Enum.ToObject(Type("Uia+NodeKind"), 3);
+        object Node(int token, double x) { var n = New("Uia+Node"); Set(n, "Kind", kind); Set(n, "Index", token); var r = New("UiaRect"); Set(r, "Left", x); Set(n, "Rect", r); return n; }
+        var first = Node(11, 10); var retained = Node(22, 20);
+        object[] current = [first, retained];
+        Callback(owner, "GetTree", () => { var t = New("Uia+TreeSnapshot"); var nodes = Array.CreateInstance(Type("Uia+Node"), current.Length); for (int i = 0; i < current.Length; i++) nodes.SetValue(current[i], i); Set(t, "Nodes", nodes); return t; });
+        var fragment = New("UiaFragment", owner, kind, 22);
+        try
+        {
+            current = [retained, first];
+            var rect = Call(fragment, "GetBoundingRectangle")!;
+            Assert.Equal(20d, rect.GetType().GetField("Left")!.GetValue(rect));
+            current = [first];
+            Closed(() => Call(fragment, "GetBoundingRectangle")); Closed(() => Call(fragment, "SetFocus"));
+        }
+        finally { ((IDisposable)owner).Dispose(); }
     }
 
     [Fact]

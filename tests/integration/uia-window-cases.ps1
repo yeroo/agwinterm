@@ -1,7 +1,10 @@
 # Actual UI Automation clients, only for HWNDs belonging to hud-ui's owned app/job.
 # This is provider integration, not a claim that Narrator/NVDA presentation was manually tested.
-Add-Type -Path "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/WPF/UIAutomationClient.dll"
-Add-Type -Path "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/WPF/UIAutomationTypes.dll"
+# PowerShell Core ships its matching desktop assemblies. Mixing Framework 4.x with that
+# runtime can bind Client 10.0 to Types 4.0 and fail only when FromHandle resolves a type.
+$uiaAssemblies=if($PSVersionTable.PSEdition-eq 'Core'){$PSHOME}else{"$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/WPF"}
+Add-Type -Path "$uiaAssemblies/UIAutomationTypes.dll"
+Add-Type -Path "$uiaAssemblies/UIAutomationClient.dll"
 Add-Type -TypeDefinition @'
 using System;using System.Collections.Generic;using System.Runtime.InteropServices;using System.Text;
 public static class NavUiaWindows {
@@ -60,6 +63,17 @@ try {
         $group.Current.ControlType-eq [System.Windows.Automation.ControlType]::Group -and $a.range.GetText(-1).Contains('UIA-ONLY-A')
     })
     [void][HudOwnedJob]::SendMessageW($uiaHandles[1],0x100,[IntPtr]27,[IntPtr]1)
+    # Remove the earlier row; a retained provider must still identify the same session, not its ordinal.
+    $retainedRuntime=$focusNode.GetRuntimeId()-join ','
+    $null=Rpc 'session.close' @{} $uiaSessions[0] -Window $uiaWindows[0]
+    $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $uiaWindows[0]
+    $focusNode.SetFocus()
+    Check 'retained sidebar item keeps session identity after earlier row closes' (NavWait {$focusNode.Current.Name-eq 'UIA-focus-alternate' -and $focusNode.Current.HasKeyboardFocus -and ($focusNode.GetRuntimeId()-join ',')-eq $retainedRuntime})
+    $replacement=[string](Rpc 'session.new' @{name='UIA-unrelated-replacement'} -Window $uiaWindows[0])
+    $null=Rpc 'session.close' @{} $alternate -Window $uiaWindows[0]
+    $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $uiaWindows[0]
+    $refused=$false;try{$null=$focusNode.Current.Name}catch{$refused=$true}
+    Check 'removed sidebar item refuses instead of describing replacement' $refused
     # Retain ranges across close; neither may attach itself to another library/quick context.
     foreach($index in 1,0){
         $null=Rpc 'window.close' @{} $uiaWindows[$index] -Window $libraryWindow
@@ -67,6 +81,8 @@ try {
         $retired=if($index-eq 1){$b.range}else{$a.range}
         $refused=$false;try{$null=$retired.GetText(-1)}catch{$refused=$true}
         Check "retained range refuses after owning window $index closes" $refused
+        $refused=$false;try{$null=$retired.Clone()}catch{$refused=$true}
+        Check "retained range cannot clone after owning window $index closes" $refused
         Check 'quick UIA remains readable after another window closes' ($quickDoc.range.GetText(-1).Contains('UIA-ONLY-QUICK'))
     }
 } finally {
