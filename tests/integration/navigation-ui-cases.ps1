@@ -98,6 +98,7 @@ Check 'readonly typo cannot remove existing protection' (-not (Rpc 'session.read
 $null=Rpc 'session.readonly' @{op='off'} $session
 Check 'missing readonly target refuses without protecting the active pane' (-not (Rpc 'session.readonly' @{op='on'} 'missing-pane' -AllowError).ok -and (Rpc 'session.readonly' @{op='state'} $session)-eq 'off')
 $null=Rpc 'session.write' @{text="`r`nSTABILIZATION-SEARCH-MARKER`r`n"} $session
+$null=Rpc 'config.set' @{key='cursor-blink';value='false'} # FIFO barrier: search's sent message can overtake the posted write.
 $findBefore=Rpc 'session.search' @{query='STABILIZATION-SEARCH-MARKER'} $session
 Check 'search mutation guard has a real match' ($findBefore-match 'of [1-9]')
 Check 'missing search target refuses without replacing active query' (-not (Rpc 'session.search' @{query='MISSING-SEARCH-QUERY'} 'missing-pane' -AllowError).ok -and (Rpc 'session.search' @{} $session)-eq $findBefore)
@@ -278,6 +279,7 @@ $null=Rpc 'session.type' @{text="exit`r"} $session
 Check 'exited shell does not retain shell-name hint' (NavWait {$null-eq (Node $session).foregroundShell})
 
 $fontOriginal=Rpc 'config.get' @{key='font-family'}
+$fontSizeOriginal=Rpc 'config.get' @{key='font-size'}
 $libraryWindow=[string](@((Rpc 'window.list').windows|Where-Object open)[0].id)
 $installed=[Drawing.Text.InstalledFontCollection]::new()
 try {
@@ -317,9 +319,54 @@ try {
         $null=Rpc 'font' @{op='reset'} -Window quick
         $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window quick
         Check 'shared font change already regrids quick' (NavWait {(Rpc 'session.metrics' -Window quick|ConvertTo-Json -Compress)-eq $quickMetrics})
+        $peerBefore=Rpc 'session.metrics' -Window $fontWindow
+        $quickBefore=Rpc 'session.metrics' -Window quick
+        $null=Rpc 'config.set' @{key='font-size';value=([int]$fontSizeOriginal+3).ToString()} -Window $libraryWindow
+        Check 'live default font size reaches existing peer and quick panes' ((Rpc 'session.metrics' -Window $fontWindow).cellHeight-gt $peerBefore.cellHeight -and (Rpc 'session.metrics' -Window quick).cellHeight-gt $quickBefore.cellHeight)
+        $null=Rpc 'font' @{op='inc'} -Window $fontWindow
+        $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $fontWindow
+        $zoomed=Rpc 'session.metrics' -Window $fontWindow
+        $null=Rpc 'config.set' @{key='font-size';value=([int]$fontSizeOriginal+5).ToString()} -Window $libraryWindow
+        Check 'live default preserves explicit peer zoom' ((Rpc 'session.metrics' -Window $fontWindow).cellHeight-eq $zoomed.cellHeight)
+        $null=Rpc 'font' @{op='reset'} -Window $fontWindow
+        $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $fontWindow
+        Check 'reset resumes current default size' ((Rpc 'session.metrics' -Window $fontWindow).cellHeight-eq (Rpc 'session.metrics' -Window quick).cellHeight)
+        $fontOwner=[string](Rpc 'tree' -Window $fontWindow).workspaces[0].sessions[0].id
+        foreach($surfaceKind in 'scratch','pane overlay','session overlay'){
+            $null=Rpc 'config.set' @{key='font-size';value='20'} -Window $libraryWindow
+            if($surfaceKind-eq 'scratch'){$null=Rpc 'session.scratch' @{op='on'} $fontOwner -Window $fontWindow}
+            else{
+                $overlayArgs=@{action='open';command='cmd /d /k echo FONT-SURFACE-READY'}
+                if($surfaceKind-eq 'pane overlay'){$overlayArgs.pane='left'}
+                $null=Rpc 'session.overlay' $overlayArgs $fontOwner -Window $fontWindow
+            }
+            $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $fontWindow
+            $beforeSurface=Rpc 'session.metrics' -Window $fontWindow
+            $null=Rpc 'config.set' @{key='font-size';value='22'} -Window $libraryWindow
+            Check "inherited $surfaceKind follows live font default" ((Rpc 'session.metrics' -Window $fontWindow).cellHeight-gt $beforeSurface.cellHeight)
+            $null=Rpc 'font' @{op='inc'} -Window $fontWindow
+            $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $fontWindow
+            $surfaceZoom=Rpc 'session.metrics' -Window $fontWindow
+            $null=Rpc 'config.set' @{key='font-size';value='24'} -Window $libraryWindow
+            Check "explicit $surfaceKind zoom survives default change" ((Rpc 'session.metrics' -Window $fontWindow).cellHeight-eq $surfaceZoom.cellHeight)
+            $null=Rpc 'font' @{op='reset'} -Window $fontWindow
+            $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $fontWindow
+            Check "$surfaceKind reset resumes inheritance" ((Rpc 'session.metrics' -Window $fontWindow).cellHeight-eq (Rpc 'session.metrics' -Window quick).cellHeight)
+            if($surfaceKind-eq 'scratch'){$null=Rpc 'session.scratch' @{op='off'} $fontOwner -Window $fontWindow}
+            else{
+                $closeArgs=@{action='close'};if($surfaceKind-eq 'pane overlay'){$closeArgs.pane='left'}
+                $null=Rpc 'session.overlay' $closeArgs $fontOwner -Window $fontWindow
+            }
+            $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $fontWindow
+        }
         $null=Rpc 'quick' @{op='off'} -Window $libraryWindow
     } finally {
         $null=Rpc 'window.close' @{} $fontWindow
         $null=Rpc 'window.select' @{} $libraryWindow
     }
-} finally {$installed.Dispose();$null=Rpc 'config.set' @{key='font-family';value=$fontOriginal} -Window $libraryWindow}
+} finally {
+    $installed.Dispose()
+    $null=Rpc 'config.set' @{key='font-family';value=$fontOriginal} -Window $libraryWindow
+    $null=Rpc 'config.set' @{key='font-size';value=$fontSizeOriginal} -Window $libraryWindow
+}
+. "$PSScriptRoot/uia-window-cases.ps1"

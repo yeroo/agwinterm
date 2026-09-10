@@ -147,6 +147,18 @@ public class RestoreStateTests
 
     // ---- Context ----
 
+    [Theory]
+    [InlineData(null)] [InlineData(false)] [InlineData(true)]
+    public void FontZoomedPreservesAbsentAndExplicitWireValues(bool? zoomed)
+    {
+        var state = Tree(); state.Workspaces[0].Sessions[0].Panes[0].FontZoomed = zoomed;
+        string json = RestoreState.Serialize(state);
+        Assert.Equal(zoomed, Load(json).Workspaces[0].Sessions[0].Panes[0].FontZoomed);
+        if (zoomed is null) Assert.DoesNotContain("FontZoomed", json);
+        else Assert.Contains("\"FontZoomed\": " + (zoomed.Value ? "true" : "false"), json);
+        Assert.Equal(json, RestoreState.Serialize(Load(json)));
+    }
+
     [Fact]
     public void RoundTrip_PreservesContext()
     {

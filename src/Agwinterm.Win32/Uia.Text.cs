@@ -40,8 +40,8 @@ partial class Uia
         }
     }
 
-    internal static Func<TextSnapshot?>? GetTextSnapshot;
-    internal static TextSnapshot Snap() => GetTextSnapshot?.Invoke() ?? EmptySnap;
+    internal Func<TextSnapshot?>? GetTextSnapshot;
+    internal TextSnapshot Snap() { EnsureAlive(); var snap = GetTextSnapshot?.Invoke() ?? EmptySnap; EnsureAlive(); return snap; }
     private static readonly TextSnapshot EmptySnap = new() { Lines = new[] { "" }, LineStart = new[] { 0, 1 } };
 
     internal static readonly Guid IID_ITextProvider = new("3589c92c-63f3-4367-99bb-ada653b77cf2");
@@ -56,10 +56,12 @@ partial class Uia
     }
 
     /// <summary>Notify listeners that the terminal text changed (so a reader re-reads new output).</summary>
-    internal static void RaiseTextChanged()
+    internal void RaiseTextChanged()
     {
-        if (_providerSimple == 0) return;
-        try { UiaRaiseAutomationEvent(_providerSimple, UIA_Text_TextChangedEventId); } catch { }
+        nint provider = BorrowProvider();
+        if (provider == 0) return;
+        try { UiaRaiseAutomationEvent(provider, UIA_Text_TextChangedEventId); } catch { }
+        finally { Marshal.Release(provider); }
     }
 
     private const int UIA_Text_TextChangedEventId = 20015;
@@ -119,33 +121,33 @@ internal partial class UiaTerminal : ITextProvider
 {
     public nint GetSelection()
     {
-        var s = Uia.Snap();
+        var s = Owner.Snap();
         // A degenerate range at the caret — Narrator announces the caret line.
-        return UiaArrays.RangeArray(new[] { new UiaTextRange(s.CaretOffset, s.CaretOffset) });
+        return UiaArrays.RangeArray(new[] { new UiaTextRange(Owner, s.CaretOffset, s.CaretOffset) });
     }
 
     public nint GetVisibleRanges()
     {
-        var s = Uia.Snap();
+        var s = Owner.Snap();
         int firstOff = s.LineStart[Math.Clamp(s.FirstVisibleLine, 0, s.Lines.Length - 1)];
         int lastLine = Math.Clamp(s.FirstVisibleLine + s.VisibleRows - 1, 0, s.Lines.Length - 1);
         int lastOff = s.LineStart[lastLine] + s.Lines[lastLine].Length;
-        return UiaArrays.RangeArray(new[] { new UiaTextRange(firstOff, lastOff) });
+        return UiaArrays.RangeArray(new[] { new UiaTextRange(Owner, firstOff, lastOff) });
     }
 
-    public nint RangeFromChild(nint childElement) => Uia.AsInterface(new UiaTextRange(0, 0), Uia.IID_ITextRangeProvider);
+    public nint RangeFromChild(nint childElement) => Uia.AsInterface(new UiaTextRange(Owner, 0, 0), Uia.IID_ITextRangeProvider);
 
     public nint RangeFromPoint(UiaPoint point)
     {
-        var s = Uia.Snap();
+        var s = Owner.Snap();
         int row = (int)((point.Y - s.ScreenY) / Math.Max(1, s.CellH));
         int col = (int)((point.X - s.ScreenX) / Math.Max(1, s.CellW));
         int line = Math.Clamp(s.FirstVisibleLine + Math.Max(0, row), 0, s.Lines.Length - 1);
         int off = s.LineStart[line] + Math.Clamp(col, 0, s.Lines[line].Length);
-        return Uia.AsInterface(new UiaTextRange(off, off), Uia.IID_ITextRangeProvider);
+        return Uia.AsInterface(new UiaTextRange(Owner, off, off), Uia.IID_ITextRangeProvider);
     }
 
-    public nint GetDocumentRange() => Uia.AsInterface(new UiaTextRange(0, Uia.Snap().TotalLength), Uia.IID_ITextRangeProvider);
+    public nint GetDocumentRange() => Uia.AsInterface(new UiaTextRange(Owner, 0, Owner.Snap().TotalLength), Uia.IID_ITextRangeProvider);
 
     public SupportedTextSelection GetSupportedTextSelection() => SupportedTextSelection.Single;
 }
@@ -155,25 +157,27 @@ internal partial class UiaTerminal : ITextProvider
 [GeneratedComClass]
 internal partial class UiaTextRange : ITextRangeProvider
 {
+    private readonly Uia Owner;
     private int _start, _end;
-    public UiaTextRange(int start, int end) { _start = Math.Min(start, end); _end = Math.Max(start, end); }
+    public UiaTextRange(Uia owner, int start, int end) { Owner = owner; _start = Math.Min(start, end); _end = Math.Max(start, end); }
 
-    private static int ClampOff(int off) { var s = Uia.Snap(); return Math.Clamp(off, 0, s.TotalLength); }
 
-    public nint Clone() => Uia.AsInterface(new UiaTextRange(_start, _end), Uia.IID_ITextRangeProvider);
+    public nint Clone() { Owner.EnsureAlive(); return Uia.AsInterface(new UiaTextRange(Owner, _start, _end), Uia.IID_ITextRangeProvider); }
 
-    public int Compare(ITextRangeProvider range) => range is UiaTextRange r && r._start == _start && r._end == _end ? 1 : 0;
+    public int Compare(ITextRangeProvider range) { Owner.EnsureAlive(); return range is UiaTextRange r && ReferenceEquals(Owner, r.Owner) && r._start == _start && r._end == _end ? 1 : 0; }
 
     public int CompareEndpoints(TextPatternRangeEndpoint endpoint, ITextRangeProvider targetRange, TextPatternRangeEndpoint targetEndpoint)
     {
+        Owner.EnsureAlive();
+        if (targetRange is not UiaTextRange r || !ReferenceEquals(Owner, r.Owner)) throw new ArgumentException("Ranges belong to different windows.", nameof(targetRange));
         int a = endpoint == TextPatternRangeEndpoint.Start ? _start : _end;
-        int b = targetRange is UiaTextRange r ? (targetEndpoint == TextPatternRangeEndpoint.Start ? r._start : r._end) : 0;
+        int b = targetEndpoint == TextPatternRangeEndpoint.Start ? r._start : r._end;
         return a.CompareTo(b);
     }
 
     public void ExpandToEnclosingUnit(TextUnit unit)
     {
-        var s = Uia.Snap();
+        var s = Owner.Snap();
         switch (unit)
         {
             case TextUnit.Character:
@@ -207,14 +211,14 @@ internal partial class UiaTextRange : ITextRangeProvider
 
     public nint FindText(string text, int backward, int ignoreCase)
     {
-        var s = Uia.Snap();
+        var s = Owner.Snap();
         string hay = s.Text;
         int from = Math.Clamp(_start, 0, hay.Length), to = Math.Clamp(_end, 0, hay.Length);
         string window = hay.Substring(from, Math.Max(0, to - from));
         var cmp = ignoreCase != 0 ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         int idx = backward != 0 ? window.LastIndexOf(text ?? "", cmp) : window.IndexOf(text ?? "", cmp);
         if (idx < 0 || string.IsNullOrEmpty(text)) return 0;
-        return Uia.AsInterface(new UiaTextRange(from + idx, from + idx + text.Length), Uia.IID_ITextRangeProvider);
+        return Uia.AsInterface(new UiaTextRange(Owner, from + idx, from + idx + text.Length), Uia.IID_ITextRangeProvider);
     }
 
     public void GetAttributeValue(int attributeId, nint pRetVal)
@@ -226,7 +230,7 @@ internal partial class UiaTextRange : ITextRangeProvider
 
     public nint GetBoundingRectangles()
     {
-        var s = Uia.Snap();
+        var s = Owner.Snap();
         var rects = new List<double>();
         var (l0, c0) = s.LineColOf(_start);
         var (l1, c1) = s.LineColOf(_end);
@@ -245,11 +249,11 @@ internal partial class UiaTextRange : ITextRangeProvider
         return UiaArrays.DoubleArray(rects.ToArray());
     }
 
-    public nint GetEnclosingElement() => Uia.RootProvider();
+    public nint GetEnclosingElement() => Owner.RootProvider();
 
     public string GetText(int maxLength)
     {
-        var s = Uia.Snap();
+        var s = Owner.Snap();
         string hay = s.Text;
         int from = Math.Clamp(_start, 0, hay.Length), to = Math.Clamp(_end, 0, hay.Length);
         string t = hay.Substring(from, Math.Max(0, to - from));
@@ -259,7 +263,7 @@ internal partial class UiaTextRange : ITextRangeProvider
     public int Move(TextUnit unit, int count)
     {
         // Move the whole (collapsed-to-start) range by `count` units; return units actually moved.
-        var s = Uia.Snap();
+        var s = Owner.Snap();
         if (unit == TextUnit.Character)
         {
             int target = Math.Clamp(_start + count, 0, s.TotalLength);
@@ -278,7 +282,7 @@ internal partial class UiaTextRange : ITextRangeProvider
 
     public int MoveEndpointByUnit(TextPatternRangeEndpoint endpoint, TextUnit unit, int count)
     {
-        var s = Uia.Snap();
+        var s = Owner.Snap();
         int cur = endpoint == TextPatternRangeEndpoint.Start ? _start : _end;
         int target;
         if (unit == TextUnit.Character) target = Math.Clamp(cur + count, 0, s.TotalLength);
@@ -296,7 +300,8 @@ internal partial class UiaTextRange : ITextRangeProvider
 
     public void MoveEndpointByRange(TextPatternRangeEndpoint endpoint, ITextRangeProvider targetRange, TextPatternRangeEndpoint targetEndpoint)
     {
-        if (targetRange is not UiaTextRange r) return;
+        Owner.EnsureAlive();
+        if (targetRange is not UiaTextRange r || !ReferenceEquals(Owner, r.Owner)) throw new ArgumentException("Ranges belong to different windows.", nameof(targetRange));
         int v = targetEndpoint == TextPatternRangeEndpoint.Start ? r._start : r._end;
         if (endpoint == TextPatternRangeEndpoint.Start) { _start = v; if (_end < _start) _end = _start; }
         else { _end = v; if (_start > _end) _start = _end; }

@@ -121,6 +121,10 @@ public class PtyHostTests : IDisposable
             Assert.Contains("before-detach", TypeUntilEcho(first.Data, "echo before-detach", "before-detach"));
         }   // disposing the data pipe = detach; the shell must keep running
 
+        // Closing the client handle signals EOF asynchronously; a control List can overtake
+        // the host data-reader's detach transition. Observe it rather than assuming a barrier.
+        Assert.True(SpinWait.SpinUntil(() => !Assert.Single(client.List()).Attached, 3000),
+            "host did not observe attachment EOF within the detach deadline");
         var info = Assert.Single(client.List());
         Assert.False(info.HasExited);
         Assert.False(info.Attached);

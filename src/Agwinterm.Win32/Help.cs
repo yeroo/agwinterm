@@ -26,14 +26,14 @@ internal partial class Program
     {
         _helpLines = BuildHelpLines();
         _helpOpen = true; _helpScroll = 0;
-        if (Uia.ClientsListening) Uia.Announce(NarratorGuide());
+        if (Uia.ClientsListening) _uia.Announce(NarratorGuide());
         RequestRedraw();
     }
 
     private void CloseHelp()
     {
         _helpOpen = false;
-        Uia.Announce("Help closed");
+        _uia.Announce("Help closed");
         RequestRedraw();
     }
 

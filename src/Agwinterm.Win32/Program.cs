@@ -336,6 +336,7 @@ internal partial class Program : ISessionHost, IWindowHost
         // instead, and treats a task that faulted anyway as the same end.
         public Task? Start;
         public float FontSize;     // per-pane font zoom (pt)
+        public bool FontZoomed;   // reset resumes inheritance; equal numeric sizes alone do not
         public float Ratio = 1f;   // this pane's OWN share of the session's extent along its axis (width when vertical, height when horizontal); PaneLayout normalises by the sum
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
         public long LastScrollGen; // emulator ScrollGeneration last seen on output (detects real scroll vs in-place repaint)
@@ -361,6 +362,8 @@ internal partial class Program : ISessionHost, IWindowHost
 
     private sealed class Ses
     {
+        private static int _nextUiaIdentity;
+        public readonly int UiaIdentity = Interlocked.Increment(ref _nextUiaIdentity);
         public required string Id;
         public required string Name;
         public required Workspace Ws;
@@ -706,6 +709,7 @@ internal partial class Program : ISessionHost, IWindowHost
         DragAcceptFiles(_hwnd, true);   // drop files/folders onto a pane -> quoted paths pasted
 
         CreateRenderTarget();
+        ConfigureUia(); // every library window and the detached quick host
         if (!_isQuickWindow) StartSession();
 
         ApplySystemTheme();   // if "follow Windows light/dark" is on, pick light/dark before the first paint
@@ -949,6 +953,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     Parent = grp,
                     Name = SetTabNames[i] + (i == _setTab ? " tab, selected" : " tab"),
                     Selected = i == _setTab,
+                    Focused = _setNav == i,
                     Rect = ScreenRect(_setCard.Left + 8f, _navHit[i * 2], SetNavW - 16f, _navHit[i * 2 + 1] - _navHit[i * 2]),
                 });
             }
@@ -960,10 +965,10 @@ internal partial class Program : ISessionHost, IWindowHost
                 nodes.Add(new Uia.Node
                 {
                     Kind = Uia.NodeKind.SettingsControl,
-                    Index = i,
+                    Index = r.UiaIdentity,
                     Parent = grp,
                     Name = SettingsControlName(r),
-                    Focused = ReferenceEquals(r, _setFocus),
+                    Focused = _setNav < 0 && ReferenceEquals(r, _setFocus),
                     Rect = r.Vis ? ScreenRect(r.Hx0, r.Hy0, Math.Max(1, r.Hx1 - r.Hx0), Math.Max(1, r.Hy1 - r.Hy0)) : default,
                 });
             }
@@ -1007,7 +1012,7 @@ internal partial class Program : ISessionHost, IWindowHost
             nodes.Add(new Uia.Node
             {
                 Kind = Uia.NodeKind.Session,
-                Index = i,
+                Index = s.UiaIdentity,
                 Name = s.Name,   // the name only — session.context is a note beside it, not a name; a reader gets it from tree --json / the palette line (P3)
                 Parent = list,
                 Focused = _chromeFocus && ReferenceEquals(_focusRow, s),
@@ -1023,10 +1028,18 @@ internal partial class Program : ISessionHost, IWindowHost
         for (int i = 0; i < btns.Count; i++)
         {
             rootKids.Add(nodes.Count);
-            nodes.Add(new Uia.Node { Kind = Uia.NodeKind.ChromeButton, Index = i, Name = btns[i].label, Parent = 0, Rect = btns[i].rect });
+            nodes.Add(new Uia.Node { Kind = Uia.NodeKind.ChromeButton, Index = ChromeUiaIdentity(btns[i].action), Name = btns[i].label, Parent = 0, Rect = btns[i].rect });
         }
         nodes[0].Children = rootKids.ToArray();
         return new Uia.TreeSnapshot { Nodes = nodes.ToArray() };
+    }
+
+    private readonly Dictionary<string, int> _chromeUiaIdentities = new(StringComparer.Ordinal);
+    private int ChromeUiaIdentity(string action)
+    {
+        if (!_chromeUiaIdentities.TryGetValue(action, out int identity))
+            _chromeUiaIdentities.Add(action, identity = _chromeUiaIdentities.Count + 1);
+        return identity;
     }
 
     /// <summary>Title-bar + footer chrome buttons as (action, spoken label, screen rect) for the UIA tree.</summary>
@@ -1060,21 +1073,25 @@ internal partial class Program : ISessionHost, IWindowHost
     private void HandleUiaInvoke(Uia.NodeKind kind, int index)
     {
         if (_nativePick is not null) return;
+        // Revalidate after the UI-thread queue hop, including modal visibility. A retained element
+        // must never target a different action merely because the current controls were reordered.
+        if (Uia.Find(BuildUiaTree(), kind, index) is null) return;
         if (kind == Uia.NodeKind.ChromeButton)
         {
             var b = ChromeButtonsForUia();
-            if (index >= 0 && index < b.Count) ChromeAction(b[index].action);
+            var action = b.FirstOrDefault(button => ChromeUiaIdentity(button.action) == index).action;
+            if (action is not null) ChromeAction(action);
         }
         else if (kind == Uia.NodeKind.SettingsControl && _setOpen)
         {
-            var rows = FocusableRows();
-            if (index >= 0 && index < rows.Count) { _setFocus = rows[index]; ActivateSetFocus(); }
+            var row = FocusableRows().FirstOrDefault(r => r.UiaIdentity == index);
+            if (row is not null) { _setFocus = row; ActivateSetFocus(); }
         }
         else if (kind == Uia.NodeKind.SettingsTab && _setOpen && index >= 0 && index < SetTabNames.Length)
         {
             _setTab = index; _setScroll = 0;
             _setFocus = FocusableRows().FirstOrDefault();
-            Uia.Announce($"{SetTabNames[index]} tab");
+            _uia.Announce($"{SetTabNames[index]} tab");
             RequestRedraw();
         }
     }
@@ -1083,16 +1100,24 @@ internal partial class Program : ISessionHost, IWindowHost
     private void HandleUiaSetFocus(Uia.NodeKind kind, int index)
     {
         if (_nativePick is not null) { _nativePick.FocusIfForeground(); return; }
+        if (Uia.Find(BuildUiaTree(), kind, index) is null) return;
         switch (kind)
         {
             case Uia.NodeKind.Terminal: ExitChromeFocus(announce: false); break;
             case Uia.NodeKind.Sidebar: EnterChromeFocus(); break;
+            case Uia.NodeKind.SettingsControl:
+                var row = FocusableRows().FirstOrDefault(r => r.UiaIdentity == index);
+                if (_setOpen && row is not null) { _setNav = -1; _setFocus = row; _setFocusKb = true; AfterSetFocus(); }
+                break;
+            case Uia.NodeKind.SettingsTab:
+                if (_setOpen && index >= 0 && index < SetTabNames.Length) { _setNav = index; _setFocusKb = true; AfterHeaderFocus(); }
+                break;
             case Uia.NodeKind.Session:
-                var list = AllSessions();
-                if (index >= 0 && index < list.Count)
+                var session = AllSessions().FirstOrDefault(s => s.UiaIdentity == index);
+                if (session is not null)
                 {
                     if (_sidebarW <= 0) ToggleSidebar();
-                    _chromeFocus = true; _focusRow = list[index]; RequestRedraw();
+                    _chromeFocus = true; _focusRow = session; RequestRedraw();
                 }
                 break;
         }
@@ -1101,14 +1126,13 @@ internal partial class Program : ISessionHost, IWindowHost
     private void RaiseUiaFocusForRow()
     {
         if (_focusRow is null) return;
-        int idx = AllSessions().IndexOf(_focusRow);
-        if (idx >= 0) Uia.RaiseFocus(Uia.NodeKind.Session, idx);
+        if (AllSessions().Contains(_focusRow)) _uia.RaiseFocus(Uia.NodeKind.Session, _focusRow.UiaIdentity);
     }
 
     /// <summary>Build the UIA text-pattern snapshot: the active pane's buffer (recent scrollback + the
     /// live screen) flattened into one document, with the caret offset and the mapping from document
-    /// lines to on-screen rows (screen px) so ranges can report bounding rectangles. Runs on the UIA
-    /// thread; locks the session.</summary>
+    /// lines to on-screen rows (screen px) so ranges can report bounding rectangles. Runs on this
+    /// window's UI thread; locks the session while copying terminal data.</summary>
     private Uia.TextSnapshot? BuildUiaTextSnapshot()
     {
         // The one seam: a shown cover, else the focused pane's SURFACE — its overlay term while a pane
@@ -1167,7 +1191,7 @@ internal partial class Program : ISessionHost, IWindowHost
         if (_sidebarW <= 0) ToggleSidebar();   // reveal the sidebar so the focus ring is visible
         _chromeFocus = true;
         _focusRow = _active ?? AllSessions().FirstOrDefault();
-        Uia.Announce("Sidebar");
+        _uia.Announce("Sidebar");
         AnnounceFocusRow();
         RequestRedraw();
     }
@@ -1176,7 +1200,7 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         if (!_chromeFocus) return;
         _chromeFocus = false;
-        if (announce) { Uia.Announce("Terminal"); Uia.RaiseFocus(Uia.NodeKind.Terminal, 0); }
+        if (announce) { _uia.Announce("Terminal"); _uia.RaiseFocus(Uia.NodeKind.Terminal, 0); }
         RequestRedraw();
     }
 
@@ -1188,7 +1212,7 @@ internal partial class Program : ISessionHost, IWindowHost
         bool current = ReferenceEquals(_focusRow, _active);
         int unread = UnreadOf(_focusRow);
         string extra = (current ? ", current" : "") + (unread > 0 ? $", {unread} unread" : "");
-        Uia.Announce($"{_focusRow.Name}, session{extra}");
+        _uia.Announce($"{_focusRow.Name}, session{extra}");
     }
 
     /// <summary>Keyboard handling while the sidebar zone has focus (F6). Up/Down walk sessions, Enter/Space
@@ -1273,6 +1297,18 @@ internal partial class Program : ISessionHost, IWindowHost
         foreach (var window in windows)
         {
             if (window._hwnd == IntPtr.Zero) continue;
+            var surfaces = new HashSet<Pane>();
+            foreach (var session in window.AllSessions())
+            {
+                foreach (var pane in session.Panes)
+                { surfaces.Add(pane); if (pane.Overlay.Term is { } overlay) surfaces.Add(overlay); }
+                if (session.Scratch is { } scratch) surfaces.Add(scratch);
+                if (session.Overlay.Term is { } sessionOverlay) surfaces.Add(sessionOverlay);
+            }
+            if (window._quick is { } quickPane) surfaces.Add(quickPane);
+            if (window._cover is { } cover) surfaces.Add(cover);
+            foreach (var surface in surfaces)
+                if (!surface.FontZoomed) surface.FontSize = (float)_config.FontSize;
             window.MeasureCell();
             foreach (var session in window.AllSessions()) window.RegridSession(session);
             if (window._cover is not null) window.RegridCover();
@@ -1369,6 +1405,40 @@ internal partial class Program : ISessionHost, IWindowHost
 
     private (int cols, int rows) GridSize() => GridSizeFor(ActiveFontSize());
 
+    private readonly Uia _uia = new();
+    private readonly int _uiaThreadId = Environment.CurrentManagedThreadId;
+
+    // UIA may call back synchronously while the UI thread raises an accessibility event.
+    // Queue only foreign-thread reads; queueing and waiting on ourselves would deadlock.
+    private T ReadUia<T>(Func<T> read)
+    {
+        try { return Environment.CurrentManagedThreadId == _uiaThreadId ? read() : InvokeOnUiQueued(read); }
+        catch (Exception) when (_uia.IsClosed || _uiGone.IsCancellationRequested)
+        {
+            throw new COMException("The accessibility window is closed.", unchecked((int)0x80040201));
+        }
+    }
+
+    private void ConfigureUia()
+    {
+        _uia.GetVisibleText = () => ReadUia(() =>
+        {
+            _uia.EnsureAlive();
+            var p = ActiveSurface();
+            if (p is null) return "terminal";
+            lock (p.S.SyncRoot)
+            {
+                var em = p.S.Emulator; var sb = new StringBuilder();
+                for (int r = 0; r < em.Screen.Rows; r++) sb.Append(em.DumpRow(r)).Append('\n');
+                return sb.ToString().TrimEnd() is { Length: > 0 } t ? t : "terminal";
+            }
+        });
+        _uia.GetTextSnapshot = () => ReadUia(() => { _uia.EnsureAlive(); return BuildUiaTextSnapshot(); });
+        _uia.GetTree = () => ReadUia(() => { _uia.EnsureAlive(); return BuildUiaTree(); });
+        _uia.OnSetFocus = (kind, index) => Post(() => { if (!_uia.IsClosed) HandleUiaSetFocus(kind, index); });
+        _uia.OnInvoke = (kind, index) => Post(() => { if (!_uia.IsClosed) HandleUiaInvoke(kind, index); });
+    }
+
     private void StartSession()
     {
         // One control server for the whole app (one pipe); it resolves --window through the library.
@@ -1403,25 +1473,6 @@ internal partial class Program : ISessionHost, IWindowHost
             // Dev builds don't register as the default-terminal COM server — that CLSID is owned by the
             // installed release, and a dev instance must not intercept the OS's console handoffs.
             if (!IsDev) { try { DefTerm.RegisterServer(); } catch { /* defterm not registered / unsupported */ } }
-            // UIA (T2-14): expose the active pane's visible text to screen readers.
-            Uia.GetVisibleText = () =>
-            {
-                var p = ActiveSurface();
-                if (p is null) return "terminal";
-                lock (p.S.SyncRoot)
-                {
-                    var em = p.S.Emulator; var sb = new StringBuilder();
-                    for (int r = 0; r < em.Screen.Rows; r++) sb.Append(em.DumpRow(r)).Append('\n');
-                    return sb.ToString().TrimEnd() is { Length: > 0 } t ? t : "terminal";
-                }
-            };
-            // Full text-pattern snapshot (ITextProvider): the flattened buffer document + caret +
-            // visible-line mapping, so Narrator can read/navigate by line/word/char and box the caret.
-            Uia.GetTextSnapshot = BuildUiaTextSnapshot;
-            // Fragment tree (root → terminal + sidebar/sessions) so the reader scans/Tabs the controls.
-            Uia.GetTree = BuildUiaTree;
-            Uia.OnSetFocus = (kind, index) => Post(() => HandleUiaSetFocus(kind, index));
-            Uia.OnInvoke = (kind, index) => Post(() => HandleUiaInvoke(kind, index));
         }
         // CLI args (first window only; consumed so extra windows don't re-apply them).
         string? argProfile = _argProfile, argDir = _argDir;

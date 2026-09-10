@@ -46,8 +46,8 @@ internal partial class Program
             }
             text = sb.ToString();
         }
-        Uia.RaiseTextChanged();   // let the reader's text model re-read (navigation)
-        Uia.Announce(text);       // and speak the new lines directly (reliable across readers)
+        _uia.RaiseTextChanged();   // let the reader's text model re-read (navigation)
+        _uia.Announce(text);       // and speak the new lines directly (reliable across readers)
     }
 
     // ---- Notifications (OSC 9 / OSC 777 / notify) ----
@@ -1511,7 +1511,7 @@ internal partial class Program
                                 }
                             }
                             catch { }
-                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, RestoreCommand = p.RestoreCommand, Buffer = buf, BufferBlob = blob });
+                        ss.Panes.Add(new PaneState { Id = p.Id, Cwd = cwd, FontSize = p.FontSize, FontZoomed = p.FontZoomed, Ratio = p.Ratio, Command = cmd, AgentResume = p.AgentResume, RestoreCommand = p.RestoreCommand, Buffer = buf, BufferBlob = blob });
                     }
                     // P4: the axis, written only for a split horizontal session (StoreAxis) — a vertical or
                     // single-pane session writes no key, so its bytes are what 0.17.12 wrote.
@@ -1651,7 +1651,7 @@ internal partial class Program
                         string.IsNullOrWhiteSpace(s.Name) ? null : s.Name,
                         string.IsNullOrWhiteSpace(first.Cwd) ? null : first.Cwd,
                         ws, makeActive: s.Id == st.ActiveId,
-                        fontSize: first.FontSize > 0 ? first.FontSize : (float?)null,
+                        fontSize: PaneFontSize.Restore(first.FontSize, (float)_config.FontSize, first.FontZoomed).Size,
                         profileName: string.IsNullOrWhiteSpace(s.Profile) ? null : s.Profile,
                         paneId: StablePaneId(first.Id, s.Id, sid, first: true));
                     // The axis BEFORE the second pane exists (P4). Every pty is spawned at the full content
@@ -1667,11 +1667,12 @@ internal partial class Program
                         AppendPane(ses,
                             StablePaneId(pl[i].Id, s.Id, sid, first: false),   // verbatim: after a swap this is the pane that carries the session id
                             string.IsNullOrWhiteSpace(pl[i].Cwd) ? null : pl[i].Cwd,
-                            pl[i].FontSize > 0 ? pl[i].FontSize : (float)_config.FontSize);
+                            PaneFontSize.Restore(pl[i].FontSize, (float)_config.FontSize, pl[i].FontZoomed).Size);
                     lock (_workspaces)
                     {
                         for (int i = 0; i < pl.Count && i < ses.Panes.Count; i++)
                         {
+                            ses.Panes[i].FontZoomed = PaneFontSize.Restore(pl[i].FontSize, (float)_config.FontSize, pl[i].FontZoomed).Zoomed;
                             ses.Panes[i].Ratio = pl[i].Ratio > 0 ? pl[i].Ratio : 1f;
                             ses.Panes[i].AgentResume = string.IsNullOrWhiteSpace(pl[i].AgentResume) ? null : pl[i].AgentResume;
                             ses.Panes[i].RestoreCommand = string.IsNullOrWhiteSpace(pl[i].RestoreCommand) ? null : pl[i].RestoreCommand;

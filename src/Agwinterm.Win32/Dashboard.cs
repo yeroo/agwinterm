@@ -36,7 +36,7 @@ internal partial class Program
         _dashFontPin = fontPin > 0 ? Math.Clamp(fontPin, 4, 40) : 0;
         _dashSel = Math.Max(0, _dashSessions.FindIndex(s => ReferenceEquals(s, _active)));
         _dashboardOpen = true;
-        Uia.Announce($"Dashboard, {_dashSessions.Count} sessions. Arrow keys to move, Enter to open, Escape to close.");
+        _uia.Announce($"Dashboard, {_dashSessions.Count} sessions. Arrow keys to move, Enter to open, Escape to close.");
         RequestRedraw();
     }
 
@@ -152,7 +152,7 @@ internal partial class Program
     {
         if (i < 0 || i >= _dashSessions.Count || i == _dashSel) return;
         _dashSel = i;
-        Uia.Announce(_dashSessions[i].Name);
+        _uia.Announce(_dashSessions[i].Name);
         RequestRedraw();
     }
 
