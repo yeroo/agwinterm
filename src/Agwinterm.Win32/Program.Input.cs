@@ -29,11 +29,11 @@ internal partial class Program
         RequestRedraw();
     }
 
-    private void Send(string s)
+    private void Send(string s, bool editing = true)
     {
         var surf = ActiveSurface();
         if (surf is { ReadOnly: true }) { ShowToast("pane is read-only"); return; }   // block input to a protected pane
-        if (surf is not null) { surf.ScrollOffset = 0; surf.ClearSel(); } // typing snaps to bottom, clears selection
+        if (editing && surf is not null) { surf.ScrollOffset = 0; surf.ClearSel(); } // modifiers/key-up do not edit the buffer
         if (_broadcast && _cover is null && _active is not null)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(s);
@@ -513,13 +513,20 @@ internal partial class Program
     /// <summary>Encode a cell or SGR-Pixels mouse event and send it to the child.</summary>
     private void SendMouse(int btn, int dipX, int dipY, int deviceX, int deviceY, bool press)
     {
-        var em = _session?.Emulator;
+        if (ActiveSurface() is { } pane)
+            SendMouseTo(pane, ActivePaneView(), btn, dipX, dipY, deviceX, deviceY, press);
+    }
+
+    private void SendMouseTo(Pane pane, (float ox, float oy, float cw, float ch) view,
+        int btn, int dipX, int dipY, int deviceX, int deviceY, bool press)
+    {
+        var em = pane.S.Emulator;
         if (em is null || !em.MouseReporting) return;
-        var (ox, oy, cw, ch) = ActivePaneView();
+        var (ox, oy, cw, ch) = view;
         string seq = MouseReport.EncodePointer(
             btn, dipX, dipY, deviceX, deviceY, ox, oy, cw, ch, Scale,
             em.Screen.Cols, em.Screen.Rows, press, em.MouseSgr, em.MouseSgrPixels);
-        _session?.Write(Encoding.UTF8.GetBytes(seq));
+        pane.S.Write(Encoding.UTF8.GetBytes(seq));
     }
 
     // ---- Clickable links: Ctrl+hover underlines a URL (hand cursor); Ctrl+click opens it ----
@@ -1183,14 +1190,11 @@ internal partial class Program
         // While the find bar is open it owns the keyboard (Enter/F3 nav, Esc close, Backspace edit).
         if (_searchActive) return SearchKeyDown(vk);
 
-        // F1 help overlay: modal while open; plain F1 opens it from the shell prompt (full-screen
-        // TUIs on the alt screen — Far, vim — keep their own F1).
+        // Plain F1 is the application help gesture, also while an alternate-screen TUI runs.
         if (_helpOpen) return HelpKey(vk);
         if (vk == 0x70 /* F1 */ && !ctrl && !alt && !shift)
         {
-            var helpSurf = ActiveSurface();
-            bool altScreen = helpSurf is not null && helpSurf.S.Emulator.IsAltScreen;
-            if (!altScreen) { OpenHelp(); return true; }
+            OpenHelp(); return true;
         }
 
         // Dashboard grid overlay (agterm #202): Ctrl+Shift+D toggles it; while open it owns the keyboard.
@@ -1299,7 +1303,7 @@ internal partial class Program
         // ConPTY can reconstruct it. Key-DOWN only for now (the common case apps read); WM_CHAR for
         // this pane is swallowed since the character rides in the sequence's Uc field.
         if (ActiveSurface()?.S.Emulator.Win32InputMode == true)
-        { Send(Win32KeySeq(vk, true, ctrl, shift, alt)); _win32KeysDown.Add(vk); return true; }
+        { Send(Win32KeySeq(vk, true, ctrl, shift, alt), editing: !Keymap.IsModifierKey(vk)); _win32KeysDown.Add(vk); return true; }
 
         // Kitty keyboard protocol: when an app has enabled it, encode keys in CSI-u form.
         if ((ActiveSurface()?.S.Emulator.KeyboardFlags ?? 0) != 0 && KittyKeyEncode(vk, ctrl, alt, shift) is { } ku)
@@ -1375,7 +1379,7 @@ internal partial class Program
     {
         if (!_win32KeysDown.Remove(vk)) return;
         if (ActiveSurface()?.S.Emulator.Win32InputMode == true)
-            Send(Win32KeySeq(vk, false, KeyDown(VK_CONTROL), KeyDown(VK_SHIFT), KeyDown(VK_MENU)));
+            Send(Win32KeySeq(vk, false, KeyDown(VK_CONTROL), KeyDown(VK_SHIFT), KeyDown(VK_MENU)), editing: false);
     }
 
     // Kitty keyboard: OnKeyDown encoded this key, so its following WM_CHAR must be dropped (else
