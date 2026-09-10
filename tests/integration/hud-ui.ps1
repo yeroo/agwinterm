@@ -86,20 +86,27 @@ public sealed class HudOwnedJob {
         ACCOUNT a; if(!QueryInformationJobObject(job,1,out a,Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero))throw new Exception("Job accounting");
         return a.active;
     }
-    public string Members() {
+    public int[] MemberIds() {
         // Read only members of THIS private job; never infer ownership from a process name.
         int bytes=65536;IntPtr buffer=Marshal.AllocHGlobal(bytes);
         try {
             if(!QueryInformationJobObject(job,3,buffer,bytes,IntPtr.Zero))throw new Exception("Job members: "+Marshal.GetLastWin32Error());
-            int count=Marshal.ReadInt32(buffer,4);var names=new System.Collections.Generic.List<string>();
+            int count=Marshal.ReadInt32(buffer,4);var ids=new System.Collections.Generic.List<int>();
             if(count<0||count>(bytes-8)/IntPtr.Size)throw new Exception("Invalid job member count");
             for(int i=0;i<count;i++){
                 int pid=checked((int)Marshal.ReadIntPtr(buffer,8+i*IntPtr.Size).ToInt64());
-                try{using(var p=System.Diagnostics.Process.GetProcessById(pid)){names.Add(pid+":"+p.ProcessName);}}
-                catch(ArgumentException){names.Add(pid+":exited");}
+                ids.Add(pid);
             }
-            return string.Join(", ",names);
+            return ids.ToArray();
         }finally{Marshal.FreeHGlobal(buffer);}
+    }
+    public string Members() {
+        var names=new System.Collections.Generic.List<string>();
+        foreach(int pid in MemberIds()){
+            try{using(var p=System.Diagnostics.Process.GetProcessById(pid)){names.Add(pid+":"+p.ProcessName);}}
+            catch(ArgumentException){names.Add(pid+":exited");}
+        }
+        return string.Join(", ",names);
     }
     public void Finish() {
         if(job==IntPtr.Zero)return;

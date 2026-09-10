@@ -1,6 +1,6 @@
 # Runs only within hud-ui's private process job and suite-token lifetime.
 if(-not (NavWait {(Node $session).foregroundShell-eq 'cmd'})){throw 'Teardown fixture needs its survivor shell ready'}
-$survivorCount=$job.Count()
+$survivorIds=@($job.MemberIds());$survivorCount=$survivorIds.Count
 "Teardown baseline: $survivorCount processes; $($job.Members())"
 foreach($finishWalk in 'cancel','commit'){
 foreach($deleteActive in $false,$true){
@@ -19,7 +19,7 @@ foreach($deleteActive in $false,$true){
         if(-not (NavWait {([string](Rpc 'session.text' @{} $paneOverlay)).Contains('PANE-TEARDOWN-READY')})){throw 'Pane overlay not ready'}
         $wholeOverlay=[string](Rpc 'session.overlay' @{action='open';command='cmd /d /k echo SESSION-TEARDOWN-READY'} $doomed)
         if(-not (NavWait {([string](Rpc 'session.text' @{} $wholeOverlay)).Contains('SESSION-TEARDOWN-READY')})){throw 'Session overlay not ready'}
-        Check 'fixture owns extra live processes before deletion' ($job.Count()-gt $survivorCount)
+        Check 'fixture owns extra live processes before deletion' (@($job.MemberIds()|Where-Object {$_-notin $survivorIds}).Count-gt 0)
         if(-not $deleteActive){$null=Rpc 'session.select' @{} $session}
         # Frozen walk membership must not keep a deleted session reachable by commit or cancel.
         $null=Rpc 'session.switch' @{op='begin'} -NoTarget
@@ -33,7 +33,9 @@ foreach($deleteActive in $false,$true){
         $null=Rpc 'workspace.delete' @{} $doomedWs
         $null=Rpc 'session.switch' @{op=$finishWalk} -NoTarget
         NavKey 13 # a stale dashboard must not activate its disposed member
-        $released=NavWait {$job.Count()-eq $survivorCount}
+        # Startup helpers in the baseline may exit normally; require every NEW job member gone,
+        # not an unchanged count (or count <= baseline, which could hide a different leaked child).
+        $released=NavWait {@($job.MemberIds()|Where-Object {$_-notin $survivorIds}).Count-eq 0}
         Check "workspace deletion releases every owned process (active=$deleteActive, finish=$finishWalk)" $released "baseline=$survivorCount remaining=$($job.Count()) members=$($job.Members())"
         Check 'deleted session cannot be reactivated by stale switch state' ($null-eq (Node $doomed) -and (Node $session).active)
         $beforeDuplicate=@((NavTree).sessions).Count
