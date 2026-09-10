@@ -36,6 +36,9 @@ foreach($deleteActive in $false,$true){
         $released=NavWait {$job.Count()-eq $survivorCount}
         Check "workspace deletion releases every owned process (active=$deleteActive, finish=$finishWalk)" $released "baseline=$survivorCount remaining=$($job.Count()) members=$($job.Members())"
         Check 'deleted session cannot be reactivated by stale switch state' ($null-eq (Node $doomed) -and (Node $session).active)
+        $beforeDuplicate=@((NavTree).sessions).Count
+        $duplicate=Rpc 'session.duplicate' @{} $doomed -AllowError
+        Check 'duplicate refuses a removed explicit owner instead of cloning the survivor' (-not $duplicate.ok -and @((NavTree).sessions).Count-eq $beforeDuplicate)
         Check 'unrelated survivor still accepts control reads' (-not [string]::IsNullOrWhiteSpace([string](Rpc 'session.text' @{} $session)))
         Check 'repeated deletion refuses' (-not (Rpc 'workspace.delete' @{} $doomedWs -AllowError).ok)
     } finally {

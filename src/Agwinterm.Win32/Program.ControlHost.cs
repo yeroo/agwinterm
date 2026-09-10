@@ -490,12 +490,14 @@ internal partial class Program
     }
 
     // Clone a session by target (agterm #234) — new session, same cwd + profile. Returns its new id.
-    public string DuplicateSession(string? target)
+    public string DuplicateSession(string? target) => InvokeOnUiQueued(() =>
     {
+        var source = FindSesForTarget(target);
+        if (source is null) throw new InvalidOperationException("session not found");
         string id = Guid.NewGuid().ToString();
-        PostVerb(() => DuplicateSession(FindSesForTarget(target), id));
+        if (DuplicateSession(source, id) is null) throw new InvalidOperationException("session not found");
         return id;
-    }
+    });
 
     // Collapse/expand a single workspace by id (agterm #272). target null/empty = the active workspace.
     public bool WorkspaceCollapse(string? target, bool expand)
