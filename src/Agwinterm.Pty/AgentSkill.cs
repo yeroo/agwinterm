@@ -169,6 +169,10 @@ public static class AgentSkill
         - `agwintermctl session search --next|--prev|--close`    — step matches / close the find bar
 
         ## Selection & clipboard
+
+        A paste can also refuse with `the pane's input is closed` before clipboard access: no bytes
+        were sent by that request, and this does not assert that the child exited. A send-command
+        failure during broadcast may follow delivery to other panes; never retry it blindly.
         - `agwintermctl selection all [--target <id>]`           — select the whole buffer (scrollback + live grid)
         - `agwintermctl selection copy [--target <id>]`          — copy the current selection to the Windows clipboard
         - `agwintermctl selection clear [--target <id>]`         — clear the selection

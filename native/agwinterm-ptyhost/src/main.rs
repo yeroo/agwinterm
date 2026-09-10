@@ -38,6 +38,7 @@ struct Hosted {
     data: Mutex<Option<Arc<OvStream>>>,
     resize: Mutex<()>, // real resize and the complete repaint jiggle share one transaction
     exited: AtomicBool,
+    input_closed: AtomicBool, // observed child death/write failure, before output settlement
     /// Bytes the pump has fed so far; the exit watcher's settle window reads it (#246).
     pump_bytes: AtomicU64,
     /// True while a chunk is read but not yet fed + forwarded (the feed can block on `term`).
@@ -311,6 +312,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         data: Mutex::new(None),
         resize: Mutex::new(()),
         exited: AtomicBool::new(false),
+        input_closed: AtomicBool::new(false),
         pump_bytes: AtomicU64::new(0),
         pump_in_flight: AtomicBool::new(false),
         exit_code: AtomicI32::new(0),
@@ -351,6 +353,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
     let child_h = hosted2.pty.lock().unwrap().child as usize;
     std::thread::spawn(move || {
         let code = conpty::wait_child(child_h);
+        hosted2.input_closed.store(true, Ordering::SeqCst);
         // The child is gone, but what it wrote last may still be in flight: conhost flushes the
         // pseudoconsole's output after the process exits and the pipe never hits EOF, so "exited"
         // is not "complete". Wait until one 50 ms window passes with no new bytes from the pump,
@@ -423,8 +426,9 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
             if n == 0 {
                 break;
             }
-            if !h2.pty.lock().unwrap().write_input(&buf[..n]) {
-                break;
+            if !h2.input_closed.load(Ordering::SeqCst) && !h2.pty.lock().unwrap().write_input(&buf[..n]) {
+                // Keep the output channel until the exit watcher drains it and detaches.
+                h2.input_closed.store(true, Ordering::SeqCst);
             }
         }
         let mut data = h2.data.lock().unwrap();

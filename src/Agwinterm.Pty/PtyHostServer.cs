@@ -258,15 +258,9 @@ public sealed class PtyHostServer : IDisposable
     /// (issue #118).</summary>
     private static async Task PumpInputAsync(Hosted hosted, DataChannel ch)
     {
-        var buf = new byte[16 * 1024];
         try
         {
-            while (true)
-            {
-                int n = await ch.Pipe.ReadAsync(buf, ch.Cancel.Token).ConfigureAwait(false);
-                if (n <= 0) break;
-                try { hosted.S.Write(buf.AsSpan(0, n)); } catch { break; }   // child gone
-            }
+            await HostInputPump.CopyAsync(ch.Pipe, (bytes, length) => hosted.S.Write(bytes.AsSpan(0, length)), ch.Cancel.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { }
         catch (IOException) { }

@@ -1517,7 +1517,9 @@ function Read-MouseReport([int]$terminator) {
             'session', 'overlay', 'open', $mouseCommand,
             '--size-percent', '50', '--target', $survivorId)
         $mouseOverlayId = [string]$mouseOverlay.result
-        for ($i = 0; $i -lt 40 -and -not (Test-Path -LiteralPath $mouseCellReadyFile); $i++) {
+        # This child compiles its raw-console helper before publishing the ready file. On a
+        # loaded runner that can exceed ten seconds; keep readiness explicit, with a finite bound.
+        for ($i = 0; $i -lt 120 -and -not (Test-Path -LiteralPath $mouseCellReadyFile); $i++) {
             Start-Sleep -Milliseconds 250
         }
 
@@ -1559,7 +1561,8 @@ function Read-MouseReport([int]$terminator) {
         $mouseFixtureReady = $mouseOverlay.ok -and $hwnd -ne [IntPtr]::Zero -and
             (Test-Path -LiteralPath $mouseCellReadyFile) -and $coverMetricsDistinct -and
             $overlayMetrics.result.cols -gt 8 -and $overlayMetrics.result.widthPx -gt 0
-        Check 'the floating cover mouse-reporting fixture becomes ready' $mouseFixtureReady
+        Check 'the floating cover mouse-reporting fixture becomes ready' $mouseFixtureReady `
+            "open=$($mouseOverlay.ok), hwnd=$hwnd, readyFile=$(Test-Path -LiteralPath $mouseCellReadyFile), distinct=$coverMetricsDistinct, cols=$($overlayMetrics.result.cols), width=$($overlayMetrics.result.widthPx)"
 
         if ($mouseFixtureReady) {
             $esc = [char]27

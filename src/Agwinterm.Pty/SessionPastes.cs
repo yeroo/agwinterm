@@ -30,6 +30,9 @@ public static class SessionPastes
     /// needs ok:false, not <see cref="Pasted"/> for text that was dropped. Answered before the
     /// clipboard is read.</summary>
     public const string ReadOnlyPane = "pane is read-only";
+    /// <summary>Known input closure is refused before clipboard access, even while output still
+    /// drains or a disconnected host's child-exit status remains unknown. This is not an exit claim.</summary>
+    public const string InputUnavailable = "the pane's input is closed";
     /// <summary>The refusal for a pane whose process has exited (a single-pane session keeps the
     /// exited surface on screen): its input may still take bytes, but no program reads them.
     /// Answered before the clipboard is read, once the host has OBSERVED the exit: the guard is

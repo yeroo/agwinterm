@@ -126,6 +126,7 @@ public sealed class TerminalSession : ISession
 
         // Wait for the child to exit on a background thread (WaitForExit is blocking).
         await Task.Run(() => _connection.WaitForExit(Timeout.Infinite), ct).ConfigureAwait(false);
+        MarkInputClosed();
 
         // Let the reader drain output already buffered in the pipe, then stop it.
         await Task.Delay(250, ct).ConfigureAwait(false);
@@ -208,7 +209,7 @@ public sealed class TerminalSession : ISession
                 var msg = $"\r\n\x1b[31m[agwinterm] could not start a non-elevated session:\x1b[0m\r\n  {ex.Message}\r\n";
                 lock (_sync) Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(msg));
                 OutputReceived?.Invoke();
-                ExitCode = 1; HasExited = true;
+                MarkInputClosed(); ExitCode = 1; HasExited = true;
                 return;
             }
             _connection = dc;
@@ -216,6 +217,7 @@ public sealed class TerminalSession : ISession
             _ = Task.Run(() =>
             {
                 try { dc.WaitForExit(Timeout.Infinite); } catch { }
+                MarkInputClosed();
                 int code = 0; try { code = dc.ExitCode; } catch { }
                 SettleOutput();
                 ExitCode = code; HasExited = true;
@@ -265,7 +267,7 @@ public sealed class TerminalSession : ISession
             var msg = $"\r\n\x1b[31m[agwinterm] could not start the session:\x1b[0m\r\n  {ex.Message}\r\n";
             lock (_sync) Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(msg));
             OutputReceived?.Invoke();
-            ExitCode = 1; HasExited = true;
+            MarkInputClosed(); ExitCode = 1; HasExited = true;
             return;
         }
         _connection = conn;
@@ -275,6 +277,7 @@ public sealed class TerminalSession : ISession
         _ = Task.Run(() =>
         {
             try { conn.WaitForExit(Timeout.Infinite); } catch { }
+            MarkInputClosed();
             int code = 0; try { code = conn.ExitCode; } catch { }
             SettleOutput();
             ExitCode = code; HasExited = true;
@@ -316,8 +319,9 @@ public sealed class TerminalSession : ISession
         var pump = StartPump(conn.ReaderStream);
         _ = Task.Run(async () =>
         {
-            if (clientProcess != IntPtr.Zero) { await Task.Run(() => conn.WaitForExit(Timeout.Infinite)).ConfigureAwait(false); SettleOutput(); }
+            if (clientProcess != IntPtr.Zero) { await Task.Run(() => conn.WaitForExit(Timeout.Infinite)).ConfigureAwait(false); MarkInputClosed(); SettleOutput(); }
             else await pump.ConfigureAwait(false);   // no client handle → exit when the output pipe hits EOF (already drained)
+            MarkInputClosed();
             int code = 0; try { code = conn.ExitCode; } catch { }
             ExitCode = code; HasExited = true;
             try { Exited?.Invoke(code); } catch { }
@@ -328,6 +332,9 @@ public sealed class TerminalSession : ISession
     /// <summary>The child's exit code once <see cref="HasExited"/> is true (null while still running).</summary>
     public int? ExitCode { get; private set; }
     public bool HasExited { get; private set; }
+    private volatile bool _inputClosed;
+    public bool InputClosed => _inputClosed;
+    internal void MarkInputClosed() => _inputClosed = true;
     /// <summary>Raised (on a background thread) when the child process exits, with its exit code.</summary>
     public event Action<int>? Exited;
 
@@ -390,9 +397,11 @@ public sealed class TerminalSession : ISession
     /// <summary>Send bytes (e.g. keystrokes) to the child's input.</summary>
     public void Write(ReadOnlySpan<byte> bytes)
     {
+        if (InputClosed) throw new IOException("Session input is closed.");
         var stream = _connection?.WriterStream ?? throw new InvalidOperationException("Session not started.");
-        stream.Write(bytes);
-        stream.Flush();
+        try { stream.Write(bytes); stream.Flush(); }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        { MarkInputClosed(); throw; }
     }
 
     public void Resize(int cols, int rows)
@@ -421,6 +430,7 @@ public sealed class TerminalSession : ISession
 
     public void Dispose()
     {
+        MarkInputClosed();
         var c = _connection;
         _connection = null;
         try { c?.Kill(); } catch { /* already exited */ }
