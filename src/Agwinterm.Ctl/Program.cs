@@ -254,6 +254,7 @@ switch (area)
                 break;
             }
             case "new":
+                if (bareLast.Contains("command")) { Console.Error.WriteLine("session new: --command needs a value"); return 2; }
                 if (bareLast.Contains("command-mode")) { Console.Error.WriteLine("session new: --command-mode needs a value"); return 2; }
                 if (!Agwinterm.Pty.SessionCommand.TryCreate(Opt("command"), Opt("command-mode"), options.ContainsKey("wait"),
                     Opt("profile"), out _, out var commandError)) { Console.Error.WriteLine(commandError); return 2; }

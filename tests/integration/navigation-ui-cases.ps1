@@ -124,7 +124,7 @@ $second=[string](Rpc 'workspace.new' @{name='P15-empty'})
 Check 'empty workspace created' (NavWait {@(NavTree|Where-Object id -eq $second).Count-eq 1})
 Check 'go reaches empty workspace and reports id' ((Rpc 'workspace.go' @{to='next'} -NoTarget)-eq $second -and (CurrentWs)-eq $second)
 Check 'empty destination leaves selected terminal intact' ((Rpc 'window.state').activeWorkspace-eq 'P15-empty' -and (Node $session).active)
-$placed=[string](Rpc 'session.new' @{name='P15-placed';wait=$true})
+$placed=[string](Rpc 'session.new' @{name='P15-placed'})
 Check 'new session without caller lands in current empty workspace' (NavWait {@((NavTree|Where-Object id -eq $second).sessions|Where-Object id -eq $placed).Count-eq 1 -and (Node $placed).active})
 foreach($badOp in 'typo',$false,42,$null,@(),@{}) {
     Check 'invalid switch operation preserves focus with two live sessions' (-not (Rpc 'session.switch' @{op=$badOp} -NoTarget -AllowError).ok -and (Node $placed).active)

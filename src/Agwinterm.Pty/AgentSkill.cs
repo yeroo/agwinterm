@@ -73,7 +73,7 @@ public static class AgentSkill
           `--no-select` creates the session in the background without stealing focus or changing the current selection.
           `--command` runs PowerShell code and leaves an interactive prompt. `--wait` is accepted in this mode; the prompt stays open either way.
           — create a session (prints its id). `--command-mode direct` launches executable + arguments using Windows quoting, with no added shell; it refuses `--wait`. An exited standalone pane remains visible without an interactive prompt.
-          `--profile NAME` picks a shell profile (default = Windows PowerShell).
+          `--profile NAME` picks a shell profile (default = Windows PowerShell). `--command` and `--profile` are mutually exclusive.
           `--workspace` is a workspace id (or unique id prefix; `tree --json` lists them), `--workspace-name` its sidebar label
           (case-insensitive). **An unknown workspace is refused** (`ok:false`, no session created) — it is never swapped for the
           active workspace: an unknown id, or an unknown name without `--create-workspace`, is an error that names the value.

@@ -26,7 +26,9 @@ but has no interpreter accepting further input. Existing split-pane exit rules a
 
 The modes are exactly `powershell` (the default) and `direct`. A mode or `--wait`
 requires a nonempty command. A command cannot be combined with `--profile`.
-Invalid launches are refused before creating a workspace or session. To match Lite's
+Invalid command options are refused before creating a workspace or session. If a valid
+command cannot start (for example, its executable is missing), the returned session
+keeps a diagnostic pane with no process accepting input. To match Lite's
 host protocol, each launch is limited to a 259-byte UTF-8 executable name, 16
 arguments, and 2047 UTF-8 bytes per argument. The PowerShell code is one argument.
 Use a helper script for longer startup sequences.
@@ -47,3 +49,6 @@ on direct process lifetime or argv parsing. Use a matching updated `agwintermctl
 and terminal; older CLIs do not send the new option. Lite's ordinary PowerShell
 command behavior remains the same. These rules apply to `session new`; overlays,
 shell profiles, custom commands and restore replay retain their separate contracts.
+In Lite, duplicating or cold-restoring a bare `powershell.exe` direct session adds
+the usual prompt wrapper; exact empty argv currently applies only to its initial launch
+([tracked follow-up](https://github.com/yeroo/agliteterm/issues/79)).

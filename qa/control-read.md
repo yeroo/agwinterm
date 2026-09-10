@@ -77,7 +77,7 @@ is at the left margin" and "nothing answered" must not look alike.
 **Steps:** create a session running a program that homes the caret and then prints nothing —
 
 ```powershell
-Send-Ctl $s @('session','new','--name','col0','--no-select','--command',
+Send-Ctl $s @('session','new','--name','col0','--no-select','--command-mode','direct','--command',
               'powershell -NoProfile -Command "Clear-Host; Start-Sleep 120"')
 ```
 

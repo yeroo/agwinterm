@@ -43,6 +43,36 @@ try{
     $spaced=CommandNew @{command=('"'+$tool+'" /d /c echo SPACE-READY');'command-mode'='direct';name='command-space'}
     CommandCheck (CommandWait $spaced 'SPACE-READY') 'direct executable path can contain spaces'
 
+    # Report argv from an actual executable, so neither PowerShell nor cmd can repair it.
+    $argvSource=Join-Path $commandArtifact 'argv helper.cs'
+    $argvExe=Join-Path $commandArtifact 'argv helper.exe'
+    @'
+using System;
+using System.Text;
+class ArgvHelper {
+    static void Main(string[] args) {
+        Console.WriteLine("ARGC=" + args.Length);
+        for (int i = 0; i < args.Length; i++)
+            Console.WriteLine("ARG" + i + "=" + Convert.ToBase64String(Encoding.UTF8.GetBytes(args[i])) + ":END");
+    }
+}
+'@ | Set-Content -LiteralPath $argvSource
+    & "$env:WINDIR/Microsoft.NET/Framework64/v4.0.30319/csc.exe" /nologo /target:exe "/out:$argvExe" $argvSource
+    if($LASTEXITCODE-ne 0){throw 'argv helper compilation failed'}
+    $argvPane=CommandNew @{command=('"'+$argvExe+'" "" "a b" "say \"hi\"" "C:\tail\\" "☃"');'command-mode'='direct';name='command-argv'}
+    CommandCheck (CommandWait $argvPane 'ARGC=5') 'direct host preserves argument count'
+    $expectedArgs=@('', 'a b', 'say "hi"', 'C:\tail\', '☃')
+    for($argIndex=0;$argIndex-lt $expectedArgs.Count;$argIndex++){
+        $encodedArg=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($expectedArgs[$argIndex]))
+        CommandCheck (CommandWait $argvPane ("ARG${argIndex}="+$encodedArg+':END')) "direct host preserves exact argument $argIndex"
+    }
+
+    $failedPane=CommandNew @{command='agwinterm-command-fixture-missing.exe';'command-mode'='direct';name='command-failure';'workspace-name'='command-failure-workspace';'create-workspace'=$true}
+    CommandCheck (CommandWait $failedPane 'start') 'failed executable retains a diagnostic pane'
+    CommandCheck (-not (CommandRpc 'session.type' @{text='MUST-NOT-RUN'} $failedPane -AllowError).ok) 'failed executable has no interpreter accepting input'
+    $failedTree=CommandRpc 'tree' @{} ''
+    CommandCheck (@($failedTree.workspaces|Where-Object { $_.name-eq 'command-failure-workspace' -and $_.sessions.id -contains $failedPane }).Count-eq 1) 'failed executable belongs to the requested published workspace'
+
     $sink="[Console]::WriteLine('DIRECT-READY');`$s=[Console]::ReadLine();[Console]::WriteLine('LITERAL='+`$s);exit 7"
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($sink))
     $direct=CommandNew @{command=('powershell.exe -NoProfile -EncodedCommand '+$encoded);'command-mode'='direct';name='command-direct'}
@@ -87,6 +117,15 @@ try{
         $beforeIds=@(($before|ConvertFrom-Json).workspaces|ForEach-Object { $_.id; $_.sessions.id })-join ','
         $afterIds=@(($after|ConvertFrom-Json).workspaces|ForEach-Object { $_.id; $_.sessions.id })-join ','
         CommandCheck ($beforeIds-ceq $afterIds) 'refusal creates neither workspace nor session'
+    }
+    foreach($bareFlag in '--command','--command-mode'){
+        $before=CommandRpc 'tree' @{} ''
+        $null=& $commandCtl session new $bareFlag --pipe $commandPipe --no-select --json 2>&1
+        CommandCheck ($LASTEXITCODE-eq 2) "CLI refuses bare $bareFlag"
+        $after=CommandRpc 'tree' @{} ''
+        $beforeIds=@($before.workspaces|ForEach-Object { $_.id; $_.sessions.id })-join ','
+        $afterIds=@($after.workspaces|ForEach-Object { $_.id; $_.sessions.id })-join ','
+        CommandCheck ($beforeIds-ceq $afterIds) 'bare CLI flag creates no workspace or session'
     }
     # Exercise the shared CLI flag, not only handcrafted JSON. The adapter owns its pipe.
     $json=& $commandCtl session new --command-mode direct --command 'cmd.exe /d /c echo CLI-DIRECT-READY' --pipe $commandPipe --no-select --json
