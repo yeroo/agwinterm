@@ -12,7 +12,7 @@ namespace Agwinterm.Win32;
 /// bindings (keymap.conf included), and an accessibility guide. When a screen reader is attached
 /// the guide is spoken on open and the whole help text is exposed as a modal UIA document, so a
 /// low-vision user gets an audio orientation of what they can do and how.
-/// F1 opens it from the shell prompt; full-screen TUIs (alt screen: Far, vim) keep their own F1.
+/// Plain F1 opens it even while a full-screen terminal application is running.
 /// </summary>
 internal partial class Program
 {
@@ -57,7 +57,7 @@ internal partial class Program
             "",
             "FOCUS & NAVIGATION",
             "F6            move focus between terminal and sidebar (arrows + Enter there)",
-            "F1            this help (at the shell prompt; full-screen apps keep their F1)",
+            "F1            this help (including while full-screen terminal apps run)",
             "Esc           close overlays (help, settings, palettes, search)",
             "",
             "KEY BINDINGS (effective — keymap.conf applied)",
