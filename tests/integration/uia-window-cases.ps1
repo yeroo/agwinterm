@@ -34,7 +34,11 @@ try {
         $handles=@([NavUiaWindows]::Owned($job.Pid)|Where-Object {$_-notin $beforeHandles})
         if($handles.Count-ne 1){throw 'Cannot identify exactly one new owned UIA HWND'}
         $uiaHandles+=,$handles[0]
-        $sid=[string](Rpc 'tree' -Window $window).workspaces[0].sessions[0].id;$uiaSessions+=,$sid
+        # Opening the HWND precedes asynchronous creation/publication of its first session.
+        if(-not (NavWait {@((Rpc 'tree' -Window $window).workspaces[0].sessions|Where-Object { -not [string]::IsNullOrWhiteSpace($_.id) }).Count-eq 1})){throw 'UIA initial session did not materialize'}
+        $sid=[string](Rpc 'tree' -Window $window).workspaces[0].sessions[0].id
+        if([string]::IsNullOrWhiteSpace($sid)){throw 'UIA initial session disappeared before identity capture'}
+        $uiaSessions+=,$sid
         if(-not (NavWait {@((Rpc 'tree' -Window $window).workspaces[0].sessions)[0].foregroundShell-eq 'cmd'})){throw 'UIA shell not ready'}
         if(-not (NavWait {([string](Rpc 'session.text' @{} $sid -Window $window)).Contains('>')})){throw 'UIA command prompt not ready'}
         # Produce real child output: injected emulator-only text is replaced by ConPTY repaint
