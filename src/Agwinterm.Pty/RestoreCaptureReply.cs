@@ -89,5 +89,5 @@ public static class RestoreCaptureReply
     /// are left as captured — <c>tree</c> shows them — because rolling them back would make the tree
     /// disagree with a query that read the processes correctly (#246; the wording is lite's).</summary>
     public static string NotSaved(int panes, string? why) =>
-        $"restore capture: {panes} pane(s) were captured into memory but the state file could not be written ({why ?? "unknown reason"}) — the checkpoint is not on disk and will not survive a restart. tree still shows what was captured.";
+        $"restore capture: {panes} pane(s) were captured into memory but the state file could not be written ({why ?? "unknown reason"}) — this save did not put the checkpoint on disk. tree still shows what was captured.";
 }

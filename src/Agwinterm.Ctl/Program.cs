@@ -359,7 +359,7 @@ switch (area)
                 // An unparseable --lines is refused, not dropped: `--lines 5O` used to read the screen and report success.
                 if (Opt("lines") is { } textLinesRaw)
                 {
-                    if (!int.TryParse(textLinesRaw, out var textLines) || textLines < 0) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.LinesRefusal(textLinesRaw)); return 2; }
+                    if (!Agwinterm.Pty.OverlayPanes.TryLines(textLinesRaw, out var textLines)) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.LinesRefusal(textLinesRaw)); return 2; }
                     cargs["lines"] = textLines;
                 }
                 break;
@@ -459,7 +459,7 @@ switch (area)
                     if (options.ContainsKey("all")) cargs["all"] = true;
                     if (Opt("lines") is { } ovLinesRaw)   // refused, not dropped, as on session text
                     {
-                        if (!int.TryParse(ovLinesRaw, out var ovLines) || ovLines < 0) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.LinesRefusal(ovLinesRaw)); return 2; }
+                        if (!Agwinterm.Pty.OverlayPanes.TryLines(ovLinesRaw, out var ovLines)) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.LinesRefusal(ovLinesRaw)); return 2; }
                         cargs["lines"] = ovLines;
                     }
                 }

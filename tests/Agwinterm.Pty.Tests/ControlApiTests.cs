@@ -162,6 +162,144 @@ public class ControlApiTests
         Assert.False(Ok(r));
     }
 
+    [Theory]
+    [InlineData("session.readonly")]
+    [InlineData("session.search")]
+    public void ProtectionAndSearch_MissingTarget_Refuse(string command)
+    {
+        var (server, _) = New();
+        var reply = Dispatch(server, command, new { op = "on", query = "needle" }, target: "missing-pane");
+        Assert.False(Ok(reply));
+        Assert.Equal(SessionContexts.NoSession, reply.GetProperty("error").GetString());
+    }
+
+    [Theory]
+    [InlineData("typo")]
+    [InlineData("")]
+    [InlineData("ON")]
+    public void ReadOnly_UnknownOp_RefusesWithoutChangingProtection(string op)
+    {
+        var (server, host) = New();
+        foreach (bool initial in new[] { false, true })
+        {
+            host.ActiveSess!.ReadOnly = initial;
+            Assert.False(Ok(Dispatch(server, "session.readonly", new { op })));
+            Assert.Equal(initial, host.ActiveSess.ReadOnly);
+        }
+    }
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("true")]
+    [InlineData("42")]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    public void MalformedOperationsAndSelectors_RefuseBeforeDispatch(string value)
+    {
+        var (server, host) = New();
+        var initial = host.ActiveSess!;
+        initial.ReadOnly = true;
+        foreach (string command in new[] { "session.readonly", "session.switch" })
+            foreach (string args in new[] { "{\"op\":" + value + "}", value })
+            {
+                // An object without op intentionally selects the default, unlike an op object.
+                if (args == "{}") continue;
+                using var reply = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"" + command + "\",\"args\":" + args + "}"));
+                Assert.False(Ok(reply.RootElement));
+                Assert.True(initial.ReadOnly);
+                Assert.Same(initial, host.ActiveSess);
+            }
+        if (value == "null") return; // null selectors retain the documented omitted-selector meaning
+        foreach (string selector in new[] { "target", "window" })
+            foreach (string command in new[] { "session.readonly", "session.search", "session.switch" })
+            {
+                using var reply = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"" + command + "\",\"" + selector + "\":" + value + ",\"args\":{\"op\":\"off\",\"query\":\"wrong\"}}"));
+                Assert.False(Ok(reply.RootElement));
+                Assert.True(initial.ReadOnly);
+            }
+    }
+
+    [Fact]
+    public void OmittedOperation_Defaults_WithOmittedOrNullSelectors()
+    {
+        var (server, host) = New();
+        foreach (string fields in new[] { "", ",\"args\":{}", ",\"args\":{},\"target\":null,\"window\":null" })
+        {
+            bool before = host.ActiveSess!.ReadOnly;
+            using var reply = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.readonly\"" + fields + "}"));
+            Assert.True(Ok(reply.RootElement));
+            Assert.Equal(!before, host.ActiveSess.ReadOnly);
+        }
+    }
+
+    [Fact]
+    public void Switch_NameThatLooksLikeRefusal_IsStillSuccessfulData()
+    {
+        var (server, host) = New();
+        host.ActiveSess!.Name = ISessionHost.RefusePrefix + "my session";
+        var reply = Dispatch(server, "session.switch", new { op = "begin" });
+        Assert.True(Ok(reply));
+        Assert.Equal(host.ActiveSess.Name, Result(reply));
+        Assert.True(host.SessionSwitch("begin").Ok);
+        Assert.False(host.SessionSwitch("typo").Ok);
+    }
+
+    [Theory]
+    [InlineData("on", false, true)]
+    [InlineData("off", true, false)]
+    [InlineData("toggle", false, true)]
+    [InlineData("toggle", true, false)]
+    [InlineData("state", true, true)]
+    [InlineData("state", false, false)]
+    [InlineData("get", true, true)]
+    [InlineData("get", false, false)]
+    public void ReadOnly_KnownOp_ReturnsEffectiveState(string op, bool initial, bool expected)
+    {
+        var (server, host) = New();
+        host.ActiveSess!.ReadOnly = initial;
+        Assert.Equal(expected ? "on" : "off", Result(Dispatch(server, "session.readonly", new { op })));
+        Assert.Equal(expected, host.ActiveSess.ReadOnly);
+    }
+
+    [Theory]
+    [InlineData("begin")]
+    [InlineData("advance")]
+    [InlineData("next")]
+    [InlineData("advance-back")]
+    [InlineData("back")]
+    [InlineData("prev")]
+    [InlineData("previous")]
+    [InlineData("commit")]
+    [InlineData("cancel")]
+    public void Switch_KnownOperations_AreAccepted(string op)
+    {
+        var (server, _) = New();
+        Assert.True(Ok(Dispatch(server, "session.switch", new { op })));
+    }
+
+    [Fact]
+    public void Switch_UnknownOp_RefusesWithoutChangingFocus()
+    {
+        var (server, host) = New();
+        var initial = host.ActiveSess;
+        Assert.False(Ok(Dispatch(server, "session.switch", new { op = "typo" })));
+        Assert.Same(initial, host.ActiveSess);
+    }
+
+    [Theory]
+    [InlineData("Tool --Path C:/CaseSensitive/Project --Key AbC", "Tool --Path C:/CaseSensitive/Project --Key AbC")]
+    [InlineData("NoNe", null)]
+    [InlineData(" ", null)]
+    public void Binding_PreservesCommandCase_OnlyClearingIsCaseInsensitive(string input, string? expected)
+    {
+        var (server, host) = New();
+        Assert.True(Ok(Dispatch(server, "session.bind", new { agent = input }, target: "s1")));
+        Assert.Equal(expected, host.ActiveSess!.AgentResume);
+        var stored = JsonSerializer.Serialize(new PaneState { AgentResume = host.ActiveSess.AgentResume }, RestoreState.Json);
+        Assert.Equal(expected, JsonSerializer.Deserialize<PaneState>(stored, RestoreState.Json)!.AgentResume);
+    }
+
     [Fact]
     public void ClaudeAdopt_BindsSessions()
     {

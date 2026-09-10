@@ -725,7 +725,8 @@ internal partial class Program
 
     public string ReadOnlyOp(string? target, string op) => InvokeOnUi(() =>
     {
-        var p = PaneForTarget(target); if (p is null) return "no session";
+        if (!SessionOperations.IsReadOnlyOp(op)) return SessionOperations.UnknownOp(op);
+        var p = PaneForTarget(target); if (p is null) return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         bool want = op switch { "on" => true, "off" => false, "state" or "get" => p.ReadOnly, _ => !p.ReadOnly };
         if (op is not ("state" or "get")) { p.ReadOnly = want; RequestRedraw(); }
         return p.ReadOnly ? "on" : "off";
@@ -828,7 +829,8 @@ internal partial class Program
     // searches the active session.)
     public string SessionSearch(string? target, string? query, string? action) => InvokeOnUi(() =>
     {
-        if (ActiveSurface() is null) return "no session";
+        if (PaneForTarget(target) is null || ActiveSurface() is null)
+            return ISessionHost.RefusePrefix + SessionContexts.NoSession;
         if (action == "close") { CloseSearch(); return "closed"; }
         if (!_searchActive) _searchActive = true;
         if (!string.IsNullOrEmpty(query)) { _searchQuery = query!; RecomputeSearch(); _searchCur = 0; ScrollToMatch(); }
@@ -1209,7 +1211,7 @@ internal partial class Program
         if (string.IsNullOrEmpty(target)) return false;
         var hit = FindPaneById(target!);
         if (hit is null) return false;
-        string? val = string.IsNullOrWhiteSpace(agent) || agent.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : agent.ToLowerInvariant();
+        string? val = SessionOperations.Binding(agent);
         PostVerb(() => { hit.Value.pane.AgentResume = val; SaveState(); });
         return true;
     }
@@ -1392,7 +1394,7 @@ internal partial class Program
 
     public void WorkspaceFocus(string op) => PostVerb(() => WorkspaceFocusOp(op));
 
-    public string SessionSwitch(string op) => InvokeOnUi(() => SwitchOp(op));
+    public SessionSwitchReply SessionSwitch(string op) => InvokeOnUiQueued(() => SwitchOp(op));
 
     public string CommandRun(string nameOrCommand, string? mode) => InvokeOnUiQueued(() =>
     {

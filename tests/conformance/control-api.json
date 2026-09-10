@@ -279,7 +279,7 @@
         "{alpha}"
       ],
       "result": "string",
-      "note": "P6: the mouse-up path (copy-on-select) run from a script; with no selection it answers `finalized (empty)` (the full app: `finalized (copy-on-select off)` when that setting is off - lite has no off switch) and touches no clipboard either."
+      "note": "The mouse-up path (copy-on-select) run from a script; with no selection it answers `finalized (empty)`, or `finalized (copy-on-select off)` when that setting is off in either product, and touches no clipboard."
     },
     {
       "verb": "session.type",
@@ -927,6 +927,14 @@
         "no-such-session-id"
       ],
       "note": "P6: same for session.paste - a paste that silently went nowhere is the worst of the silent-success class (the text was meant for a shell)."
+    },
+    {
+      "args": ["session", "readonly", "on", "--target", "no-such-session-id"],
+      "note": "A missing protection target is refused; success must never imply a nonexistent pane was protected."
+    },
+    {
+      "args": ["session", "search", "needle", "--target", "no-such-session-id"],
+      "note": "A missing search target is refused without opening or changing another pane's search."
     }
   ],
   "$orderComment": [

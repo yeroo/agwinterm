@@ -23,6 +23,28 @@ function PixelDifference($a,$b,[int]$x=0,[int]$y=0,[int]$w=0,[int]$h=0){
     }};return $different
 }
 $first=[string](CurrentWs);$beforeText=Rpc 'session.text' @{} $session
+Check 'readonly rejects an unknown operation without changing protection' (-not (Rpc 'session.readonly' @{op='typo'} $session -AllowError).ok -and (Rpc 'session.readonly' @{op='state'} $session)-eq 'off')
+$null=Rpc 'session.readonly' @{op='on'} $session
+Check 'readonly typo cannot remove existing protection' (-not (Rpc 'session.readonly' @{op='typo'} $session -AllowError).ok -and (Rpc 'session.readonly' @{op='get'} $session)-eq 'on')
+$null=Rpc 'session.readonly' @{op='off'} $session
+Check 'missing readonly target refuses without protecting the active pane' (-not (Rpc 'session.readonly' @{op='on'} 'missing-pane' -AllowError).ok -and (Rpc 'session.readonly' @{op='state'} $session)-eq 'off')
+$null=Rpc 'session.write' @{text="`r`nSTABILIZATION-SEARCH-MARKER`r`n"} $session
+$findBefore=Rpc 'session.search' @{query='STABILIZATION-SEARCH-MARKER'} $session
+Check 'search mutation guard has a real match' ($findBefore-match 'of [1-9]')
+Check 'missing search target refuses without replacing active query' (-not (Rpc 'session.search' @{query='MISSING-SEARCH-QUERY'} 'missing-pane' -AllowError).ok -and (Rpc 'session.search' @{} $session)-eq $findBefore)
+$null=Rpc 'session.search' @{action='close'} $session
+Check 'unknown switch operation refuses' (-not (Rpc 'session.switch' @{op='typo'} -NoTarget -AllowError).ok)
+$mixedCommand='Tool --Path C:/CaseSensitive/Project --Key AbC'
+$null=Rpc 'session.bind' @{agent=$mixedCommand} $session
+Check 'binding preserves command case in the saved pane' (NavWait {
+    foreach($file in Get-ChildItem (Join-Path $appDir 'windows') -Filter '*.json') {
+        try {$saved=Get-Content $file.FullName -Raw|ConvertFrom-Json} catch {continue}
+        foreach($ws in $saved.Workspaces){foreach($ses in $ws.Sessions){foreach($pane in $ses.Panes){
+            if($pane.Id-eq $session -and $pane.AgentResume-ceq $mixedCommand){return $true}
+        }}}
+    };return $false
+})
+$null=Rpc 'session.bind' @{agent='NoNe'} $session
 Check 'one workspace navigation refuses' (-not (Rpc 'workspace.go' @{to='next'} -NoTarget -AllowError).ok)
 Check 'last workspace deletion refuses without removing its terminal' (-not (Rpc 'workspace.delete' @{} $first -AllowError).ok -and @(NavTree).Count-eq 1 -and $null-ne (Node $session))
 $second=[string](Rpc 'workspace.new' @{name='P15-empty'})
@@ -31,6 +53,18 @@ Check 'go reaches empty workspace and reports id' ((Rpc 'workspace.go' @{to='nex
 Check 'empty destination leaves selected terminal intact' ((Rpc 'window.state').activeWorkspace-eq 'P15-empty' -and (Node $session).active)
 $placed=[string](Rpc 'session.new' @{name='P15-placed';wait=$true})
 Check 'new session without caller lands in current empty workspace' (NavWait {@((NavTree|Where-Object id -eq $second).sessions|Where-Object id -eq $placed).Count-eq 1 -and (Node $placed).active})
+foreach($badOp in 'typo',$false,42,$null,@(),@{}) {
+    Check 'invalid switch operation preserves focus with two live sessions' (-not (Rpc 'session.switch' @{op=$badOp} -NoTarget -AllowError).ok -and (Node $placed).active)
+    $null=Rpc 'session.readonly' @{op='on'} $placed
+    Check 'malformed readonly operation preserves protection' (-not (Rpc 'session.readonly' @{op=$badOp} $placed -AllowError).ok -and (Rpc 'session.readonly' @{op='state'} $placed)-eq 'on')
+}
+$null=Rpc 'session.readonly' @{op='off'} $placed
+$refusalName=([string][char]1)+'refuse:valid-name'
+$null=Rpc 'session.rename' @{name=$refusalName} $placed
+$switchReply=Rpc 'session.switch' @{op='begin'} -NoTarget -AllowError
+Check 'valid session name cannot turn switch success into an error' ($switchReply.ok -and $switchReply.result-ceq $refusalName)
+$null=Rpc 'session.switch' @{op='cancel'} -NoTarget
+$null=Rpc 'session.rename' @{name='P15-placed'} $placed
 $null=Rpc 'workspace.collapse' @{} $second
 Check 'collapsed workspace readback' (NavWait {(NavTree|Where-Object id -eq $second).collapsed})
 Check 'previous wraps without skipping collapsed destinations' ((Rpc 'workspace.go' @{to='prev'} -NoTarget)-eq $first -and (Rpc 'workspace.go' @{to='next'} -NoTarget)-eq $second)

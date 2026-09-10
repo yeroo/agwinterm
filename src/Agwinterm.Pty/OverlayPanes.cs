@@ -22,6 +22,23 @@ namespace Agwinterm.Pty;
 /// </summary>
 public static class OverlayPanes
 {
+    /// <summary>Parse a nonnegative decimal count, saturating at the maximum buffer index.</summary>
+    public static bool TryLines(string raw, out int lines)
+    {
+        if (int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out lines)) return lines >= 0;
+        var digits = raw.AsSpan().Trim();
+        if (digits.Length > 0 && digits[0] == '+') digits = digits[1..];
+        lines = 0;
+        if (digits.IsEmpty) return false;
+        foreach (char c in digits)
+        {
+            if (c < '0' || c > '9') return false;
+            lines = lines > (int.MaxValue - (c - '0')) / 10 ? int.MaxValue : lines * 10 + c - '0';
+        }
+        return true;
+    }
+
     /// <summary>Pane 0 — whatever the axis (on a horizontal split, the TOP pane).</summary>
     public const string Left = "left";
     /// <summary>Pane 1 — whatever the axis (on a horizontal split, the BOTTOM pane).</summary>

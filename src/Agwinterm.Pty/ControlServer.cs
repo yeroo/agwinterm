@@ -165,6 +165,10 @@ public sealed class ControlServer : IDisposable
             using var doc = JsonDocument.Parse(requestJson);
             var root = doc.RootElement;
             string cmd = root.TryGetProperty("cmd", out var c) ? c.GetString() ?? "" : "";
+            if (root.TryGetProperty("target", out var selector) && selector.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                return Err("target must be a string or null");
+            if (root.TryGetProperty("window", out var windowValue) && windowValue.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                return Err("window must be a string or null");
             string? target = root.TryGetProperty("target", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
             JsonElement args = root.TryGetProperty("args", out var a) ? a : default;
             // --window <id|prefix|active>: content verbs act on the resolved window (default = frontmost).
@@ -294,7 +298,10 @@ public sealed class ControlServer : IDisposable
                     }
                 case "session.seen": return host.SessionSeen(target) ? Ok("seen") : Err("session not found");
                 case "broadcast": return Ok(host.BroadcastOp(GetString(args, "op") ?? "toggle"));
-                case "session.readonly": return Ok(host.ReadOnlyOp(target, GetString(args, "op") ?? "toggle"));
+                case "session.readonly":
+                    if (!TryOperation(args, "toggle", SessionOperations.IsReadOnlyOp, out var protectionOp))
+                        return Err("readonly requires on, off, toggle, state or get; nothing changed");
+                    return HostReply(host.ReadOnlyOp(target, protectionOp));
                 case "session.output": return Ok(host.SessionOutput(target)); // last completed command's output (FTCS)
                 case "workspace.rename": return host.WorkspaceRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("workspace not found");
                 case "workspace.delete": return host.WorkspaceDelete(target) ? Ok("deleted") : Err("workspace not found / cannot delete last workspace");
@@ -369,7 +376,7 @@ public sealed class ControlServer : IDisposable
                 case "selection.clear": return HostReply(host.SelectionClear(target));
                 case "selection.finalize": return HostReply(host.SelectionFinalize(target)); // copy-on-select path (testing)
                 case "session.paste": return HostReply(host.SessionPaste(target, GetString(args, "text")));
-                case "session.search": return Ok(host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
+                case "session.search": return HostReply(host.SessionSearch(target, GetString(args, "query"), GetString(args, "action")));
                 case "session.scratch": return host.SessionScratch(target, GetString(args, "op") ?? "toggle") ? Ok("scratch") : Err("session not found");
                 case "quick":
                     {
@@ -403,7 +410,11 @@ public sealed class ControlServer : IDisposable
                 case "session.background":
                     return Ok(host.SessionBackground(target, GetString(args, "action") ?? "set",
                         GetString(args, "path"), GetInt(args, "opacity", -1), GetString(args, "mode")));
-                case "session.switch": return Ok(host.SessionSwitch(GetString(args, "op") ?? "advance"));
+                case "session.switch":
+                    if (!TryOperation(args, "advance", SessionOperations.IsSwitchOp, out var switchOp))
+                        return Err("unknown or malformed switch op; nothing changed");
+                    var switched = host.SessionSwitch(switchOp);
+                    return switched.Ok ? Ok(switched.Text) : Err(switched.Text);
                 case "command.run":
                     {
                         string? nameOrCmd = GetString(args, "name") ?? GetString(args, "command");
@@ -689,7 +700,7 @@ public sealed class ControlServer : IDisposable
         bool hasLines = args.TryGetProperty("lines", out var lv);
         if (all && hasLines) { error = OverlayPanes.AllWithLines; return false; }
         int lines = 0;
-        if (hasLines && (lv.ValueKind != JsonValueKind.Number || !lv.TryGetInt32(out lines) || lines < 0))
+        if (hasLines && (lv.ValueKind != JsonValueKind.Number || !OverlayPanes.TryLines(lv.GetRawText(), out lines)))
         {
             error = OverlayPanes.LinesRefusal(lv.ValueKind == JsonValueKind.String ? lv.GetString()! : lv.GetRawText(),
                 quoted: lv.ValueKind == JsonValueKind.String);
@@ -1403,6 +1414,17 @@ public sealed class ControlServer : IDisposable
             return fi.LastWriteTimeUtc.Ticks ^ ((long)fi.Length << 1) ^ (uint)StringComparer.OrdinalIgnoreCase.GetHashCode(path);
         }
         catch { return 0; }
+    }
+
+    private static bool TryOperation(JsonElement args, string fallback, Func<string, bool> valid, out string op)
+    {
+        op = fallback;
+        if (args.ValueKind == JsonValueKind.Undefined) return true;
+        if (args.ValueKind != JsonValueKind.Object) return false;
+        if (!args.TryGetProperty("op", out var value)) return true;
+        if (value.ValueKind != JsonValueKind.String) return false;
+        op = value.GetString()!;
+        return valid(op);
     }
 
     private static string? GetString(JsonElement args, string key)

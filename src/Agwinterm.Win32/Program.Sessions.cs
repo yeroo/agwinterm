@@ -652,7 +652,7 @@ internal partial class Program
     /// <summary>Drive the MRU walk state machine directly (same methods the Ctrl+Tab keys call).
     /// Exists so the control API / tests can exercise begin→advance→commit deterministically with
     /// zero global key injection. Returns the current active session name (or a short status).</summary>
-    private string SwitchOp(string op)
+    private SessionSwitchReply SwitchOp(string op)
     {
         switch (op)
         {
@@ -661,9 +661,9 @@ internal partial class Program
             case "advance-back": case "back": case "prev": case "previous": MruWalk(-1); break;
             case "commit": MruCommit(); break;
             case "cancel": MruCancel(); break;
-            default: return $"unknown op '{op}'";
+            default: return new(false, $"unknown op '{op}'; nothing changed");
         }
-        return _active?.Name ?? "(none)";
+        return new(true, _active?.Name ?? "(none)");
     }
 
     // ---- Cover terminals (scratch / quick) ----
