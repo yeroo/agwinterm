@@ -170,7 +170,14 @@ internal abstract class UiaNodeBase
 
     public nint GetEmbeddedFragmentRoots() => 0;
 
-    public void SetFocus() { Owner.EnsureAlive(); if (Kind == Uia.NodeKind.Session) Self(Owner.Tree()); Owner.OnSetFocus?.Invoke(Kind, Index); }
+    public void SetFocus()
+    {
+        Self(Owner.Tree());
+        if (!KeyboardFocusable) throw new InvalidOperationException("This accessibility element does not accept keyboard focus.");
+        Owner.OnSetFocus?.Invoke(Kind, Index);
+    }
+
+    internal bool KeyboardFocusable => Kind is Uia.NodeKind.Terminal or Uia.NodeKind.Sidebar or Uia.NodeKind.Session or Uia.NodeKind.SettingsControl or Uia.NodeKind.SettingsTab;
 
     public nint GetFragmentRoot() => Owner.FragmentRootPtr();
 
@@ -182,7 +189,8 @@ internal abstract class UiaNodeBase
             Uia.P_ControlType => controlType,
             Uia.P_Name => n?.Name is { Length: > 0 } nm ? nm : localized,
             Uia.P_LocalizedControlType => localized,
-            Uia.P_IsControlElement or Uia.P_IsKeyboardFocusable => true,
+            Uia.P_IsControlElement => true,
+            Uia.P_IsKeyboardFocusable => KeyboardFocusable,
             Uia.P_IsContentElement => content,
             Uia.P_HasKeyboardFocus => n?.Focused == true,
             _ => null,

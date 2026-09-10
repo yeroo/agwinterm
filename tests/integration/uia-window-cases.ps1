@@ -36,20 +36,25 @@ try {
         $uiaHandles+=,$handles[0]
         $sid=[string](Rpc 'tree' -Window $window).workspaces[0].sessions[0].id;$uiaSessions+=,$sid
         if(-not (NavWait {@((Rpc 'tree' -Window $window).workspaces[0].sessions)[0].foregroundShell-eq 'cmd'})){throw 'UIA shell not ready'}
-        $null=Rpc 'session.write' @{text=($esc+'[2J'+$esc+'[H'+"UIA-ONLY-$label")} $sid -Window $window
+        if(-not (NavWait {([string](Rpc 'session.text' @{} $sid -Window $window)).Contains('>')})){throw 'UIA command prompt not ready'}
+        # Produce real child output: injected emulator-only text is replaced by ConPTY repaint
+        # after a later session switch/resize and cannot serve as a retained-range oracle.
+        $null=Rpc 'session.type' @{text="echo UIA-ONLY-$label`r"} $sid -Window $window
+        if(-not (NavWait {([string](Rpc 'session.text' @{} $sid -Window $window)).Contains("UIA-ONLY-$label")})){throw 'UIA marker did not reach owned shell'}
     }
     $null=Rpc 'quick' @{op='on'} -Window $libraryWindow
     $q=@([NavUiaWindows]::Owned($job.Pid,$true))
     if($q.Count-ne 1){throw 'No unique owned quick HWND'}
     if(-not (NavWait {([string](Rpc 'session.text' -Window quick)).Contains('>')})){throw 'Quick shell did not finish startup'}
-    $null=Rpc 'session.write' @{text=($esc+'[2J'+$esc+'[H'+'UIA-ONLY-QUICK')} -Window quick
+    $null=Rpc 'session.type' @{text="echo UIA-ONLY-QUICK`r"} -Window quick
     if(-not (NavWait {([string](Rpc 'session.text' -Window quick)).Contains('UIA-ONLY-QUICK')})){throw 'Quick marker did not reach its owned pane'}
     $a=UiaDoc $uiaHandles[0];$b=UiaDoc $uiaHandles[1];$quickDoc=UiaDoc $q[0]
     Check 'two library UIA roots and quick expose separate document text' ($a.range.GetText(-1).Contains('UIA-ONLY-A') -and $b.range.GetText(-1).Contains('UIA-ONLY-B') -and $quickDoc.range.GetText(-1).Contains('UIA-ONLY-QUICK'))
     Check 'UIA text runtime ids differ across windows' (($a.document.GetRuntimeId()-join ',')-ne ($b.document.GetRuntimeId()-join ',') -and ($a.document.GetRuntimeId()-join ',')-ne ($quickDoc.document.GetRuntimeId()-join ','))
-    $alternate=[string](Rpc 'session.new' @{name='UIA-focus-alternate'} -Window $uiaWindows[0])
+    $alternate=[string](Rpc 'session.new' @{name='UIA-focus-alternate';'no-select'=$true} -Window $uiaWindows[0])
     if(-not (NavWait {@((Rpc 'tree' -Window $uiaWindows[0]).workspaces[0].sessions|Where-Object id -eq $alternate).Count-eq 1})){throw 'UIA focus peer not ready'}
     $null=Rpc 'session.select' @{} $uiaSessions[0] -Window $uiaWindows[0]
+    if(-not (NavWait {@((Rpc 'tree' -Window $uiaWindows[0]).workspaces[0].sessions|Where-Object {$_.id-eq $uiaSessions[0] -and $_.active}).Count-eq 1})){throw 'Original UIA session did not become active'}
     $condition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,'UIA-focus-alternate')
     $focusNode=$a.root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
     if($null-eq $focusNode){throw 'No owned sidebar session for UIA focus'}
@@ -62,12 +67,21 @@ try {
     $null=Rpc 'sidebar' @{op='hide'} -Window $uiaWindows[1]
     if(-not (NavWait {$null-ne $b.root.FindFirst([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,'Recent sessions'))})){throw 'Sidebar-hidden chrome did not materialize'}
     Check 'retained Settings button keeps its action across chrome insertion' ($settingsButton.Current.Name-eq 'Settings' -and ($settingsButton.GetRuntimeId()-join ',')-eq $settingsIdentity)
+    Check 'chrome Invoke button does not advertise unsupported keyboard focus' (-not $settingsButton.Current.IsKeyboardFocusable)
     ($settingsButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke()
     $settingsOpened=NavWait {
         $group=$b.root.FindFirst([System.Windows.Automation.TreeScope]::Children,$settingsCondition)
         $group.Current.ControlType-eq [System.Windows.Automation.ControlType]::Group -and $a.range.GetText(-1).Contains('UIA-ONLY-A')
     }
     Check 'UIA Invoke opens settings in its owner only' $settingsOpened
+    if($settingsOpened){
+        $tabCondition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::TabItem)
+        $tab=$b.root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$tabCondition)
+        $tab.SetFocus();Check 'settings tab UIA SetFocus updates actual keyboard focus' (NavWait {$tab.Current.HasKeyboardFocus})
+        $controlCondition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button)
+        $control=$b.root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$controlCondition)
+        $control.SetFocus();Check 'settings control UIA SetFocus moves focus off tab header' (NavWait {$control.Current.HasKeyboardFocus -and -not $tab.Current.HasKeyboardFocus})
+    }
     if(-not $settingsOpened){"UIA invoke diagnostics: A=$($a.range.GetText(-1)) B=$($b.range.GetText(-1)) windows=$($uiaWindows-join ',')"}
     [void][HudOwnedJob]::SendMessageW($uiaHandles[1],0x100,[IntPtr]27,[IntPtr]1)
     # Remove the earlier row; a retained provider must still identify the same session, not its ordinal.

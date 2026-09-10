@@ -127,6 +127,7 @@ public class UiaContextTests
             Assert.Equal(20d, rect.GetType().GetField("Left")!.GetValue(rect));
             Call(button, "Invoke"); Assert.Equal(1, calls);
             current = [first]; Closed(() => Call(button, "Invoke")); Closed(() => Call(button, "GetBoundingRectangle"));
+            Closed(() => Call(button, "SetFocus"));
             Assert.Equal(1, calls);
         }
         finally { ((IDisposable)owner).Dispose(); }
@@ -142,6 +143,23 @@ public class UiaContextTests
         Assert.Equal(scratch, Call(app, "ChromeUiaIdentity", "scratch")); Assert.NotEqual(scratch, split);
         var rowA = New("Program+SetRow"); var rowB = New("Program+SetRow");
         Assert.NotEqual(rowA.GetType().GetField("UiaIdentity", Flags)!.GetValue(rowA), rowB.GetType().GetField("UiaIdentity", Flags)!.GetValue(rowB));
+    }
+
+    [Theory]
+    [InlineData(4, false)] [InlineData(6, true)] [InlineData(7, true)]
+    public void InvokableFocusContractMatchesSupportedKinds(int nodeKind, bool focusable)
+    {
+        var owner = New("Uia"); var kind = Enum.ToObject(Type("Uia+NodeKind"), nodeKind);
+        var node = New("Uia+Node"); Set(node, "Kind", kind); Tree(owner, () => [node]);
+        var button = New("UiaButton", owner, kind, 0); int calls = 0;
+        Callback(owner, "OnSetFocus", () => { calls++; return null; });
+        try
+        {
+            Assert.Equal(focusable, button.GetType().BaseType!.GetProperty("KeyboardFocusable", Flags)!.GetValue(button));
+            if (focusable) { Call(button, "SetFocus"); Assert.Equal(1, calls); }
+            else { Assert.IsType<InvalidOperationException>(Assert.Throws<TargetInvocationException>(() => Call(button, "SetFocus")).InnerException); Assert.Equal(0, calls); }
+        }
+        finally { ((IDisposable)owner).Dispose(); }
     }
 
     [Theory]

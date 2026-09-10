@@ -953,6 +953,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     Parent = grp,
                     Name = SetTabNames[i] + (i == _setTab ? " tab, selected" : " tab"),
                     Selected = i == _setTab,
+                    Focused = _setNav == i,
                     Rect = ScreenRect(_setCard.Left + 8f, _navHit[i * 2], SetNavW - 16f, _navHit[i * 2 + 1] - _navHit[i * 2]),
                 });
             }
@@ -967,7 +968,7 @@ internal partial class Program : ISessionHost, IWindowHost
                     Index = r.UiaIdentity,
                     Parent = grp,
                     Name = SettingsControlName(r),
-                    Focused = ReferenceEquals(r, _setFocus),
+                    Focused = _setNav < 0 && ReferenceEquals(r, _setFocus),
                     Rect = r.Vis ? ScreenRect(r.Hx0, r.Hy0, Math.Max(1, r.Hx1 - r.Hx0), Math.Max(1, r.Hy1 - r.Hy0)) : default,
                 });
             }
@@ -1099,10 +1100,18 @@ internal partial class Program : ISessionHost, IWindowHost
     private void HandleUiaSetFocus(Uia.NodeKind kind, int index)
     {
         if (_nativePick is not null) { _nativePick.FocusIfForeground(); return; }
+        if (Uia.Find(BuildUiaTree(), kind, index) is null) return;
         switch (kind)
         {
             case Uia.NodeKind.Terminal: ExitChromeFocus(announce: false); break;
             case Uia.NodeKind.Sidebar: EnterChromeFocus(); break;
+            case Uia.NodeKind.SettingsControl:
+                var row = FocusableRows().FirstOrDefault(r => r.UiaIdentity == index);
+                if (_setOpen && row is not null) { _setNav = -1; _setFocus = row; _setFocusKb = true; AfterSetFocus(); }
+                break;
+            case Uia.NodeKind.SettingsTab:
+                if (_setOpen && index >= 0 && index < SetTabNames.Length) { _setNav = index; _setFocusKb = true; AfterHeaderFocus(); }
+                break;
             case Uia.NodeKind.Session:
                 var session = AllSessions().FirstOrDefault(s => s.UiaIdentity == index);
                 if (session is not null)
