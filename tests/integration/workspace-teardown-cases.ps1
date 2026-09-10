@@ -1,6 +1,7 @@
 # Runs only within hud-ui's private process job and suite-token lifetime.
 if(-not (NavWait {(Node $session).foregroundShell-eq 'cmd'})){throw 'Teardown fixture needs its survivor shell ready'}
 $survivorCount=$job.Count()
+"Teardown baseline: $survivorCount processes; $($job.Members())"
 foreach($finishWalk in 'cancel','commit'){
 foreach($deleteActive in $false,$true){
     $doomedWs=[string](Rpc 'workspace.new' @{name='teardown-owned'})
@@ -32,8 +33,12 @@ foreach($deleteActive in $false,$true){
         $null=Rpc 'workspace.delete' @{} $doomedWs
         $null=Rpc 'session.switch' @{op=$finishWalk} -NoTarget
         NavKey 13 # a stale dashboard must not activate its disposed member
-        Check "workspace deletion releases every owned process (active=$deleteActive, finish=$finishWalk)" (NavWait {$job.Count()-eq $survivorCount})
+        $released=NavWait {$job.Count()-eq $survivorCount}
+        Check "workspace deletion releases every owned process (active=$deleteActive, finish=$finishWalk)" $released "baseline=$survivorCount remaining=$($job.Count()) members=$($job.Members())"
         Check 'deleted session cannot be reactivated by stale switch state' ($null-eq (Node $doomed) -and (Node $session).active)
+        $beforeDuplicate=@((NavTree).sessions).Count
+        $duplicate=Rpc 'session.duplicate' @{} $doomed -AllowError
+        Check 'duplicate refuses a removed explicit owner instead of cloning the survivor' (-not $duplicate.ok -and @((NavTree).sessions).Count-eq $beforeDuplicate)
         Check 'unrelated survivor still accepts control reads' (-not [string]::IsNullOrWhiteSpace([string](Rpc 'session.text' @{} $session)))
         Check 'repeated deletion refuses' (-not (Rpc 'workspace.delete' @{} $doomedWs -AllowError).ok)
     } finally {

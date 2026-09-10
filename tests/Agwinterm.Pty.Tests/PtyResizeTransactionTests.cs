@@ -5,6 +5,15 @@ namespace Agwinterm.Pty.Tests;
 
 public class PtyResizeTransactionTests
 {
+    [Theory]
+    [InlineData(-1, 24)] [InlineData(80, -1)] [InlineData(10001, 24)] [InlineData(80, 10001)]
+    public void InvalidCreateDimensionsRefuseBeforeAnyTransportAccess(int cols, int rows)
+    {
+        // No constructor/pipe: touching the transport would fail this test for the wrong reason.
+        var client = (PtyHostClient)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PtyHostClient));
+        Assert.Throws<ArgumentOutOfRangeException>(() => client.Create("unused", cols, rows, "cmd.exe", []));
+    }
+
     [Fact]
     public async Task RealResizeCannotInterleaveWithRepaintRestore()
     {

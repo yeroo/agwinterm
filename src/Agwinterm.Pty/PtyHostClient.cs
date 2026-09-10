@@ -67,6 +67,8 @@ public sealed class PtyHostClient : IDisposable
         string? cwd = null, IReadOnlyDictionary<string, string>? env = null, bool verbatim = false, bool deElevate = false,
         bool freshEnv = true)
     {
+        if (cols < 0 || rows < 0 || cols > 10000 || rows > 10000)
+            throw new ArgumentOutOfRangeException(nameof(cols), "create cols/rows must be in 0..10000 (zero selects defaults)");
         var create = new Create
         {
             Id = id,
