@@ -44,7 +44,7 @@ partial class Uia
     internal sealed class Node
     {
         public NodeKind Kind;
-        public int Index;                 // session lifetime token; per-kind ordinal for fixed controls
+        public int Index;                 // session/row lifetime token or chrome action identity; fixed tab ordinal
         public string Name = "";
         public bool Focused, Selected;
         public UiaRect Rect;              // screen px (all zero → fall back to the host/window rect)
@@ -125,8 +125,8 @@ internal abstract class UiaNodeBase
     protected Uia.Node? Self(Uia.TreeSnapshot t)
     {
         var node = Uia.Find(t, Kind, Index);
-        if (node is null && Kind == Uia.NodeKind.Session)
-            throw new COMException("The accessibility session is closed.", unchecked((int)0x80040201));
+        if (node is null && Kind is Uia.NodeKind.Session or Uia.NodeKind.ChromeButton or Uia.NodeKind.SettingsControl or Uia.NodeKind.SettingsTab)
+            throw new COMException("The accessibility element is no longer available.", unchecked((int)0x80040201));
         return node;
     }
 
@@ -294,7 +294,7 @@ internal partial class UiaButton : UiaNodeBase, IRawElementProviderSimple, IRawE
         var (ct, lct) = Kind == Uia.NodeKind.SettingsTab ? (Uia.CT_TabItem, "tab") : (Uia.CT_Button, "button");
         FillProperty(propertyId, pRetVal, ct, lct, true);
     }
-    public void Invoke() { Owner.EnsureAlive(); Owner.OnInvoke?.Invoke(Kind, Index); }
+    public void Invoke() { Self(Owner.Tree()); Owner.OnInvoke?.Invoke(Kind, Index); }
     [LibraryImport("oleaut32.dll")] private static partial void VariantInit(nint pvarg);
 }
 

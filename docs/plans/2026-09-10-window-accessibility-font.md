@@ -3,7 +3,9 @@
 Each library or quick Program owns its UI Automation context. Every root, fragment and text range
 retains that context; child runtime IDs append their context identity to the HWND host identity.
 Session fragments use lifetime tokens, never mutable sidebar ordinals, including queued focus
-resolution. A removed session cannot redirect a retained fragment to its replacement. UIA snapshot reads
+resolution. Chrome buttons use per-window action identities; settings rows use per-lifetime tokens,
+not a tab's current row position. Invoke revalidates identity and modal visibility after its queue hop.
+A removed session or control cannot redirect a retained fragment to its replacement. UIA snapshot reads
 run on the owning UI thread (inline for reentrant same-thread calls), and posted actions recheck
 closure before touching the window. No provider lock spans app callbacks or UIA event delivery.
 Window destruction retires its root COM references and clears callbacks. Retained text ranges

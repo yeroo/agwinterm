@@ -964,7 +964,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 nodes.Add(new Uia.Node
                 {
                     Kind = Uia.NodeKind.SettingsControl,
-                    Index = i,
+                    Index = r.UiaIdentity,
                     Parent = grp,
                     Name = SettingsControlName(r),
                     Focused = ReferenceEquals(r, _setFocus),
@@ -1027,10 +1027,18 @@ internal partial class Program : ISessionHost, IWindowHost
         for (int i = 0; i < btns.Count; i++)
         {
             rootKids.Add(nodes.Count);
-            nodes.Add(new Uia.Node { Kind = Uia.NodeKind.ChromeButton, Index = i, Name = btns[i].label, Parent = 0, Rect = btns[i].rect });
+            nodes.Add(new Uia.Node { Kind = Uia.NodeKind.ChromeButton, Index = ChromeUiaIdentity(btns[i].action), Name = btns[i].label, Parent = 0, Rect = btns[i].rect });
         }
         nodes[0].Children = rootKids.ToArray();
         return new Uia.TreeSnapshot { Nodes = nodes.ToArray() };
+    }
+
+    private readonly Dictionary<string, int> _chromeUiaIdentities = new(StringComparer.Ordinal);
+    private int ChromeUiaIdentity(string action)
+    {
+        if (!_chromeUiaIdentities.TryGetValue(action, out int identity))
+            _chromeUiaIdentities.Add(action, identity = _chromeUiaIdentities.Count + 1);
+        return identity;
     }
 
     /// <summary>Title-bar + footer chrome buttons as (action, spoken label, screen rect) for the UIA tree.</summary>
@@ -1064,15 +1072,19 @@ internal partial class Program : ISessionHost, IWindowHost
     private void HandleUiaInvoke(Uia.NodeKind kind, int index)
     {
         if (_nativePick is not null) return;
+        // Revalidate after the UI-thread queue hop, including modal visibility. A retained element
+        // must never target a different action merely because the current controls were reordered.
+        if (Uia.Find(BuildUiaTree(), kind, index) is null) return;
         if (kind == Uia.NodeKind.ChromeButton)
         {
             var b = ChromeButtonsForUia();
-            if (index >= 0 && index < b.Count) ChromeAction(b[index].action);
+            var action = b.FirstOrDefault(button => ChromeUiaIdentity(button.action) == index).action;
+            if (action is not null) ChromeAction(action);
         }
         else if (kind == Uia.NodeKind.SettingsControl && _setOpen)
         {
-            var rows = FocusableRows();
-            if (index >= 0 && index < rows.Count) { _setFocus = rows[index]; ActivateSetFocus(); }
+            var row = FocusableRows().FirstOrDefault(r => r.UiaIdentity == index);
+            if (row is not null) { _setFocus = row; ActivateSetFocus(); }
         }
         else if (kind == Uia.NodeKind.SettingsTab && _setOpen && index >= 0 && index < SetTabNames.Length)
         {

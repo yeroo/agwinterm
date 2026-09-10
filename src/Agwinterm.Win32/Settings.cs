@@ -22,6 +22,8 @@ internal partial class Program
 
     private sealed class SetRow
     {
+        private static int _nextUiaIdentity;
+        public readonly int UiaIdentity = System.Threading.Interlocked.Increment(ref _nextUiaIdentity);
         public SW Kind;
         public int Tab, Min, Max;
         public string Key = "", Label = "";

@@ -58,6 +58,10 @@ try {
     $settingsCondition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,'Settings')
     $settingsButton=$b.root.FindFirst([System.Windows.Automation.TreeScope]::Children,$settingsCondition)
     if($null-eq $settingsButton){throw 'Owned peer has no UIA Settings button'}
+    $settingsIdentity=$settingsButton.GetRuntimeId()-join ','
+    $null=Rpc 'sidebar' @{op='hide'} -Window $uiaWindows[1]
+    if(-not (NavWait {$null-ne $b.root.FindFirst([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,'Recent sessions'))})){throw 'Sidebar-hidden chrome did not materialize'}
+    Check 'retained Settings button keeps its action across chrome insertion' ($settingsButton.Current.Name-eq 'Settings' -and ($settingsButton.GetRuntimeId()-join ',')-eq $settingsIdentity)
     ($settingsButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke()
     $settingsOpened=NavWait {
         $group=$b.root.FindFirst([System.Windows.Automation.TreeScope]::Children,$settingsCondition)

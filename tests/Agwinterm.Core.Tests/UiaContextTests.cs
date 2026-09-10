@@ -36,6 +36,10 @@ public class UiaContextTests
         Set(s, "TotalLength", text.Length); Set(s, "VisibleRows", 1);
         return s;
     }
+    private static void Tree(object owner, Func<object[]> read)
+    {
+        Callback(owner, "GetTree", () => { var t = New("Uia+TreeSnapshot"); var current = read(); var nodes = Array.CreateInstance(Type("Uia+Node"), current.Length); for (int i = 0; i < current.Length; i++) nodes.SetValue(current[i], i); Set(t, "Nodes", nodes); return t; });
+    }
     private static void Closed(Action action)
     {
         var ex = Assert.Throws<TargetInvocationException>(action);
@@ -93,6 +97,8 @@ public class UiaContextTests
         var a = New("Uia"); var b = New("Uia"); int callsA = 0, callsB = 0;
         Callback(a, "OnInvoke", () => { callsA++; return null; }); Callback(b, "OnInvoke", () => { callsB++; return null; });
         var kind = Enum.ToObject(Type("Uia+NodeKind"), 4);
+        var node = New("Uia+Node"); Set(node, "Kind", kind);
+        Tree(a, () => [node]); Tree(b, () => [node]);
         var buttonA = New("UiaButton", a, kind, 0); var buttonB = New("UiaButton", b, kind, 0);
         try
         {
@@ -103,6 +109,39 @@ public class UiaContextTests
             Call(buttonB, "Invoke"); Assert.Equal(1, callsB);
         }
         finally { ((IDisposable)a).Dispose(); ((IDisposable)b).Dispose(); }
+    }
+
+    [Theory]
+    [InlineData(4)] [InlineData(6)] [InlineData(7)]
+    public void RetainedInvokableIdentityCannotMoveToAnotherControl(int nodeKind)
+    {
+        var owner = New("Uia"); var kind = Enum.ToObject(Type("Uia+NodeKind"), nodeKind);
+        object Node(int id, double x) { var n = New("Uia+Node"); Set(n, "Kind", kind); Set(n, "Index", id); var r = New("UiaRect"); Set(r, "Left", x); Set(n, "Rect", r); return n; }
+        var first = Node(1, 10); var retained = Node(2, 20); object[] current = [first, retained];
+        Tree(owner, () => current); int calls = 0; Callback(owner, "OnInvoke", () => { calls++; return null; });
+        var button = New("UiaButton", owner, kind, 2);
+        try
+        {
+            current = [retained, first];
+            var rect = Call(button, "GetBoundingRectangle")!;
+            Assert.Equal(20d, rect.GetType().GetField("Left")!.GetValue(rect));
+            Call(button, "Invoke"); Assert.Equal(1, calls);
+            current = [first]; Closed(() => Call(button, "Invoke")); Closed(() => Call(button, "GetBoundingRectangle"));
+            Assert.Equal(1, calls);
+        }
+        finally { ((IDisposable)owner).Dispose(); }
+    }
+
+    [Fact]
+    public void ProgramChromeIdentityAndSettingsRowsAreNotListOrdinals()
+    {
+        var app = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(Type("Program"));
+        Set(app, "_chromeUiaIdentities", new Dictionary<string, int>(StringComparer.Ordinal));
+        var scratch = Call(app, "ChromeUiaIdentity", "scratch"); var split = Call(app, "ChromeUiaIdentity", "split");
+        _ = Call(app, "ChromeUiaIdentity", "recent");
+        Assert.Equal(scratch, Call(app, "ChromeUiaIdentity", "scratch")); Assert.NotEqual(scratch, split);
+        var rowA = New("Program+SetRow"); var rowB = New("Program+SetRow");
+        Assert.NotEqual(rowA.GetType().GetField("UiaIdentity", Flags)!.GetValue(rowA), rowB.GetType().GetField("UiaIdentity", Flags)!.GetValue(rowB));
     }
 
     [Theory]
