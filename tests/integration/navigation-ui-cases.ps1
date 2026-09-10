@@ -23,6 +23,7 @@ function PixelDifference($a,$b,[int]$x=0,[int]$y=0,[int]$w=0,[int]$h=0){
     }};return $different
 }
 $first=[string](CurrentWs);$beforeText=Rpc 'session.text' @{} $session
+. "$PSScriptRoot/workspace-teardown-cases.ps1"
 $esc=[string][char]27
 $null=Rpc 'config.set' @{key='cursor-blink';value='false'}
 $null=Rpc 'session.write' @{text=($esc+'[?9001hMODIFIER-SELECTION-PROBE')} $session

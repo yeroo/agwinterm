@@ -85,6 +85,7 @@ public sealed class ServerSession : ISession
     private readonly CancellationTokenSource _readCancel = new();   // unblocks ReadLoop's pending read (#118)
     private int? _childPid;
     private volatile bool _started;
+    private readonly SessionStartFence _startFence = new();
     private volatile bool _disposed;
 
     public ITerminalCore Emulator { get; }
@@ -160,16 +161,19 @@ public sealed class ServerSession : ISession
         {
             await Task.Run(() =>
             {
+                if (_startFence.IsClosed) return;
                 var client = _backend.Client;
                 client.Create(_id, Cols, Rows, app, commandLine, cwd, extraEnv,
                     verbatim: verbatimCommandLine, deElevate: deElevate, freshEnv: freshEnv);
-                var att = client.Attach(_id);
-                _data = att.Data;
-                _childPid = att.ChildPid;
+                if (_startFence.Created()) KillHosted(); // close won while create was in flight
+                if (_startFence.IsClosed) return;
+                try { PublishAttachment(client.Attach(_id)); }
+                catch { if (_startFence.AttachmentFailed()) KillHosted(); throw; }
             }, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
+            if (_disposed) return;
             // Same shape as TerminalSession's de-elevate failure: surface it IN the pane instead of
             // leaving a dead surface (or crashing an unobserved fire-and-forget task).
             var msg = $"\r\n\x1b[31m[agwinterm] pty-host session failed to start:\x1b[0m\r\n  {ex.Message}\r\n";
@@ -178,10 +182,22 @@ public sealed class ServerSession : ISession
             ExitCode = 1; HasExited = true;
             return;
         }
-        _started = true;
-        _ = Task.Factory.StartNew(ReadLoop, CancellationToken.None,
-            TaskCreationOptions.LongRunning, TaskScheduler.Default);
     }
+
+    private bool PublishAttachment(PtyHostAttachment att)
+    {
+        bool published = _startFence.Publish(() =>
+        {
+            _data = att.Data; _childPid = att.ChildPid;
+            _started = true; // from here the reader alone owns disposal, even if close cancels it now
+            _ = Task.Factory.StartNew(ReadLoop, CancellationToken.None,
+                TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        });
+        if (!published) att.Dispose(); // no read was ever issued
+        return published;
+    }
+
+    private void KillHosted() { try { _backend.Client.Kill(_id); } catch { } }
 
     public async Task<int> RunAsync(string app, string[] commandLine, bool verbatimCommandLine = false, CancellationToken ct = default)
     {
@@ -198,6 +214,7 @@ public sealed class ServerSession : ISession
     /// fresh; an exited leftover is reaped here so the fresh launch starts clean.</summary>
     public bool TryAdopt()
     {
+        if (_startFence.IsClosed) return false;
         PtyHostAttachment att;
         try { att = _backend.Client.Attach(_id, repaint: true); }
         catch { return false; }                       // no such session (or host unreachable)
@@ -218,12 +235,12 @@ public sealed class ServerSession : ISession
                 Emulator.SeedScrollback(att.Scrollback);
             Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(att.Modes));
         }
-        _data = att.Data;
-        _childPid = att.ChildPid;
+        if (_startFence.Created()) KillHosted();
+        if (!PublishAttachment(att)) return false;
         Adopted = true;
-        _started = true;
-        _ = Task.Factory.StartNew(ReadLoop, CancellationToken.None,
-            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        // The new UI already reports its desired grid, so its ordinary layout guard will not
+        // detect an old host grid. The reader must be live before resizing (ConPTY may repaint).
+        if (att.Cols != Cols || att.Rows != Rows) Resize(Cols, Rows);
         OutputReceived?.Invoke();
         return true;
     }
@@ -327,6 +344,7 @@ public sealed class ServerSession : ISession
     /// app-quit path. Never disposes the pipe directly — see ReadLoop's ownership rule (#118).</summary>
     public void Detach()
     {
+        _startFence.Close(kill: false);
         _disposed = true;                                            // EOF now means "we left", not "it died"
         CancelRead();
     }
@@ -334,16 +352,14 @@ public sealed class ServerSession : ISession
     public void Dispose()
     {
         _disposed = true;
-        if (_started)
-            try { _backend.Client.Kill(_id); } catch { }             // explicit close = kill (pane closed)
+        if (_startFence.Close(kill: true)) KillHosted();
         CancelRead();
     }
 
     private void CancelRead()
     {
         try { _readCancel.Cancel(); } catch (ObjectDisposedException) { }
-        // If the loop never started (start failed / never started), there is no pending read and
-        // no owner to close the pipe — do it here, where it is safe for the same reason.
-        if (!_started && _data is { } d) { try { d.Dispose(); } catch { } }
+        // PublishAttachment either assigns the pipe to a reader, or closes the unpublished pipe.
+        // Never inspect _started here to guess whether a concurrent publisher has issued a read.
     }
 }

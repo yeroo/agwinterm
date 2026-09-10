@@ -401,6 +401,7 @@ internal partial class Program
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
         bool deElevate = false, HandoffArgs? handoff = null, bool wait = false, string? paneId = null)
     {
+        lock (_workspaces) if (!_workspaces.Contains(ws)) throw new InvalidOperationException("workspace no longer exists");
         // Elevated profile from a non-elevated app: hand off to a separate elevated window (UAC).
         if (profileName is not null && !IsElevated()
             && _profileCfg.Profiles.FirstOrDefault(p => p.Name.Equals(profileName, StringComparison.OrdinalIgnoreCase)) is { Elevate: true })
@@ -445,6 +446,7 @@ internal partial class Program
     /// <summary>Append an extra pane to an existing session (used by split-layout restore).</summary>
     private Pane AppendPane(Ses ses, string paneId, string? cwd, float fontSize)
     {
+        if (!OwnsSession(ses)) throw new InvalidOperationException("session no longer exists");
         var p = CreatePane(paneId, ses.Ws, cwd, fontSize, profileName: ses.ProfileName);
         lock (_workspaces) ses.Panes.Add(p);
         return p;
@@ -556,6 +558,8 @@ internal partial class Program
 
     private void SetActive(Ses ses)
     {
+        // Modal selectors and queued callbacks may outlive the object they captured.
+        if (!OwnsSession(ses)) return;
         _workspaceTarget = null;
         // Navigating to a session outside the multi-selection drops the selection (single-select again).
         if (!_selectedIds.Contains(ses.Id)) _selectedIds.Clear();
@@ -782,6 +786,7 @@ internal partial class Program
     /// <summary>Show a session's scratch terminal (creating it lazily in the session's cwd).</summary>
     private void ShowScratch(Ses ses)
     {
+        if (!OwnsSession(ses)) return;
         ses.Scratch ??= CreatePane(ses.Id + ":scratch:" + Guid.NewGuid().ToString("N")[..6], ses.Ws, CwdOf(ses), ses.FontSize);
         ShowCover(ses.Scratch, 1);
     }
@@ -824,6 +829,8 @@ internal partial class Program
     /// open — the pane arm has its own <see cref="OverlaySlot.LastResult"/>, reset here.</summary>
     private string OverlayOpen(Ses ses, Pane? pane, string command, int sizePercent, bool wait, Dictionary<string, string>? extraEnv = null)
     {
+        if (!OwnsSession(ses) || (pane is not null && !ses.Panes.Contains(pane)))
+            return ISessionHost.RefusePrefix + "session or pane no longer exists";
         OverlaySlot slot;
         string id;
         if (pane is null)
@@ -1192,6 +1199,7 @@ internal partial class Program
             // itself is the authority (it no-ops harmlessly when already current).
             Post(() =>
             {
+                if (!OwnsSession(ses)) { _claudeUpdating = false; return; }
                 OverlayOpen(ses, null, "claude update", 60, wait: true);
                 var ovl = ses.Overlay.Term;
                 if (ovl is null) { _claudeUpdating = false; return; }
@@ -1418,6 +1426,7 @@ internal partial class Program
 
     private void SplitPane(Ses ses)
     {
+        if (!OwnsSession(ses)) return;
         if (ses.Panes.Count >= 2) return;   // agterm model: strictly primary + one split (no 3+ panes)
         var cur = ses.ActivePane;
         string? cwd = string.IsNullOrEmpty(cur.StartCwd) ? null : cur.StartCwd;
@@ -1652,22 +1661,56 @@ internal partial class Program
     private Ses? DuplicateSession(Ses? source, string? id = null)
     {
         source ??= _active;
-        if (source is null) return null;
+        if (source is null || !OwnsSession(source)) return null;
         return CreateSession(id ?? Guid.NewGuid().ToString(), null, CwdOf(source), source.Ws,
             makeActive: true, profileName: source.ProfileName);
+    }
+
+    private bool OwnsSession(Ses ses)
+    {
+        lock (_workspaces) return _workspaces.Contains(ses.Ws) && ses.Ws.Sessions.Contains(ses);
+    }
+
+    /// <summary>Release every surface and UI reference owned by a session, without creating a
+    /// replacement or recording a second closed-history item. Used by both session and workspace close.</summary>
+    private void DisposeSessionResources(Ses ses)
+    {
+        InvalidateSessionSelectors();
+        if (_mruSnapshot.Contains(ses))
+        {
+            // A deletion invalidates the walk's frozen membership; a later commit/cancel must
+            // never reactivate a disposed session (including a deleted, non-active start pane).
+            _mruWalking = false; _mruSnapshot.Clear(); _mruStart = null;
+        }
+        _selectedIds.Remove(ses.Id);
+        if (_selAnchorId == ses.Id) _selAnchorId = null;
+        if (ReferenceEquals(_focusRow, ses)) _focusRow = null;
+        if (ReferenceEquals(_toastTarget, ses)) _toastTarget = null;
+        if (ReferenceEquals(_editing, ses)) CancelRename();
+        bool ownsSelection = _selPane is { } selected &&
+            (ses.Panes.Any(p => ReferenceEquals(p, selected) || ReferenceEquals(p.Overlay.Term, selected)) ||
+             ReferenceEquals(ses.Scratch, selected) || ReferenceEquals(ses.Overlay.Term, selected));
+        if (ownsSelection) { _selecting = false; _selPane = null; StopSelAutoscroll(); ReleaseCapture(); }
+        if (ReferenceEquals(_active, ses) && _divDragging) { _divDragging = false; ReleaseCapture(); }
+        if (ReferenceEquals(_dragItem, ses) || ReferenceEquals(_pressItem, ses))
+        {
+            _dragging = false; _sbPress = false; _dragItem = null; _pressItem = null; ReleaseCapture();
+        }
+        foreach (var p in ses.Panes) { ClosePaneOverlay(ses, p); try { p.S.Dispose(); } catch { } }   // each pane's overlay (P5) dies with its pane
+        // Dismiss + dispose this session's scratch cover if it belongs here.
+        if (ses.Scratch is not null) { if (_coverKind == 1 && ReferenceEquals(_cover, ses.Scratch)) HideCover(); try { ses.Scratch.S.Dispose(); } catch { } ses.Scratch = null; }
+        CloseOverlayOf(ses); // dismiss + dispose this session's session-wide overlay (a no-op on an empty slot)
+        _mru.Remove(ses.Id);
+        EmitEvent("session", ses.Id, "closed");
+        EvictWatermark(ses.BgPath); SweepBackground(ses.Id); // drop the session's watermark file + texture
     }
 
     private void CloseSessionInternal(Ses ses)
     {
         CaptureClosedSession(ses);   // remember it so Reopen Closed Session can bring it back
-        foreach (var p in ses.Panes) { ClosePaneOverlay(ses, p); try { p.S.Dispose(); } catch { } }   // each pane's overlay (P5) dies with its pane
-        // Dismiss + dispose this session's scratch cover if it belongs here.
-        if (ses.Scratch is not null) { if (_coverKind == 1 && ReferenceEquals(_cover, ses.Scratch)) HideCover(); try { ses.Scratch.S.Dispose(); } catch { } ses.Scratch = null; }
-        CloseOverlayOf(ses); // dismiss + dispose this session's session-wide overlay (a no-op on an empty slot)
         bool wasActive = ReferenceEquals(_active, ses);
-        _mru.Remove(ses.Id);
-        EmitEvent("session", ses.Id, "closed"); EmitEvent("tree");   // control-API event log (#273)
-        EvictWatermark(ses.BgPath); SweepBackground(ses.Id); // drop the session's watermark file + texture
+        DisposeSessionResources(ses);
+        EmitEvent("tree");   // control-API event log (#273)
         lock (_workspaces) ses.Ws.Sessions.Remove(ses);
         if (wasActive)
         {

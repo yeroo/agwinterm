@@ -462,8 +462,7 @@ internal partial class Program : ISessionHost, IWindowHost
     // (one bitmap per distinct image, at native size); decode happens off the UI thread just like
     // the Kitty pipeline, so a background image never stalls rendering — it appears on a later frame.
     private readonly Dictionary<string, ID2D1Bitmap> _bgCache = new();
-    private readonly HashSet<string> _bgDecoding = new();
-    private readonly System.Collections.Concurrent.ConcurrentQueue<(string path, byte[]? bgra, int w, int h)> _bgDecoded = new();
+    private readonly DecodeMailbox<string, (byte[]? bgra, int w, int h)> _backgroundDecodes = new();
 
     // ---- CLI launch args (wt-style, applied to the first window): ----
     //   Agwinterm.Win32.exe [-p|--profile NAME] [-d|--dir PATH] [--maximized] [--fullscreen]
