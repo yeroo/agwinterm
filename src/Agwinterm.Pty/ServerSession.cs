@@ -19,6 +19,8 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
     private readonly object _lock = new();
     private PtyHostClient? _client;
     private bool _disposed;
+    private readonly StartupHostClaims _startupClaims = new();
+    private int _reapStarted;
 
     /// <param name="appId">Instance id — names the host's control pipe.</param>
     /// <param name="exePath">The host exe to spawn when none is running; null = require an
@@ -38,8 +40,26 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
 
     public ISession Create(string id, int cols, int rows)
     {
+        _startupClaims.Claim(id); // before connection, adoption, async spawn, or UI publication
         EnsureClient();   // connect/spawn NOW so an unreachable host fails here, where callers can fall back
         return new ServerSession(this, id, cols, rows);
+    }
+
+    /// <summary>One best-effort sweep after restore. Every handle created by this backend is a
+    /// claim, even before its pane is published. Closed/failed handles stay conservatively claimed
+    /// for this sweep; their own exact lifecycle cleanup remains responsible for their child.</summary>
+    public void ReapUnclaimedStartupSessions()
+    {
+        if (Interlocked.Exchange(ref _reapStarted, 1) != 0) return;
+        try
+        {
+            using var probe = ConnectExisting();
+            foreach (var info in probe.List())
+                try { _startupClaims.TryReap(info.Id, () => probe.Kill(info.Id, info.CreationTicket)); }
+                catch { } // this exact attempt failed; never substitute another incarnation
+        }
+        catch { } // host unavailable: nothing can be proven safe to reap
+        finally { _startupClaims.Complete(); }
     }
 
     internal PtyHostClient Client => EnsureClient();

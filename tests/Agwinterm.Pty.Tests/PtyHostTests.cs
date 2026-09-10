@@ -18,6 +18,10 @@ public class PtyHostTests : IDisposable
         => CreationProtocolAssertions.LostRepliesAndReusedId(_appId);
 
     [Fact]
+    public Task CreationTickets_StartupSweepProtectsUnpublishedPane()
+        => CreationProtocolAssertions.StartupSweepKeepsPendingPane(_appId);
+
+    [Fact]
     public async Task CreationTickets_CancelBetweenSpawnAndPublicationCleansExactChild()
     {
         using var reached = new ManualResetEventSlim(); using var release = new ManualResetEventSlim();

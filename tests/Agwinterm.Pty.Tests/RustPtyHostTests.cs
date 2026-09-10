@@ -115,6 +115,14 @@ public class RustPtyHostTests : IDisposable
     }
 
     [Fact]
+    public async Task CreationTickets_StartupSweepProtectsUnpublishedPane()
+    {
+        Assert.NotNull(ExePath);
+        using var client = Start();
+        await CreationProtocolAssertions.StartupSweepKeepsPendingPane(_appId);
+    }
+
+    [Fact]
     public void CreateAttachTypeKill_RoundTrips()
     {
         if (ExePath is null) return;

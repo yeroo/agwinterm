@@ -1038,40 +1038,6 @@ internal partial class Program
         return Path.Combine(projects, EncodeClaudeProject(cwd));
     }
 
-    /// <summary>Kill hosted sessions no live pane claims (server mode): pane ids ARE hosted-session
-    /// ids, so anything unclaimed belongs to a closed pane (its kill lost to a crash) or already
-    /// exited. Every surface counts as a claim — panes, scratch, overlay, quick — across all
-    /// windows. Best-effort; runs once, well after restore/adoption has claimed everything.</summary>
-    private static void ReapOrphanedHostedSessions(string appId)
-    {
-        try
-        {
-            var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            List<Program> wins;
-            lock (_windowIndex) wins = _byId.Values.ToList();
-            foreach (var w in wins)
-            {
-                lock (w._workspaces)
-                    foreach (var s in w._workspaces.SelectMany(x => x.Sessions))
-                    {
-                        foreach (var p in s.Panes)
-                        {
-                            claimed.Add(p.Id);
-                            if (p.Overlay.Term is { } po) claimed.Add(po.Id);   // a pane overlay's term is hosted like any other (P5)
-                        }
-                        if (s.Scratch is { } sc) claimed.Add(sc.Id);
-                        if (s.Overlay.Term is { } ov) claimed.Add(ov.Id);
-                    }
-                if (w._quick is { } q) claimed.Add(q.Id);
-            }
-            using var probe = Agwinterm.Pty.PtyHostClient.Connect(appId);
-            foreach (var info in probe.List())
-                if (!claimed.Contains(info.Id) || info.HasExited)
-                    try { probe.Kill(info.Id, info.CreationTicket); } catch { }
-        }
-        catch { }   // host not running / racing shutdown — nothing to reap
-    }
-
     /// <summary>Whether a Claude conversation transcript with this exact id exists for the folder.
     /// The launcher wrapper keys Claude's session id to the PANE id, so this is the per-pane test.</summary>
     private static bool ClaudeTranscriptExists(string cwd, string id)

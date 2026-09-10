@@ -57,3 +57,11 @@ Implementation and validation plan; shipping remains gated on review and exact-h
   session, exact-ticket absence and original-process exit. Canonical token generation 137 released
   after owned job zero; no clipboard, HKCU or foreground access.
 - Orphan reaping carries the listed incarnation. C# and Lite fresh cancellation both bind host PID.
+- The startup sweep now uses backend claims registered before connection/adoption/creation rather
+  than a stale UI collection snapshot. Claim-versus-cleanup has one per-ID decision; cleanup holds
+  no state lock during host I/O, unrelated creation proceeds, and a losing same-ID claim refuses.
+  Claims are retained conservatively until this one sweep completes, then storage is released.
+- 44 private C# checks and five Rust ledger checks pass. Five real-host checks (including both
+  hosts protecting an unpublished backend pane while reaping an actual orphan) and the Rust
+  publication barrier pass under token139, released after owned job zero. The Navigation search
+  fixture waits for an actual match rather than treating a no-change config request as a FIFO barrier.

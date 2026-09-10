@@ -9,6 +9,36 @@ namespace Agwinterm.Pty.Tests;
 // Real-pipe/real-child oracle, shared by BOTH hosts. Requires the integration-suite token locally.
 internal static class CreationProtocolAssertions
 {
+    internal static async Task StartupSweepKeepsPendingPane(string appId)
+    {
+        using var backend = new ServerSessionBackend(appId, null);
+        using var pendingPane = backend.Create("not-yet-published", 80, 24);
+        using var client = PtyHostClient.Connect(appId);
+        string orphan = client.PrepareCreate("unclaimed-orphan");
+        try
+        {
+            await pendingPane.StartAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep 120"], freshEnv: false);
+            Assert.False(pendingPane.HasExited);
+            client.Create("unclaimed-orphan", 80, 24, "powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep 120"], freshEnv: false, creationTicket: orphan);
+            var before = client.List(); Assert.Equal(2, before.Count);
+            using var orphanChild = Process.GetProcessById(before.Single(x => x.Id == "unclaimed-orphan").ChildPid!.Value);
+            _ = orphanChild.SafeHandle;
+            // The backend handle exists, but no workspace/sidebar/Pane collection publishes it.
+            backend.ReapUnclaimedStartupSessions();
+            Assert.Equal("not-yet-published", Assert.Single(client.List()).Id);
+            Assert.False(pendingPane.HasExited);
+            Assert.True(orphanChild.WaitForExit(5000));
+            backend.ReapUnclaimedStartupSessions(); // one-shot, not a new claim epoch
+            Assert.Equal("not-yet-published", Assert.Single(client.List()).Id);
+        }
+        finally
+        {
+            Assert.True(SpinWait.SpinUntil(() => client.CancelCreate("unclaimed-orphan", orphan) == CreationPhase.CreationUnknown, 15000));
+            pendingPane.Dispose();
+            Assert.True(SpinWait.SpinUntil(() => client.List().Count == 0, 15000));
+        }
+    }
+
     private static void DropReply(string appId, Request request)
     {
         using var pipe = new NamedPipeClientStream(".", PtyHostServer.ControlPipeName(appId), PipeDirection.InOut);
