@@ -7,7 +7,7 @@ using System.Text.Json;
 //   agwintermctl ping
 //   agwintermctl version [--json]                  (the CLI that ran + the app serving the pipe)
 //   agwintermctl tree [--json]
-//   agwintermctl session new [--cwd DIR] [--name NAME] [--workspace ID|--workspace-name NAME [--create-workspace]] [--no-select]
+//   agwintermctl session new [--command "PowerShell code"] [--command-mode powershell|direct] [--cwd DIR] [--name NAME] [--workspace ID|--workspace-name NAME [--create-workspace]] [--no-select]
 //       (no workspace given = the workspace of the pane running this CLI; the active one only when there is none)
 //                                                  (an unknown workspace is refused, never swapped for the active one)
 //   agwintermctl session select <target>
@@ -254,6 +254,11 @@ switch (area)
                 break;
             }
             case "new":
+                if (bareLast.Contains("command")) { Console.Error.WriteLine("session new: --command needs a value"); return 2; }
+                if (bareLast.Contains("command-mode")) { Console.Error.WriteLine("session new: --command-mode needs a value"); return 2; }
+                if (!Agwinterm.Pty.SessionCommand.TryCreate(Opt("command"), Opt("command-mode"), options.ContainsKey("wait"),
+                    Opt("profile"), out _, out var commandError)) { Console.Error.WriteLine(commandError); return 2; }
+                if (Opt("command-mode") is { } commandMode) cargs["command-mode"] = commandMode;
                 if (Opt("cwd") is { } cwd) cargs["cwd"] = cwd;
                 if (Opt("name") is { } name) cargs["name"] = name;
                 if (Opt("workspace") is { } wsp) cargs["workspace"] = wsp;
@@ -262,7 +267,7 @@ switch (area)
                 if (options.ContainsKey("create-workspace")) cargs["create-workspace"] = true;
                 if (Opt("profile") is { } prof) cargs["profile"] = prof;
                 if (options.ContainsKey("no-select")) cargs["no-select"] = true;   // create in background, keep focus
-                if (options.ContainsKey("wait")) cargs["wait"] = true;             // hold on "press any key" after --command exits
+                if (options.ContainsKey("wait")) cargs["wait"] = true;             // PowerShell keeps its interactive prompt; direct mode refuses this flag
                 // Who is asking: the pane this CLI runs in, the same AGWINTERM_SESSION_ID every other
                 // verb defaults its target to. With no --workspace the session lands in THAT pane's
                 // workspace, not in whatever the user last clicked. Sent as `caller`, not as the

@@ -7,7 +7,7 @@ foreach($deleteActive in $false,$true){
     $doomedWs=[string](Rpc 'workspace.new' @{name='teardown-owned'})
     try {
         $null=Rpc 'workspace.select' @{} $doomedWs
-        $doomed=[string](Rpc 'session.new' @{name='teardown-split';wait=$true})
+        $doomed=[string](Rpc 'session.new' @{name='teardown-split'})
         if(-not (NavWait {$null-ne (Node $doomed)})){throw 'Doomed session did not materialize'}
         $right=[string](Rpc 'session.split' @{op='on'} $doomed)
         if(-not (NavWait {(Node $doomed).foregroundShells.Count-eq 2 -and @((Node $doomed).foregroundShells|Where-Object {$_-ne 'cmd'}).Count-eq 0})){throw 'Split shells not ready'}

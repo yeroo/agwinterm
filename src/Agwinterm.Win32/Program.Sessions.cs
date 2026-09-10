@@ -49,10 +49,10 @@ internal partial class Program
     }
 
     /// <summary>Create one terminal pane (its own ConPTY, env, wiring) sized for the given font.
-    /// When <paramref name="command"/> is set, that argv runs as the pane's process instead of the shell.</summary>
+    /// When <paramref name="sessionCommand"/> is set, its validated application and argv run as the pane's process.</summary>
     private Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null,
         bool shellWrap = false, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
-        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false)
+        bool deElevate = false, HandoffArgs? handoff = null, SessionCommand? sessionCommand = null)
     {
         var (cols, rows) = GridSizeFor(fontSize);
         // The ONLY session creation site (see ISessionBackend). Handoff panes are pinned in-process
@@ -138,11 +138,8 @@ internal partial class Program
                            new Microsoft.Win32.SafeHandles.SafeFileHandle(h.ConIn, true),
                            new Microsoft.Win32.SafeHandles.SafeFileHandle(h.Signal, true), h.Client, h.ClientPid);
         else if (adopted) { /* reattached to the surviving shell — nothing to launch */ }
-        else if (!string.IsNullOrWhiteSpace(command) && wait)
-            // --wait: run the command, then hold on "press any key" so a build/test/deploy's final
-            // output (or an early failure) stays readable before the session closes (agterm #255 —
-            // the session-surface counterpart of `overlay open --wait`).
-            pane.Start = session.StartAsync("cmd.exe", new[] { "/c", command! + " & echo. & pause" }, verbatimCommandLine: true, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
+        else if (sessionCommand is { } launch)
+            pane.Start = session.StartAsync(launch.App, launch.QuotedArgs, verbatimCommandLine: true, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
         else if (!string.IsNullOrWhiteSpace(command) && interactive)
             // Run the command in a fresh shell that STAYS OPEN afterwards (custom-command "new" mode):
             // the user's profile loads (oh-my-posh etc.), the command runs, then it's an interactive shell.
@@ -152,32 +149,8 @@ internal partial class Program
             // propagates. Verbatim so it becomes exactly `cmd.exe /c <command>` (no extra quoting,
             // which cmd's /c quote-stripping rules would otherwise mangle).
             pane.Start = session.StartAsync("cmd.exe", new[] { "/c", command! }, verbatimCommandLine: true, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
-        else if (!string.IsNullOrWhiteSpace(command))
-        {
-            var argv = ParseArgv(command);
-            if (argv.Length > 0)
-                pane.Start = session.StartAsync(argv[0], argv[1..], extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
-            else
-                LaunchShell(session, profileName, env, cwd, deElevate);
-        }
         else LaunchShell(session, profileName, env, cwd, deElevate);   // launch the chosen shell profile (default = Windows PowerShell)
         return pane;
-    }
-
-    /// <summary>Minimal argv split (whitespace-separated, double-quotes group). For session --command.</summary>
-    private static string[] ParseArgv(string s)
-    {
-        var args = new List<string>();
-        var cur = new StringBuilder();
-        bool inQuote = false, has = false;
-        foreach (char ch in s)
-        {
-            if (ch == '"') { inQuote = !inQuote; has = true; }
-            else if (char.IsWhiteSpace(ch) && !inQuote) { if (has) { args.Add(cur.ToString()); cur.Clear(); has = false; } }
-            else { cur.Append(ch); has = true; }
-        }
-        if (has) args.Add(cur.ToString());
-        return args.ToArray();
     }
 
     /// <summary>
@@ -405,7 +378,7 @@ internal partial class Program
     /// split, a close, a swap or a restore).</summary>
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
-        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false, string? paneId = null)
+        bool deElevate = false, HandoffArgs? handoff = null, string? paneId = null, SessionCommand? sessionCommand = null)
     {
         lock (_workspaces) if (!_workspaces.Contains(ws)) throw new InvalidOperationException("workspace no longer exists");
         // Elevated profile from a non-elevated app: hand off to a separate elevated window (UAC).
@@ -436,7 +409,7 @@ internal partial class Program
         // closing it by any path leaves none (the id then resolves to the focused pane, like a name —
         // the rule by condition is on ISessionHost.SplitClose), and a restore hands the saved pane-0
         // id in — see the summary.
-        ses.Panes.Add(CreatePane(paneId ?? id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff, wait: wait));
+        ses.Panes.Add(CreatePane(paneId ?? id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff, sessionCommand: sessionCommand));
         ses.Active = 0;
         DetectSessionElevation(ses);   // refine ⚡ from the shell's real integrity once it's running
 

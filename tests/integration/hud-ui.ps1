@@ -1,7 +1,7 @@
 # Dedicated P13 fixture: private app-data, no clipboard/registry writes, exact owned job teardown.
 param([string]$Exe="$PSScriptRoot/../../src/Agwinterm.Win32/bin/x64/Release/net10.0-windows/win-x64/Agwinterm.Win32.exe",
       [string]$TokenOwner=$env:AGWINTERM_TEST_OWNER,[switch]$Strict,
-      [ValidateSet('Hud','Quick','Navigation','Picker','Accessibility')][string]$Suite='Hud')
+      [ValidateSet('Hud','Quick','Navigation','Picker','Accessibility','Command')][string]$Suite='Hud')
 $ErrorActionPreference='Stop'
 $PSNativeCommandUseErrorActionPreference=$false
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
@@ -201,6 +201,15 @@ public sealed class HudOwnedJob {
         $esc=[string][char]27
         $libraryWindow=[string](@((Rpc 'window.list').windows|Where-Object open)[0].id)
         . "$PSScriptRoot/uia-window-cases.ps1"
+    }
+    elseif($Suite-eq 'Command') {
+        $commandArtifact=$artifact;$commandPipe=$pipe
+        $commandCtl=Join-Path $root 'src/Agwinterm.Ctl/bin/Release/net10.0-windows/agwintermctl.exe'
+        function CommandRpc([string]$verb,$params,[string]$target,[switch]$AllowError){
+            Rpc $verb $params $target -AllowError:$AllowError
+        }
+        . "$PSScriptRoot/session-command-cases.ps1"
+        Check 'shared command acceptance completed' ($commandChecks-ge 30)
     }
     elseif($Suite-eq 'Picker') { . "$PSScriptRoot/picker-ui-cases.ps1" }
     elseif($Suite-eq 'Navigation') { . "$PSScriptRoot/navigation-ui-cases.ps1" }

@@ -104,8 +104,9 @@ public interface ISessionHost
     /// <summary>
     /// Create a session; returns its id. Optionally in a workspace (by id/prefix via
     /// <paramref name="workspace"/>, or by sidebar label via <paramref name="workspaceName"/> +
-    /// <paramref name="createWorkspace"/>), running <paramref name="command"/> as its process
-    /// instead of the shell. A workspace that does not resolve — an unknown id/prefix, or an
+    /// <paramref name="createWorkspace"/>), running <paramref name="command"/> as PowerShell code with an interactive prompt afterward.
+    /// <paramref name="commandMode"/> = direct runs executable + arguments without a shell;
+    /// wait is accepted only in PowerShell mode, whose prompt already stays open. A workspace that does not resolve — an unknown id/prefix, or an
     /// unknown name without <paramref name="createWorkspace"/> — is <b>refused</b> with
     /// <see cref="RefusePrefix"/> + the <see cref="SessionNewWorkspaces"/> wording, and no session
     /// is created; it is never swapped for the active workspace (P2, decision 1). The host resolves
@@ -122,7 +123,7 @@ public interface ISessionHost
     /// </summary>
     string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
-        string? caller = null);
+        string? caller = null, string? commandMode = null);
 
     /// <summary>Clone a session (same cwd + shell profile); returns the new session id. (agterm #234)</summary>
     string DuplicateSession(string? target);
@@ -621,7 +622,7 @@ public sealed class SingleSessionHost : ISessionHost
     public WindowStateSnapshot WindowState() => new(true, false, false, false, "ws", "single");
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
-        string? caller = null) => "single";
+        string? caller = null, string? commandMode = null) => "single";
     public string DuplicateSession(string? target) => "";
     public string ProfilesList() => "Windows PowerShell";
     public string ProfilesReload() => "0 profiles loaded";

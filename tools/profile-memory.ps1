@@ -70,7 +70,7 @@ function ChurnResize([string]$tag) {
 }
 function HeavyOutput([string]$tag) {
     # ~60k lines through one PTY: scrollback fills to its cap; growth beyond one buffer = leak.
-    $id = (& $Ctl session new --name blaster --command 'powershell -NoProfile -Command "1..60000 | ForEach-Object { \"line $_ with some padding text to make it wider\" }; Start-Sleep 2"' | Out-String).Trim()
+    $id = (& $Ctl session new --name blaster --command-mode direct --command 'powershell -NoProfile -Command "1..60000 | ForEach-Object { \"line $_ with some padding text to make it wider\" }; Start-Sleep 2"' | Out-String).Trim()
     Start-Sleep -Seconds 14
     Sample "heavy output (open) $tag"
     & $Ctl session close --target $id 2>$null | Out-Null

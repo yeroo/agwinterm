@@ -69,11 +69,11 @@ public static class AgentSkill
           from a live one beside it, and no verb reports the stamp per pane. Always present, even
           for an idle session that never set one)
         - `agwintermctl events [--since CURSOR] [--limit N]`      — poll the event log (status/notification/session/tree changes); returns {cursor, events:[{seq,type,session,info}]}. Pass the returned cursor as --since next poll.
-        - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "argv"] [--profile NAME] [--no-select] [--wait]`
+        - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "PowerShell code"] [--command-mode powershell|direct] [--profile NAME] [--no-select] [--wait]`
           `--no-select` creates the session in the background without stealing focus or changing the current selection.
-          `--wait` (with `--command`) holds the session on "press any key" after the command exits, so its final output stays readable.
-          — create a session (prints its id). `--command` runs that program as the session process (argv-style, no shell) instead of the shell.
-          `--profile NAME` picks a shell profile (default = Windows PowerShell).
+          `--command` runs PowerShell code and leaves an interactive prompt. `--wait` is accepted in this mode; the prompt stays open either way.
+          — create a session (prints its id). `--command-mode direct` launches executable + arguments using Windows quoting, with no added shell; it refuses `--wait`. An exited standalone pane remains visible without an interactive prompt.
+          `--profile NAME` picks a shell profile (default = Windows PowerShell). `--command` and `--profile` are mutually exclusive.
           `--workspace` is a workspace id (or unique id prefix; `tree --json` lists them), `--workspace-name` its sidebar label
           (case-insensitive). **An unknown workspace is refused** (`ok:false`, no session created) — it is never swapped for the
           active workspace: an unknown id, or an unknown name without `--create-workspace`, is an error that names the value.

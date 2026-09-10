@@ -352,7 +352,7 @@ internal sealed class FakeSessionHost : ISessionHost
     // the active workspace — the last answer, not the first (task 5a).
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
-        string? caller = null)
+        string? caller = null, string? commandMode = null)
     {
         Ws? w;
         if (!string.IsNullOrEmpty(workspace))
