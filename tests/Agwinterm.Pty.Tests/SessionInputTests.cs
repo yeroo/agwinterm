@@ -46,6 +46,33 @@ public class SessionInputTests
     }
 
     [Theory]
+    [InlineData(false, 0, false)] [InlineData(true, 0, false)]
+    [InlineData(false, 2, false)] [InlineData(true, 2, false)]
+    [InlineData(false, 0, true)] [InlineData(true, 0, true)]
+    [InlineData(false, 1, true)] [InlineData(true, 1, true)]
+    [InlineData(false, 2, true)] [InlineData(true, 2, true)]
+    public void ActualSendKeepsCoversTargetedWhileBroadcastIsOn(bool paneOverlay, int state, bool command)
+    {
+        using var shell = new InputSession(); using var cover = new InputSession { InputClosed = state == 2 };
+        var program = LoadProgram();
+        var app = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(program);
+        object Make(string name) => Activator.CreateInstance(program.GetNestedType(name, BindingFlags.NonPublic)!, true)!;
+        static void Set(object o, string name, object value) => o.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(o, value);
+        var ses = Make("Ses"); var pane = Make("Pane"); var overlay = Make("Pane");
+        Set(pane, "S", shell); Set(overlay, "S", cover); Set(overlay, "ReadOnly", state == 1);
+        ((System.Collections.IList)ses.GetType().GetField("Panes")!.GetValue(ses)!).Add(pane);
+        if (paneOverlay) Set(pane.GetType().GetField("Overlay")!.GetValue(pane)!, "Term", overlay);
+        else Set(app, "_cover", overlay);
+        Set(app, "_active", ses); Set(app, "_session", cover); Set(app, "_broadcast", true);
+        Assert.False((bool)program.GetProperty("BroadcastActive", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(app)!);
+        var result = program.GetMethod(command ? "RunCommandText" : "Send", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(app, command ? ["payload", "send"] : ["payload", true]);
+        Assert.Equal(0, shell.Attempts);
+        Assert.Equal(state == 0 ? (command ? "payload\r" : "payload") : "", cover.Input);
+        if (command) Assert.Equal(state != 0, Assert.IsType<string>(result).StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal));
+        else Assert.Equal(state == 0, Assert.IsType<bool>(result));
+    }
+
+    [Theory]
     [InlineData(false)] [InlineData(true)]
     public void ActualPaneHostQueryReplyCannotAbortFollowingOutput(bool closed)
     {

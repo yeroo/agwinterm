@@ -29,7 +29,7 @@ internal partial class Program
         RequestRedraw();
     }
 
-    private bool BroadcastActive => _broadcast && _cover is null && _active is not null;
+    private bool BroadcastActive => _broadcast && _cover is null && _active is { } active && active.ActivePane.Overlay.Term is null;
 
     private bool Send(string s, bool editing = true)
     {
