@@ -161,10 +161,17 @@ public class ServerSessionTests : IDisposable
         }
 
         // "UI generation 2": a fresh handle with the SAME pane id adopts it.
-        using var gen2 = (ServerSession)_backend.Create(paneId, 100, 24);
+        using var gen2 = (ServerSession)_backend.Create(paneId, 132, 40);
         Assert.True(gen2.TryAdopt(), "adoption must find the surviving session");
         Assert.True(gen2.Adopted);
         Assert.Equal(pid, gen2.ChildProcessId);                      // SAME child process — the whole point
+        using (var probe = PtyHostClient.Connect(_appId))
+        {
+            Assert.True(WaitFor(() => probe.List().Any(s => s.Id == paneId && s.Attached)));
+            // Old code leaves the host at 100x24 despite the new replica's requested grid.
+            Assert.Equal((132, 40), (gen2.Cols, gen2.Rows));
+            Assert.True(WaitFor(() => probe.List().Any(s => s.Id == paneId && s.Cols == 132 && s.Rows == 40)));
+        }
         Assert.True(WaitFor(() => GridText(gen2).Contains("pre+restart")),
             "pre-restart output missing after adoption; grid:\n" + GridText(gen2));
 
@@ -172,6 +179,11 @@ public class ServerSessionTests : IDisposable
         // repaints via a resize jiggle, and input landing mid-resize is discarded exactly as it is
         // during init (seen in the full suite under parallel load, never in isolation).
         TypeLine(gen2, "echo post+adopt", "post+adopt");
+        using (var probe = PtyHostClient.Connect(_appId))
+        {
+            var info = Assert.Single(probe.List());
+            Assert.Equal((132, 40), (info.Cols, info.Rows)); // repaint must not later restore the old grid
+        }
     }
 
     [Fact]

@@ -592,9 +592,20 @@ internal partial class Program
         }
     }
 
+    // These surfaces hold objects/actions, not just ids. Invalidate even an empty workspace's
+    // menu before removing it, and do the same for single-session close.
+    private void InvalidateSessionSelectors()
+    {
+        CloseDashboard(); ClosePalette(); CloseMenuWindow();
+        _menuItems.Clear(); _menuSel = -1;
+        _sidebarRows.Clear(); _sidebarNames.Clear();
+        DismissHoverTip(); ClearLinkHover();
+    }
+
     private bool DeleteWorkspace(Workspace ws)
     {
         lock (_workspaces) if (_workspaces.Count <= 1 || !_workspaces.Contains(ws)) return false;
+        InvalidateSessionSelectors();
         List<Ses> sessions;
         bool hadActive = _active is not null && ReferenceEquals(_active.Ws, ws);
         lock (_workspaces)
@@ -608,7 +619,12 @@ internal partial class Program
             if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
         }
         RefreshHudTimer(); // a removed workspace may have owned the last animated HUD
-        foreach (var s in sessions) { try { s.S.Dispose(); } catch { } }
+        if (ReferenceEquals(_editing, ws)) CancelRename();
+        if (ReferenceEquals(_dragItem, ws) || ReferenceEquals(_pressItem, ws))
+        {
+            _dragging = false; _sbPress = false; _dragItem = null; _pressItem = null; ReleaseCapture();
+        }
+        foreach (var s in sessions) DisposeSessionResources(s);
         if (hadActive)
         {
             var next = AllSessions().FirstOrDefault();

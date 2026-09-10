@@ -39,6 +39,7 @@ public sealed class PtyHostServer : IDisposable
         public required string Id;
         public required TerminalSession S;
         public readonly object DataLock = new();                 // guards Data + writes to it
+        public readonly PtyResizeTransaction Resize = new();     // real resize and the complete repaint jiggle
         public DataChannel? Data;                                // the currently-attached client
     }
 
@@ -149,6 +150,7 @@ public sealed class PtyHostServer : IDisposable
 
     private Reply HandleCreate(Create c)
     {
+        if (c.Cols > 10000 || c.Rows > 10000) return Err("create cols/rows must not exceed 10000");
         string id = c.Id.Length > 0 ? c.Id : Guid.NewGuid().ToString();
         int cols = c.Cols > 0 ? (int)c.Cols : 120;
         int rows = c.Rows > 0 ? (int)c.Rows : 30;
@@ -242,7 +244,7 @@ public sealed class PtyHostServer : IDisposable
                 }
                 return;
             }
-            if (repaint) JiggleRepaint(hosted.S);
+            if (repaint) hosted.Resize.Run(() => JiggleRepaint(hosted.S));
             await PumpInputAsync(hosted, ch).ConfigureAwait(false);
         });
 
@@ -295,8 +297,8 @@ public sealed class PtyHostServer : IDisposable
 
     private Reply HandleResize(Resize r) => WithSession(r.Id, h =>
     {
-        if (r.Cols == 0 || r.Rows == 0) return Err("resize needs cols/rows");
-        h.S.Resize((int)r.Cols, (int)r.Rows);
+        if (!PtyResizeTransaction.Valid(r.Cols, r.Rows)) return Err("resize cols/rows must be in 1..10000");
+        h.Resize.Run(() => h.S.Resize((int)r.Cols, (int)r.Rows));
         return Ok();
     });
 

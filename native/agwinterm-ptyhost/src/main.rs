@@ -13,6 +13,7 @@ mod freshenv;
 mod persist;
 mod pipes;
 mod proto;
+mod resize;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -35,6 +36,7 @@ struct Hosted {
     pty: Mutex<ConPty>,
     term: Mutex<Terminal>,
     data: Mutex<Option<Arc<OvStream>>>,
+    resize: Mutex<()>, // real resize and the complete repaint jiggle share one transaction
     exited: AtomicBool,
     /// Bytes the pump has fed so far; the exit watcher's settle window reads it (#246).
     pump_bytes: AtomicU64,
@@ -170,15 +172,17 @@ fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
             ok_reply(None)
         }),
         Some(request::Cmd::Resize(r)) => with_session(host, &r.id, |h| {
-            if r.cols == 0 || r.rows == 0 {
-                return err_reply("resize needs cols/rows");
+            if !resize::valid(r.cols, r.rows) {
+                return err_reply("resize cols/rows must be in 1..10000");
             }
+            resize::transaction(&h.resize, || {
             h.term
                 .lock()
                 .unwrap()
                 .emu
                 .resize(r.cols as usize, r.rows as usize);
             h.pty.lock().unwrap().resize(r.cols as i16, r.rows as i16);
+            });
             ok_reply(None)
         }),
         Some(request::Cmd::Kill(k)) => match host.sessions.lock().unwrap().remove(&k.id) {
@@ -253,8 +257,9 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
     if c.de_elevate {
         return err_reply("spawn failed: de-elevate unsupported by rust host");
     }
-    let cols = c.cols.clamp(1, 10000) as i64;
-    let rows = c.rows.clamp(1, 10000) as i64;
+    let Some((cols, rows)) = resize::create_dimensions(c.cols, c.rows) else {
+        return err_reply("create cols/rows must not exceed 10000");
+    };
     {
         let sessions = host.sessions.lock().unwrap();
         if sessions.contains_key(&c.id) {
@@ -304,6 +309,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         term: Mutex::new(Terminal::new(cols as usize, rows as usize)),
         pty: Mutex::new(pty),
         data: Mutex::new(None),
+        resize: Mutex::new(()),
         exited: AtomicBool::new(false),
         pump_bytes: AtomicU64::new(0),
         pump_in_flight: AtomicBool::new(false),
@@ -398,6 +404,7 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
             return;
         }
         if repaint {
+            resize::transaction(&h2.resize, || {
             let (c, r) = h2.pty.lock().unwrap().size();
             h2.term
                 .lock()
@@ -408,6 +415,7 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
             std::thread::sleep(std::time::Duration::from_millis(60));
             h2.term.lock().unwrap().emu.resize(c as usize, r as usize);
             h2.pty.lock().unwrap().resize(c, r);
+            });
         }
         let mut buf = [0u8; 16 * 1024];
         loop {

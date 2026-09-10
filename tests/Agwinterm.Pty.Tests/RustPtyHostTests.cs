@@ -137,12 +137,15 @@ public class RustPtyHostTests : IDisposable
 
         Thread.Sleep(300);   // let the echo land in the HOST emulator (its snapshot feeds reattach)
         using var second = client.Attach(id, repaint: true);
+        client.Resize(id, 132, 40); // may arrive during the reconnect repaint's two-resize transaction
         bool inHistory = second.Scrollback.Any(l => l.Contains("before-detach"));
         var emu = new TerminalEmulator(second.Cols, second.Rows);
         emu.Feed(System.Text.Encoding.UTF8.GetBytes(second.Modes));   // modes replay parses cleanly
         Assert.True(inHistory || TypeUntilEcho(second.Data, "echo probe", "probe").Length > 0,
             "reattach must hand back a live stream");
         Assert.Contains("after-reattach", TypeUntilEcho(second.Data, "echo after-reattach", "after-reattach"));
+        var resized = Assert.Single(client.List());
+        Assert.Equal((132, 40), (resized.Cols, resized.Rows));
         client.Kill(id);
     }
 
