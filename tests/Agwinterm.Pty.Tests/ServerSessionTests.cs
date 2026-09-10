@@ -98,7 +98,7 @@ public class ServerSessionTests : IDisposable
         var seen = new TaskCompletionSource<(int Code, string Grid)>(TaskCreationOptions.RunContinuationsAsynchronously);
         s.Exited += code => seen.TrySetResult((code, GridText(s)));
         string script = $"$o=[Threading.EventWaitHandle]::OpenExisting('{outputName}'); $x=[Threading.EventWaitHandle]::OpenExisting('{exitName}'); " +
-            "if(-not $o.WaitOne(60000)){exit 41}; 'settle-marker-246'; if(-not $x.WaitOne(60000)){exit 42}; exit 3";
+            "if(-not $o.WaitOne(60000)){exit 41}; 'settle-marker-246'; if(-not $x.WaitOne(60000)){exit 42}; 'FINAL-after-exit-release'; exit 3";
         await s.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoProfile", "-Command", script });
         Assert.True(WaitFor(() => _backend.Client.List().Any(i => i.Id == id && i.Attached), 10000));
         outputGate.Set();
@@ -106,8 +106,22 @@ public class ServerSessionTests : IDisposable
         exitGate.Set();
         var (exit, grid) = await seen.Task.WaitAsync(TimeSpan.FromSeconds(15));
         Assert.Equal(3, exit);
-        Assert.Contains("settle-marker-246", grid);
+        Assert.Contains("FINAL-after-exit-release", grid);
         Assert.True(s.HasExited);
+    }
+
+    [Fact]
+    public async Task SupersedingAttachmentClosesOldInputWithoutClaimingChildExit()
+    {
+        string id = Guid.NewGuid().ToString();
+        using var old = _backend.Create(id, 80, 24);
+        await old.StartAsync("cmd.exe", ["/d", "/q"]);
+        Assert.True(WaitFor(() => _backend.Client.List().Any(i => i.Id == id && i.Attached)));
+        using var replacement = _backend.Client.Attach(id);
+        Assert.True(WaitFor(() => old.InputClosed));
+        Assert.False(old.HasExited);
+        Assert.Throws<IOException>(() => old.Write("must refuse"u8));
+        Assert.False(_backend.Client.List().Single(i => i.Id == id).HasExited);
     }
 
     [Fact]

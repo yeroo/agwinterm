@@ -608,7 +608,7 @@ internal partial class Program
                 // Focus reporting (DECSET ?1004): on a real focus transition, tell the active pane's
                 // app the terminal gained (ESC[I) or lost (ESC[O) focus, so it can pause/resume.
                 if (_windowActive != wasActive && _session is { } fs && fs.Emulator.FocusReporting)
-                    fs.Write(_windowActive ? "\x1b[I"u8.ToArray() : "\x1b[O"u8.ToArray());
+                    SessionInput.TryWrite(fs, _windowActive ? "\x1b[I"u8 : "\x1b[O"u8);
                 if (_config.UnfocusedDim > 0) RequestRedraw();
                 if (_isQuickWindow && !_windowActive && _quickVisible && !_quickPinned
                     && (lParam == IntPtr.Zero || GetAncestor(lParam, 3 /* GA_ROOTOWNER */) != _hwnd)) DismissQuick(blur: true);

@@ -14,7 +14,7 @@ public class InputLifecycleTests
     }
 
     [Fact]
-    public void HostedDisconnectRefusesInputWithoutClaimingChildExit()
+    public void HostedInputClosedStateRefusesWithoutClaimingChildExit()
     {
         // Constructor is cheap and never connects; no server or shared resource is started.
         using var backend = new ServerSessionBackend("not-connected", null);
@@ -27,7 +27,7 @@ public class InputLifecycleTests
         session.Detach(); // local cancellation only, no kill/control connection
     }
 
-    private sealed class ScriptedChannel : Stream
+    private class ScriptedChannel : Stream
     {
         internal int Reads; internal bool SawFinalOutput; internal bool Disposed;
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
@@ -58,9 +58,23 @@ public class InputLifecycleTests
     [Fact]
     public async Task HostCancellationStillEndsInputPumpWithoutDisposingAnOutstandingRead()
     {
-        using var channel = new ScriptedChannel(); using var cancel = new CancellationTokenSource();
+        using var channel = new PendingChannel(); using var cancel = new CancellationTokenSource();
+        var pump = HostInputPump.CopyAsync(channel, (_, _) => {}, cancel.Token);
+        await channel.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cancel.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => HostInputPump.CopyAsync(channel, (_, _) => {}, cancel.Token));
-        Assert.False(channel.Disposed); Assert.Equal(0, channel.Reads);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pump.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(channel.Disposed); Assert.True(channel.ReadCompleted);
+    }
+
+    private sealed class PendingChannel : ScriptedChannel
+    {
+        internal readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal bool ReadCompleted;
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            Entered.SetResult();
+            try { await Task.Delay(Timeout.Infinite, ct); return 0; }
+            finally { ReadCompleted = true; }
+        }
     }
 }

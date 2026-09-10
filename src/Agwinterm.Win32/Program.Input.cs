@@ -29,21 +29,19 @@ internal partial class Program
         RequestRedraw();
     }
 
-    private void Send(string s, bool editing = true)
+    private bool Send(string s, bool editing = true)
     {
         var surf = ActiveSurface();
-        if (surf is { ReadOnly: true }) { ShowToast("pane is read-only"); return; }   // block input to a protected pane
+        if (surf is { ReadOnly: true }) { ShowToast("pane is read-only"); return false; }   // block input to a protected pane
         if (editing && surf is not null) { surf.ScrollOffset = 0; surf.ClearSel(); } // modifiers/key-up do not edit the buffer
         if (_broadcast && _cover is null && _active is not null)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(s);
             List<Pane> panes;
             lock (_workspaces) panes = _active.Ws.Sessions.SelectMany(x => x.Panes).ToList();
-            foreach (var p in panes) { p.S.NotifyActivity(); p.S.Write(bytes); }
-            return;
+            return SessionInput.Broadcast(panes.Select(p => (p.S, p.ReadOnly)), bytes);
         }
-        _session?.NotifyActivity();
-        _session?.Write(Encoding.UTF8.GetBytes(s));
+        return _session is { } session && SessionInput.TryWrite(session, Encoding.UTF8.GetBytes(s));
     }
 
     /// <summary>Scroll the active pane's scrollback by delta lines (or to top/bottom for ±int.MaxValue).</summary>
@@ -244,7 +242,8 @@ internal partial class Program
                 if (surface is null || _session is null || surface.S.InputClosed)
                     return ISessionHost.RefusePrefix + "no live pane for send command";
                 if (surface.ReadOnly) return ISessionHost.RefusePrefix + "pane is read-only";
-                Send(expanded.Replace("\r", "").Replace("\n", "") + "\r");
+                if (!Send(expanded.Replace("\r", "").Replace("\n", "") + "\r"))
+                    return ISessionHost.RefusePrefix + "input unavailable on at least one pane; other panes or part of the payload may have received bytes; do not retry blindly";
                 break;
         }
         return expanded;

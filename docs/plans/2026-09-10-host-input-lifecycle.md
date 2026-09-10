@@ -16,11 +16,13 @@ application-level output/receipt marker and must not blindly retry a possibly pa
 No protobuf version or cross-product ABI changes are needed for this contract.
 
 The #258 exit-ordering test uses two private events: output begins after sink attachment; exit is
-released only after the replica sees the marker. It checks the grid captured by the exit handler.
+released only after the replica sees a readiness marker. The child then prints a second marker and
+immediately exits; that second marker must be in the grid captured by the exit handler.
 The color-reattach test already has the corresponding output-start gate. These are controlled
 ordering tests, not guarantees of lossless output from a process that finishes before first attach,
 or of unbounded ConPTY draining beyond the existing bounded settle window.
 
-Isolated tests exercise early input closure, hosted disconnect without a child-exit claim, rejected
-input while final output remains live, and cancellation. Real host/child scenarios remain in the
+Isolated tests exercise early input-closed states, broadcast failure isolation, actual pane-host
+query replies followed by output, and cancellation of an already-pending read. A real hosted
+supersede test checks EOF without a child-exit claim. Real host/child scenarios remain in the
 isolated Windows CI gate; local execution requires the canonical shared suite token.
