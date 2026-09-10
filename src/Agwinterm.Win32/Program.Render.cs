@@ -142,14 +142,13 @@ internal partial class Program
         string path = ses.BgPath!;
 
         // Upload anything decoded on background threads (cheap; UI thread only).
-        while (_bgDecoded.TryDequeue(out var d))
+        foreach (var (decodedPath, d) in _backgroundDecodes.Drain())
         {
-            _bgDecoding.Remove(d.path);
-            if (d.bgra is null || _bgCache.ContainsKey(d.path)) continue;
+            if (d.bgra is null || _bgCache.ContainsKey(decodedPath)) continue;
             try
             {
                 var h = GCHandle.Alloc(d.bgra, GCHandleType.Pinned);
-                try { _bgCache[d.path] = _rt.CreateBitmap(new SizeI(d.w, d.h), h.AddrOfPinnedObject(), (uint)(d.w * 4), _bmpProps); }
+                try { _bgCache[decodedPath] = _rt.CreateBitmap(new SizeI(d.w, d.h), h.AddrOfPinnedObject(), (uint)(d.w * 4), _bmpProps); }
                 finally { h.Free(); }
             }
             catch (Exception ex) { Log($"watermark upload FAILED {path}: {ex.Message}"); }
@@ -157,7 +156,7 @@ internal partial class Program
 
         if (!_bgCache.TryGetValue(path, out var bmp))
         {
-            if (_bgDecoding.Add(path)) _ = Task.Run(() => DecodeBackgroundAsync(path));
+            if (_backgroundDecodes.Begin(path) is { } ticket) _ = Task.Run(() => DecodeBackgroundAsync(path, ticket));
             return; // renders on a later frame once uploaded
         }
 
@@ -196,7 +195,7 @@ internal partial class Program
     }
 
     /// <summary>Background: decode a watermark image file to premultiplied BGRA, enqueue for UI upload.</summary>
-    private void DecodeBackgroundAsync(string path)
+    private void DecodeBackgroundAsync(string path, DecodeMailbox<string, (byte[]? bgra, int w, int h)>.Ticket ticket)
     {
         try
         {
@@ -213,12 +212,12 @@ internal partial class Program
                 else for (int y = 0; y < h; y++) Marshal.Copy(data.Scan0 + y * data.Stride, buf, y * w * 4, w * 4);
             }
             finally { gdi.UnlockBits(data); }
-            _bgDecoded.Enqueue((path, buf, w, h));
+            _backgroundDecodes.Complete(path, ticket, (buf, w, h));
         }
         catch (Exception ex)
         {
             Log($"watermark decode FAILED {path}: {ex.Message}");
-            _bgDecoded.Enqueue((path, null, 0, 0)); // stop retrying
+            _backgroundDecodes.Complete(path, ticket, (null, 0, 0));
         }
         finally { RequestRedraw(); }
     }
@@ -228,7 +227,7 @@ internal partial class Program
     {
         if (string.IsNullOrEmpty(path)) return;
         if (_bgCache.Remove(path!, out var bmp)) { try { bmp.Dispose(); } catch { } }
-        _bgDecoding.Remove(path!);
+        _backgroundDecodes.Invalidate(path!);
     }
 
     /// <summary>Background: decode to premultiplied BGRA pixels (no D2D), enqueue for UI upload, ask for a redraw.</summary>
@@ -295,8 +294,7 @@ internal partial class Program
         // Failed uploads may have been caused by the old device, so those exact images may retry.
         foreach (var b in _bgCache.Values) { try { b.Dispose(); } catch { } } // watermark textures are device-bound too
         _bgCache.Clear();
-        _bgDecoding.Clear();
-        while (_bgDecoded.TryDequeue(out _)) { }
+        _backgroundDecodes.Clear();
         try { _brush?.Dispose(); } catch { }
         try { _rt?.Dispose(); } catch { }
         _brush = null; _rt = null;

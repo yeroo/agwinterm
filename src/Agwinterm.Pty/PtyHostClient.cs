@@ -106,7 +106,11 @@ public sealed class PtyHostClient : IDisposable
     }
 
     public void Resize(string id, int cols, int rows)
-        => Request(new Request { Resize = new Resize { Id = id, Cols = (uint)cols, Rows = (uint)rows } });
+    {
+        if (!PtyResizeTransaction.Valid(unchecked((uint)cols), unchecked((uint)rows)))
+            throw new ArgumentOutOfRangeException(nameof(cols), "resize cols/rows must be in 1..10000");
+        Request(new Request { Resize = new Resize { Id = id, Cols = (uint)cols, Rows = (uint)rows } });
+    }
 
     public void Detach(string id)
         => Request(new Request { Detach = new SessionRef { Id = id } });

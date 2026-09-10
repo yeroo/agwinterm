@@ -592,9 +592,20 @@ internal partial class Program
         }
     }
 
+    // These surfaces hold objects/actions, not just ids. Invalidate even an empty workspace's
+    // menu before removing it, and do the same for single-session close.
+    private void InvalidateSessionSelectors()
+    {
+        CloseDashboard(); ClosePalette(); CloseMenuWindow();
+        _menuItems.Clear(); _menuSel = -1;
+        _sidebarRows.Clear(); _sidebarNames.Clear();
+        DismissHoverTip(); ClearLinkHover();
+    }
+
     private bool DeleteWorkspace(Workspace ws)
     {
         lock (_workspaces) if (_workspaces.Count <= 1 || !_workspaces.Contains(ws)) return false;
+        InvalidateSessionSelectors();
         List<Ses> sessions;
         bool hadActive = _active is not null && ReferenceEquals(_active.Ws, ws);
         lock (_workspaces)

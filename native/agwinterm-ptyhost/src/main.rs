@@ -13,6 +13,7 @@ mod freshenv;
 mod persist;
 mod pipes;
 mod proto;
+mod resize;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -171,16 +172,17 @@ fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
             ok_reply(None)
         }),
         Some(request::Cmd::Resize(r)) => with_session(host, &r.id, |h| {
-            if r.cols == 0 || r.rows == 0 {
-                return err_reply("resize needs cols/rows");
+            if !resize::valid(r.cols, r.rows) {
+                return err_reply("resize cols/rows must be in 1..10000");
             }
-            let _resize = h.resize.lock().unwrap();
+            resize::transaction(&h.resize, || {
             h.term
                 .lock()
                 .unwrap()
                 .emu
                 .resize(r.cols as usize, r.rows as usize);
             h.pty.lock().unwrap().resize(r.cols as i16, r.rows as i16);
+            });
             ok_reply(None)
         }),
         Some(request::Cmd::Kill(k)) => match host.sessions.lock().unwrap().remove(&k.id) {
@@ -401,7 +403,7 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
             return;
         }
         if repaint {
-            let _resize = h2.resize.lock().unwrap();
+            resize::transaction(&h2.resize, || {
             let (c, r) = h2.pty.lock().unwrap().size();
             h2.term
                 .lock()
@@ -412,6 +414,7 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
             std::thread::sleep(std::time::Duration::from_millis(60));
             h2.term.lock().unwrap().emu.resize(c as usize, r as usize);
             h2.pty.lock().unwrap().resize(c, r);
+            });
         }
         let mut buf = [0u8; 16 * 1024];
         loop {

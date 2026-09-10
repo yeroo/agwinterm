@@ -556,6 +556,9 @@ internal partial class Program
 
     private void SetActive(Ses ses)
     {
+        // Modal selectors and queued callbacks may outlive the object they captured.
+        lock (_workspaces)
+            if (!_workspaces.Contains(ses.Ws) || !ses.Ws.Sessions.Contains(ses)) return;
         _workspaceTarget = null;
         // Navigating to a session outside the multi-selection drops the selection (single-select again).
         if (!_selectedIds.Contains(ses.Id)) _selectedIds.Clear();
@@ -1661,6 +1664,7 @@ internal partial class Program
     /// replacement or recording a second closed-history item. Used by both session and workspace close.</summary>
     private void DisposeSessionResources(Ses ses)
     {
+        InvalidateSessionSelectors();
         if (_mruSnapshot.Contains(ses))
         {
             // A deletion invalidates the walk's frozen membership; a later commit/cancel must

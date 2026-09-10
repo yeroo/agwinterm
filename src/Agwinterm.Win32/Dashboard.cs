@@ -40,7 +40,12 @@ internal partial class Program
         RequestRedraw();
     }
 
-    private void CloseDashboard() { if (!_dashboardOpen) return; _dashboardOpen = false; RequestRedraw(); }
+    private void CloseDashboard()
+    {
+        bool wasOpen = _dashboardOpen;
+        _dashboardOpen = false; _dashSessions.Clear(); _dashCells.Clear(); _dashSel = 0;
+        if (wasOpen) RequestRedraw();
+    }
 
     private static (int cols, int rows) DashGrid(int n)
     {

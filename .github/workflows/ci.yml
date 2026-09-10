@@ -63,6 +63,9 @@ jobs:
         # hard merge gate.
         run: cargo build --release --manifest-path native/Cargo.toml
 
+      - name: Host resize transaction regressions (no child processes)
+        run: cargo test --manifest-path native/agwinterm-ptyhost/Cargo.toml resize::tests
+
       # The control API is a cross-product contract now: agliteterm ships from its own repository
       # promising to speak this dialect, and its CI runs THIS spec against its own client. Running
       # it here too is what makes "same control API" a gate rather than a claim — a verb reshaped
