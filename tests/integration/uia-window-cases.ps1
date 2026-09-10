@@ -54,7 +54,11 @@ try {
     $alternate=[string](Rpc 'session.new' @{name='UIA-focus-alternate';'no-select'=$true} -Window $uiaWindows[0])
     if(-not (NavWait {@((Rpc 'tree' -Window $uiaWindows[0]).workspaces[0].sessions|Where-Object id -eq $alternate).Count-eq 1})){throw 'UIA focus peer not ready'}
     $null=Rpc 'session.select' @{} $uiaSessions[0] -Window $uiaWindows[0]
-    if(-not (NavWait {@((Rpc 'tree' -Window $uiaWindows[0]).workspaces[0].sessions|Where-Object {$_.id-eq $uiaSessions[0] -and $_.active}).Count-eq 1})){throw 'Original UIA session did not become active'}
+    # A FIFO UI action, unlike a pipe-thread tree read, observes the posted selection landing.
+    $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $uiaWindows[0]
+    if(-not (NavWait {@((Rpc 'tree' -Window $uiaWindows[0]).workspaces[0].sessions|Where-Object {$_.id-eq $uiaSessions[0] -and $_.active}).Count-eq 1})){
+        throw "Original UIA session did not become active: expected=$($uiaSessions[0]), window=$($uiaWindows[0]), tree=$(Rpc 'tree' -Window $uiaWindows[0]|ConvertTo-Json -Depth 8 -Compress)"
+    }
     $condition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,'UIA-focus-alternate')
     $focusNode=$a.root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
     if($null-eq $focusNode){throw 'No owned sidebar session for UIA focus'}
