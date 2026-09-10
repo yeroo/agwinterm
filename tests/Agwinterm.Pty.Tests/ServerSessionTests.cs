@@ -118,10 +118,24 @@ public class ServerSessionTests : IDisposable
         await old.StartAsync("cmd.exe", ["/d", "/q"]);
         Assert.True(WaitFor(() => _backend.Client.List().Any(i => i.Id == id && i.Attached)));
         using var replacement = _backend.Client.Attach(id);
-        Assert.True(WaitFor(() => old.InputClosed));
-        Assert.False(old.HasExited);
-        Assert.Throws<IOException>(() => old.Write("must refuse"u8));
-        Assert.False(_backend.Client.List().Single(i => i.Id == id).HasExited);
+        // An attachment is a duplex transport, not just a handle. Keep consuming output as a
+        // real replacement client does; otherwise a prompt can backpressure the host's writer
+        // while List waits for its attachment lock, deadlocking the test's liveness assertion.
+        using var drainCancel = new CancellationTokenSource();
+        var drain = replacement.Data.CopyToAsync(Stream.Null, drainCancel.Token);
+        try
+        {
+            Assert.True(WaitFor(() => old.InputClosed));
+            Assert.False(old.HasExited);
+            Assert.Throws<IOException>(() => old.Write("must refuse"u8));
+            Assert.False(_backend.Client.List().Single(i => i.Id == id).HasExited);
+        }
+        finally
+        {
+            drainCancel.Cancel();
+            try { await drain; } catch (OperationCanceledException) { }
+            // Consume completion before the attachment's using disposes its overlapped handle.
+        }
     }
 
     [Fact]
