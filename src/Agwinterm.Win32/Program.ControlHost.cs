@@ -1394,7 +1394,7 @@ internal partial class Program
 
     public void WorkspaceFocus(string op) => PostVerb(() => WorkspaceFocusOp(op));
 
-    public string SessionSwitch(string op) => InvokeOnUi(() => SwitchOp(op));
+    public SessionSwitchReply SessionSwitch(string op) => InvokeOnUiQueued(() => SwitchOp(op));
 
     public string CommandRun(string nameOrCommand, string? mode) => InvokeOnUiQueued(() =>
     {

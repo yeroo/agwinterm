@@ -923,7 +923,8 @@ internal sealed class FakeSessionHost : ISessionHost
     public string UpdateApp() => "updating agwinterm…";
     public void WorkspaceFocus(string op) { }
     public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => FindSes(target) is not null ? "ok" : "no session";
-    public string SessionSwitch(string op) => SessionOperations.IsSwitchOp(op) ? ActiveSess?.Name ?? "" : SessionOperations.UnknownOp(op);
+    public SessionSwitchReply SessionSwitch(string op) => SessionOperations.IsSwitchOp(op)
+        ? new(true, ActiveSess?.Name ?? "") : new(false, $"unknown op '{op}'; nothing changed");
     public string CommandRun(string nameOrCommand, string? mode) => $"{mode ?? "new"}: {nameOrCommand}";
     public string CommandList() => "";
     public string CommandLeader(string op) => "idle";

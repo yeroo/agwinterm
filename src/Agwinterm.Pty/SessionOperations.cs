@@ -1,5 +1,8 @@
 namespace Agwinterm.Pty;
 
+/// <summary>Out-of-band status: a session name may contain any refusal-looking prefix.</summary>
+public readonly record struct SessionSwitchReply(bool Ok, string Text);
+
 /// <summary>Shared validation for protection, MRU operations and durable agent commands.</summary>
 public static class SessionOperations
 {

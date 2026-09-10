@@ -320,8 +320,8 @@ Thirteen of those answer a question a script would otherwise have to guess at:
   target, an empty one (`--target ''` — only an OMITTED target means every pane), a
   scratch/overlay/quick pane, or a query that fails is refused and nothing is written. One refusal
   leaves something behind and says so — "captured into memory but the state file could not be
-  written": the slots are filled (`tree` shows them) but the checkpoint is not on disk and will not
-  survive a restart; fix the state directory and capture again.
+  written": the slots are filled (`tree` shows them), but this save did not put the new checkpoint
+  on disk. An earlier checkpoint may remain; fix the state directory and capture again.
   `tree --json` reads the slots back as `capturedCommands`, keyed by pane id like `restoreCommands`.
 - `session context "<text>"` sets one line of **what a session is for**, shown dimmed after the name
   in the title bar and the sidebar row and on the session palette's second line, where a name has to
