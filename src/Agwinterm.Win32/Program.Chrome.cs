@@ -608,7 +608,12 @@ internal partial class Program
             if (_workspaces.Count == 0) _workspaces.Add(new Workspace { Id = Guid.NewGuid().ToString(), Name = "workspace 1" });
         }
         RefreshHudTimer(); // a removed workspace may have owned the last animated HUD
-        foreach (var s in sessions) { try { s.S.Dispose(); } catch { } }
+        if (ReferenceEquals(_editing, ws)) CancelRename();
+        if (ReferenceEquals(_dragItem, ws) || ReferenceEquals(_pressItem, ws))
+        {
+            _dragging = false; _sbPress = false; _dragItem = null; _pressItem = null; ReleaseCapture();
+        }
+        foreach (var s in sessions) DisposeSessionResources(s);
         if (hadActive)
         {
             var next = AllSessions().FirstOrDefault();

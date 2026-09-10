@@ -23,6 +23,7 @@ function PixelDifference($a,$b,[int]$x=0,[int]$y=0,[int]$w=0,[int]$h=0){
     }};return $different
 }
 $first=[string](CurrentWs);$beforeText=Rpc 'session.text' @{} $session
+. "$PSScriptRoot/workspace-teardown-cases.ps1"
 Check 'readonly rejects an unknown operation without changing protection' (-not (Rpc 'session.readonly' @{op='typo'} $session -AllowError).ok -and (Rpc 'session.readonly' @{op='state'} $session)-eq 'off')
 $null=Rpc 'session.readonly' @{op='on'} $session
 Check 'readonly typo cannot remove existing protection' (-not (Rpc 'session.readonly' @{op='typo'} $session -AllowError).ok -and (Rpc 'session.readonly' @{op='get'} $session)-eq 'on')

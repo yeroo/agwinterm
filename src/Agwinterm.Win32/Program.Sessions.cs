@@ -1657,17 +1657,45 @@ internal partial class Program
             makeActive: true, profileName: source.ProfileName);
     }
 
-    private void CloseSessionInternal(Ses ses)
+    /// <summary>Release every surface and UI reference owned by a session, without creating a
+    /// replacement or recording a second closed-history item. Used by both session and workspace close.</summary>
+    private void DisposeSessionResources(Ses ses)
     {
-        CaptureClosedSession(ses);   // remember it so Reopen Closed Session can bring it back
+        if (_mruSnapshot.Contains(ses))
+        {
+            // A deletion invalidates the walk's frozen membership; a later commit/cancel must
+            // never reactivate a disposed session (including a deleted, non-active start pane).
+            _mruWalking = false; _mruSnapshot.Clear(); _mruStart = null;
+        }
+        _selectedIds.Remove(ses.Id);
+        if (_selAnchorId == ses.Id) _selAnchorId = null;
+        if (ReferenceEquals(_focusRow, ses)) _focusRow = null;
+        if (ReferenceEquals(_toastTarget, ses)) _toastTarget = null;
+        if (ReferenceEquals(_editing, ses)) CancelRename();
+        bool ownsSelection = _selPane is { } selected &&
+            (ses.Panes.Any(p => ReferenceEquals(p, selected) || ReferenceEquals(p.Overlay.Term, selected)) ||
+             ReferenceEquals(ses.Scratch, selected) || ReferenceEquals(ses.Overlay.Term, selected));
+        if (ownsSelection) { _selecting = false; _selPane = null; StopSelAutoscroll(); ReleaseCapture(); }
+        if (ReferenceEquals(_active, ses) && _divDragging) { _divDragging = false; ReleaseCapture(); }
+        if (ReferenceEquals(_dragItem, ses) || ReferenceEquals(_pressItem, ses))
+        {
+            _dragging = false; _sbPress = false; _dragItem = null; _pressItem = null; ReleaseCapture();
+        }
         foreach (var p in ses.Panes) { ClosePaneOverlay(ses, p); try { p.S.Dispose(); } catch { } }   // each pane's overlay (P5) dies with its pane
         // Dismiss + dispose this session's scratch cover if it belongs here.
         if (ses.Scratch is not null) { if (_coverKind == 1 && ReferenceEquals(_cover, ses.Scratch)) HideCover(); try { ses.Scratch.S.Dispose(); } catch { } ses.Scratch = null; }
         CloseOverlayOf(ses); // dismiss + dispose this session's session-wide overlay (a no-op on an empty slot)
-        bool wasActive = ReferenceEquals(_active, ses);
         _mru.Remove(ses.Id);
-        EmitEvent("session", ses.Id, "closed"); EmitEvent("tree");   // control-API event log (#273)
+        EmitEvent("session", ses.Id, "closed");
         EvictWatermark(ses.BgPath); SweepBackground(ses.Id); // drop the session's watermark file + texture
+    }
+
+    private void CloseSessionInternal(Ses ses)
+    {
+        CaptureClosedSession(ses);   // remember it so Reopen Closed Session can bring it back
+        bool wasActive = ReferenceEquals(_active, ses);
+        DisposeSessionResources(ses);
+        EmitEvent("tree");   // control-API event log (#273)
         lock (_workspaces) ses.Ws.Sessions.Remove(ses);
         if (wasActive)
         {

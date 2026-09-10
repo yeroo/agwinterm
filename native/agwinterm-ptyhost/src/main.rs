@@ -35,6 +35,7 @@ struct Hosted {
     pty: Mutex<ConPty>,
     term: Mutex<Terminal>,
     data: Mutex<Option<Arc<OvStream>>>,
+    resize: Mutex<()>, // real resize and the complete repaint jiggle share one transaction
     exited: AtomicBool,
     /// Bytes the pump has fed so far; the exit watcher's settle window reads it (#246).
     pump_bytes: AtomicU64,
@@ -173,6 +174,7 @@ fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
             if r.cols == 0 || r.rows == 0 {
                 return err_reply("resize needs cols/rows");
             }
+            let _resize = h.resize.lock().unwrap();
             h.term
                 .lock()
                 .unwrap()
@@ -304,6 +306,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         term: Mutex::new(Terminal::new(cols as usize, rows as usize)),
         pty: Mutex::new(pty),
         data: Mutex::new(None),
+        resize: Mutex::new(()),
         exited: AtomicBool::new(false),
         pump_bytes: AtomicU64::new(0),
         pump_in_flight: AtomicBool::new(false),
@@ -398,6 +401,7 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
             return;
         }
         if repaint {
+            let _resize = h2.resize.lock().unwrap();
             let (c, r) = h2.pty.lock().unwrap().size();
             h2.term
                 .lock()

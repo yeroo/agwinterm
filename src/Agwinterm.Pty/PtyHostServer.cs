@@ -39,6 +39,7 @@ public sealed class PtyHostServer : IDisposable
         public required string Id;
         public required TerminalSession S;
         public readonly object DataLock = new();                 // guards Data + writes to it
+        public readonly object ResizeLock = new();               // serializes real resize with repaint jiggle
         public DataChannel? Data;                                // the currently-attached client
     }
 
@@ -242,7 +243,7 @@ public sealed class PtyHostServer : IDisposable
                 }
                 return;
             }
-            if (repaint) JiggleRepaint(hosted.S);
+            if (repaint) lock (hosted.ResizeLock) JiggleRepaint(hosted.S);
             await PumpInputAsync(hosted, ch).ConfigureAwait(false);
         });
 
@@ -296,7 +297,7 @@ public sealed class PtyHostServer : IDisposable
     private Reply HandleResize(Resize r) => WithSession(r.Id, h =>
     {
         if (r.Cols == 0 || r.Rows == 0) return Err("resize needs cols/rows");
-        h.S.Resize((int)r.Cols, (int)r.Rows);
+        lock (h.ResizeLock) h.S.Resize((int)r.Cols, (int)r.Rows);
         return Ok();
     });
 

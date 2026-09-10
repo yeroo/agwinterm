@@ -224,6 +224,9 @@ public sealed class ServerSession : ISession
         _started = true;
         _ = Task.Factory.StartNew(ReadLoop, CancellationToken.None,
             TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        // The new UI already reports its desired grid, so its ordinary layout guard will not
+        // detect an old host grid. The reader must be live before resizing (ConPTY may repaint).
+        if (att.Cols != Cols || att.Rows != Rows) Resize(Cols, Rows);
         OutputReceived?.Invoke();
         return true;
     }
