@@ -394,15 +394,11 @@ internal partial class Program
         int delta = op switch { "inc" => 1, "dec" => -1, _ => 0 }; // reset otherwise
         if (string.IsNullOrEmpty(target) || target == "active")
         {
-            if (_isQuickWindow) return InvokeOnUiQueued(() =>
+            return InvokeOnUiQueued(() =>
             {
-                if (ActiveSurface() is not { } p) return false;
-                ZoomPane((p, null, true), delta); return true;
+                if (ActiveSurface() is null) return false;
+                ChangeFontSize(delta); return true;
             });
-            var ses = Find(target);
-            if (ses is null) return false;
-            PostVerb(() => ChangeFontSizeOf(ses, delta));
-            return true;
         }
         if (FindControlPane(target) is not { } targetPane) return false;
         PostVerb(() => ZoomPane(targetPane, delta));

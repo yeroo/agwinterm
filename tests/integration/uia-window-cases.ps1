@@ -30,6 +30,7 @@ try {
         $window=[string](Rpc 'window.new' @{name="UIA-owned-$label"} -Window $libraryWindow)
         $uiaWindows+=,$window
         if(-not (NavWait {@((Rpc 'window.list').windows|Where-Object {$_.id-eq $window -and $_.open}).Count-eq 1})){throw 'UIA peer did not open'}
+        if(-not (NavWait {@([NavUiaWindows]::Owned($job.Pid)|Where-Object {$_-notin $beforeHandles}).Count-eq 1})){throw 'New owned UIA HWND did not materialize'}
         $handles=@([NavUiaWindows]::Owned($job.Pid)|Where-Object {$_-notin $beforeHandles})
         if($handles.Count-ne 1){throw 'Cannot identify exactly one new owned UIA HWND'}
         $uiaHandles+=,$handles[0]
@@ -58,10 +59,12 @@ try {
     $settingsButton=$b.root.FindFirst([System.Windows.Automation.TreeScope]::Children,$settingsCondition)
     if($null-eq $settingsButton){throw 'Owned peer has no UIA Settings button'}
     ($settingsButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke()
-    Check 'UIA Invoke opens settings in its owner only' (NavWait {
+    $settingsOpened=NavWait {
         $group=$b.root.FindFirst([System.Windows.Automation.TreeScope]::Children,$settingsCondition)
         $group.Current.ControlType-eq [System.Windows.Automation.ControlType]::Group -and $a.range.GetText(-1).Contains('UIA-ONLY-A')
-    })
+    }
+    Check 'UIA Invoke opens settings in its owner only' $settingsOpened
+    if(-not $settingsOpened){"UIA invoke diagnostics: A=$($a.range.GetText(-1)) B=$($b.range.GetText(-1)) windows=$($uiaWindows-join ',')"}
     [void][HudOwnedJob]::SendMessageW($uiaHandles[1],0x100,[IntPtr]27,[IntPtr]1)
     # Remove the earlier row; a retained provider must still identify the same session, not its ordinal.
     $retainedRuntime=$focusNode.GetRuntimeId()-join ','
@@ -72,8 +75,19 @@ try {
     $replacement=[string](Rpc 'session.new' @{name='UIA-unrelated-replacement'} -Window $uiaWindows[0])
     $null=Rpc 'session.close' @{} $alternate -Window $uiaWindows[0]
     $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $uiaWindows[0]
-    $refused=$false;try{$null=$focusNode.Current.Name}catch{$refused=$true}
-    Check 'removed sidebar item refuses instead of describing replacement' $refused
+    # UIA's client broker may retain an old Name/default rather than forward the provider HRESULT.
+    # Test the user-visible invariant: no rebinding, and a stale focus request cannot steal focus.
+    $staleName=$null;try{$staleName=$focusNode.Current.Name}catch{}
+    $sentinel=[string](Rpc 'session.new' @{name='UIA-focus-sentinel'} -Window $uiaWindows[0])
+    $sentinelCondition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,'UIA-focus-sentinel')
+    if(-not (NavWait {$null-ne $a.root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$sentinelCondition)})){throw 'UIA sentinel not ready'}
+    $sentinelNode=$a.root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$sentinelCondition)
+    $sentinelNode.SetFocus()
+    if(-not (NavWait {$sentinelNode.Current.HasKeyboardFocus})){throw 'UIA sentinel did not receive focus'}
+    try{$focusNode.SetFocus()}catch{}
+    $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $uiaWindows[0]
+    "Retained UIA check: original=$($uiaSessions[0]) retained=$alternate tree=$(Rpc 'tree' -Window $uiaWindows[0]|ConvertTo-Json -Depth 6 -Compress)"
+    Check 'removed sidebar item cannot rebind name or focus to replacement' ($staleName-ne 'UIA-unrelated-replacement' -and $sentinelNode.Current.HasKeyboardFocus) "broker name='$staleName'"
     # Retain ranges across close; neither may attach itself to another library/quick context.
     foreach($index in 1,0){
         $null=Rpc 'window.close' @{} $uiaWindows[$index] -Window $libraryWindow

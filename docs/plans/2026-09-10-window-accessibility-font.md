@@ -1,7 +1,9 @@
 # Window accessibility and live font defaults (#267, #276)
 
 Each library or quick Program owns its UI Automation context. Every root, fragment and text range
-retains that context; runtime IDs include a process-unique context identity. UIA snapshot reads
+retains that context; child runtime IDs append their context identity to the HWND host identity.
+Session fragments use lifetime tokens, never mutable sidebar ordinals, including queued focus
+resolution. A removed session cannot redirect a retained fragment to its replacement. UIA snapshot reads
 run on the owning UI thread (inline for reentrant same-thread calls), and posted actions recheck
 closure before touching the window. No provider lock spans app callbacks or UIA event delivery.
 Window destruction retires its root COM references and clears callbacks. Retained text ranges
@@ -17,4 +19,9 @@ Validation uses actual built providers in isolated tests, plus the private-job/t
 Accessibility fixture: distinct documents/runtime IDs, owner-local focus and Invoke, and retained
 ranges across closing two windows while quick remains readable. This tests UIA provider behavior,
 not a manual Narrator/NVDA presentation audit. Navigation integration additionally checks live
-font geometry, explicit zoom preservation and reset across library and quick windows.
+font geometry, explicit zoom preservation and reset across library, quick, scratch, pane-overlay
+and session-overlay surfaces. Active-target font commands use the visible surface, not its hidden
+underlying shell. Legacy absent FontZoomed keys remain absent on round-trip; explicit true/false
+values are preserved. The private UIA client may cache an old property when a node retires; tests
+verify it never rebinds that name or a focus request to the replacement, and isolated provider
+tests verify UIA_E_ELEMENTNOTAVAILABLE directly.

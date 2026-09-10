@@ -104,4 +104,23 @@ public class UiaContextTests
         }
         finally { ((IDisposable)a).Dispose(); ((IDisposable)b).Dispose(); }
     }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public void ReadUiaMapsClosureFailuresWithoutHidingLiveFailures(bool close)
+    {
+        var program = Type("Program"); var owner = New("Uia");
+        using var gone = new CancellationTokenSource();
+        var app = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(program);
+        Set(app, "_uia", owner); Set(app, "_uiGone", gone); Set(app, "_uiaThreadId", Environment.CurrentManagedThreadId);
+        Func<int> read = () => { if (close) ((IDisposable)owner).Dispose(); throw new InvalidOperationException("queued read failure"); };
+        var method = program.GetMethod("ReadUia", Flags)!.MakeGenericMethod(typeof(int));
+        try
+        {
+            var error = Assert.Throws<TargetInvocationException>(() => method.Invoke(app, [read])).InnerException;
+            if (close) Assert.Equal(unchecked((int)0x80040201), Assert.IsType<COMException>(error).HResult);
+            else Assert.IsType<InvalidOperationException>(error);
+        }
+        finally { ((IDisposable)owner).Dispose(); }
+    }
 }
