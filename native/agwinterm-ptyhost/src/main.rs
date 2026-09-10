@@ -9,6 +9,7 @@
 //! v1-behavior parity notes: deElevate refused loudly; hello is the hard gate.
 
 mod conpty;
+mod creation;
 mod freshenv;
 mod persist;
 mod pipes;
@@ -20,6 +21,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use agwinterm_core::emulator::Terminal;
 use conpty::ConPty;
@@ -31,8 +33,111 @@ use proto::{
 
 const PROTOCOL_VERSION: u32 = 2;
 
+#[cfg(test)]
+mod creation_host_tests {
+    use super::*;
+    // Real ConPTY test: run only under the integration-suite lease locally.
+    #[test]
+    fn cancellation_between_spawn_and_publication_cleans_exact_child() {
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let host = Arc::new(Host {
+            app_id: "private-creation-barrier".into(),
+            state: Mutex::new(HostState {
+                sessions: HashMap::new(),
+                creations: creation::Tickets::new(),
+            }),
+            attach_seq: AtomicU64::new(0),
+            before_publication: Some(Box::new(move |h| {
+                reached_tx.send(h.clone()).unwrap();
+                let _ = release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(15));
+            })),
+        });
+        let ticket = "0123456789abcdef0123456789abcdef";
+        host.state
+            .lock()
+            .unwrap()
+            .creations
+            .prepare("barrier", ticket.into(), Instant::now())
+            .unwrap();
+        let creator = host.clone();
+        let join = std::thread::spawn(move || {
+            handle_create(
+                &creator,
+                proto::Create {
+                    id: "barrier".into(),
+                    creation_ticket: ticket.into(),
+                    app: "powershell.exe".into(),
+                    args: vec![
+                        "-NoLogo".into(),
+                        "-NoProfile".into(),
+                        "-NonInteractive".into(),
+                        "-Command".into(),
+                        "Start-Sleep -Seconds 120".into(),
+                    ],
+                    cols: 80,
+                    rows: 24,
+                    fresh_env_off: true,
+                    ..Default::default()
+                },
+            )
+        });
+        let reference = proto::CreationRef {
+            id: "barrier".into(),
+            ticket: ticket.into(),
+        };
+        let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let h = reached_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            {
+                let mut state = host.state.lock().unwrap();
+                assert!(state.sessions.is_empty());
+                assert_eq!(
+                    state
+                        .creations
+                        .find("barrier", ticket, Instant::now())
+                        .unwrap()
+                        .phase,
+                    creation::Phase::Creating
+                );
+            }
+            let reply = handle_cancel(&host, &reference);
+            assert!(
+                matches!(reply.body, Some(reply::Body::Creation(c)) if c.phase == proto::CreationPhase::CreationCancelling as i32)
+            );
+            h
+        }));
+        let _ = release_tx.send(());
+        let created = join.join();
+        let cleaned = handle_cancel(&host, &reference);
+        let h = match observed {
+            Ok(h) => h,
+            Err(e) => std::panic::resume_unwind(e),
+        };
+        assert!(!created.unwrap().ok);
+        assert!(
+            matches!(cleaned.body, Some(reply::Body::Creation(c)) if c.phase == proto::CreationPhase::CreationUnknown as i32)
+        );
+        assert!(host.state.lock().unwrap().sessions.is_empty());
+        // h retains the ORIGINAL process handle; never reopen its PID after cancellation.
+        let child = h.pty.lock().unwrap().child;
+        unsafe {
+            assert_eq!(
+                windows_sys::Win32::System::Threading::WaitForSingleObject(child, 5000),
+                windows_sys::Win32::Foundation::WAIT_OBJECT_0
+            );
+        }
+    }
+}
+
 struct Hosted {
     id: String,
+    creation_ticket: String,
     pty: Mutex<ConPty>,
     term: Mutex<Terminal>,
     data: Mutex<Option<Arc<OvStream>>>,
@@ -48,8 +153,14 @@ struct Hosted {
 
 struct Host {
     app_id: String,
-    sessions: Mutex<HashMap<String, Arc<Hosted>>>,
+    state: Mutex<HostState>,
     attach_seq: AtomicU64,
+    #[cfg(test)]
+    before_publication: Option<Box<dyn Fn(&Arc<Hosted>) + Send + Sync>>,
+}
+struct HostState {
+    sessions: HashMap<String, Arc<Hosted>>,
+    creations: creation::Tickets<Arc<Hosted>>,
 }
 
 fn main() {
@@ -66,10 +177,33 @@ fn main() {
     let app_id = pipe.unwrap_or_else(|| "agwinterm".to_string());
     let host = Arc::new(Host {
         app_id: app_id.clone(),
-        sessions: Mutex::new(HashMap::new()),
+        state: Mutex::new(HostState {
+            sessions: HashMap::new(),
+            creations: creation::Tickets::new(),
+        }),
         attach_seq: AtomicU64::new(0),
+        #[cfg(test)]
+        before_publication: None,
     });
 
+    let cleanup_host = host.clone();
+    std::thread::Builder::new()
+        .name("creation-cleanup".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let pending = cleanup_host
+                    .state
+                    .lock()
+                    .unwrap()
+                    .creations
+                    .claim_pending_cleanup();
+                for (ticket, h) in pending {
+                    finish_cleanup(&cleanup_host, &ticket, &h);
+                }
+            }
+        })
+        .expect("creation cleanup worker must start before accepting requests");
     let control = format!("{app_id}-ptyhost");
     loop {
         let server = match PipeServer::create(&control) {
@@ -125,10 +259,25 @@ fn handle_control_client(host: Arc<Host>, stream: File) {
         if shutdown && reply.ok {
             // Ack flushed; tear down after a beat (same grace as v1).
             std::thread::sleep(std::time::Duration::from_millis(100));
-            let sessions: Vec<Arc<Hosted>> =
-                host.sessions.lock().unwrap().values().cloned().collect();
-            for s in sessions {
-                s.pty.lock().unwrap().kill();
+            let cleanup = {
+                let mut state = host.state.lock().unwrap();
+                let cleanup = state.creations.stop();
+                state.sessions.clear();
+                cleanup
+            };
+            for (ticket, s) in cleanup {
+                finish_cleanup(&host, &ticket, &s);
+            }
+            let deadline = Instant::now();
+            let mut warned = false;
+            while !host.state.lock().unwrap().creations.is_empty() {
+                if !warned && deadline.elapsed().as_secs() >= 30 {
+                    eprintln!(
+                        "shutdown cleanup remains pending; host retained for exact-ticket queries"
+                    );
+                    warned = true; // diagnostic deadline, not abandonment of eventual shutdown
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
             std::process::exit(0);
         }
@@ -158,6 +307,7 @@ fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
                 ok_reply(Some(reply::Body::Hello(HelloReply {
                     protocol: PROTOCOL_VERSION,
                     pid: std::process::id(),
+                    creation_revision: 1,
                 })))
             } else {
                 err_reply(format!(
@@ -167,39 +317,62 @@ fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
             }
         }
         Some(request::Cmd::Create(c)) => handle_create(host, c),
+        Some(request::Cmd::PrepareCreate(p)) => handle_prepare(host, &p.id),
+        Some(request::Cmd::QueryCreate(q)) => handle_query(host, &q),
+        Some(request::Cmd::CancelCreate(c)) => handle_cancel(host, &c),
         Some(request::Cmd::Attach(a)) => handle_attach(host, a),
-        Some(request::Cmd::Detach(d)) => with_session(host, &d.id, |h| {
+        Some(request::Cmd::Detach(d)) => with_session(host, &d.id, &d.creation_ticket, |h| {
             detach(h);
             ok_reply(None)
         }),
-        Some(request::Cmd::Resize(r)) => with_session(host, &r.id, |h| {
+        Some(request::Cmd::Resize(r)) => with_session(host, &r.id, &r.creation_ticket, |h| {
             if !resize::valid(r.cols, r.rows) {
                 return err_reply("resize cols/rows must be in 1..10000");
             }
             resize::transaction(&h.resize, || {
-            h.term
-                .lock()
-                .unwrap()
-                .emu
-                .resize(r.cols as usize, r.rows as usize);
-            h.pty.lock().unwrap().resize(r.cols as i16, r.rows as i16);
+                h.term
+                    .lock()
+                    .unwrap()
+                    .emu
+                    .resize(r.cols as usize, r.rows as usize);
+                h.pty.lock().unwrap().resize(r.cols as i16, r.rows as i16);
             });
             ok_reply(None)
         }),
-        Some(request::Cmd::Kill(k)) => match host.sessions.lock().unwrap().remove(&k.id) {
-            Some(h) => {
-                detach(&h);
-                h.pty.lock().unwrap().kill();
-                ok_reply(None)
+        Some(request::Cmd::Kill(k)) => {
+            let ticket = {
+                let state = host.state.lock().unwrap();
+                let Some(h) = state.sessions.get(&k.id) else {
+                    return err_reply(format!("no session '{}'", k.id));
+                };
+                if !k.creation_ticket.is_empty() && k.creation_ticket != h.creation_ticket {
+                    return err_reply("session incarnation changed");
+                }
+                h.creation_ticket.clone()
+            };
+            let result = handle_cancel(host, &proto::CreationRef { id: k.id, ticket });
+            match result.body {
+                Some(reply::Body::Creation(c))
+                    if c.phase == proto::CreationPhase::CreationUnknown as i32 =>
+                {
+                    ok_reply(None)
+                }
+                _ => err_reply("session cleanup is pending"),
             }
-            None => err_reply(format!("no session '{}'", k.id)),
-        },
+        }
         Some(request::Cmd::List(_)) => {
-            let sessions = host.sessions.lock().unwrap();
+            let sessions: Vec<_> = host
+                .state
+                .lock()
+                .unwrap()
+                .sessions
+                .values()
+                .cloned()
+                .collect();
             let mut list = ListReply {
                 sessions: Vec::new(),
             };
-            for h in sessions.values() {
+            for h in sessions {
                 let (cols, rows) = h.pty.lock().unwrap().size();
                 list.sessions.push(SessionInfo {
                     id: h.id.clone(),
@@ -210,6 +383,7 @@ fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
                     exit_code: h.exit_code.load(Ordering::SeqCst),
                     title: h.term.lock().unwrap().emu.title.clone(),
                     attached: h.data.lock().unwrap().is_some(),
+                    creation_ticket: h.creation_ticket.clone(),
                 });
             }
             ok_reply(Some(reply::Body::List(list)))
@@ -219,9 +393,17 @@ fn dispatch(host: &Arc<Host>, req: Request) -> Reply {
     }
 }
 
-fn with_session(host: &Arc<Host>, id: &str, act: impl FnOnce(&Arc<Hosted>) -> Reply) -> Reply {
-    let h = host.sessions.lock().unwrap().get(id).cloned();
+fn with_session(
+    host: &Arc<Host>,
+    id: &str,
+    ticket: &str,
+    act: impl FnOnce(&Arc<Hosted>) -> Reply,
+) -> Reply {
+    let h = host.state.lock().unwrap().sessions.get(id).cloned();
     match h {
+        Some(h) if !ticket.is_empty() && ticket != h.creation_ticket => {
+            err_reply("session incarnation changed")
+        }
         Some(h) => act(&h),
         None => err_reply(format!("no session '{id}'")),
     }
@@ -248,6 +430,98 @@ fn detach(h: &Arc<Hosted>) {
     }
 }
 
+fn new_creation_ticket() -> Option<String> {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+    };
+    let mut bytes = [0u8; 16];
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            bytes.as_mut_ptr(),
+            16,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    (status >= 0).then(|| bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+fn creation_reply(id: &str, ticket: &str, phase: Option<creation::Phase>) -> Reply {
+    use proto::CreationPhase as P;
+    let state = match phase {
+        None => P::CreationUnknown,
+        Some(creation::Phase::Prepared) => P::CreationPrepared,
+        Some(creation::Phase::Creating) => P::CreationCreating,
+        Some(creation::Phase::Live) => P::CreationLive,
+        Some(creation::Phase::Cancelling) => P::CreationCancelling,
+    };
+    ok_reply(Some(reply::Body::Creation(proto::CreationReply {
+        id: id.into(),
+        ticket: ticket.into(),
+        phase: state as i32,
+    })))
+}
+fn handle_prepare(host: &Arc<Host>, id: &str) -> Reply {
+    let Some(ticket) = new_creation_ticket() else {
+        return err_reply("creation ticket entropy unavailable");
+    };
+    let mut state = host.state.lock().unwrap();
+    match state.creations.prepare(id, ticket, Instant::now()) {
+        Some(ticket) => creation_reply(id, &ticket, Some(creation::Phase::Prepared)),
+        None => err_reply("missing id, host stopping or preparation limit reached"),
+    }
+}
+fn handle_query(host: &Arc<Host>, request: &proto::CreationRef) -> Reply {
+    let mut state = host.state.lock().unwrap();
+    creation_reply(
+        &request.id,
+        &request.ticket,
+        state
+            .creations
+            .find(&request.id, &request.ticket, Instant::now())
+            .map(|e| e.phase),
+    )
+}
+fn dispose_hosted(h: &Arc<Hosted>) -> bool {
+    detach(h);
+    h.pty.lock().unwrap().kill_and_close()
+}
+fn handle_cancel(host: &Arc<Host>, request: &proto::CreationRef) -> Reply {
+    let claimed = {
+        let mut state = host.state.lock().unwrap();
+        if state
+            .creations
+            .find(&request.id, &request.ticket, Instant::now())
+            .is_none()
+        {
+            return creation_reply(&request.id, &request.ticket, None);
+        }
+        let claimed = state.creations.cancel(&request.ticket);
+        if let Some(h) = &claimed {
+            if state
+                .sessions
+                .get(&h.id)
+                .is_some_and(|current| Arc::ptr_eq(current, h))
+            {
+                state.sessions.remove(&h.id);
+            }
+        }
+        claimed
+    };
+    if let Some(h) = claimed {
+        finish_cleanup(host, &request.ticket, &h);
+    }
+    handle_query(host, request)
+}
+fn finish_cleanup(host: &Arc<Host>, ticket: &str, h: &Arc<Hosted>) {
+    let cleaned = dispose_hosted(h);
+    let mut state = host.state.lock().unwrap();
+    if cleaned {
+        state.creations.cleaned(ticket);
+    } else {
+        state.creations.cleanup_failed(ticket, h.clone());
+    }
+}
+
 fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
     if c.id.is_empty() {
         return err_reply("create needs id");
@@ -261,12 +535,42 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
     let Some((cols, rows)) = resize::create_dimensions(c.cols, c.rows) else {
         return err_reply("create cols/rows must not exceed 10000");
     };
-    {
-        let sessions = host.sessions.lock().unwrap();
-        if sessions.contains_key(&c.id) {
-            return err_reply(format!("session '{}' already exists", c.id));
+    let ticket = {
+        let mut state = host.state.lock().unwrap();
+        let ticket = if c.creation_ticket.is_empty() {
+            let Some(ticket) = new_creation_ticket()
+                .and_then(|ticket| state.creations.prepare(&c.id, ticket, Instant::now()))
+            else {
+                return err_reply("creation ticket unavailable");
+            };
+            ticket
+        } else {
+            c.creation_ticket.clone()
+        };
+        if !c.creation_ticket.is_empty()
+            && state
+                .creations
+                .find(&c.id, &ticket, Instant::now())
+                .is_some_and(|e| e.phase == creation::Phase::Live)
+        {
+            return ok_reply(Some(reply::Body::Create(CreateReply {
+                id: c.id,
+                creation_ticket: ticket,
+            })));
         }
-    }
+        if !state.creations.begin(&c.id, &ticket, Instant::now()) {
+            return if state
+                .sessions
+                .keys()
+                .any(|id| id.eq_ignore_ascii_case(&c.id))
+            {
+                err_reply(format!("session '{}' already exists", c.id))
+            } else {
+                err_reply("unknown, expired, pending or cancelled creation ticket")
+            };
+        }
+        ticket
+    };
 
     let fresh_env = !c.fresh_env_off;
     let env: Option<Vec<(String, String)>> = if fresh_env || !c.env.is_empty() {
@@ -292,7 +596,7 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
     } else {
         Some(c.cwd.as_str())
     };
-    let pty = match ConPty::spawn(
+    let mut pty = match ConPty::spawn(
         &c.app,
         &c.args,
         c.verbatim,
@@ -302,11 +606,19 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         rows as i16,
     ) {
         Ok(p) => p,
-        Err(e) => return err_reply(format!("spawn failed: {e}")),
+        Err(e) => {
+            host.state.lock().unwrap().creations.cleaned(&ticket);
+            return err_reply(format!("spawn failed: {e}"));
+        }
     };
+    let mut out = pty
+        .output
+        .take()
+        .expect("new ConPTY owns its output reader");
 
     let hosted = Arc::new(Hosted {
         id: c.id.clone(),
+        creation_ticket: ticket.clone(),
         term: Mutex::new(Terminal::new(cols as usize, rows as usize)),
         pty: Mutex::new(pty),
         data: Mutex::new(None),
@@ -317,61 +629,91 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         pump_in_flight: AtomicBool::new(false),
         exit_code: AtomicI32::new(0),
     });
-    host.sessions
-        .lock()
-        .unwrap()
-        .insert(c.id.clone(), hosted.clone());
     let hosted2 = hosted.clone();
+    let pump_hosted = hosted.clone();
 
     // Output pump: ConPTY → emulator (+ forward raw to the attached client).
-    std::thread::spawn(move || {
-        let mut out = { hosted.pty.lock().unwrap().output.try_clone() };
-        let Ok(ref mut out) = out else { return };
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = out.read(&mut buf).unwrap_or(0);
-            if n == 0 {
-                break;
+    if std::thread::Builder::new()
+        .spawn(move || {
+            let hosted = pump_hosted;
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = out.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                hosted.pump_in_flight.store(true, Ordering::SeqCst);
+                hosted.term.lock().unwrap().feed(&buf[..n]);
+                let mut data = hosted.data.lock().unwrap();
+                if let Some(d) = data.as_ref()
+                    && !d.write_all(&buf[..n])
+                {
+                    *data = None; // client vanished mid-write -> plain detach
+                }
+                drop(data);
+                // After the feed and the forward: "settled" means the emulator and the client both have it.
+                hosted.pump_bytes.fetch_add(n as u64, Ordering::SeqCst);
+                hosted.pump_in_flight.store(false, Ordering::SeqCst);
             }
-            hosted.pump_in_flight.store(true, Ordering::SeqCst);
-            hosted.term.lock().unwrap().feed(&buf[..n]);
-            let mut data = hosted.data.lock().unwrap();
-            if let Some(d) = data.as_ref()
-                && !d.write_all(&buf[..n])
-            {
-                *data = None; // client vanished mid-write -> plain detach
-            }
-            drop(data);
-            // After the feed and the forward: "settled" means the emulator and the client both have it.
-            hosted.pump_bytes.fetch_add(n as u64, Ordering::SeqCst);
-            hosted.pump_in_flight.store(false, Ordering::SeqCst);
-        }
-    });
+        })
+        .is_err()
+    {
+        finish_cleanup(host, &ticket, &hosted);
+        return err_reply("output drainer thread could not start");
+    }
 
     // Exit watcher on the raw child handle — ConPTY's output pipe does NOT EOF on
     // child exit; waiting via the pty mutex would hold it for the child's lifetime.
     let child_h = hosted2.pty.lock().unwrap().child as usize;
-    std::thread::spawn(move || {
-        let code = conpty::wait_child(child_h);
-        hosted2.input_closed.store(true, Ordering::SeqCst);
-        // The child is gone, but what it wrote last may still be in flight: conhost flushes the
-        // pseudoconsole's output after the process exits and the pipe never hits EOF, so "exited"
-        // is not "complete". Wait until one 50 ms window passes with no new bytes from the pump,
-        // at most 500 ms, BEFORE the client's EOF (the detach) and `has_exited` say the session
-        // ended — the same window as TerminalSession's SettleOutput (#246).
-        settle_output(&hosted2);
-        hosted2.exit_code.store(code, Ordering::SeqCst);
-        hosted2.exited.store(true, Ordering::SeqCst);
-        detach(&hosted2); // data-pipe EOF = the client's exit signal
-    });
+    if std::thread::Builder::new()
+        .spawn(move || {
+            let code = conpty::wait_child(child_h);
+            hosted2.input_closed.store(true, Ordering::SeqCst);
+            // The child is gone, but what it wrote last may still be in flight: conhost flushes the
+            // pseudoconsole's output after the process exits and the pipe never hits EOF, so "exited"
+            // is not "complete". Wait until one 50 ms window passes with no new bytes from the pump,
+            // at most 500 ms, BEFORE the client's EOF (the detach) and `has_exited` say the session
+            // ended — the same window as TerminalSession's SettleOutput (#246).
+            settle_output(&hosted2);
+            hosted2.exit_code.store(code, Ordering::SeqCst);
+            hosted2.exited.store(true, Ordering::SeqCst);
+            detach(&hosted2); // data-pipe EOF = the client's exit signal
+        })
+        .is_err()
+    {
+        finish_cleanup(host, &ticket, &hosted);
+        return err_reply("exit watcher thread could not start");
+    }
 
-    ok_reply(Some(reply::Body::Create(CreateReply { id: c.id })))
+    #[cfg(test)]
+    if let Some(barrier) = &host.before_publication {
+        barrier(&hosted);
+    }
+    let publish = {
+        let mut state = host.state.lock().unwrap();
+        let publish = state.creations.complete(&ticket, hosted.clone());
+        if publish {
+            state.sessions.insert(c.id.clone(), hosted.clone());
+        }
+        publish
+    };
+    if !publish {
+        finish_cleanup(host, &ticket, &hosted);
+        return err_reply("creation cancelled; query exact ticket for cleanup completion");
+    }
+    ok_reply(Some(reply::Body::Create(CreateReply {
+        id: c.id,
+        creation_ticket: ticket,
+    })))
 }
 
 fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
-    let Some(hosted) = host.sessions.lock().unwrap().get(&a.id).cloned() else {
+    let Some(hosted) = host.state.lock().unwrap().sessions.get(&a.id).cloned() else {
         return err_reply(format!("no session '{}'", a.id));
     };
+    if !a.creation_ticket.is_empty() && a.creation_ticket != hosted.creation_ticket {
+        return err_reply("session incarnation changed");
+    }
     let seq = host.attach_seq.fetch_add(1, Ordering::SeqCst);
     let data_name = format!("{}-ptyhost-d-{seq:08x}", host.app_id);
     let server = match OverlappedPipeServer::create(&data_name) {
@@ -408,16 +750,16 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
         }
         if repaint {
             resize::transaction(&h2.resize, || {
-            let (c, r) = h2.pty.lock().unwrap().size();
-            h2.term
-                .lock()
-                .unwrap()
-                .emu
-                .resize(c as usize, (r as usize).saturating_sub(1).max(2));
-            h2.pty.lock().unwrap().resize(c, (r - 1).max(2));
-            std::thread::sleep(std::time::Duration::from_millis(60));
-            h2.term.lock().unwrap().emu.resize(c as usize, r as usize);
-            h2.pty.lock().unwrap().resize(c, r);
+                let (c, r) = h2.pty.lock().unwrap().size();
+                h2.term
+                    .lock()
+                    .unwrap()
+                    .emu
+                    .resize(c as usize, (r as usize).saturating_sub(1).max(2));
+                h2.pty.lock().unwrap().resize(c, (r - 1).max(2));
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                h2.term.lock().unwrap().emu.resize(c as usize, r as usize);
+                h2.pty.lock().unwrap().resize(c, r);
             });
         }
         let mut buf = [0u8; 16 * 1024];
@@ -426,7 +768,9 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
             if n == 0 {
                 break;
             }
-            if !h2.input_closed.load(Ordering::SeqCst) && !h2.pty.lock().unwrap().write_input(&buf[..n]) {
+            if !h2.input_closed.load(Ordering::SeqCst)
+                && !h2.pty.lock().unwrap().write_input(&buf[..n])
+            {
                 // Keep the output channel until the exit watcher drains it and detaches.
                 h2.input_closed.store(true, Ordering::SeqCst);
             }
@@ -447,6 +791,7 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
         modes,
         scrollback,
         scrollback_blob, // attributed history (full colour on reattach), byte-identical to the C# host
+        creation_ticket: hosted.creation_ticket.clone(),
     })))
 }
 

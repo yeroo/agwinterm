@@ -623,14 +623,12 @@ internal partial class Program : ISessionHost, IWindowHost
         {
             string host = sb.Name == "server-rust" ? "the Rust pty-host binary" : "the pty-host process";
             front!.Post(() => front.ShowToast($"session-host = {sb.Name} (experimental) — sessions live in {host}", 6000));
-            // Reap hosted sessions no pane claims — leftovers of closed panes whose kill raced a
-            // crash, or exited corpses. WELL after boot: restore/adoption must claim everything
-            // (incl. slow multi-window restores) before anything is judged an orphan.
-            string reapPipe = (_argPipe ?? _appId) + (sb.Name == "server-rust" ? "-rust" : "");
+            // All restore handles have already claimed their hosted IDs in the backend. New
+            // handles claim before async creation too, not after publication in the UI tree.
             _ = Task.Run(async () =>
             {
                 await Task.Delay(TimeSpan.FromSeconds(30));
-                ReapOrphanedHostedSessions(reapPipe);
+                sb.ReapUnclaimedStartupSessions();
             });
         }
 

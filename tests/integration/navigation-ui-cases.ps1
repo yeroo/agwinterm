@@ -98,9 +98,12 @@ Check 'readonly typo cannot remove existing protection' (-not (Rpc 'session.read
 $null=Rpc 'session.readonly' @{op='off'} $session
 Check 'missing readonly target refuses without protecting the active pane' (-not (Rpc 'session.readonly' @{op='on'} 'missing-pane' -AllowError).ok -and (Rpc 'session.readonly' @{op='state'} $session)-eq 'off')
 $null=Rpc 'session.write' @{text="`r`nSTABILIZATION-SEARCH-MARKER`r`n"} $session
-$null=Rpc 'config.set' @{key='cursor-blink';value='false'} # FIFO barrier: search's sent message can overtake the posted write.
-$findBefore=Rpc 'session.search' @{query='STABILIZATION-SEARCH-MARKER'} $session
-Check 'search mutation guard has a real match' ($findBefore-match 'of [1-9]')
+# Search uses a sent UI message and can overtake the posted emulator write. A no-change
+# config.set is not an acknowledgement of that write. Wait for the actual search result.
+Check 'search mutation guard has a real match' (NavWait {
+    $script:findBefore=Rpc 'session.search' @{query='STABILIZATION-SEARCH-MARKER'} $session
+    return $script:findBefore-match 'of [1-9]'
+})
 Check 'missing search target refuses without replacing active query' (-not (Rpc 'session.search' @{query='MISSING-SEARCH-QUERY'} 'missing-pane' -AllowError).ok -and (Rpc 'session.search' @{} $session)-eq $findBefore)
 $null=Rpc 'session.search' @{action='close'} $session
 Check 'unknown switch operation refuses' (-not (Rpc 'session.switch' @{op='typo'} -NoTarget -AllowError).ok)

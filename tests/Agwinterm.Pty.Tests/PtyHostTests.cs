@@ -13,6 +13,51 @@ public class PtyHostTests : IDisposable
     public PtyHostTests() => _server = new PtyHostServer(_appId);
     public void Dispose() => _server.Dispose();
 
+    [Fact]
+    public void CreationTickets_ReconcileLostRepliesAndGuardReusedIds()
+        => CreationProtocolAssertions.LostRepliesAndReusedId(_appId);
+
+    [Fact]
+    public Task CreationTickets_StartupSweepProtectsUnpublishedPane()
+        => CreationProtocolAssertions.StartupSweepKeepsPendingPane(_appId);
+
+    [Fact]
+    public async Task CreationTickets_CancelBetweenSpawnAndPublicationCleansExactChild()
+    {
+        using var reached = new ManualResetEventSlim(); using var release = new ManualResetEventSlim();
+        System.Diagnostics.Process? child = null;
+        _server.BeforeCreationPublication = pid =>
+        {
+            child = System.Diagnostics.Process.GetProcessById(pid!.Value);
+            _ = child.SafeHandle; // pin the original process before allowing cleanup
+            reached.Set();
+            if (!release.Wait(15000)) throw new TimeoutException("publication barrier not released");
+        };
+        using var client = PtyHostClient.Connect(_appId);
+        string ticket = client.PrepareCreate("barrier");
+        var create = Task.Run(() => Record.Exception(() => client.Create("barrier", 80, 24, "powershell.exe",
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 120"], freshEnv: false, creationTicket: ticket)));
+        try
+        {
+            Assert.True(reached.Wait(10000), "real child must exist before cancellation");
+            using var cancel = PtyHostClient.Connect(_appId);
+            Assert.Equal(Proto.CreationPhase.CreationCreating, cancel.QueryCreate("barrier", ticket));
+            Assert.Empty(cancel.List()); Assert.False(child!.HasExited);
+            Assert.Equal(Proto.CreationPhase.CreationCancelling, cancel.CancelCreate("barrier", ticket));
+            release.Set(); Assert.NotNull(await create.WaitAsync(TimeSpan.FromSeconds(15)));
+            Assert.True(SpinWait.SpinUntil(() => cancel.QueryCreate("barrier", ticket) == Proto.CreationPhase.CreationUnknown, 10000));
+            Assert.True(child.WaitForExit(5000)); Assert.Empty(cancel.List());
+        }
+        finally
+        {
+            release.Set();
+            await create.WaitAsync(TimeSpan.FromSeconds(20)); // leave barrier before disposing its events
+            using var cleanup = PtyHostClient.Connect(_appId);
+            Assert.True(SpinWait.SpinUntil(() => cleanup.CancelCreate("barrier", ticket) == Proto.CreationPhase.CreationUnknown, 15000));
+            child?.Dispose();
+        }
+    }
+
     /// <summary>Type a line and make sure it took (raw-stream twin of ServerSessionTests.TypeLine):
     /// input during cmd/conhost console init can be silently discarded, and `cmd /q` prints no
     /// prompt on newer Windows — so retype every ~2.5s until the echo shows up in the stream.</summary>

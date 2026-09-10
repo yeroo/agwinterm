@@ -107,6 +107,22 @@ public class RustPtyHostTests : IDisposable
     }
 
     [Fact]
+    public void CreationTickets_ReconcileLostRepliesAndGuardReusedIds()
+    {
+        if (ExePath is null) return;
+        using var client = Start();
+        CreationProtocolAssertions.LostRepliesAndReusedId(_appId);
+    }
+
+    [Fact]
+    public async Task CreationTickets_StartupSweepProtectsUnpublishedPane()
+    {
+        Assert.NotNull(ExePath);
+        using var client = Start();
+        await CreationProtocolAssertions.StartupSweepKeepsPendingPane(_appId);
+    }
+
+    [Fact]
     public void CreateAttachTypeKill_RoundTrips()
     {
         if (ExePath is null) return;
