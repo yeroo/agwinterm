@@ -70,7 +70,16 @@ $sink=Join-Path $artifact 'quick-survived.txt'
 $null=Rpc 'session.type' @{text="echo %P14_KEEP%>`"$sink`"`r"} -Window quick
 for($i=0;$i-lt 50 -and -not (Test-Path $sink);$i++){Start-Sleep -Milliseconds 100}
 Check 'same shell and environment survive hide/show' ((Test-Path $sink) -and (Get-Content $sink -Raw).Trim()-eq 'alive')
-Check 'explicit quick prefix routes readback from library window' ((Rpc 'session.text' @{} 'quick:')-ceq (Rpc 'session.text' -Window quick))
+# Two sequential snapshots can straddle the shell's next prompt. Prove routing with a completed
+# output line in each surface instead of requiring an asynchronously changing screen to be equal.
+$null=Rpc 'session.type' @{text="echo P14-ROUTE-CHECK`r"} -Window quick
+$routed=$false
+for($i=0;$i-lt 50;$i++){
+    $explicit=[string](Rpc 'session.text' @{} 'quick:');$implicit=[string](Rpc 'session.text' -Window quick)
+    if($explicit-match '(?m)^P14-ROUTE-CHECK\s*$' -and $implicit-match '(?m)^P14-ROUTE-CHECK\s*$'){$routed=$true;break}
+    Start-Sleep -Milliseconds 100
+}
+Check 'explicit quick prefix routes readback from library window' $routed
 $beforeFont=Rpc 'session.metrics' -Window quick
 $null=Rpc 'font' @{op='inc'} -Window quick
 $afterFont=Rpc 'session.metrics' -Window quick
