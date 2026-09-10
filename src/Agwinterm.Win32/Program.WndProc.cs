@@ -574,27 +574,16 @@ internal partial class Program
                         ChangeFontSize(HiWord(wParam) > 0 ? 1 : -1);
                         return IntPtr.Zero;
                     }
-                    var em = _session?.Emulator;
-                    if (em is not null && em.MouseReporting) // app wants the wheel (forward to the active pane)
+                    // Decide reporting versus history from the hit-tested surface, not keyboard focus.
+                    if (PaneAt(pt.x, pt.y) is { } under)
                     {
-                        if (pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
-                            SendMouse(HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, deviceX, deviceY, true);
-                        return IntPtr.Zero;
-                    }
-                    // Otherwise scroll the pane under the cursor through its scrollback history.
-                    if (_cover is not null && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH)
-                    {
-                        if (_cover.S.Emulator.IsAltScreen) return IntPtr.Zero;
-                        int hn = _cover.S.Emulator.HistoryCount;
-                        int step = Math.Clamp(_config.ScrollSpeed, 1, 10);
-                        int no = Math.Clamp(_cover.ScrollOffset + (HiWord(wParam) > 0 ? step : -step), 0, hn);
-                        if (no != _cover.ScrollOffset) { _cover.ScrollOffset = no; RequestRedraw(); }
-                        return IntPtr.Zero;
-                    }
-                    if (_active is not null && pt.x >= (int)_sidebarW && pt.y >= (int)TitleBarH &&
-                        PaneAlongAxisAt(_active, pt.x, pt.y) is { } under)   // the pane under the wheel, on either axis
-                    {
-                        var p = SurfaceOf(under.pane);   // its overlay while one is open (P5): the wheel scrolls the SURFACE under the pointer
+                        var p = under.pane;
+                        if (p.S.Emulator.MouseReporting)
+                        {
+                            SendMouseTo(p, (under.ox, under.oy, under.cw, under.ch),
+                                HiWord(wParam) > 0 ? 64 : 65, pt.x, pt.y, deviceX, deviceY, true);
+                            return IntPtr.Zero;
+                        }
                         // The alt screen shows no history: an offset accumulated here would
                         // never be rendered, and silently move where clicks land.
                         if (p.S.Emulator.IsAltScreen) return IntPtr.Zero;

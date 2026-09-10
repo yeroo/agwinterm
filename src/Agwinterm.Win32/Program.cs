@@ -612,6 +612,8 @@ internal partial class Program : ISessionHost, IWindowHost
         // Experimental knobs announce themselves once at startup — never a silent mystery.
         if (_emulatorCoreNote is { } note)
             front!.Post(() => front.ShowToast(note, 6000));
+        if (_fontFallbackNote is { } fontNote)
+            front!.Post(() => front.ShowToast(fontNote, 8000));
         // Server mode is experimental (#105) — say so once at startup, so a flipped knob is never
         // a silent mystery ("why is there a second agwinterm process?").
         if (_sessionBackend is ServerSessionBackend sb)
@@ -733,9 +735,16 @@ internal partial class Program : ISessionHost, IWindowHost
     private static IDWriteTextFormat CreateTextFormat(TerminalConfig cfg)
     {
         float px = (float)cfg.FontSize;
-        try { return NewFormat(cfg.FontFamily, px); }
-        catch { return NewFormat("Consolas", px); }
+        using var fonts = _dwrite.GetSystemFontCollection(false);
+        _terminalFontFamily = TerminalFontFamily.Resolve(cfg.FontFamily,
+            family => fonts.FindFamilyName(family, out _));
+        _fontFallbackNote = string.Equals(cfg.FontFamily, _terminalFontFamily, StringComparison.OrdinalIgnoreCase)
+            ? null : $"Font '{cfg.FontFamily}' is not installed; using {_terminalFontFamily}";
+        return NewFormat(_terminalFontFamily, px);
     }
+
+    private static string _terminalFontFamily = "Consolas";
+    private static string? _fontFallbackNote;
 
     private static IDWriteTextFormat NewFormat(string family, float px,
         FontWeight weight = FontWeight.Normal, FontStyle style = FontStyle.Normal)
@@ -747,7 +756,7 @@ internal partial class Program : ISessionHost, IWindowHost
         return f;
     }
 
-    // The configured family's font object, for per-codepoint coverage checks. A glyph that IS in
+    // The resolved terminal family's font object (possibly the installed fallback), for coverage checks. A glyph that IS in
     // the (monospace) family advances exactly one cell — safe to coalesce into text runs. A glyph
     // that falls back to another font (emoji, ⏺/✻ symbols, …) has arbitrary advance and MUST be
     // drawn solo, anchored to its own grid column, or runs drift and overpaint their neighbours
@@ -792,7 +801,7 @@ internal partial class Program : ISessionHost, IWindowHost
         try
         {
             using var coll = _dwrite.GetSystemFontCollection(false);
-            if (coll.FindFamilyName(_config.FontFamily, out uint idx))
+            if (coll.FindFamilyName(_terminalFontFamily, out uint idx))
             {
                 using var fam = coll.GetFontFamily(idx);
                 _familyFont = fam.GetFirstMatchingFont(FontWeight.Normal, FontStretch.Normal, FontStyle.Normal);
@@ -801,7 +810,7 @@ internal partial class Program : ISessionHost, IWindowHost
         catch { }   // no family match → every non-ASCII glyph draws solo (safe, just slower)
     }
 
-    /// <summary>Whether the configured family itself covers this codepoint (cached).</summary>
+    /// <summary>Whether the resolved terminal family itself covers this codepoint (cached).</summary>
     private static bool FontHasGlyph(int cp)
     {
         if (_glyphInFont.TryGetValue(cp, out bool has)) return has;
@@ -821,8 +830,7 @@ internal partial class Program : ISessionHost, IWindowHost
         if (_styledFmt.TryGetValue((px, bold, italic), out var f)) return f;
         var weight = bold ? FontWeight.Bold : FontWeight.Normal;
         var style = italic ? FontStyle.Italic : FontStyle.Normal;
-        try { f = NewFormat(_config.FontFamily, px, weight, style); }
-        catch { f = NewFormat("Consolas", px, weight, style); }
+        f = NewFormat(_terminalFontFamily, px, weight, style);
         _styledFmt[(px, bold, italic)] = f;
         return f;
     }
@@ -1256,11 +1264,21 @@ internal partial class Program : ISessionHost, IWindowHost
         _metrics.Clear();
         foreach (var f in _styledFmt.Values) { try { f.Dispose(); } catch { } }     // bold/italic variants bake in the family too
         _styledFmt.Clear();
-        MeasureCell();
-        foreach (var s in AllSessions()) RegridSession(s);
-        if (_cover is not null) RegridCover();
-        if (!_isQuickWindow && _quickHost?._cover is not null) _quickHost.RegridCover();
-        RequestRedraw();
+        // Formats/metrics are process-wide; every open window must adopt their new geometry.
+        // Quick is not part of the persisted library-window index.
+        List<Program> windows;
+        lock (_windowIndex) windows = _byId.Values.ToList();
+        if (!windows.Contains(this)) windows.Add(this);
+        if (_quickHost is { } quick && !windows.Contains(quick)) windows.Add(quick);
+        foreach (var window in windows)
+        {
+            if (window._hwnd == IntPtr.Zero) continue;
+            window.MeasureCell();
+            foreach (var session in window.AllSessions()) window.RegridSession(session);
+            if (window._cover is not null) window.RegridCover();
+            if (_fontFallbackNote is { } note) window.ShowToast(note, 8000);
+            window.RequestRedraw();
+        }
     }
 
     private void MeasureCell()
@@ -1285,8 +1303,7 @@ internal partial class Program : ISessionHost, IWindowHost
     {
         if (_metrics.TryGetValue(px, out var m)) return m;
         IDWriteTextFormat fmt;
-        try { fmt = NewFormat(_config.FontFamily, px); }
-        catch { fmt = NewFormat("Consolas", px); }
+        fmt = NewFormat(_terminalFontFamily, px);
         using var run = _dwrite.CreateTextLayout(new string('M', 10), fmt, 4096f, 4096f);
         using var one = _dwrite.CreateTextLayout("M", fmt, 4096f, 4096f);
         float cw = run.Metrics.Width / 10f, ch = MathF.Round(one.Metrics.Height);

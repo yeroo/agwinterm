@@ -22,6 +22,10 @@ namespace Agwinterm.Core;
 /// </summary>
 public static class Keymap
 {
+    /// <summary>Modifier-only Win32 events are protocol state, not editing input.</summary>
+    public static bool IsModifierKey(int vk) => vk is 0x10 or 0x11 or 0x12
+        or 0x5B or 0x5C or >= 0xA0 and <= 0xA5;
+
     /// <summary>Built-in action ids and their default chords (overridable by keymap.conf).</summary>
     public static IReadOnlyList<(string Chord, string Action)> DefaultBindings { get; } =
         Array.AsReadOnly<(string Chord, string Action)>(new (string, string)[] {
