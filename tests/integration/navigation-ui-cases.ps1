@@ -23,6 +23,74 @@ function PixelDifference($a,$b,[int]$x=0,[int]$y=0,[int]$w=0,[int]$h=0){
     }};return $different
 }
 $first=[string](CurrentWs);$beforeText=Rpc 'session.text' @{} $session
+$esc=[string][char]27
+$null=Rpc 'config.set' @{key='cursor-blink';value='false'}
+$null=Rpc 'session.write' @{text=($esc+'[?9001hMODIFIER-SELECTION-PROBE')} $session
+$null=Rpc 'selection.all' @{} $session
+$selectedBefore=Rpc 'session.copy' @{} $session
+NavKey 17
+Check 'modifier down preserves selection in Win32 input mode' ((Rpc 'session.copy' @{} $session)-ceq $selectedBefore)
+[void][HudOwnedJob]::SendMessageW($hwnd,0x101,[IntPtr]17,[IntPtr]1)
+Check 'modifier up preserves selection in Win32 input mode' ((Rpc 'session.copy' @{} $session)-ceq $selectedBefore)
+$null=Rpc 'selection.clear' @{} $session
+$null=Rpc 'session.write' @{text=($esc+'[?9001l'+$esc+'[?1049hALT-HELP-PROBE')} $session
+$helpBefore=NavPixels 'alt-help-before';NavKey 112
+$helpShown=NavPixels 'alt-help-shown'
+Check 'F1 opens app help while alternate screen is active' ((PixelDifference $helpBefore $helpShown)-gt 1000)
+NavKey 112
+$helpClosed=NavPixels 'alt-help-closed'
+Check 'F1 closes app help without forwarding it to the terminal' ((PixelDifference $helpBefore $helpClosed)-lt 250)
+$null=Rpc 'session.write' @{text=($esc+'[?1049l')} $session
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class NavWheel {
+    [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x,y; }
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hwnd,ref POINT point);
+    [DllImport("user32.dll",SetLastError=true)] static extern IntPtr SendMessageTimeoutW(IntPtr h,uint m,IntPtr w,IntPtr l,uint flags,uint timeout,out IntPtr result);
+    public static bool Responsive(IntPtr h) { IntPtr result;return SendMessageTimeoutW(h,0,IntPtr.Zero,IntPtr.Zero,3,2000,out result)!=IntPtr.Zero; }
+}
+'@
+$null=Rpc 'sidebar' @{op='hide'}
+$wheelPane=[string](Rpc 'session.split' @{op='on';axis='vertical'} $session)
+$null=Rpc 'session.focus' @{dir='left'}
+$lines=(1..100|ForEach-Object {"WHEEL-LINE-$_"})-join "`r`n"
+$null=Rpc 'session.write' @{text=($esc+'[?1000h')} $session
+$null=Rpc 'session.write' @{text=($esc+'[?1000l'+$lines)} $wheelPane
+$wheelBefore=NavPixels 'wheel-under-pointer-before'
+$wheelPoint=[NavWheel+POINT]::new();$wheelPoint.x=[int]($wheelBefore.width*0.75);$wheelPoint.y=[int]($wheelBefore.height*0.5)
+if(-not [NavWheel]::ClientToScreen($hwnd,[ref]$wheelPoint)){throw 'Wheel coordinate conversion failed'}
+$wheelPosition=[IntPtr]([int64](($wheelPoint.y-band 0xffff)-shl 16)-bor ($wheelPoint.x-band 0xffff))
+[void][HudOwnedJob]::SendMessageW($hwnd,0x20a,[IntPtr](120-shl 16),$wheelPosition)
+$wheelAfter=NavPixels 'wheel-under-pointer-after'
+Check 'wheel scrolls unfocused history while focused sibling reports mouse' ((PixelDifference $wheelBefore $wheelAfter ([int]($wheelBefore.width*0.55)) 80 ([int]($wheelBefore.width*0.4)) ([int]($wheelBefore.height*0.65)))-gt 100)
+$null=Rpc 'session.write' @{text=($esc+'[?1000l')} $session
+$wheelReady=Join-Path $artifact 'wheel-reader-ready';$wheelBytes=Join-Path $artifact 'wheel-reader-bytes'
+$wheelScript=@'
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class RawWheel { [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n); [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h,out uint m); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h,uint m); }'
+$inputHandle=[RawWheel]::GetStdHandle(-10);[uint32]$oldMode=0
+if(-not [RawWheel]::GetConsoleMode($inputHandle,[ref]$oldMode)){throw 'GetConsoleMode'}
+if(-not [RawWheel]::SetConsoleMode($inputHandle,($oldMode-band (-bnot 6))-bor 512)){throw 'SetConsoleMode'}
+try {
+    $inputStream=[Console]::OpenStandardInput();$bytes=[Collections.Generic.List[byte]]::new();$one=[byte[]]::new(1)
+    [IO.File]::WriteAllText('__READY__','ready')
+    while($bytes.Count-lt 256 -and $inputStream.Read($one,0,1)-eq 1){$bytes.Add($one[0]);if($one[0]-eq 77){break}}
+    [IO.File]::WriteAllText('__BYTES__',[Text.Encoding]::ASCII.GetString($bytes.ToArray()))
+    Start-Sleep 600
+} finally {[void][RawWheel]::SetConsoleMode($inputHandle,$oldMode)}
+'@
+$wheelScript=$wheelScript.Replace('__READY__',$wheelReady.Replace("'","''")).Replace('__BYTES__',$wheelBytes.Replace("'","''"))
+$wheelEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wheelScript))
+$null=Rpc 'session.type' @{text="powershell.exe -NoLogo -NoProfile -EncodedCommand $wheelEncoded`r"} $wheelPane
+for($i=0;$i-lt 300 -and -not (Test-Path $wheelReady);$i++){Start-Sleep -Milliseconds 100}
+if(-not (Test-Path $wheelReady)){throw 'Owned raw-input mouse reader was not ready'}
+$null=Rpc 'session.write' @{text=($esc+'[?1000h'+$esc+'[?1006h'+$lines)} $wheelPane
+$reportBefore=NavPixels 'wheel-report-before'
+[void][HudOwnedJob]::SendMessageW($hwnd,0x20a,[IntPtr](120-shl 16),$wheelPosition)
+Check 'wheel report reaches the unfocused raw-input reader' (NavWait {(Test-Path $wheelBytes) -and (Get-Content $wheelBytes -Raw)-match '^\x1b\[<64;[0-9]+;[0-9]+M$'})
+$reportAfter=NavPixels 'wheel-report-after'
+Check 'reported wheel leaves the hovered history viewport unchanged' ((PixelDifference $reportBefore $reportAfter ([int]($reportBefore.width*0.55)) 80 ([int]($reportBefore.width*0.4)) ([int]($reportBefore.height*0.65)))-lt 100)
+$null=Rpc 'session.split.close' @{} $wheelPane
+$null=Rpc 'sidebar' @{op='show'}
 Check 'readonly rejects an unknown operation without changing protection' (-not (Rpc 'session.readonly' @{op='typo'} $session -AllowError).ok -and (Rpc 'session.readonly' @{op='state'} $session)-eq 'off')
 $null=Rpc 'session.readonly' @{op='on'} $session
 Check 'readonly typo cannot remove existing protection' (-not (Rpc 'session.readonly' @{op='typo'} $session -AllowError).ok -and (Rpc 'session.readonly' @{op='get'} $session)-eq 'on')
@@ -207,3 +275,50 @@ Check 'renaming hovered row invalidates tooltip without a move' ((PixelDifferenc
 $null=Rpc 'sidebar' @{op='mode:tree'}
 $null=Rpc 'session.type' @{text="exit`r"} $session
 Check 'exited shell does not retain shell-name hint' (NavWait {$null-eq (Node $session).foregroundShell})
+
+$fontOriginal=Rpc 'config.get' @{key='font-family'}
+$libraryWindow=[string](@((Rpc 'window.list').windows|Where-Object open)[0].id)
+$installed=[Drawing.Text.InstalledFontCollection]::new()
+try {
+    $familyNames=@($installed.Families|ForEach-Object Name)
+    $fallback=@('Cascadia Mono','Consolas','Lucida Console','Courier New'|Where-Object {$_-in $familyNames})[0]
+    if(-not $fallback){throw 'No expected monospace face on integration runner'}
+    $null=Rpc 'config.set' @{key='font-family';value=$fallback}
+    $null=Rpc 'session.write' @{text=($esc+'[2J'+$esc+'[H'+$esc+'[1mBOLD FALLBACK 0123456789'+$esc+'[0m'+"`r`n"+$esc+'[3mITALIC FALLBACK 0123456789'+$esc+'[0m')} $session
+    $styledExpected=NavPixels 'fallback-styled-expected'
+    $fallbackMetrics=Rpc 'session.metrics' @{} $session|ConvertTo-Json -Compress
+    $missing='Agwinterm-Missing-'+[guid]::NewGuid().ToString('N')
+    $null=Rpc 'config.set' @{key='font-family';value=$missing}
+    Check 'missing font uses the installed monospace fallback metrics' ((Rpc 'session.metrics' @{} $session|ConvertTo-Json -Compress)-eq $fallbackMetrics)
+    Check 'font fallback preserves the requested preference' ((Rpc 'config.get' @{key='font-family'})-eq $missing)
+    $styledActual=NavPixels 'fallback-styled-missing'
+    Check 'missing font uses the same bold and italic glyphs' ((PixelDifference $styledExpected $styledActual 0 40 $styledExpected.width 120)-lt 100)
+    # Consolas covers double-line corners; these must enter the text run, not stall it.
+    $null=Rpc 'config.set' @{key='font-family';value='Consolas'}
+    $null=Rpc 'session.write' @{text=($esc+'[2J'+$esc+'[H'+[string][char]0x2554+[string][char]0x2557+[string][char]0x255A+[string][char]0x255D)} $session
+    Start-Sleep -Milliseconds 200
+    $responsive=[NavWheel]::Responsive($hwnd)
+    Check 'font-rendered unsupported box glyphs cannot stall the UI' $responsive
+    if(-not $responsive){throw 'Render thread stalled; stop before any unbounded screenshot call'}
+    $null=NavPixels 'unsupported-box-glyphs'
+    $fontWindow=[string](Rpc 'window.new' @{name='Font geometry peer'})
+    try {
+        if(-not (NavWait {@((Rpc 'window.list').windows|Where-Object {$_.id-eq $fontWindow -and $_.open}).Count-eq 1})){throw 'Font peer window did not open'}
+        $null=Rpc 'config.set' @{key='font-family';value='Courier New'} -Window $libraryWindow
+        $sharedMetrics=Rpc 'session.metrics' -Window $fontWindow|ConvertTo-Json -Compress
+        $null=Rpc 'font' @{op='reset'} -Window $fontWindow
+        $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $fontWindow # FIFO UI barrier behind font reset
+        Check 'shared font change already regrids another library window' (NavWait {(Rpc 'session.metrics' -Window $fontWindow|ConvertTo-Json -Compress)-eq $sharedMetrics})
+        # Verify again after another family change, and include the singleton quick surface.
+        $null=Rpc 'quick' @{op='on'} -Window $libraryWindow
+        $null=Rpc 'config.set' @{key='font-family';value='Consolas'} -Window $libraryWindow
+        $quickMetrics=Rpc 'session.metrics' -Window quick|ConvertTo-Json -Compress
+        $null=Rpc 'font' @{op='reset'} -Window quick
+        $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window quick
+        Check 'shared font change already regrids quick' (NavWait {(Rpc 'session.metrics' -Window quick|ConvertTo-Json -Compress)-eq $quickMetrics})
+        $null=Rpc 'quick' @{op='off'} -Window $libraryWindow
+    } finally {
+        $null=Rpc 'window.close' @{} $fontWindow
+        $null=Rpc 'window.select' @{} $libraryWindow
+    }
+} finally {$installed.Dispose();$null=Rpc 'config.set' @{key='font-family';value=$fontOriginal} -Window $libraryWindow}

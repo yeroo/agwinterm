@@ -482,14 +482,13 @@ internal partial class Program
                     if (cell.Width == 0 || (startBlank && (cell.Attributes & LineMask) == 0)) { c++; continue; }
                     Color runFg = EffectiveFg(cell);
                     CellAttributes runStyle = cell.Attributes & StyleMask;
-                    // Builtin box-drawing / block elements: vector-draw for pixel-perfect borders
-                    // (unhandled codepoints in the range fall back to the font glyph, drawn solo so
-                    // the coalesced run never has to include them).
-                    if (_config.BuiltinGlyphs && cell.Rune is (>= 0x2500 and <= 0x259F) or 0x2571 or 0x2572)
+                    // Only claim the vector renderer's implemented set. Other glyphs retain the
+                    // normal font-fallback, style and clipping rules below.
+                    if (_config.BuiltinGlyphs && BuiltinBoxGlyphs.Supports(cell.Rune))
                     {
                         float bx = ox + c * cw;
                         if (!DrawBoxGlyph(rt, brush, cell.Rune, bx, y, cw, ch, C4(runFg)))
-                        { brush.Color = C4(runFg); rt.DrawText(RuneStr(cell.Rune), fmt, new Rect(bx, y, bx + cw, y + ch), brush); }
+                        { brush.Color = C4(runFg); rt.DrawText(RuneStr(cell.Rune), StyleFmt(fmt, runStyle), new Rect(bx, y, cw, ch), brush, DrawTextOptions.Clip); }
                         c++; continue;
                     }
                     if (cell.Width == 2 || cell.Rune > 0xFFFF || !GridTrue(cell.Rune))
@@ -523,7 +522,7 @@ internal partial class Program
                     {
                         Cell cc = CellAt(r, c);
                         if (cc.Width == 2 || cc.Width == 0 || cc.Rune > 0xFFFF) break;
-                        if (_config.BuiltinGlyphs && cc.Rune is (>= 0x2500 and <= 0x259F) or 0x2571 or 0x2572) break; // vector-drawn separately
+                        if (_config.BuiltinGlyphs && BuiltinBoxGlyphs.Supports(cc.Rune)) break; // same consumed set as the outer dispatch
                         bool blank = cc.Rune == ' ' || cc.Rune == '\0';
                         if (!blank && !GridTrue(cc.Rune)) break;   // fallback glyph → its own solo draw
                         // Blanks only need matching decoration lines (bold/italic is invisible on a
