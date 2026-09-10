@@ -49,12 +49,12 @@ internal partial class Program
                 if ((int)wParam == _quickHotkeyId && _quickHotkeyId != 0) QuickOp("toggle", global: true);
                 return IntPtr.Zero;
             }
-            if (msg == WM_DESTROY) { _uiGone.Cancel(); return IntPtr.Zero; }
+            if (msg == WM_DESTROY) { _uia.Dispose(); _uiGone.Cancel(); return IntPtr.Zero; }
         }
         switch (msg)
         {
             case 0x003D: // WM_GETOBJECT — expose the terminal to screen readers (UIA, T2-14)
-                { nint r = Uia.OnGetObject(hwnd, wParam, lParam); if (r != 0) return r; break; }
+                { nint r = _uia.OnGetObject(hwnd, wParam, lParam); if (r != 0) return r; break; }
 
             case WM_NCCALCSIZE:
                 if (wParam != IntPtr.Zero) { AdjustClientRect(hwnd, lParam); return IntPtr.Zero; }
@@ -622,6 +622,7 @@ internal partial class Program
                 return DefWindowProcW(hwnd, msg, wParam, lParam);
 
             case WM_DESTROY:
+                _uia.Dispose();
                 CloseWindowPicker();
                 _uiGone.Cancel();                 // release any pipe thread waiting in InvokeOnUiQueued
                 RemoveTrayIcon();                 // drop the shell tray balloon icon

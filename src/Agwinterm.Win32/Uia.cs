@@ -9,47 +9,98 @@ namespace Agwinterm.Win32;
 /// Raw source-generated COM — NO WPF/UIAutomationProvider dependency (which would bloat the exe). A full
 /// ITextProvider (line/caret navigation) is the follow-on stage.
 /// </summary>
-internal static partial class Uia
+internal partial class Uia : IDisposable
 {
     private static readonly StrategyBasedComWrappers ComWrappers = new();
-    private static UiaRoot? _root;           // keep the singleton root alive
-    private static nint _providerSimple;     // QI'd IRawElementProviderSimple* of the root (handed to UIA)
-    private static nint _fragmentRoot;       // QI'd IRawElementProviderFragmentRoot* of the root
+    // One context per Program window. Retained COM fragments/ranges keep this context, never a
+    // process-wide "current window". Closing it severs callbacks and retires its root references.
+    private readonly object _gate = new();
+    private static int _nextIdentity;
+    internal int Identity { get; } = Interlocked.Increment(ref _nextIdentity);
+    private volatile bool _closed;
+    internal bool IsClosed => _closed;
+    private UiaRoot? _root;
+    private nint _providerSimple, _fragmentRoot;
+    internal Func<string>? GetVisibleText;
 
-    /// <summary>Supplies the current visible terminal text (set by the app) for the terminal element's Name.</summary>
-    internal static Func<string>? GetVisibleText;
+    internal void EnsureAlive()
+    {
+        if (_closed) throw new COMException("The accessibility window is closed.", unchecked((int)0x80040201));
+    }
 
-    /// <summary>Handle WM_GETOBJECT: return our root UIA fragment when UIA asks for it.</summary>
-    internal static nint OnGetObject(nint hwnd, nint wParam, nint lParam)
+    internal string VisibleText()
+    {
+        EnsureAlive();
+        string text = GetVisibleText?.Invoke() ?? "terminal";
+        EnsureAlive();
+        return text;
+    }
+
+    /// <summary>Handle WM_GETOBJECT for this window only.</summary>
+    internal nint OnGetObject(nint hwnd, nint wParam, nint lParam)
     {
         if ((int)lParam != UiaRootObjectId) return 0;
-        if (_providerSimple == 0)
+        nint provider;
+        lock (_gate)
         {
-            _treeHwnd = hwnd;
-            _root = new UiaRoot(hwnd);
-            nint unk = ComWrappers.GetOrCreateComInterfaceForObject(_root, CreateComInterfaceFlags.None);
-            try
+            if (_closed) return 0;
+            if (_providerSimple == 0)
             {
-                // Hand UIA a real IRawElementProviderSimple* (not the raw IUnknown* — vtables differ).
-                Guid iid = IID_IRawElementProviderSimple;
-                if (Marshal.QueryInterface(unk, in iid, out _providerSimple) < 0) _providerSimple = 0;
-                Guid fr = IID_IRawElementProviderFragmentRoot;
-                if (Marshal.QueryInterface(unk, in fr, out _fragmentRoot) < 0) _fragmentRoot = 0;
+                _treeHwnd = hwnd;
+                _root = new UiaRoot(this, hwnd);
+                _providerSimple = AsInterface(_root, IID_IRawElementProviderSimple);
+                if (_fragmentRoot == 0) _fragmentRoot = AsInterface(_root, IID_IRawElementProviderFragmentRoot);
             }
-            finally { Marshal.Release(unk); }
+            provider = _providerSimple;
+            if (provider != 0) Marshal.AddRef(provider);
         }
-        return _providerSimple != 0 ? UiaReturnRawElementProvider(hwnd, wParam, lParam, _providerSimple) : 0;
+        // UIA can reenter the provider. Never hold _gate across a UIA call or an app callback.
+        try { return provider != 0 ? UiaReturnRawElementProvider(hwnd, wParam, lParam, provider) : 0; }
+        finally { if (provider != 0) Marshal.Release(provider); }
     }
 
-    /// <summary>The fragment root (IRawElementProviderFragmentRoot*), AddRef'd — each fragment's FragmentRoot.</summary>
-    internal static nint FragmentRootPtr()
+    internal nint FragmentRootPtr()
     {
-        if (_fragmentRoot != 0) Marshal.AddRef(_fragmentRoot);
-        return _fragmentRoot;
+        lock (_gate)
+        {
+            EnsureAlive();
+            if (_fragmentRoot != 0) Marshal.AddRef(_fragmentRoot);
+            return _fragmentRoot;
+        }
     }
 
-    /// <summary>The terminal element (IRawElementProviderSimple*), AddRef'd — text ranges' GetEnclosingElement.</summary>
-    internal static nint RootProvider() => AsInterface(new UiaTerminal(_treeHwnd), IID_IRawElementProviderSimple);
+    internal nint RootProvider()
+    {
+        EnsureAlive();
+        return AsInterface(new UiaTerminal(this), IID_IRawElementProviderSimple);
+    }
+
+    private nint BorrowProvider()
+    {
+        lock (_gate)
+        {
+            if (_closed || _providerSimple == 0) return 0;
+            Marshal.AddRef(_providerSimple);
+            return _providerSimple;
+        }
+    }
+
+    public void Dispose()
+    {
+        nint provider, root;
+        lock (_gate)
+        {
+            if (_closed) return;
+            _closed = true;
+            GetVisibleText = null; GetTree = null; GetTextSnapshot = null;
+            OnSetFocus = null; OnInvoke = null;
+            provider = _providerSimple; root = _fragmentRoot;
+            _providerSimple = _fragmentRoot = _treeHwnd = 0;
+            _root = null;
+        }
+        if (provider != 0) Marshal.Release(provider);
+        if (root != 0) Marshal.Release(root);
+    }
 
     private static readonly Guid IID_IRawElementProviderSimple = new("d6dd68d1-86fd-4332-8666-9abedea2d24c");
     private const int UiaRootObjectId = -25;
@@ -64,15 +115,18 @@ internal static partial class Uia
     /// <summary>Push text to the active screen reader via a UIA notification event (new terminal output,
     /// settings interactions). Cheap alternative to a full ITextProvider: the reader simply speaks the
     /// string. No-op until the provider exists (first WM_GETOBJECT) or when nothing is listening.</summary>
-    internal static void Announce(string text)
+    internal void Announce(string text)
     {
-        if (_providerSimple == 0 || string.IsNullOrWhiteSpace(text)) return;
+        if (string.IsNullOrWhiteSpace(text)) return;
+        nint provider = BorrowProvider();
+        if (provider == 0) return;
         try
         {
             // NotificationKind_Other = 4, NotificationProcessing_All = 2 (queue, don't drop).
-            UiaRaiseNotificationEvent(_providerSimple, 4, 2, text, "agwinterm-announce");
+            UiaRaiseNotificationEvent(provider, 4, 2, text, "agwinterm-announce");
         }
         catch { }
+        finally { Marshal.Release(provider); }
     }
 
     [LibraryImport("uiautomationcore.dll")]

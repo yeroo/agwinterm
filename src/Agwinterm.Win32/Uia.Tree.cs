@@ -8,7 +8,7 @@ namespace Agwinterm.Win32;
 //   Root (window) ─┬─ Terminal (Document + Text pattern)
 //                  └─ Sidebar (List) ── Session (ListItem) × N
 // Fragments are lightweight: each holds its (kind,index) identity and re-reads a fresh snapshot
-// (Uia.Tree(), built by the app on the UIA thread) to answer navigation/properties/bounds. Stable
+// (Owner.Tree(), marshaled to the owning UI thread) to answer navigation/properties/bounds. Stable
 // RuntimeIds let UIA correlate the freshly-built fragments across calls.
 
 internal enum NavigateDirection { Parent = 0, NextSibling = 1, PreviousSibling = 2, FirstChild = 3, LastChild = 4 }
@@ -56,11 +56,11 @@ partial class Uia
 
     internal sealed class TreeSnapshot { public required Node[] Nodes; }   // Nodes[0] is the root
 
-    internal static Func<TreeSnapshot>? GetTree;
-    internal static Action<NodeKind, int>? OnSetFocus;   // app moves internal focus when UIA calls SetFocus
+    internal Func<TreeSnapshot>? GetTree;
+    internal Action<NodeKind, int>? OnSetFocus;   // app moves internal focus when UIA calls SetFocus
     private static readonly TreeSnapshot EmptyTree = new()
     { Nodes = new[] { new Node { Kind = NodeKind.Root, Name = "agwinterm" } } };
-    internal static TreeSnapshot Tree() { try { return GetTree?.Invoke() ?? EmptyTree; } catch { return EmptyTree; } }
+    internal TreeSnapshot Tree() { EnsureAlive(); var tree = GetTree?.Invoke() ?? EmptyTree; EnsureAlive(); return tree; }
 
     /// <summary>Find a node by identity (kind + index) in a snapshot; null if it's gone (e.g. closed session).</summary>
     internal static Node? Find(TreeSnapshot t, NodeKind kind, int index)
@@ -71,30 +71,31 @@ partial class Uia
     internal static int IndexOf(TreeSnapshot t, Node n) => Array.IndexOf(t.Nodes, n);
 
     /// <summary>A COM fragment pointer (IRawElementProviderFragment*, AddRef'd) for a node, or 0.</summary>
-    internal static nint FragmentPtr(NodeKind kind, int index)
+    internal nint FragmentPtr(NodeKind kind, int index)
     {
+        EnsureAlive();
         object obj = kind switch
         {
-            NodeKind.Root => new UiaRoot(_treeHwnd),
-            NodeKind.Terminal => new UiaTerminal(_treeHwnd),
-            _ when IsButton(kind) => new UiaButton(kind, index),
-            _ => new UiaFragment(kind, index),
+            NodeKind.Root => new UiaRoot(this, _treeHwnd),
+            NodeKind.Terminal => new UiaTerminal(this),
+            _ when IsButton(kind) => new UiaButton(this, kind, index),
+            _ => new UiaFragment(this, kind, index),
         };
         return AsInterface(obj, IID_IRawElementProviderFragment);
     }
 
-    internal static Action<NodeKind, int>? OnInvoke;   // app activates a button/control when UIA invokes it
+    internal Action<NodeKind, int>? OnInvoke;   // app activates a button/control when UIA invokes it
     internal static readonly Guid IID_IInvokeProvider = new("54fcb24b-e18e-47a2-b4d3-eccbe77599a2");
 
     internal static readonly Guid IID_IRawElementProviderFragment = new("f7063da8-8359-439c-9297-bbc5299a7d87");
     internal static readonly Guid IID_IRawElementProviderFragmentRoot = new("620ce2a5-ab8f-40a9-86cb-de3c75599b58");
-    internal static nint _treeHwnd;   // set in OnGetObject
+    internal nint _treeHwnd;   // set in OnGetObject
 
     /// <summary>Raise a UIA focus-changed event on a tree node (so the reader announces it) — used when
     /// F6 / arrow keys move the internal focus.</summary>
-    internal static void RaiseFocus(NodeKind kind, int index)
+    internal void RaiseFocus(NodeKind kind, int index)
     {
-        if (_providerSimple == 0 || !ClientsListening) return;
+        if (_closed || _providerSimple == 0 || !ClientsListening) return;
         nint frag = 0;
         try { frag = FragmentPtr(kind, index); if (frag != 0) UiaRaiseAutomationEvent(frag, UIA_AutomationFocusChangedEventId); }
         catch { }
@@ -116,22 +117,23 @@ partial class Uia
 /// <summary>Shared property/navigation logic over a tree node identified by (kind,index).</summary>
 internal abstract class UiaNodeBase
 {
+    protected readonly Uia Owner;
     protected readonly Uia.NodeKind Kind;
     protected readonly int Index;
-    protected UiaNodeBase(Uia.NodeKind kind, int index) { Kind = kind; Index = index; }
+    protected UiaNodeBase(Uia owner, Uia.NodeKind kind, int index) { Owner = owner; Kind = kind; Index = index; }
 
     protected Uia.Node? Self(Uia.TreeSnapshot t) => Uia.Find(t, Kind, Index);
 
     public nint Navigate(NavigateDirection direction)
     {
-        var t = Uia.Tree();
+        var t = Owner.Tree();
         var me = Self(t);
         if (me is null) return 0;
         int myIdx = Uia.IndexOf(t, me);
         switch (direction)
         {
             case NavigateDirection.Parent:
-                return me.Parent >= 0 ? Uia.FragmentPtr(t.Nodes[me.Parent].Kind, t.Nodes[me.Parent].Index) : 0;
+                return me.Parent >= 0 ? Owner.FragmentPtr(t.Nodes[me.Parent].Kind, t.Nodes[me.Parent].Index) : 0;
             case NavigateDirection.FirstChild:
                 return me.Children.Length > 0 ? NodePtr(t, me.Children[0]) : 0;
             case NavigateDirection.LastChild:
@@ -149,21 +151,21 @@ internal abstract class UiaNodeBase
         return 0;
     }
 
-    private static nint NodePtr(Uia.TreeSnapshot t, int nodeIdx) => Uia.FragmentPtr(t.Nodes[nodeIdx].Kind, t.Nodes[nodeIdx].Index);
+    private nint NodePtr(Uia.TreeSnapshot t, int nodeIdx) => Owner.FragmentPtr(t.Nodes[nodeIdx].Kind, t.Nodes[nodeIdx].Index);
 
-    public nint GetRuntimeId() => UiaArrays.IntArray(new[] { 42, (int)Kind, Index });   // stable identity
+    public nint GetRuntimeId() => UiaArrays.IntArray(new[] { 42, Owner.Identity, (int)Kind, Index });   // stable identity
 
-    public UiaRect GetBoundingRectangle() { var n = Self(Uia.Tree()); return n?.Rect ?? default; }
+    public UiaRect GetBoundingRectangle() { var n = Self(Owner.Tree()); return n?.Rect ?? default; }
 
     public nint GetEmbeddedFragmentRoots() => 0;
 
-    public void SetFocus() { try { Uia.OnSetFocus?.Invoke(Kind, Index); } catch { } }
+    public void SetFocus() { Owner.EnsureAlive(); Owner.OnSetFocus?.Invoke(Kind, Index); }
 
-    public nint GetFragmentRoot() => Uia.FragmentRootPtr();
+    public nint GetFragmentRoot() => Owner.FragmentRootPtr();
 
     protected void FillProperty(int propertyId, nint pRetVal, int controlType, string localized, bool content)
     {
-        var n = Self(Uia.Tree());
+        var n = Self(Owner.Tree());
         object? val = propertyId switch
         {
             Uia.P_ControlType => controlType,
@@ -182,30 +184,30 @@ internal abstract class UiaNodeBase
 internal partial class UiaRoot : UiaNodeBase, IRawElementProviderSimple, IRawElementProviderFragment, IRawElementProviderFragmentRoot
 {
     private readonly nint _hwnd;
-    public UiaRoot(nint hwnd) : base(Uia.NodeKind.Root, 0) => _hwnd = hwnd;
+    public UiaRoot(Uia owner, nint hwnd) : base(owner, Uia.NodeKind.Root, 0) => _hwnd = hwnd;
 
     public ProviderOptions GetProviderOptions() => ProviderOptions.ServerSideProvider;
     public nint GetPatternProvider(int patternId) => 0;
-    public nint GetHostRawElementProvider() => UiaHostProviderFromHwnd(_hwnd, out nint host) >= 0 ? host : 0;
+    public nint GetHostRawElementProvider() { Owner.EnsureAlive(); return UiaHostProviderFromHwnd(_hwnd, out nint host) >= 0 ? host : 0; }
     public void GetPropertyValue(int propertyId, nint pRetVal) { VariantInit(pRetVal); FillProperty(propertyId, pRetVal, Uia.CT_Pane, "terminal window", true); }
 
     // FragmentRoot
     public nint ElementProviderFromPoint(double x, double y)
     {
-        var t = Uia.Tree();
+        var t = Owner.Tree();
         // deepest node whose rect contains the point (sessions/terminal before the containers)
         for (int i = t.Nodes.Length - 1; i >= 1; i--)
         {
             var r = t.Nodes[i].Rect;
             if (r.Width > 0 && x >= r.Left && x < r.Left + r.Width && y >= r.Top && y < r.Top + r.Height)
-                return Uia.FragmentPtr(t.Nodes[i].Kind, t.Nodes[i].Index);
+                return Owner.FragmentPtr(t.Nodes[i].Kind, t.Nodes[i].Index);
         }
         return 0;
     }
     public nint GetFocus()
     {
-        var t = Uia.Tree();
-        foreach (var n in t.Nodes) if (n.Focused) return Uia.FragmentPtr(n.Kind, n.Index);
+        var t = Owner.Tree();
+        foreach (var n in t.Nodes) if (n.Focused) return Owner.FragmentPtr(n.Kind, n.Index);
         return 0;
     }
 
@@ -216,8 +218,7 @@ internal partial class UiaRoot : UiaNodeBase, IRawElementProviderSimple, IRawEle
 [GeneratedComClass]
 internal partial class UiaTerminal : UiaNodeBase, IRawElementProviderSimple, IRawElementProviderFragment
 {
-    private readonly nint _hwnd;
-    public UiaTerminal(nint hwnd) : base(Uia.NodeKind.Terminal, 0) => _hwnd = hwnd;
+    public UiaTerminal(Uia owner) : base(owner, Uia.NodeKind.Terminal, 0) { }
 
     public ProviderOptions GetProviderOptions() => ProviderOptions.ServerSideProvider;
     public nint GetPatternProvider(int patternId) => patternId == 10014 /* Text */ ? Uia.AsInterface(this, Uia.IID_ITextProvider) : 0;
@@ -228,7 +229,7 @@ internal partial class UiaTerminal : UiaNodeBase, IRawElementProviderSimple, IRa
         // Name = live screen text (so a plain read still speaks the terminal); rest via FillProperty.
         if (propertyId == Uia.P_Name)
         {
-            string t = Uia.GetVisibleText?.Invoke() is { Length: > 0 } v ? v : "terminal";
+            string t = Owner.VisibleText() is { Length: > 0 } v ? v : "terminal";
             Marshal.GetNativeVariantForObject(t, pRetVal);
             return;
         }
@@ -240,7 +241,7 @@ internal partial class UiaTerminal : UiaNodeBase, IRawElementProviderSimple, IRa
 [GeneratedComClass]
 internal partial class UiaFragment : UiaNodeBase, IRawElementProviderSimple, IRawElementProviderFragment
 {
-    public UiaFragment(Uia.NodeKind kind, int index) : base(kind, index) { }
+    public UiaFragment(Uia owner, Uia.NodeKind kind, int index) : base(owner, kind, index) { }
 
     public ProviderOptions GetProviderOptions() => ProviderOptions.ServerSideProvider;
     public nint GetPatternProvider(int patternId) => 0;
@@ -271,7 +272,7 @@ internal partial interface IInvokeProvider { void Invoke(); }
 [GeneratedComClass]
 internal partial class UiaButton : UiaNodeBase, IRawElementProviderSimple, IRawElementProviderFragment, IInvokeProvider
 {
-    public UiaButton(Uia.NodeKind kind, int index) : base(kind, index) { }
+    public UiaButton(Uia owner, Uia.NodeKind kind, int index) : base(owner, kind, index) { }
 
     public ProviderOptions GetProviderOptions() => ProviderOptions.ServerSideProvider;
     public nint GetPatternProvider(int patternId) => patternId == 10000 /* Invoke */ ? Uia.AsInterface(this, Uia.IID_IInvokeProvider) : 0;
@@ -282,7 +283,7 @@ internal partial class UiaButton : UiaNodeBase, IRawElementProviderSimple, IRawE
         var (ct, lct) = Kind == Uia.NodeKind.SettingsTab ? (Uia.CT_TabItem, "tab") : (Uia.CT_Button, "button");
         FillProperty(propertyId, pRetVal, ct, lct, true);
     }
-    public void Invoke() { try { Uia.OnInvoke?.Invoke(Kind, Index); } catch { } }
+    public void Invoke() { Owner.EnsureAlive(); Owner.OnInvoke?.Invoke(Kind, Index); }
     [LibraryImport("oleaut32.dll")] private static partial void VariantInit(nint pvarg);
 }
 

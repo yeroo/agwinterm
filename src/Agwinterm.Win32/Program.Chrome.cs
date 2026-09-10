@@ -1403,7 +1403,7 @@ internal partial class Program
         if (hit is not null)
         {
             _hotPaint = hit; _hotAlpha = 1f;   // light instantly on hover-in
-            if (Uia.ClientsListening) Uia.Announce(ChromeButtonLabel(hit) + " button");   // speak the hovered button
+            if (Uia.ClientsListening) _uia.Announce(ChromeButtonLabel(hit) + " button");   // speak the hovered button
         }
         else
         {

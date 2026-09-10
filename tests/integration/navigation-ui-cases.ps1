@@ -277,6 +277,7 @@ $null=Rpc 'session.type' @{text="exit`r"} $session
 Check 'exited shell does not retain shell-name hint' (NavWait {$null-eq (Node $session).foregroundShell})
 
 $fontOriginal=Rpc 'config.get' @{key='font-family'}
+$fontSizeOriginal=Rpc 'config.get' @{key='font-size'}
 $libraryWindow=[string](@((Rpc 'window.list').windows|Where-Object open)[0].id)
 $installed=[Drawing.Text.InstalledFontCollection]::new()
 try {
@@ -316,9 +317,26 @@ try {
         $null=Rpc 'font' @{op='reset'} -Window quick
         $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window quick
         Check 'shared font change already regrids quick' (NavWait {(Rpc 'session.metrics' -Window quick|ConvertTo-Json -Compress)-eq $quickMetrics})
+        $peerBefore=Rpc 'session.metrics' -Window $fontWindow
+        $quickBefore=Rpc 'session.metrics' -Window quick
+        $null=Rpc 'config.set' @{key='font-size';value=([int]$fontSizeOriginal+3).ToString()} -Window $libraryWindow
+        Check 'live default font size reaches existing peer and quick panes' ((Rpc 'session.metrics' -Window $fontWindow).cellHeight-gt $peerBefore.cellHeight -and (Rpc 'session.metrics' -Window quick).cellHeight-gt $quickBefore.cellHeight)
+        $null=Rpc 'font' @{op='inc'} -Window $fontWindow
+        $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $fontWindow
+        $zoomed=Rpc 'session.metrics' -Window $fontWindow
+        $null=Rpc 'config.set' @{key='font-size';value=([int]$fontSizeOriginal+5).ToString()} -Window $libraryWindow
+        Check 'live default preserves explicit peer zoom' ((Rpc 'session.metrics' -Window $fontWindow).cellHeight-eq $zoomed.cellHeight)
+        $null=Rpc 'font' @{op='reset'} -Window $fontWindow
+        $null=Rpc 'config.set' @{key='cursor-blink';value='false'} -Window $fontWindow
+        Check 'reset resumes current default size' ((Rpc 'session.metrics' -Window $fontWindow).cellHeight-eq (Rpc 'session.metrics' -Window quick).cellHeight)
         $null=Rpc 'quick' @{op='off'} -Window $libraryWindow
     } finally {
         $null=Rpc 'window.close' @{} $fontWindow
         $null=Rpc 'window.select' @{} $libraryWindow
     }
-} finally {$installed.Dispose();$null=Rpc 'config.set' @{key='font-family';value=$fontOriginal} -Window $libraryWindow}
+} finally {
+    $installed.Dispose()
+    $null=Rpc 'config.set' @{key='font-family';value=$fontOriginal} -Window $libraryWindow
+    $null=Rpc 'config.set' @{key='font-size';value=$fontSizeOriginal} -Window $libraryWindow
+}
+. "$PSScriptRoot/uia-window-cases.ps1"

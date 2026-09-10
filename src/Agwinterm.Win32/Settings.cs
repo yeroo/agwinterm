@@ -71,14 +71,14 @@ internal partial class Program
         _setOpen = true; _setTab = 0; _setScroll = 0; _ddRow = null; _setDragRow = null;
         _setFocus = FocusableRows().FirstOrDefault();
         _setNav = -1; _setFocusKb = false;   // no focus rectangle until the keyboard is used
-        Uia.Announce("Settings, General tab. Tab to move, Space to change, Escape to close.");
+        _uia.Announce("Settings, General tab. Tab to move, Space to change, Escape to close.");
         RequestRedraw();
     }
 
     private void CloseSettings()
     {
         _setOpen = false; _ddRow = null; _setDragRow = null;
-        Uia.Announce("Settings closed");
+        _uia.Announce("Settings closed");
         RequestRedraw();
     }
 
@@ -565,7 +565,7 @@ internal partial class Program
             else { ConfigSetInternal("blocked-sound", val == "None" ? "" : val); if (val != "None") PlayStatusSound(val); }
         }
         else ConfigSetInternal(r.Key, val);
-        Uia.Announce($"{r.Label}, {r.Opts[_ddFiltered[filteredIdx]]}");
+        _uia.Announce($"{r.Label}, {r.Opts[_ddFiltered[filteredIdx]]}");
         RequestRedraw();
     }
 
@@ -586,7 +586,7 @@ internal partial class Program
         // nav
         if (mx >= _setCard.Left + 8f && mx <= _setCard.Left + SetNavW - 8f)
             for (int i = 0; i < SetTabNames.Length; i++)
-                if (my >= _navHit[i * 2] && my < _navHit[i * 2 + 1]) { _setTab = i; _setScroll = 0; _setFocus = FocusableRows().FirstOrDefault(); _setNav = -1; _setFocusKb = false; Uia.Announce(SetTabNames[i] + " tab"); RequestRedraw(); return; }
+                if (my >= _navHit[i * 2] && my < _navHit[i * 2 + 1]) { _setTab = i; _setScroll = 0; _setFocus = FocusableRows().FirstOrDefault(); _setNav = -1; _setFocusKb = false; _uia.Announce(SetTabNames[i] + " tab"); RequestRedraw(); return; }
         // outside the card → dismiss
         if (mx < _setCard.Left || mx > _setCard.Right || my < _setCard.Top || my > _setCard.Bottom) { CloseSettings(); return; }
         // widgets (only within the visible pane)
@@ -604,14 +604,14 @@ internal partial class Program
                     {
                         bool on = !IsOn(ConfigValue(r.Key));
                         ConfigSetInternal(r.Key, on ? "true" : "false");
-                        Uia.Announce($"{r.Label}, {(on ? "on" : "off")}");
+                        _uia.Announce($"{r.Label}, {(on ? "on" : "off")}");
                         return;
                     }
                 case SW.Slider: _setDragRow = r; SetCapture(_hwnd); SliderTo(r, mx); return;
                 case SW.Dropdown: case SW.Sound: OpenDropdown(r); return;
                 case SW.Color: PickColorKey(r.Key); return;
-                case SW.Profile: SetProfileDefault(r.Key); Uia.Announce($"{r.Key} is now the default profile"); return;
-                case SW.Button: Uia.Announce(r.Label); r.OnClick?.Invoke(); return;
+                case SW.Profile: SetProfileDefault(r.Key); _uia.Announce($"{r.Key} is now the default profile"); return;
+                case SW.Button: _uia.Announce(r.Label); r.OnClick?.Invoke(); return;
             }
         }
     }
@@ -633,7 +633,7 @@ internal partial class Program
     {
         if (_setDragRow is not null)
         {
-            Uia.Announce($"{_setDragRow.Label}, {ConfigValue(_setDragRow.Key)}");
+            _uia.Announce($"{_setDragRow.Label}, {ConfigValue(_setDragRow.Key)}");
             _setDragRow = null; ReleaseCapture(); RequestRedraw();
         }
     }
@@ -735,7 +735,7 @@ internal partial class Program
 
     private void AfterHeaderFocus()
     {
-        Uia.Announce($"{SetTabNames[_setNav]} tab{(_setNav == _setTab ? ", selected" : "")}, press Enter to open");
+        _uia.Announce($"{SetTabNames[_setNav]} tab{(_setNav == _setTab ? ", selected" : "")}, press Enter to open");
         RequestRedraw();
     }
 
@@ -746,7 +746,7 @@ internal partial class Program
         _setTab = _setNav;
         _setScroll = 0;
         _setFocus = FocusableRows().FirstOrDefault();
-        Uia.Announce($"{SetTabNames[_setTab]} tab, selected");
+        _uia.Announce($"{SetTabNames[_setTab]} tab, selected");
         RequestRedraw();
     }
 
@@ -757,7 +757,7 @@ internal partial class Program
         _setTab = (_setTab + dir + SetTabNames.Length) % SetTabNames.Length;
         _setScroll = 0;
         _setFocus = FocusableRows().FirstOrDefault();
-        Uia.Announce($"{SetTabNames[_setTab]} tab");
+        _uia.Announce($"{SetTabNames[_setTab]} tab");
         AfterSetFocus();
     }
 
@@ -792,7 +792,7 @@ internal partial class Program
             SW.Profile => "profile",
             _ => "",
         };
-        Uia.Announce($"{r.Label}{(val.Length > 0 ? ", " + val : "")}, {kind}");
+        _uia.Announce($"{r.Label}{(val.Length > 0 ? ", " + val : "")}, {kind}");
     }
 
     private void ActivateSetFocus()
@@ -804,7 +804,7 @@ internal partial class Program
             case SW.Toggle:
                 bool on = !IsOn(ConfigValue(r.Key));
                 ConfigSetInternal(r.Key, on ? "true" : "false");
-                Uia.Announce($"{r.Label}, {(on ? "on" : "off")}");
+                _uia.Announce($"{r.Label}, {(on ? "on" : "off")}");
                 break;
             case SW.Dropdown: case SW.Sound: OpenDropdown(r); break;
             case SW.Color: PickColorKey(r.Key); break;
@@ -812,8 +812,8 @@ internal partial class Program
                 var d = PickFolder();
                 if (d is not null) { ConfigSetInternal("new-session-dir", d); ConfigSetInternal("new-session-dir-mode", "custom"); }
                 break;
-            case SW.Profile: SetProfileDefault(r.Key); Uia.Announce($"{r.Key} is now the default profile"); break;
-            case SW.Button: Uia.Announce(r.Label); r.OnClick?.Invoke(); break;
+            case SW.Profile: SetProfileDefault(r.Key); _uia.Announce($"{r.Key} is now the default profile"); break;
+            case SW.Button: _uia.Announce(r.Label); r.OnClick?.Invoke(); break;
         }
         RequestRedraw();
     }
@@ -826,7 +826,7 @@ internal partial class Program
         {
             int cur = int.TryParse(ConfigValue(r.Key), out var v) ? v : r.Min;
             int nv = Math.Clamp(cur + dir, r.Min, r.Max);
-            if (nv != cur) { ConfigSetInternal(r.Key, nv.ToString()); Uia.Announce($"{r.Label}, {nv}"); }
+            if (nv != cur) { ConfigSetInternal(r.Key, nv.ToString()); _uia.Announce($"{r.Label}, {nv}"); }
             RequestRedraw();
         }
         else if (r.Kind is SW.Dropdown or SW.Sound) OpenDropdown(r);

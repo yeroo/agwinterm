@@ -78,7 +78,8 @@ internal partial class Program
         // Under the session lock: with the Rust core this setter now crosses into native code and
         // re-syncs the mirrors, and an ADOPTED session's reader thread is already feeding by now.
         lock (session.SyncRoot) session.Emulator.ScrollbackMax = _config.Scrollback;
-        var pane = new Pane { Id = paneId, S = session, StartCwd = cwd, FontSize = fontSize };
+        var pane = new Pane { Id = paneId, S = session, StartCwd = cwd, FontSize = fontSize,
+            FontZoomed = fontSize != (float)_config.FontSize };
         // New output snaps this pane back to the live bottom when the buffer ACTUALLY scrolled (a line
         // pushed into history) — not on every repaint. TUIs like Claude Code redraw in place without
         // scrolling, so a mouse selection survives those frames. #copy-selection
@@ -782,7 +783,11 @@ internal partial class Program
     /// <summary>Show a session's scratch terminal (creating it lazily in the session's cwd).</summary>
     private void ShowScratch(Ses ses)
     {
-        ses.Scratch ??= CreatePane(ses.Id + ":scratch:" + Guid.NewGuid().ToString("N")[..6], ses.Ws, CwdOf(ses), ses.FontSize);
+        if (ses.Scratch is null)
+        {
+            ses.Scratch = CreatePane(ses.Id + ":scratch:" + Guid.NewGuid().ToString("N")[..6], ses.Ws, CwdOf(ses), ses.FontSize);
+            ses.Scratch.FontZoomed = ses.ActivePane.FontZoomed;
+        }
         ShowCover(ses.Scratch, 1);
     }
 
@@ -842,6 +847,7 @@ internal partial class Program
         }
         var owner = pane ?? ses.ActivePane;
         var term = CreatePane(id, ses.Ws, CwdOf(owner), owner.FontSize, command, shellWrap: true, extraEnv: extraEnv);
+        term.FontZoomed = owner.FontZoomed;
         term.OverlayDone = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         // The slot's LAST exit is reset by every open, and the new term becomes the slot's overlay in
         // the same locked step: an exit that lands on the pty thread either wrote before this (and is
@@ -986,7 +992,7 @@ internal partial class Program
 
     /// <summary>Change one pane's font zoom (delta 0 = reset to the config default). Caller reflows.</summary>
     private void ChangeFontSizeOfPane(Pane p, int delta)
-        => p.FontSize = delta == 0 ? (float)_config.FontSize : Math.Clamp(p.FontSize + delta, 6f, 48f);
+        => (p.FontSize, p.FontZoomed) = PaneFontSize.Zoom(p.FontSize, (float)_config.FontSize, delta);
 
     /// <summary>Resolve a pane by id across split panes, per-session scratch/overlay, and the quick terminal
     /// (so <c>agwintermctl font --target &lt;paneId&gt;</c> can zoom a specific pane). Null if no pane matches.</summary>
@@ -1396,10 +1402,7 @@ internal partial class Program
     /// <summary>Change the active pane's font zoom (delta 0 = reset to config default), reflow + repaint.</summary>
     private void ChangeFontSizeOf(Ses ses, int delta)
     {
-        float cur = ses.FontSize;
-        float ns = delta == 0 ? (float)_config.FontSize : Math.Clamp(cur + delta, 6f, 48f);
-        if (ns == cur) return;
-        ses.FontSize = ns;               // active pane
+        ChangeFontSizeOfPane(ses.ActivePane, delta);
         RegridSession(ses);
         if (ReferenceEquals(_active, ses)) RequestRedraw();
         SaveState();
@@ -1422,6 +1425,7 @@ internal partial class Program
         var cur = ses.ActivePane;
         string? cwd = string.IsNullOrEmpty(cur.StartCwd) ? null : cur.StartCwd;
         var np = CreatePane(Guid.NewGuid().ToString(), ses.Ws, cwd, cur.FontSize, profileName: ses.ProfileName);
+        np.FontZoomed = cur.FontZoomed;
         float half = cur.Ratio / 2f;
         cur.Ratio = half; np.Ratio = half;
         int idx = ses.Panes.IndexOf(cur);
