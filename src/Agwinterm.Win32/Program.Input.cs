@@ -29,16 +29,18 @@ internal partial class Program
         RequestRedraw();
     }
 
+    private bool BroadcastActive => _broadcast && _cover is null && _active is not null;
+
     private bool Send(string s, bool editing = true)
     {
         var surf = ActiveSurface();
-        if (surf is { ReadOnly: true }) { ShowToast("pane is read-only"); return false; }   // block input to a protected pane
-        if (editing && surf is not null) { surf.ScrollOffset = 0; surf.ClearSel(); } // modifiers/key-up do not edit the buffer
-        if (_broadcast && _cover is null && _active is not null)
+        if (!BroadcastActive && surf is { ReadOnly: true }) { ShowToast("pane is read-only"); return false; }
+        if (editing && surf is { ReadOnly: false } && !surf.S.InputClosed) { surf.ScrollOffset = 0; surf.ClearSel(); }
+        if (BroadcastActive)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(s);
             List<Pane> panes;
-            lock (_workspaces) panes = _active.Ws.Sessions.SelectMany(x => x.Panes).ToList();
+            lock (_workspaces) panes = _active!.Ws.Sessions.SelectMany(x => x.Panes).ToList();
             return SessionInput.Broadcast(panes.Select(p => (p.S, p.ReadOnly)), bytes);
         }
         return _session is { } session && SessionInput.TryWrite(session, Encoding.UTF8.GetBytes(s));
@@ -239,9 +241,12 @@ internal partial class Program
                 // and Send run together on the UI thread; local write failures propagate through
                 // queued CommandRun. Accepted transport input is not proof of child execution (#268).
                 var surface = ActiveSurface();
-                if (surface is null || _session is null || surface.S.InputClosed)
-                    return ISessionHost.RefusePrefix + "no live pane for send command";
-                if (surface.ReadOnly) return ISessionHost.RefusePrefix + "pane is read-only";
+                if (!BroadcastActive)
+                {
+                    if (surface is null || _session is null || surface.S.InputClosed)
+                        return ISessionHost.RefusePrefix + "no live pane for send command";
+                    if (surface.ReadOnly) return ISessionHost.RefusePrefix + "pane is read-only";
+                }
                 if (!Send(expanded.Replace("\r", "").Replace("\n", "") + "\r"))
                     return ISessionHost.RefusePrefix + "input unavailable on at least one pane; other panes or part of the payload may have received bytes; do not retry blindly";
                 break;

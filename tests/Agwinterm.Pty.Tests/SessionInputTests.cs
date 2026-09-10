@@ -5,6 +5,35 @@ namespace Agwinterm.Pty.Tests;
 
 public class SessionInputTests
 {
+    [Theory]
+    [InlineData(false, false)] [InlineData(true, false)]
+    [InlineData(false, true)] [InlineData(true, true)]
+    public void ActualSendBroadcastDoesNotLetActiveProtectionBlockSibling(bool closed, bool command)
+    {
+        using var active = new InputSession { InputClosed = closed };
+        using var live = new InputSession();
+        var program = LoadProgram();
+        // No Program constructor: no HWND, host, timers, or shared state is created.
+        var app = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(program);
+        object Make(string nested) => Activator.CreateInstance(program.GetNestedType(nested, BindingFlags.NonPublic)!, true)!;
+        static void Set(object o, string name, object value) => o.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(o, value);
+        static System.Collections.IList List(object o, string name) => (System.Collections.IList)o.GetType().GetField(name)!.GetValue(o)!;
+        var ws = Make("Workspace"); var ses = Make("Ses");
+        var pane = Make("Pane"); var sibling = Make("Pane");
+        Set(pane, "S", active); Set(pane, "ReadOnly", !closed); Set(pane, "HasSel", true); Set(pane, "ScrollOffset", 5);
+        Set(sibling, "S", live); Set(ses, "Ws", ws);
+        List(ses, "Panes").Add(pane); List(ses, "Panes").Add(sibling); List(ws, "Sessions").Add(ses);
+        Set(app, "_active", ses); Set(app, "_session", active); Set(app, "_broadcast", true);
+        Set(app, "_workspaces", Activator.CreateInstance(program.GetField("_workspaces", BindingFlags.NonPublic | BindingFlags.Instance)!.FieldType)!);
+        var method = program.GetMethod(command ? "RunCommandText" : "Send", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var result = method.Invoke(app, command ? ["payload", "send"] : ["payload", true]);
+        if (command) Assert.Contains("do not retry blindly", Assert.IsType<string>(result));
+        else Assert.False(Assert.IsType<bool>(result));
+        Assert.Equal(0, active.Attempts); Assert.Equal(command ? "payload\r" : "payload", live.Input);
+        Assert.True((bool)pane.GetType().GetField("HasSel")!.GetValue(pane)!);
+        Assert.Equal(5, pane.GetType().GetField("ScrollOffset")!.GetValue(pane));
+    }
+
     [Fact]
     public void BroadcastContinuesPastClosedProtectedAndFailingPanes()
     {
@@ -21,15 +50,20 @@ public class SessionInputTests
     public void ActualPaneHostQueryReplyCannotAbortFollowingOutput(bool closed)
     {
         using var session = new InputSession { InputClosed = closed, FailWrite = true };
-        string? root = AppContext.BaseDirectory;
-        while (root is not null && !Directory.Exists(Path.Combine(root, "src", "Agwinterm.Win32"))) root = Path.GetDirectoryName(root);
-        var path = Directory.GetFiles(Path.Combine(root!, "src", "Agwinterm.Win32", "bin"), "Agwinterm.Win32.dll", SearchOption.AllDirectories).OrderByDescending(File.GetLastWriteTimeUtc).First();
-        var type = Assembly.LoadFrom(path).GetType("Agwinterm.Win32.Program+PaneHost", true)!;
+        var type = LoadProgram().GetNestedType("PaneHost", BindingFlags.NonPublic)!;
         session.Emulator.Host = (IHostActions)Activator.CreateInstance(type, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, [null, null, session], null)!;
         // Kitty flags query requests a real host reply; the marker follows in the SAME Feed call.
         session.Emulator.Feed("\x1b[?uFINAL-after-query"u8);
         Assert.Contains("FINAL-after-query", session.Emulator.DumpRow(0));
         Assert.Equal(closed ? 0 : 1, session.Attempts);
+    }
+
+    private static Type LoadProgram()
+    {
+        string? root = AppContext.BaseDirectory;
+        while (root is not null && !Directory.Exists(Path.Combine(root, "src", "Agwinterm.Win32"))) root = Path.GetDirectoryName(root);
+        var path = Directory.GetFiles(Path.Combine(root!, "src", "Agwinterm.Win32", "bin"), "Agwinterm.Win32.dll", SearchOption.AllDirectories).OrderByDescending(File.GetLastWriteTimeUtc).First();
+        return Assembly.LoadFrom(path).GetType("Agwinterm.Win32.Program", true)!;
     }
 
     private sealed class InputSession : ISession
