@@ -18,6 +18,7 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
     private readonly string _name;
     private readonly object _lock = new();
     private PtyHostClient? _client;
+    private bool _disposed;
 
     /// <param name="appId">Instance id — names the host's control pipe.</param>
     /// <param name="exePath">The host exe to spawn when none is running; null = require an
@@ -42,12 +43,20 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
     }
 
     internal PtyHostClient Client => EnsureClient();
+    // Reconciliation must never start a new host or reuse an ambiguous request/reply stream.
+    internal PtyHostClient ConnectExisting() => PtyHostClient.Connect(_appId);
 
     private PtyHostClient EnsureClient()
     {
         lock (_lock)
         {
-            if (_client is not null) return _client;
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_client is not null)
+            {
+                if (_client.IsUsable) return _client;
+                _client.Dispose();
+                return _client = ConnectExisting(); // a broken host is not an instruction to replay/spawn
+            }
             if (!PtyHostClient.IsRunning(_appId))
             {
                 if (_exePath is null || !File.Exists(_exePath))
@@ -63,7 +72,7 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
 
     public void Dispose()
     {
-        lock (_lock) { _client?.Dispose(); _client = null; }
+        lock (_lock) { _disposed = true; _client?.Dispose(); _client = null; }
     }
 }
 
@@ -87,6 +96,7 @@ public sealed class ServerSession : ISession
     private volatile bool _started;
     private readonly SessionStartFence _startFence = new();
     private volatile bool _disposed;
+    private volatile string _creationTicket = "";
 
     public ITerminalCore Emulator { get; }
     public int Cols { get; private set; }
@@ -166,12 +176,27 @@ public sealed class ServerSession : ISession
             {
                 if (_startFence.IsClosed) return;
                 var client = _backend.Client;
-                client.Create(_id, Cols, Rows, app, commandLine, cwd, extraEnv,
-                    verbatim: verbatimCommandLine, deElevate: deElevate, freshEnv: freshEnv);
-                if (_startFence.Created()) KillHosted(); // close won while create was in flight
-                if (_startFence.IsClosed) return;
-                try { PublishAttachment(client.Attach(_id)); }
-                catch { if (_startFence.AttachmentFailed()) KillHosted(); throw; }
+                if (client.CreationRevision >= 1)
+                {
+                    // A lost preparation reply owns no child. Once this ticket is known, close
+                    // can cancel even while the following create is still blocked on its reply.
+                    _creationTicket = client.PrepareCreate(_id);
+                    if (_startFence.Created()) KillHosted();
+                    if (_startFence.IsClosed) return;
+                }
+                try
+                {
+                    client.Create(_id, Cols, Rows, app, commandLine, cwd, extraEnv,
+                        verbatim: verbatimCommandLine, deElevate: deElevate, freshEnv: freshEnv, creationTicket: _creationTicket);
+                    if (_startFence.Created() || _startFence.KillRequested) KillHosted(); // retry exact cancellation if close raced a reply
+                    if (_startFence.IsClosed) return;
+                    PublishAttachment(client.Attach(_id, creationTicket: _creationTicket));
+                }
+                catch
+                {
+                    if (_startFence.AttachmentFailed() || (_creationTicket.Length > 0 && _startFence.KillRequested)) KillHosted();
+                    throw;
+                }
             }, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -200,7 +225,32 @@ public sealed class ServerSession : ISession
         return published;
     }
 
-    private void KillHosted() { try { _backend.Client.Kill(_id); } catch { } }
+    private void KillHosted()
+    {
+        if (_creationTicket.Length == 0)
+        {
+            // Legacy peers cannot disambiguate a lost create reply. Preserve their established
+            // post-ack close behavior, but never pretend it has ticket-based recovery.
+            try { using var client = _backend.ConnectExisting(); client.Kill(_id); } catch { }
+            return;
+        }
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                using var client = _backend.ConnectExisting();
+                var state = client.CancelCreate(_id, _creationTicket);
+                if (state == Proto.CreationPhase.CreationUnknown) return; // exact attempt proven absent
+                if (state == Proto.CreationPhase.CreationCancelling)
+                {
+                    Trace.WriteLine($"pty-host creation {_creationTicket}: cancellation accepted, cleanup pending");
+                    return; // host creator retains the disposal obligation; this is not a completion claim
+                }
+            }
+            catch (Exception ex) { Trace.WriteLine($"pty-host exact cancellation attempt failed: {ex.Message}"); }
+        }
+        Trace.WriteLine($"pty-host creation {_creationTicket}: cleanup remains unproven");
+    }
 
     public async Task<int> RunAsync(string app, string[] commandLine, bool verbatimCommandLine = false, CancellationToken ct = default)
     {
@@ -221,10 +271,11 @@ public sealed class ServerSession : ISession
         PtyHostAttachment att;
         try { att = _backend.Client.Attach(_id, repaint: true); }
         catch { return false; }                       // no such session (or host unreachable)
+        _creationTicket = att.CreationTicket;
         if (att.HasExited)
         {
             att.Dispose();
-            try { _backend.Client.Kill(_id); } catch { }
+            KillHosted();
             return false;
         }
         lock (_sync)
@@ -290,7 +341,8 @@ public sealed class ServerSession : ISession
         int? code = null;
         try
         {
-            var info = _backend.Client.List().FirstOrDefault(i => i.Id == _id);
+            var info = _backend.Client.List().FirstOrDefault(i => i.Id == _id &&
+                (_creationTicket.Length == 0 || i.CreationTicket == _creationTicket));
             if (info is not null && !info.HasExited) return;         // detached, still running (2c territory)
             code = info?.ExitCode;
         }
@@ -330,7 +382,7 @@ public sealed class ServerSession : ISession
         Cols = cols;
         Rows = rows;
         if (_started && !HasExited)
-            try { _backend.Client.Resize(_id, cols, rows); } catch { }   // host gone → EOF path reports it
+            try { _backend.Client.Resize(_id, cols, rows, _creationTicket); } catch { }   // host gone → EOF path reports it
     }
 
     public string SnapshotRow(int row)

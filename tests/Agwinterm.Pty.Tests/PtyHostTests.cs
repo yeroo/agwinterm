@@ -13,6 +13,10 @@ public class PtyHostTests : IDisposable
     public PtyHostTests() => _server = new PtyHostServer(_appId);
     public void Dispose() => _server.Dispose();
 
+    [Fact]
+    public void CreationTickets_ReconcileLostRepliesAndGuardReusedIds()
+        => CreationProtocolAssertions.LostRepliesAndReusedId(_appId);
+
     /// <summary>Type a line and make sure it took (raw-stream twin of ServerSessionTests.TypeLine):
     /// input during cmd/conhost console init can be silently discarded, and `cmd /q` prints no
     /// prompt on newer Windows — so retype every ~2.5s until the echo shows up in the stream.</summary>

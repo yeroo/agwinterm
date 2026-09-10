@@ -31,13 +31,15 @@ public sealed class PtyHostServer : IDisposable
     private readonly string _appId;
     private readonly CancellationTokenSource _cts = new();
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly object _lock = new();                       // guards _sessions
+    private readonly CreationTickets<Hosted> _creations = new();
+    private object _lock => _creations.Gate;                     // guards sessions + creation publication
     private readonly Dictionary<string, Hosted> _sessions = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed class Hosted
     {
         public required string Id;
         public required TerminalSession S;
+        public required CreationTickets<Hosted>.Entry Creation;
         public readonly object DataLock = new();                 // guards Data + writes to it
         public readonly PtyResizeTransaction Resize = new();     // real resize and the complete repaint jiggle
         public DataChannel? Data;                                // the currently-attached client
@@ -128,9 +130,12 @@ public sealed class PtyHostServer : IDisposable
                 Request.CmdOneofCase.Hello => HandleHello(req.Hello),
                 Request.CmdOneofCase.Create => HandleCreate(req.Create),
                 Request.CmdOneofCase.Attach => HandleAttach(req.Attach),
-                Request.CmdOneofCase.Detach => WithSession(req.Detach.Id, h => { CloseData(h); return Ok(); }),
+                Request.CmdOneofCase.Detach => WithSession(req.Detach.Id, h => { CloseData(h); return Ok(); }, req.Detach.CreationTicket),
                 Request.CmdOneofCase.Resize => HandleResize(req.Resize),
-                Request.CmdOneofCase.Kill => HandleKill(req.Kill.Id),
+                Request.CmdOneofCase.Kill => HandleKill(req.Kill),
+                Request.CmdOneofCase.PrepareCreate => HandlePrepare(req.PrepareCreate),
+                Request.CmdOneofCase.QueryCreate => HandleQuery(req.QueryCreate),
+                Request.CmdOneofCase.CancelCreate => HandleCancel(req.CancelCreate),
                 Request.CmdOneofCase.List => HandleList(),
                 Request.CmdOneofCase.Shutdown => HandleShutdown(),
                 _ => Err("unknown command"),
@@ -144,7 +149,7 @@ public sealed class PtyHostServer : IDisposable
         // The handshake is the protocol's forward-compat seam: a client offering a DIFFERENT
         // version is refused loudly (never half-understood), and the reply names ours.
         return h.Protocol == ProtocolVersion
-            ? new Reply { Ok = true, Hello = new HelloReply { Protocol = ProtocolVersion, Pid = (uint)Environment.ProcessId } }
+            ? new Reply { Ok = true, Hello = new HelloReply { Protocol = ProtocolVersion, Pid = (uint)Environment.ProcessId, CreationRevision = 1 } }
             : Err($"protocol mismatch: host={ProtocolVersion} client={h.Protocol}");
     }
 
@@ -157,43 +162,124 @@ public sealed class PtyHostServer : IDisposable
         if (c.App.Length == 0) return Err("create needs app");
         Dictionary<string, string>? env = c.Env.Count > 0 ? new(c.Env) : null;
 
-        var session = new TerminalSession(cols, rows);
-        var hosted = new Hosted { Id = id, S = session };
+        CreationTickets<Hosted>.Entry creation;
         lock (_lock)
         {
-            if (_sessions.ContainsKey(id)) { session.Dispose(); return Err($"session '{id}' already exists"); }
-            _sessions[id] = hosted;
+            var entry = c.CreationTicket.Length == 0 ? _creations.Prepare(id, DateTimeOffset.UtcNow)
+                : _creations.Find(id, c.CreationTicket, DateTimeOffset.UtcNow);
+            if (entry is null) return Err("unknown, expired or unavailable creation ticket");
+            creation = entry;
+            if (c.CreationTicket.Length > 0 && entry.State == CreationTickets<Hosted>.Phase.Live)
+                return CreatedReply(entry); // the original attempt, not a second spawn
+            if (!_creations.Begin(entry)) return _sessions.ContainsKey(id)
+                ? Err($"session '{id}' already exists") : Err("creation is pending or cancelled");
         }
-        // Forward raw output to whichever client is attached; child exit closes the data pipe (EOF
-        // is the client's exit signal — the code is in `list`).
-        session.RawOutput += chunk =>
-        {
-            lock (hosted.DataLock)
-            {
-                var d = hosted.Data;
-                if (d is null) return;
-                try { d.Pipe.Write(chunk); d.Pipe.Flush(); }
-                catch { CloseDataLocked(hosted); }   // client vanished mid-write → plain detach
-            }
-        };
-        session.Exited += _ => CloseData(hosted);
-        // Await the spawn so a failure (bad exe, bad cwd) travels back as the create's error — the
-        // throwing form: StartAsync would paint the reason into THIS process's emulator, which no
-        // client sees, and answer ok for a session that never ran (#227 r3).
+        TerminalSession? session = null;
+        Hosted? hosted = null;
         try
         {
+            session = new TerminalSession(cols, rows);
+            hosted = new Hosted { Id = id, S = session, Creation = creation };
+            // Forward raw output to whichever client is attached; child exit closes the data pipe (EOF
+            // is the client's exit signal — the code is in `list`).
+            session.RawOutput += chunk =>
+            {
+                lock (hosted.DataLock)
+                {
+                    var d = hosted.Data;
+                    if (d is null) return;
+                    try { d.Pipe.Write(chunk); d.Pipe.Flush(); }
+                    catch { CloseDataLocked(hosted); }   // client vanished mid-write → plain detach
+                }
+            };
+            session.Exited += _ => CloseData(hosted);
+            // Await the spawn so a failure (bad exe, bad cwd) travels back as the create's error — the
+            // throwing form: StartAsync would paint the reason into THIS process's emulator, which no
+            // client sees, and answer ok for a session that never ran (#227 r3).
             session.StartOrThrowAsync(c.App, c.Args.ToArray(), verbatimCommandLine: c.Verbatim,
                     extraEnv: env, cwd: c.Cwd.Length > 0 ? c.Cwd : null, deElevate: c.DeElevate,
                     freshEnv: !c.FreshEnvOff)
                 .GetAwaiter().GetResult();
+            bool publish;
+            lock (_lock)
+            {
+                publish = _creations.Complete(creation, hosted);
+                if (publish) _sessions[id] = hosted;
+            }
+            if (!publish)
+            {
+                if (DisposeHosted(hosted)) { lock (_lock) _creations.Cleaned(creation); }
+                return Err("creation cancelled; query the exact ticket for cleanup completion");
+            }
+            return CreatedReply(creation);
         }
         catch (Exception ex)
         {
-            lock (_lock) _sessions.Remove(id);
-            try { session.Dispose(); } catch { }
+            bool cleaned = true;
+            try { if (hosted is not null) CloseData(hosted); cleaned = session?.DisposeHosted() ?? true; } catch { cleaned = false; }
+            lock (_lock)
+            {
+                if (_sessions.TryGetValue(id, out var current) && ReferenceEquals(current, hosted)) _sessions.Remove(id);
+                if (cleaned) _creations.Cleaned(creation);
+                else _creations.Cancel(creation);
+            }
             return Err("spawn failed: " + ex.Message);
         }
-        return new Reply { Ok = true, Create = new CreateReply { Id = id } };
+    }
+
+    private static Reply CreatedReply(CreationTickets<Hosted>.Entry e) => new()
+    { Ok = true, Create = new CreateReply { Id = e.Id, CreationTicket = e.Ticket } };
+
+    private Reply HandlePrepare(PrepareCreate request)
+    {
+        lock (_lock)
+        {
+            var e = _creations.Prepare(request.Id, DateTimeOffset.UtcNow);
+            return e is null ? Err("missing id, host stopping or preparation limit reached") : CreationReplyFor(request.Id, e.Ticket, e);
+        }
+    }
+
+    private static Reply CreationReplyFor(string id, string ticket, CreationTickets<Hosted>.Entry? e) => new()
+    {
+        Ok = true,
+        Creation = new CreationReply
+        {
+            Id = id,
+            Ticket = ticket,
+            Phase = e is null ? CreationPhase.CreationUnknown : e.State switch
+            {
+                CreationTickets<Hosted>.Phase.Prepared => CreationPhase.CreationPrepared,
+                CreationTickets<Hosted>.Phase.Creating => CreationPhase.CreationCreating,
+                CreationTickets<Hosted>.Phase.Live => CreationPhase.CreationLive,
+                _ => CreationPhase.CreationCancelling
+            }
+        }
+    };
+
+    private Reply HandleQuery(CreationRef request)
+    {
+        lock (_lock) return CreationReplyFor(request.Id, request.Ticket, _creations.Find(request.Id, request.Ticket, DateTimeOffset.UtcNow));
+    }
+
+    private Reply HandleCancel(CreationRef request)
+    {
+        CreationTickets<Hosted>.Entry? e;
+        Hosted? claimed;
+        lock (_lock)
+        {
+            e = _creations.Find(request.Id, request.Ticket, DateTimeOffset.UtcNow);
+            if (e is null) return CreationReplyFor(request.Id, request.Ticket, null);
+            claimed = _creations.Cancel(e);
+            if (claimed is not null && _sessions.TryGetValue(e.Id, out var current) && ReferenceEquals(current, claimed)) _sessions.Remove(e.Id);
+        }
+        if (claimed is not null && DisposeHosted(claimed)) { lock (_lock) _creations.Cleaned(e); }
+        return HandleQuery(request);
+    }
+
+    private bool DisposeHosted(Hosted h)
+    {
+        try { CloseData(h); return h.S.DisposeHosted(); }
+        catch { return false; } // keep the exact cleanup obligation queryable, never claim completion
     }
 
     private Reply HandleAttach(Attach a) => WithSession(a.Id, hosted =>
@@ -204,7 +290,7 @@ public sealed class PtyHostServer : IDisposable
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
         // Snapshot content + modes UNDER the session lock, before any new output can race the seed.
-        var reply = new AttachReply { Pipe = dataName };
+        var reply = new AttachReply { Pipe = dataName, CreationTicket = hosted.Creation.Ticket };
         var s = hosted.S;
         lock (s.SyncRoot)
         {
@@ -249,7 +335,7 @@ public sealed class PtyHostServer : IDisposable
         });
 
         return new Reply { Ok = true, Attach = reply };
-    });
+    }, a.CreationTicket);
 
     /// <summary>Client→host side of a data pipe: bytes are the child's stdin. EOF/error = detach;
     /// the session keeps running unattached. This pump OWNS the pipe: it is the only code that
@@ -294,15 +380,20 @@ public sealed class PtyHostServer : IDisposable
         if (!PtyResizeTransaction.Valid(r.Cols, r.Rows)) return Err("resize cols/rows must be in 1..10000");
         h.Resize.Run(() => h.S.Resize((int)r.Cols, (int)r.Rows));
         return Ok();
-    });
+    }, r.CreationTicket);
 
-    private Reply HandleKill(string id) => WithSession(id, h =>
+    private Reply HandleKill(SessionRef request)
     {
-        lock (_lock) _sessions.Remove(h.Id);
-        CloseData(h);
-        try { h.S.Dispose(); } catch { }
-        return Ok();
-    });
+        string ticket;
+        lock (_lock)
+        {
+            if (!_sessions.TryGetValue(request.Id, out var hosted)) return Err($"no session '{request.Id}'");
+            ticket = hosted.Creation.Ticket;
+            if (request.CreationTicket.Length > 0 && request.CreationTicket != ticket) return Err("session incarnation changed");
+        }
+        var cancelled = HandleCancel(new CreationRef { Id = request.Id, Ticket = ticket });
+        return cancelled.Creation.Phase == CreationPhase.CreationUnknown ? Ok() : Err("session cleanup is pending");
+    }
 
     private Reply HandleList()
     {
@@ -314,6 +405,7 @@ public sealed class PtyHostServer : IDisposable
             var info = new SessionInfo
             {
                 Id = h.Id,
+                CreationTicket = h.Creation.Ticket,
                 Cols = (uint)h.S.Cols,
                 Rows = (uint)h.S.Rows,
                 ChildPid = (uint)(h.S.ChildProcessId ?? 0),
@@ -335,12 +427,13 @@ public sealed class PtyHostServer : IDisposable
         return Ok();
     }
 
-    private Reply WithSession(string id, Func<Hosted, Reply> act)
+    private Reply WithSession(string id, Func<Hosted, Reply> act, string ticket = "")
     {
         if (id.Length == 0) return Err("missing id");
         Hosted? h;
         lock (_lock) _sessions.TryGetValue(id, out h);
-        return h is null ? Err($"no session '{id}'") : act(h);
+        return h is null ? Err($"no session '{id}'") : ticket.Length > 0 && ticket != h.Creation.Ticket
+            ? Err("session incarnation changed") : act(h);
     }
 
     /// <summary>Signal the attached client (if any) to go away. Cancels the pump's pending read —
@@ -357,9 +450,18 @@ public sealed class PtyHostServer : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
-        List<Hosted> all;
-        lock (_lock) { all = _sessions.Values.ToList(); _sessions.Clear(); }
-        foreach (var h in all) { CloseData(h); try { h.S.Dispose(); } catch { } }
+        IReadOnlyList<(CreationTickets<Hosted>.Entry Attempt, Hosted Value)> all;
+        lock (_lock) { all = _creations.Stop(); _sessions.Clear(); }
+        foreach (var (attempt, h) in all)
+            if (DisposeHosted(h)) { lock (_lock) _creations.Cleaned(attempt); }
+        // A creator may still own a child not yet published in _sessions. Keep the host alive
+        // until that exact attempt finishes cleanup; cancellation acceptance is not completion.
+        _ = CompleteShutdownWhenDrained();
+    }
+
+    private async Task CompleteShutdownWhenDrained()
+    {
+        await _creations.Drained.ConfigureAwait(false);
         _done.TrySetResult();
     }
 }

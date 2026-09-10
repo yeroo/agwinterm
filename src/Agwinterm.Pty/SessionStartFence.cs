@@ -7,6 +7,7 @@ internal sealed class SessionStartFence
     private readonly object _gate = new();
     private bool _closed, _killRequested, _created, _killClaimed;
     public bool IsClosed { get { lock (_gate) return _closed; } }
+    public bool KillRequested { get { lock (_gate) return _killRequested; } }
     public bool Created() { lock (_gate) { _created = true; return ClaimKill(); } }
     public bool Close(bool kill)
     {

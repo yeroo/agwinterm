@@ -1,18 +1,29 @@
 # nanopb field options for the C++ lite client (fields lite actually touches get
 # fixed-size storage; everything else stays callback-based and is skipped).
 agwinterm.ptyhost.Create.id            max_size:128
+agwinterm.ptyhost.Create.creation_ticket max_size:33
+agwinterm.ptyhost.PrepareCreate.id     max_size:128
+agwinterm.ptyhost.CreationRef.id       max_size:128
+agwinterm.ptyhost.CreationRef.ticket   max_size:33
+agwinterm.ptyhost.CreationReply.id     max_size:128
+agwinterm.ptyhost.CreationReply.ticket max_size:33
 agwinterm.ptyhost.Create.app           max_size:260
 agwinterm.ptyhost.Create.cwd           max_size:260
 agwinterm.ptyhost.Create.args          max_count:16
 agwinterm.ptyhost.Create.args          max_size:2048
 agwinterm.ptyhost.Attach.id            max_size:128
+agwinterm.ptyhost.Attach.creation_ticket max_size:33
 agwinterm.ptyhost.SessionRef.id        max_size:128
+agwinterm.ptyhost.SessionRef.creation_ticket max_size:33
 agwinterm.ptyhost.Resize.id            max_size:128
+agwinterm.ptyhost.Resize.creation_ticket max_size:33
 agwinterm.ptyhost.Reply.error          max_size:256
 agwinterm.ptyhost.HelloReply.protocol  int_size:IS_32
 agwinterm.ptyhost.CreateReply.id       max_size:128
+agwinterm.ptyhost.CreateReply.creation_ticket max_size:33
 agwinterm.ptyhost.AttachReply.pipe     max_size:128
 agwinterm.ptyhost.AttachReply.modes    max_size:1024
+agwinterm.ptyhost.AttachReply.creation_ticket max_size:33
 # list: lite reads the host's live session ids at startup to ADOPT sessions that outlived a killed
 # UI (the pty-host survives the UI by design). 64 is far past any realistic window's session count.
 agwinterm.ptyhost.ListReply.sessions   max_count:64
@@ -23,6 +34,7 @@ agwinterm.ptyhost.ListReply.sessions   max_count:64
 # matters far beyond adoption: `list` is also the startup liveness probe, so a title nobody reads
 # used to be able to stop lite from launching at all.
 agwinterm.ptyhost.SessionInfo.id       max_size:128
+agwinterm.ptyhost.SessionInfo.creation_ticket max_size:33
 agwinterm.ptyhost.Create.env           max_count:8
 agwinterm.ptyhost.Create.EnvEntry.key    max_size:64
 agwinterm.ptyhost.Create.EnvEntry.value  max_size:192

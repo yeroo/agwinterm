@@ -428,6 +428,18 @@ public sealed class TerminalSession : ISession
     /// <summary>In-process sessions cannot outlive the process — detach IS dispose here.</summary>
     public void Detach() => Dispose();
 
+    /// <summary>The host's creation ledger must not confuse best-effort Dispose with proof.
+    /// Called by the attempt's sole cleanup owner, only after spawn has finished.</summary>
+    internal bool DisposeHosted()
+    {
+        MarkInputClosed();
+        var connection = _connection;
+        if (connection is null) return true; // creation failed before obtaining a connection
+        if (!HostedCleanup.TryComplete(connection.WaitForExit, connection.Kill, connection.Dispose)) return false;
+        _connection = null;
+        return true;
+    }
+
     public void Dispose()
     {
         MarkInputClosed();

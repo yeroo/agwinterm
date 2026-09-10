@@ -24,7 +24,7 @@ namespace Agwinterm.Pty.Proto {
     static PtyhostReflection() {
       byte[] descriptorData = global::System.Convert.FromBase64String(
           string.Concat(
-            "Cg1wdHlob3N0LnByb3RvEhFhZ3dpbnRlcm0ucHR5aG9zdCL8AgoHUmVxdWVz",
+            "Cg1wdHlob3N0LnByb3RvEhFhZ3dpbnRlcm0ucHR5aG9zdCKpBAoHUmVxdWVz",
             "dBIpCgVoZWxsbxgBIAEoCzIYLmFnd2ludGVybS5wdHlob3N0LkhlbGxvSAAS",
             "KwoGY3JlYXRlGAIgASgLMhkuYWd3aW50ZXJtLnB0eWhvc3QuQ3JlYXRlSAAS",
             "KwoGYXR0YWNoGAMgASgLMhkuYWd3aW50ZXJtLnB0eWhvc3QuQXR0YWNoSAAS",
@@ -33,54 +33,90 @@ namespace Agwinterm.Pty.Proto {
             "ZUgAEi0KBGtpbGwYBiABKAsyHS5hZ3dpbnRlcm0ucHR5aG9zdC5TZXNzaW9u",
             "UmVmSAASJwoEbGlzdBgHIAEoCzIXLmFnd2ludGVybS5wdHlob3N0Lkxpc3RI",
             "ABIvCghzaHV0ZG93bhgIIAEoCzIbLmFnd2ludGVybS5wdHlob3N0LlNodXRk",
-            "b3duSABCBQoDY21kIhkKBUhlbGxvEhAKCHByb3RvY29sGAEgASgNIvIBCgZD",
-            "cmVhdGUSCgoCaWQYASABKAkSDAoEY29scxgCIAEoDRIMCgRyb3dzGAMgASgN",
-            "EgsKA2FwcBgEIAEoCRIMCgRhcmdzGAUgAygJEgsKA2N3ZBgGIAEoCRIQCgh2",
-            "ZXJiYXRpbRgHIAEoCBISCgpkZV9lbGV2YXRlGAggASgIEhUKDWZyZXNoX2Vu",
-            "dl9vZmYYCSABKAgSLwoDZW52GAogAygLMiIuYWd3aW50ZXJtLnB0eWhvc3Qu",
-            "Q3JlYXRlLkVudkVudHJ5GioKCEVudkVudHJ5EgsKA2tleRgBIAEoCRINCgV2",
-            "YWx1ZRgCIAEoCToCOAEiJQoGQXR0YWNoEgoKAmlkGAEgASgJEg8KB3JlcGFp",
-            "bnQYAiABKAgiGAoKU2Vzc2lvblJlZhIKCgJpZBgBIAEoCSIwCgZSZXNpemUS",
-            "CgoCaWQYASABKAkSDAoEY29scxgCIAEoDRIMCgRyb3dzGAMgASgNIgYKBExp",
-            "c3QiCgoIU2h1dGRvd24i7AEKBVJlcGx5EgoKAm9rGAEgASgIEg0KBWVycm9y",
-            "GAIgASgJEi4KBWhlbGxvGAMgASgLMh0uYWd3aW50ZXJtLnB0eWhvc3QuSGVs",
-            "bG9SZXBseUgAEjAKBmNyZWF0ZRgEIAEoCzIeLmFnd2ludGVybS5wdHlob3N0",
-            "LkNyZWF0ZVJlcGx5SAASMAoGYXR0YWNoGAUgASgLMh4uYWd3aW50ZXJtLnB0",
-            "eWhvc3QuQXR0YWNoUmVwbHlIABIsCgRsaXN0GAYgASgLMhwuYWd3aW50ZXJt",
-            "LnB0eWhvc3QuTGlzdFJlcGx5SABCBgoEYm9keSIrCgpIZWxsb1JlcGx5EhAK",
-            "CHByb3RvY29sGAEgASgNEgsKA3BpZBgCIAEoDSIZCgtDcmVhdGVSZXBseRIK",
-            "CgJpZBgBIAEoCSKtAQoLQXR0YWNoUmVwbHkSDAoEcGlwZRgBIAEoCRIMCgRj",
-            "b2xzGAIgASgNEgwKBHJvd3MYAyABKA0SEQoJY2hpbGRfcGlkGAQgASgNEhIK",
-            "Cmhhc19leGl0ZWQYBSABKAgSEQoJZXhpdF9jb2RlGAYgASgFEg0KBW1vZGVz",
-            "GAcgASgJEhIKCnNjcm9sbGJhY2sYCCADKAkSFwoPc2Nyb2xsYmFja19ibG9i",
-            "GAkgASgMIpABCgtTZXNzaW9uSW5mbxIKCgJpZBgBIAEoCRIMCgRjb2xzGAIg",
-            "ASgNEgwKBHJvd3MYAyABKA0SEQoJY2hpbGRfcGlkGAQgASgNEhIKCmhhc19l",
-            "eGl0ZWQYBSABKAgSEQoJZXhpdF9jb2RlGAYgASgFEg0KBXRpdGxlGAcgASgJ",
-            "EhAKCGF0dGFjaGVkGAggASgIIj0KCUxpc3RSZXBseRIwCghzZXNzaW9ucxgB",
-            "IAMoCzIeLmFnd2ludGVybS5wdHlob3N0LlNlc3Npb25JbmZvQhaqAhNBZ3dp",
-            "bnRlcm0uUHR5LlByb3RvYgZwcm90bzM="));
+            "b3duSAASOgoOcHJlcGFyZV9jcmVhdGUYCSABKAsyIC5hZ3dpbnRlcm0ucHR5",
+            "aG9zdC5QcmVwYXJlQ3JlYXRlSAASNgoMcXVlcnlfY3JlYXRlGAogASgLMh4u",
+            "YWd3aW50ZXJtLnB0eWhvc3QuQ3JlYXRpb25SZWZIABI3Cg1jYW5jZWxfY3Jl",
+            "YXRlGAsgASgLMh4uYWd3aW50ZXJtLnB0eWhvc3QuQ3JlYXRpb25SZWZIAEIF",
+            "CgNjbWQiGQoFSGVsbG8SEAoIcHJvdG9jb2wYASABKA0iiwIKBkNyZWF0ZRIK",
+            "CgJpZBgBIAEoCRIMCgRjb2xzGAIgASgNEgwKBHJvd3MYAyABKA0SCwoDYXBw",
+            "GAQgASgJEgwKBGFyZ3MYBSADKAkSCwoDY3dkGAYgASgJEhAKCHZlcmJhdGlt",
+            "GAcgASgIEhIKCmRlX2VsZXZhdGUYCCABKAgSFQoNZnJlc2hfZW52X29mZhgJ",
+            "IAEoCBIvCgNlbnYYCiADKAsyIi5hZ3dpbnRlcm0ucHR5aG9zdC5DcmVhdGUu",
+            "RW52RW50cnkSFwoPY3JlYXRpb25fdGlja2V0GAsgASgJGioKCEVudkVudHJ5",
+            "EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiPgoGQXR0YWNoEgoK",
+            "AmlkGAEgASgJEg8KB3JlcGFpbnQYAiABKAgSFwoPY3JlYXRpb25fdGlja2V0",
+            "GAMgASgJIjEKClNlc3Npb25SZWYSCgoCaWQYASABKAkSFwoPY3JlYXRpb25f",
+            "dGlja2V0GAIgASgJIkkKBlJlc2l6ZRIKCgJpZBgBIAEoCRIMCgRjb2xzGAIg",
+            "ASgNEgwKBHJvd3MYAyABKA0SFwoPY3JlYXRpb25fdGlja2V0GAQgASgJIhsK",
+            "DVByZXBhcmVDcmVhdGUSCgoCaWQYASABKAkiKQoLQ3JlYXRpb25SZWYSCgoC",
+            "aWQYASABKAkSDgoGdGlja2V0GAIgASgJIlwKDUNyZWF0aW9uUmVwbHkSCgoC",
+            "aWQYASABKAkSDgoGdGlja2V0GAIgASgJEi8KBXBoYXNlGAMgASgOMiAuYWd3",
+            "aW50ZXJtLnB0eWhvc3QuQ3JlYXRpb25QaGFzZSIGCgRMaXN0IgoKCFNodXRk",
+            "b3duIqICCgVSZXBseRIKCgJvaxgBIAEoCBINCgVlcnJvchgCIAEoCRIuCgVo",
+            "ZWxsbxgDIAEoCzIdLmFnd2ludGVybS5wdHlob3N0LkhlbGxvUmVwbHlIABIw",
+            "CgZjcmVhdGUYBCABKAsyHi5hZ3dpbnRlcm0ucHR5aG9zdC5DcmVhdGVSZXBs",
+            "eUgAEjAKBmF0dGFjaBgFIAEoCzIeLmFnd2ludGVybS5wdHlob3N0LkF0dGFj",
+            "aFJlcGx5SAASLAoEbGlzdBgGIAEoCzIcLmFnd2ludGVybS5wdHlob3N0Lkxp",
+            "c3RSZXBseUgAEjQKCGNyZWF0aW9uGAcgASgLMiAuYWd3aW50ZXJtLnB0eWhv",
+            "c3QuQ3JlYXRpb25SZXBseUgAQgYKBGJvZHkiRgoKSGVsbG9SZXBseRIQCghw",
+            "cm90b2NvbBgBIAEoDRILCgNwaWQYAiABKA0SGQoRY3JlYXRpb25fcmV2aXNp",
+            "b24YAyABKA0iMgoLQ3JlYXRlUmVwbHkSCgoCaWQYASABKAkSFwoPY3JlYXRp",
+            "b25fdGlja2V0GAIgASgJIsYBCgtBdHRhY2hSZXBseRIMCgRwaXBlGAEgASgJ",
+            "EgwKBGNvbHMYAiABKA0SDAoEcm93cxgDIAEoDRIRCgljaGlsZF9waWQYBCAB",
+            "KA0SEgoKaGFzX2V4aXRlZBgFIAEoCBIRCglleGl0X2NvZGUYBiABKAUSDQoF",
+            "bW9kZXMYByABKAkSEgoKc2Nyb2xsYmFjaxgIIAMoCRIXCg9zY3JvbGxiYWNr",
+            "X2Jsb2IYCSABKAwSFwoPY3JlYXRpb25fdGlja2V0GAogASgJIqkBCgtTZXNz",
+            "aW9uSW5mbxIKCgJpZBgBIAEoCRIMCgRjb2xzGAIgASgNEgwKBHJvd3MYAyAB",
+            "KA0SEQoJY2hpbGRfcGlkGAQgASgNEhIKCmhhc19leGl0ZWQYBSABKAgSEQoJ",
+            "ZXhpdF9jb2RlGAYgASgFEg0KBXRpdGxlGAcgASgJEhAKCGF0dGFjaGVkGAgg",
+            "ASgIEhcKD2NyZWF0aW9uX3RpY2tldBgJIAEoCSI9CglMaXN0UmVwbHkSMAoI",
+            "c2Vzc2lvbnMYASADKAsyHi5hZ3dpbnRlcm0ucHR5aG9zdC5TZXNzaW9uSW5m",
+            "byp/Cg1DcmVhdGlvblBoYXNlEhQKEENSRUFUSU9OX1VOS05PV04QABIVChFD",
+            "UkVBVElPTl9QUkVQQVJFRBABEhUKEUNSRUFUSU9OX0NSRUFUSU5HEAISEQoN",
+            "Q1JFQVRJT05fTElWRRADEhcKE0NSRUFUSU9OX0NBTkNFTExJTkcQBEIWqgIT",
+            "QWd3aW50ZXJtLlB0eS5Qcm90b2IGcHJvdG8z"));
       descriptor = pbr::FileDescriptor.FromGeneratedCode(descriptorData,
           new pbr::FileDescriptor[] { },
-          new pbr::GeneratedClrTypeInfo(null, null, new pbr::GeneratedClrTypeInfo[] {
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Request), global::Agwinterm.Pty.Proto.Request.Parser, new[]{ "Hello", "Create", "Attach", "Detach", "Resize", "Kill", "List", "Shutdown" }, new[]{ "Cmd" }, null, null, null),
+          new pbr::GeneratedClrTypeInfo(new[] {typeof(global::Agwinterm.Pty.Proto.CreationPhase), }, null, new pbr::GeneratedClrTypeInfo[] {
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Request), global::Agwinterm.Pty.Proto.Request.Parser, new[]{ "Hello", "Create", "Attach", "Detach", "Resize", "Kill", "List", "Shutdown", "PrepareCreate", "QueryCreate", "CancelCreate" }, new[]{ "Cmd" }, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Hello), global::Agwinterm.Pty.Proto.Hello.Parser, new[]{ "Protocol" }, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Create), global::Agwinterm.Pty.Proto.Create.Parser, new[]{ "Id", "Cols", "Rows", "App", "Args", "Cwd", "Verbatim", "DeElevate", "FreshEnvOff", "Env" }, null, null, null, new pbr::GeneratedClrTypeInfo[] { null, }),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Attach), global::Agwinterm.Pty.Proto.Attach.Parser, new[]{ "Id", "Repaint" }, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.SessionRef), global::Agwinterm.Pty.Proto.SessionRef.Parser, new[]{ "Id" }, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Resize), global::Agwinterm.Pty.Proto.Resize.Parser, new[]{ "Id", "Cols", "Rows" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Create), global::Agwinterm.Pty.Proto.Create.Parser, new[]{ "Id", "Cols", "Rows", "App", "Args", "Cwd", "Verbatim", "DeElevate", "FreshEnvOff", "Env", "CreationTicket" }, null, null, null, new pbr::GeneratedClrTypeInfo[] { null, }),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Attach), global::Agwinterm.Pty.Proto.Attach.Parser, new[]{ "Id", "Repaint", "CreationTicket" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.SessionRef), global::Agwinterm.Pty.Proto.SessionRef.Parser, new[]{ "Id", "CreationTicket" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Resize), global::Agwinterm.Pty.Proto.Resize.Parser, new[]{ "Id", "Cols", "Rows", "CreationTicket" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.PrepareCreate), global::Agwinterm.Pty.Proto.PrepareCreate.Parser, new[]{ "Id" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.CreationRef), global::Agwinterm.Pty.Proto.CreationRef.Parser, new[]{ "Id", "Ticket" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.CreationReply), global::Agwinterm.Pty.Proto.CreationReply.Parser, new[]{ "Id", "Ticket", "Phase" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.List), global::Agwinterm.Pty.Proto.List.Parser, null, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Shutdown), global::Agwinterm.Pty.Proto.Shutdown.Parser, null, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Reply), global::Agwinterm.Pty.Proto.Reply.Parser, new[]{ "Ok", "Error", "Hello", "Create", "Attach", "List" }, new[]{ "Body" }, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.HelloReply), global::Agwinterm.Pty.Proto.HelloReply.Parser, new[]{ "Protocol", "Pid" }, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.CreateReply), global::Agwinterm.Pty.Proto.CreateReply.Parser, new[]{ "Id" }, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.AttachReply), global::Agwinterm.Pty.Proto.AttachReply.Parser, new[]{ "Pipe", "Cols", "Rows", "ChildPid", "HasExited", "ExitCode", "Modes", "Scrollback", "ScrollbackBlob" }, null, null, null, null),
-            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.SessionInfo), global::Agwinterm.Pty.Proto.SessionInfo.Parser, new[]{ "Id", "Cols", "Rows", "ChildPid", "HasExited", "ExitCode", "Title", "Attached" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.Reply), global::Agwinterm.Pty.Proto.Reply.Parser, new[]{ "Ok", "Error", "Hello", "Create", "Attach", "List", "Creation" }, new[]{ "Body" }, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.HelloReply), global::Agwinterm.Pty.Proto.HelloReply.Parser, new[]{ "Protocol", "Pid", "CreationRevision" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.CreateReply), global::Agwinterm.Pty.Proto.CreateReply.Parser, new[]{ "Id", "CreationTicket" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.AttachReply), global::Agwinterm.Pty.Proto.AttachReply.Parser, new[]{ "Pipe", "Cols", "Rows", "ChildPid", "HasExited", "ExitCode", "Modes", "Scrollback", "ScrollbackBlob", "CreationTicket" }, null, null, null, null),
+            new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.SessionInfo), global::Agwinterm.Pty.Proto.SessionInfo.Parser, new[]{ "Id", "Cols", "Rows", "ChildPid", "HasExited", "ExitCode", "Title", "Attached", "CreationTicket" }, null, null, null, null),
             new pbr::GeneratedClrTypeInfo(typeof(global::Agwinterm.Pty.Proto.ListReply), global::Agwinterm.Pty.Proto.ListReply.Parser, new[]{ "Sessions" }, null, null, null, null)
           }));
     }
     #endregion
 
   }
+  #region Enums
+  public enum CreationPhase {
+    /// <summary>
+    /// cannot start or address a child under this ticket
+    /// </summary>
+    [pbr::OriginalName("CREATION_UNKNOWN")] CreationUnknown = 0,
+    [pbr::OriginalName("CREATION_PREPARED")] CreationPrepared = 1,
+    [pbr::OriginalName("CREATION_CREATING")] CreationCreating = 2,
+    [pbr::OriginalName("CREATION_LIVE")] CreationLive = 3,
+    /// <summary>
+    /// cleanup requested, NOT yet proven complete
+    /// </summary>
+    [pbr::OriginalName("CREATION_CANCELLING")] CreationCancelling = 4,
+  }
+
+  #endregion
+
   #region Messages
   [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
   public sealed partial class Request : pb::IMessage<Request>
@@ -141,6 +177,15 @@ namespace Agwinterm.Pty.Proto {
           break;
         case CmdOneofCase.Shutdown:
           Shutdown = other.Shutdown.Clone();
+          break;
+        case CmdOneofCase.PrepareCreate:
+          PrepareCreate = other.PrepareCreate.Clone();
+          break;
+        case CmdOneofCase.QueryCreate:
+          QueryCreate = other.QueryCreate.Clone();
+          break;
+        case CmdOneofCase.CancelCreate:
+          CancelCreate = other.CancelCreate.Clone();
           break;
       }
 
@@ -249,6 +294,42 @@ namespace Agwinterm.Pty.Proto {
       }
     }
 
+    /// <summary>Field number for the "prepare_create" field.</summary>
+    public const int PrepareCreateFieldNumber = 9;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public global::Agwinterm.Pty.Proto.PrepareCreate PrepareCreate {
+      get { return cmdCase_ == CmdOneofCase.PrepareCreate ? (global::Agwinterm.Pty.Proto.PrepareCreate) cmd_ : null; }
+      set {
+        cmd_ = value;
+        cmdCase_ = value == null ? CmdOneofCase.None : CmdOneofCase.PrepareCreate;
+      }
+    }
+
+    /// <summary>Field number for the "query_create" field.</summary>
+    public const int QueryCreateFieldNumber = 10;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public global::Agwinterm.Pty.Proto.CreationRef QueryCreate {
+      get { return cmdCase_ == CmdOneofCase.QueryCreate ? (global::Agwinterm.Pty.Proto.CreationRef) cmd_ : null; }
+      set {
+        cmd_ = value;
+        cmdCase_ = value == null ? CmdOneofCase.None : CmdOneofCase.QueryCreate;
+      }
+    }
+
+    /// <summary>Field number for the "cancel_create" field.</summary>
+    public const int CancelCreateFieldNumber = 11;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public global::Agwinterm.Pty.Proto.CreationRef CancelCreate {
+      get { return cmdCase_ == CmdOneofCase.CancelCreate ? (global::Agwinterm.Pty.Proto.CreationRef) cmd_ : null; }
+      set {
+        cmd_ = value;
+        cmdCase_ = value == null ? CmdOneofCase.None : CmdOneofCase.CancelCreate;
+      }
+    }
+
     private object cmd_;
     /// <summary>Enum of possible cases for the "cmd" oneof.</summary>
     public enum CmdOneofCase {
@@ -261,6 +342,9 @@ namespace Agwinterm.Pty.Proto {
       Kill = 6,
       List = 7,
       Shutdown = 8,
+      PrepareCreate = 9,
+      QueryCreate = 10,
+      CancelCreate = 11,
     }
     private CmdOneofCase cmdCase_ = CmdOneofCase.None;
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -299,6 +383,9 @@ namespace Agwinterm.Pty.Proto {
       if (!object.Equals(Kill, other.Kill)) return false;
       if (!object.Equals(List, other.List)) return false;
       if (!object.Equals(Shutdown, other.Shutdown)) return false;
+      if (!object.Equals(PrepareCreate, other.PrepareCreate)) return false;
+      if (!object.Equals(QueryCreate, other.QueryCreate)) return false;
+      if (!object.Equals(CancelCreate, other.CancelCreate)) return false;
       if (CmdCase != other.CmdCase) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
@@ -315,6 +402,9 @@ namespace Agwinterm.Pty.Proto {
       if (cmdCase_ == CmdOneofCase.Kill) hash ^= Kill.GetHashCode();
       if (cmdCase_ == CmdOneofCase.List) hash ^= List.GetHashCode();
       if (cmdCase_ == CmdOneofCase.Shutdown) hash ^= Shutdown.GetHashCode();
+      if (cmdCase_ == CmdOneofCase.PrepareCreate) hash ^= PrepareCreate.GetHashCode();
+      if (cmdCase_ == CmdOneofCase.QueryCreate) hash ^= QueryCreate.GetHashCode();
+      if (cmdCase_ == CmdOneofCase.CancelCreate) hash ^= CancelCreate.GetHashCode();
       hash ^= (int) cmdCase_;
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
@@ -366,6 +456,18 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(66);
         output.WriteMessage(Shutdown);
       }
+      if (cmdCase_ == CmdOneofCase.PrepareCreate) {
+        output.WriteRawTag(74);
+        output.WriteMessage(PrepareCreate);
+      }
+      if (cmdCase_ == CmdOneofCase.QueryCreate) {
+        output.WriteRawTag(82);
+        output.WriteMessage(QueryCreate);
+      }
+      if (cmdCase_ == CmdOneofCase.CancelCreate) {
+        output.WriteRawTag(90);
+        output.WriteMessage(CancelCreate);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -408,6 +510,18 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(66);
         output.WriteMessage(Shutdown);
       }
+      if (cmdCase_ == CmdOneofCase.PrepareCreate) {
+        output.WriteRawTag(74);
+        output.WriteMessage(PrepareCreate);
+      }
+      if (cmdCase_ == CmdOneofCase.QueryCreate) {
+        output.WriteRawTag(82);
+        output.WriteMessage(QueryCreate);
+      }
+      if (cmdCase_ == CmdOneofCase.CancelCreate) {
+        output.WriteRawTag(90);
+        output.WriteMessage(CancelCreate);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -441,6 +555,15 @@ namespace Agwinterm.Pty.Proto {
       }
       if (cmdCase_ == CmdOneofCase.Shutdown) {
         size += 1 + pb::CodedOutputStream.ComputeMessageSize(Shutdown);
+      }
+      if (cmdCase_ == CmdOneofCase.PrepareCreate) {
+        size += 1 + pb::CodedOutputStream.ComputeMessageSize(PrepareCreate);
+      }
+      if (cmdCase_ == CmdOneofCase.QueryCreate) {
+        size += 1 + pb::CodedOutputStream.ComputeMessageSize(QueryCreate);
+      }
+      if (cmdCase_ == CmdOneofCase.CancelCreate) {
+        size += 1 + pb::CodedOutputStream.ComputeMessageSize(CancelCreate);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -502,6 +625,24 @@ namespace Agwinterm.Pty.Proto {
             Shutdown = new global::Agwinterm.Pty.Proto.Shutdown();
           }
           Shutdown.MergeFrom(other.Shutdown);
+          break;
+        case CmdOneofCase.PrepareCreate:
+          if (PrepareCreate == null) {
+            PrepareCreate = new global::Agwinterm.Pty.Proto.PrepareCreate();
+          }
+          PrepareCreate.MergeFrom(other.PrepareCreate);
+          break;
+        case CmdOneofCase.QueryCreate:
+          if (QueryCreate == null) {
+            QueryCreate = new global::Agwinterm.Pty.Proto.CreationRef();
+          }
+          QueryCreate.MergeFrom(other.QueryCreate);
+          break;
+        case CmdOneofCase.CancelCreate:
+          if (CancelCreate == null) {
+            CancelCreate = new global::Agwinterm.Pty.Proto.CreationRef();
+          }
+          CancelCreate.MergeFrom(other.CancelCreate);
           break;
       }
 
@@ -596,6 +737,33 @@ namespace Agwinterm.Pty.Proto {
             Shutdown = subBuilder;
             break;
           }
+          case 74: {
+            global::Agwinterm.Pty.Proto.PrepareCreate subBuilder = new global::Agwinterm.Pty.Proto.PrepareCreate();
+            if (cmdCase_ == CmdOneofCase.PrepareCreate) {
+              subBuilder.MergeFrom(PrepareCreate);
+            }
+            input.ReadMessage(subBuilder);
+            PrepareCreate = subBuilder;
+            break;
+          }
+          case 82: {
+            global::Agwinterm.Pty.Proto.CreationRef subBuilder = new global::Agwinterm.Pty.Proto.CreationRef();
+            if (cmdCase_ == CmdOneofCase.QueryCreate) {
+              subBuilder.MergeFrom(QueryCreate);
+            }
+            input.ReadMessage(subBuilder);
+            QueryCreate = subBuilder;
+            break;
+          }
+          case 90: {
+            global::Agwinterm.Pty.Proto.CreationRef subBuilder = new global::Agwinterm.Pty.Proto.CreationRef();
+            if (cmdCase_ == CmdOneofCase.CancelCreate) {
+              subBuilder.MergeFrom(CancelCreate);
+            }
+            input.ReadMessage(subBuilder);
+            CancelCreate = subBuilder;
+            break;
+          }
         }
       }
     #endif
@@ -685,6 +853,33 @@ namespace Agwinterm.Pty.Proto {
             }
             input.ReadMessage(subBuilder);
             Shutdown = subBuilder;
+            break;
+          }
+          case 74: {
+            global::Agwinterm.Pty.Proto.PrepareCreate subBuilder = new global::Agwinterm.Pty.Proto.PrepareCreate();
+            if (cmdCase_ == CmdOneofCase.PrepareCreate) {
+              subBuilder.MergeFrom(PrepareCreate);
+            }
+            input.ReadMessage(subBuilder);
+            PrepareCreate = subBuilder;
+            break;
+          }
+          case 82: {
+            global::Agwinterm.Pty.Proto.CreationRef subBuilder = new global::Agwinterm.Pty.Proto.CreationRef();
+            if (cmdCase_ == CmdOneofCase.QueryCreate) {
+              subBuilder.MergeFrom(QueryCreate);
+            }
+            input.ReadMessage(subBuilder);
+            QueryCreate = subBuilder;
+            break;
+          }
+          case 90: {
+            global::Agwinterm.Pty.Proto.CreationRef subBuilder = new global::Agwinterm.Pty.Proto.CreationRef();
+            if (cmdCase_ == CmdOneofCase.CancelCreate) {
+              subBuilder.MergeFrom(CancelCreate);
+            }
+            input.ReadMessage(subBuilder);
+            CancelCreate = subBuilder;
             break;
           }
         }
@@ -940,6 +1135,7 @@ namespace Agwinterm.Pty.Proto {
       deElevate_ = other.deElevate_;
       freshEnvOff_ = other.freshEnvOff_;
       env_ = other.env_.Clone();
+      creationTicket_ = other.creationTicket_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -1073,6 +1269,21 @@ namespace Agwinterm.Pty.Proto {
       get { return env_; }
     }
 
+    /// <summary>Field number for the "creation_ticket" field.</summary>
+    public const int CreationTicketFieldNumber = 11;
+    private string creationTicket_ = "";
+    /// <summary>
+    /// creation_revision >= 1: host-issued, single-use spawn authority
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string CreationTicket {
+      get { return creationTicket_; }
+      set {
+        creationTicket_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -1098,6 +1309,7 @@ namespace Agwinterm.Pty.Proto {
       if (DeElevate != other.DeElevate) return false;
       if (FreshEnvOff != other.FreshEnvOff) return false;
       if (!Env.Equals(other.Env)) return false;
+      if (CreationTicket != other.CreationTicket) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -1115,6 +1327,7 @@ namespace Agwinterm.Pty.Proto {
       if (DeElevate != false) hash ^= DeElevate.GetHashCode();
       if (FreshEnvOff != false) hash ^= FreshEnvOff.GetHashCode();
       hash ^= Env.GetHashCode();
+      if (CreationTicket.Length != 0) hash ^= CreationTicket.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -1167,6 +1380,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteBool(FreshEnvOff);
       }
       env_.WriteTo(output, _map_env_codec);
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(90);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -1211,6 +1428,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteBool(FreshEnvOff);
       }
       env_.WriteTo(ref output, _map_env_codec);
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(90);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -1247,6 +1468,9 @@ namespace Agwinterm.Pty.Proto {
         size += 1 + 1;
       }
       size += env_.CalculateSize(_map_env_codec);
+      if (CreationTicket.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(CreationTicket);
+      }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
       }
@@ -1285,6 +1509,9 @@ namespace Agwinterm.Pty.Proto {
         FreshEnvOff = other.FreshEnvOff;
       }
       env_.MergeFrom(other.env_);
+      if (other.CreationTicket.Length != 0) {
+        CreationTicket = other.CreationTicket;
+      }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
 
@@ -1342,6 +1569,10 @@ namespace Agwinterm.Pty.Proto {
           }
           case 82: {
             env_.AddEntriesFrom(input, _map_env_codec);
+            break;
+          }
+          case 90: {
+            CreationTicket = input.ReadString();
             break;
           }
         }
@@ -1403,6 +1634,10 @@ namespace Agwinterm.Pty.Proto {
             env_.AddEntriesFrom(ref input, _map_env_codec);
             break;
           }
+          case 90: {
+            CreationTicket = input.ReadString();
+            break;
+          }
         }
       }
     }
@@ -1447,6 +1682,7 @@ namespace Agwinterm.Pty.Proto {
     public Attach(Attach other) : this() {
       id_ = other.id_;
       repaint_ = other.repaint_;
+      creationTicket_ = other.creationTicket_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -1480,6 +1716,21 @@ namespace Agwinterm.Pty.Proto {
       }
     }
 
+    /// <summary>Field number for the "creation_ticket" field.</summary>
+    public const int CreationTicketFieldNumber = 3;
+    private string creationTicket_ = "";
+    /// <summary>
+    /// optional expected incarnation; mismatch refuses
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string CreationTicket {
+      get { return creationTicket_; }
+      set {
+        creationTicket_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -1497,6 +1748,7 @@ namespace Agwinterm.Pty.Proto {
       }
       if (Id != other.Id) return false;
       if (Repaint != other.Repaint) return false;
+      if (CreationTicket != other.CreationTicket) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -1506,6 +1758,7 @@ namespace Agwinterm.Pty.Proto {
       int hash = 1;
       if (Id.Length != 0) hash ^= Id.GetHashCode();
       if (Repaint != false) hash ^= Repaint.GetHashCode();
+      if (CreationTicket.Length != 0) hash ^= CreationTicket.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -1532,6 +1785,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(16);
         output.WriteBool(Repaint);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(26);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -1550,6 +1807,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(16);
         output.WriteBool(Repaint);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(26);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -1565,6 +1826,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (Repaint != false) {
         size += 1 + 1;
+      }
+      if (CreationTicket.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(CreationTicket);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -1583,6 +1847,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (other.Repaint != false) {
         Repaint = other.Repaint;
+      }
+      if (other.CreationTicket.Length != 0) {
+        CreationTicket = other.CreationTicket;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -1611,6 +1878,10 @@ namespace Agwinterm.Pty.Proto {
             Repaint = input.ReadBool();
             break;
           }
+          case 26: {
+            CreationTicket = input.ReadString();
+            break;
+          }
         }
       }
     #endif
@@ -1636,6 +1907,10 @@ namespace Agwinterm.Pty.Proto {
           }
           case 16: {
             Repaint = input.ReadBool();
+            break;
+          }
+          case 26: {
+            CreationTicket = input.ReadString();
             break;
           }
         }
@@ -1681,6 +1956,7 @@ namespace Agwinterm.Pty.Proto {
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public SessionRef(SessionRef other) : this() {
       id_ = other.id_;
+      creationTicket_ = other.creationTicket_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -1702,6 +1978,21 @@ namespace Agwinterm.Pty.Proto {
       }
     }
 
+    /// <summary>Field number for the "creation_ticket" field.</summary>
+    public const int CreationTicketFieldNumber = 2;
+    private string creationTicket_ = "";
+    /// <summary>
+    /// optional expected incarnation; mismatch refuses
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string CreationTicket {
+      get { return creationTicket_; }
+      set {
+        creationTicket_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -1718,6 +2009,7 @@ namespace Agwinterm.Pty.Proto {
         return true;
       }
       if (Id != other.Id) return false;
+      if (CreationTicket != other.CreationTicket) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -1726,6 +2018,7 @@ namespace Agwinterm.Pty.Proto {
     public override int GetHashCode() {
       int hash = 1;
       if (Id.Length != 0) hash ^= Id.GetHashCode();
+      if (CreationTicket.Length != 0) hash ^= CreationTicket.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -1748,6 +2041,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(10);
         output.WriteString(Id);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(18);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -1762,6 +2059,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(10);
         output.WriteString(Id);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(18);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -1774,6 +2075,9 @@ namespace Agwinterm.Pty.Proto {
       int size = 0;
       if (Id.Length != 0) {
         size += 1 + pb::CodedOutputStream.ComputeStringSize(Id);
+      }
+      if (CreationTicket.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(CreationTicket);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -1789,6 +2093,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (other.Id.Length != 0) {
         Id = other.Id;
+      }
+      if (other.CreationTicket.Length != 0) {
+        CreationTicket = other.CreationTicket;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -1813,6 +2120,10 @@ namespace Agwinterm.Pty.Proto {
             Id = input.ReadString();
             break;
           }
+          case 18: {
+            CreationTicket = input.ReadString();
+            break;
+          }
         }
       }
     #endif
@@ -1834,6 +2145,10 @@ namespace Agwinterm.Pty.Proto {
             break;
           case 10: {
             Id = input.ReadString();
+            break;
+          }
+          case 18: {
+            CreationTicket = input.ReadString();
             break;
           }
         }
@@ -1881,6 +2196,7 @@ namespace Agwinterm.Pty.Proto {
       id_ = other.id_;
       cols_ = other.cols_;
       rows_ = other.rows_;
+      creationTicket_ = other.creationTicket_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -1926,6 +2242,21 @@ namespace Agwinterm.Pty.Proto {
       }
     }
 
+    /// <summary>Field number for the "creation_ticket" field.</summary>
+    public const int CreationTicketFieldNumber = 4;
+    private string creationTicket_ = "";
+    /// <summary>
+    /// optional expected incarnation; mismatch refuses
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string CreationTicket {
+      get { return creationTicket_; }
+      set {
+        creationTicket_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -1944,6 +2275,7 @@ namespace Agwinterm.Pty.Proto {
       if (Id != other.Id) return false;
       if (Cols != other.Cols) return false;
       if (Rows != other.Rows) return false;
+      if (CreationTicket != other.CreationTicket) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -1954,6 +2286,7 @@ namespace Agwinterm.Pty.Proto {
       if (Id.Length != 0) hash ^= Id.GetHashCode();
       if (Cols != 0) hash ^= Cols.GetHashCode();
       if (Rows != 0) hash ^= Rows.GetHashCode();
+      if (CreationTicket.Length != 0) hash ^= CreationTicket.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -1984,6 +2317,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(24);
         output.WriteUInt32(Rows);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(34);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -2006,6 +2343,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(24);
         output.WriteUInt32(Rows);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(34);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -2024,6 +2365,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (Rows != 0) {
         size += 1 + pb::CodedOutputStream.ComputeUInt32Size(Rows);
+      }
+      if (CreationTicket.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(CreationTicket);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -2045,6 +2389,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (other.Rows != 0) {
         Rows = other.Rows;
+      }
+      if (other.CreationTicket.Length != 0) {
+        CreationTicket = other.CreationTicket;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -2075,6 +2422,10 @@ namespace Agwinterm.Pty.Proto {
           }
           case 24: {
             Rows = input.ReadUInt32();
+            break;
+          }
+          case 34: {
+            CreationTicket = input.ReadString();
             break;
           }
         }
@@ -2108,6 +2459,719 @@ namespace Agwinterm.Pty.Proto {
             Rows = input.ReadUInt32();
             break;
           }
+          case 34: {
+            CreationTicket = input.ReadString();
+            break;
+          }
+        }
+      }
+    }
+    #endif
+
+  }
+
+  /// <summary>
+  /// Preparation never starts a child. A lost prepare reply may be abandoned safely. A client must
+  /// never allocate a replacement ticket or replay a legacy create after an ambiguous create reply.
+  /// </summary>
+  [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
+  public sealed partial class PrepareCreate : pb::IMessage<PrepareCreate>
+  #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      , pb::IBufferMessage
+  #endif
+  {
+    private static readonly pb::MessageParser<PrepareCreate> _parser = new pb::MessageParser<PrepareCreate>(() => new PrepareCreate());
+    private pb::UnknownFieldSet _unknownFields;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pb::MessageParser<PrepareCreate> Parser { get { return _parser; } }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pbr::MessageDescriptor Descriptor {
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[6]; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    pbr::MessageDescriptor pb::IMessage.Descriptor {
+      get { return Descriptor; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public PrepareCreate() {
+      OnConstruction();
+    }
+
+    partial void OnConstruction();
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public PrepareCreate(PrepareCreate other) : this() {
+      id_ = other.id_;
+      _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public PrepareCreate Clone() {
+      return new PrepareCreate(this);
+    }
+
+    /// <summary>Field number for the "id" field.</summary>
+    public const int IdFieldNumber = 1;
+    private string id_ = "";
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string Id {
+      get { return id_; }
+      set {
+        id_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override bool Equals(object other) {
+      return Equals(other as PrepareCreate);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public bool Equals(PrepareCreate other) {
+      if (ReferenceEquals(other, null)) {
+        return false;
+      }
+      if (ReferenceEquals(other, this)) {
+        return true;
+      }
+      if (Id != other.Id) return false;
+      return Equals(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override int GetHashCode() {
+      int hash = 1;
+      if (Id.Length != 0) hash ^= Id.GetHashCode();
+      if (_unknownFields != null) {
+        hash ^= _unknownFields.GetHashCode();
+      }
+      return hash;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override string ToString() {
+      return pb::JsonFormatter.ToDiagnosticString(this);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void WriteTo(pb::CodedOutputStream output) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      output.WriteRawMessage(this);
+    #else
+      if (Id.Length != 0) {
+        output.WriteRawTag(10);
+        output.WriteString(Id);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(output);
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalWriteTo(ref pb::WriteContext output) {
+      if (Id.Length != 0) {
+        output.WriteRawTag(10);
+        output.WriteString(Id);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(ref output);
+      }
+    }
+    #endif
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int CalculateSize() {
+      int size = 0;
+      if (Id.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(Id);
+      }
+      if (_unknownFields != null) {
+        size += _unknownFields.CalculateSize();
+      }
+      return size;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(PrepareCreate other) {
+      if (other == null) {
+        return;
+      }
+      if (other.Id.Length != 0) {
+        Id = other.Id;
+      }
+      _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(pb::CodedInputStream input) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      input.ReadRawMessage(this);
+    #else
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, input);
+            break;
+          case 10: {
+            Id = input.ReadString();
+            break;
+          }
+        }
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalMergeFrom(ref pb::ParseContext input) {
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
+            break;
+          case 10: {
+            Id = input.ReadString();
+            break;
+          }
+        }
+      }
+    }
+    #endif
+
+  }
+
+  [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
+  public sealed partial class CreationRef : pb::IMessage<CreationRef>
+  #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      , pb::IBufferMessage
+  #endif
+  {
+    private static readonly pb::MessageParser<CreationRef> _parser = new pb::MessageParser<CreationRef>(() => new CreationRef());
+    private pb::UnknownFieldSet _unknownFields;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pb::MessageParser<CreationRef> Parser { get { return _parser; } }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pbr::MessageDescriptor Descriptor {
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[7]; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    pbr::MessageDescriptor pb::IMessage.Descriptor {
+      get { return Descriptor; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public CreationRef() {
+      OnConstruction();
+    }
+
+    partial void OnConstruction();
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public CreationRef(CreationRef other) : this() {
+      id_ = other.id_;
+      ticket_ = other.ticket_;
+      _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public CreationRef Clone() {
+      return new CreationRef(this);
+    }
+
+    /// <summary>Field number for the "id" field.</summary>
+    public const int IdFieldNumber = 1;
+    private string id_ = "";
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string Id {
+      get { return id_; }
+      set {
+        id_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
+    /// <summary>Field number for the "ticket" field.</summary>
+    public const int TicketFieldNumber = 2;
+    private string ticket_ = "";
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string Ticket {
+      get { return ticket_; }
+      set {
+        ticket_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override bool Equals(object other) {
+      return Equals(other as CreationRef);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public bool Equals(CreationRef other) {
+      if (ReferenceEquals(other, null)) {
+        return false;
+      }
+      if (ReferenceEquals(other, this)) {
+        return true;
+      }
+      if (Id != other.Id) return false;
+      if (Ticket != other.Ticket) return false;
+      return Equals(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override int GetHashCode() {
+      int hash = 1;
+      if (Id.Length != 0) hash ^= Id.GetHashCode();
+      if (Ticket.Length != 0) hash ^= Ticket.GetHashCode();
+      if (_unknownFields != null) {
+        hash ^= _unknownFields.GetHashCode();
+      }
+      return hash;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override string ToString() {
+      return pb::JsonFormatter.ToDiagnosticString(this);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void WriteTo(pb::CodedOutputStream output) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      output.WriteRawMessage(this);
+    #else
+      if (Id.Length != 0) {
+        output.WriteRawTag(10);
+        output.WriteString(Id);
+      }
+      if (Ticket.Length != 0) {
+        output.WriteRawTag(18);
+        output.WriteString(Ticket);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(output);
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalWriteTo(ref pb::WriteContext output) {
+      if (Id.Length != 0) {
+        output.WriteRawTag(10);
+        output.WriteString(Id);
+      }
+      if (Ticket.Length != 0) {
+        output.WriteRawTag(18);
+        output.WriteString(Ticket);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(ref output);
+      }
+    }
+    #endif
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int CalculateSize() {
+      int size = 0;
+      if (Id.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(Id);
+      }
+      if (Ticket.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(Ticket);
+      }
+      if (_unknownFields != null) {
+        size += _unknownFields.CalculateSize();
+      }
+      return size;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(CreationRef other) {
+      if (other == null) {
+        return;
+      }
+      if (other.Id.Length != 0) {
+        Id = other.Id;
+      }
+      if (other.Ticket.Length != 0) {
+        Ticket = other.Ticket;
+      }
+      _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(pb::CodedInputStream input) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      input.ReadRawMessage(this);
+    #else
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, input);
+            break;
+          case 10: {
+            Id = input.ReadString();
+            break;
+          }
+          case 18: {
+            Ticket = input.ReadString();
+            break;
+          }
+        }
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalMergeFrom(ref pb::ParseContext input) {
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
+            break;
+          case 10: {
+            Id = input.ReadString();
+            break;
+          }
+          case 18: {
+            Ticket = input.ReadString();
+            break;
+          }
+        }
+      }
+    }
+    #endif
+
+  }
+
+  [global::System.Diagnostics.DebuggerDisplayAttribute("{ToString(),nq}")]
+  public sealed partial class CreationReply : pb::IMessage<CreationReply>
+  #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      , pb::IBufferMessage
+  #endif
+  {
+    private static readonly pb::MessageParser<CreationReply> _parser = new pb::MessageParser<CreationReply>(() => new CreationReply());
+    private pb::UnknownFieldSet _unknownFields;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pb::MessageParser<CreationReply> Parser { get { return _parser; } }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public static pbr::MessageDescriptor Descriptor {
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[8]; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    pbr::MessageDescriptor pb::IMessage.Descriptor {
+      get { return Descriptor; }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public CreationReply() {
+      OnConstruction();
+    }
+
+    partial void OnConstruction();
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public CreationReply(CreationReply other) : this() {
+      id_ = other.id_;
+      ticket_ = other.ticket_;
+      phase_ = other.phase_;
+      _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public CreationReply Clone() {
+      return new CreationReply(this);
+    }
+
+    /// <summary>Field number for the "id" field.</summary>
+    public const int IdFieldNumber = 1;
+    private string id_ = "";
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string Id {
+      get { return id_; }
+      set {
+        id_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
+    /// <summary>Field number for the "ticket" field.</summary>
+    public const int TicketFieldNumber = 2;
+    private string ticket_ = "";
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string Ticket {
+      get { return ticket_; }
+      set {
+        ticket_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
+    /// <summary>Field number for the "phase" field.</summary>
+    public const int PhaseFieldNumber = 3;
+    private global::Agwinterm.Pty.Proto.CreationPhase phase_ = global::Agwinterm.Pty.Proto.CreationPhase.CreationUnknown;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public global::Agwinterm.Pty.Proto.CreationPhase Phase {
+      get { return phase_; }
+      set {
+        phase_ = value;
+      }
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override bool Equals(object other) {
+      return Equals(other as CreationReply);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public bool Equals(CreationReply other) {
+      if (ReferenceEquals(other, null)) {
+        return false;
+      }
+      if (ReferenceEquals(other, this)) {
+        return true;
+      }
+      if (Id != other.Id) return false;
+      if (Ticket != other.Ticket) return false;
+      if (Phase != other.Phase) return false;
+      return Equals(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override int GetHashCode() {
+      int hash = 1;
+      if (Id.Length != 0) hash ^= Id.GetHashCode();
+      if (Ticket.Length != 0) hash ^= Ticket.GetHashCode();
+      if (Phase != global::Agwinterm.Pty.Proto.CreationPhase.CreationUnknown) hash ^= Phase.GetHashCode();
+      if (_unknownFields != null) {
+        hash ^= _unknownFields.GetHashCode();
+      }
+      return hash;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public override string ToString() {
+      return pb::JsonFormatter.ToDiagnosticString(this);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void WriteTo(pb::CodedOutputStream output) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      output.WriteRawMessage(this);
+    #else
+      if (Id.Length != 0) {
+        output.WriteRawTag(10);
+        output.WriteString(Id);
+      }
+      if (Ticket.Length != 0) {
+        output.WriteRawTag(18);
+        output.WriteString(Ticket);
+      }
+      if (Phase != global::Agwinterm.Pty.Proto.CreationPhase.CreationUnknown) {
+        output.WriteRawTag(24);
+        output.WriteEnum((int) Phase);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(output);
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalWriteTo(ref pb::WriteContext output) {
+      if (Id.Length != 0) {
+        output.WriteRawTag(10);
+        output.WriteString(Id);
+      }
+      if (Ticket.Length != 0) {
+        output.WriteRawTag(18);
+        output.WriteString(Ticket);
+      }
+      if (Phase != global::Agwinterm.Pty.Proto.CreationPhase.CreationUnknown) {
+        output.WriteRawTag(24);
+        output.WriteEnum((int) Phase);
+      }
+      if (_unknownFields != null) {
+        _unknownFields.WriteTo(ref output);
+      }
+    }
+    #endif
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public int CalculateSize() {
+      int size = 0;
+      if (Id.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(Id);
+      }
+      if (Ticket.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(Ticket);
+      }
+      if (Phase != global::Agwinterm.Pty.Proto.CreationPhase.CreationUnknown) {
+        size += 1 + pb::CodedOutputStream.ComputeEnumSize((int) Phase);
+      }
+      if (_unknownFields != null) {
+        size += _unknownFields.CalculateSize();
+      }
+      return size;
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(CreationReply other) {
+      if (other == null) {
+        return;
+      }
+      if (other.Id.Length != 0) {
+        Id = other.Id;
+      }
+      if (other.Ticket.Length != 0) {
+        Ticket = other.Ticket;
+      }
+      if (other.Phase != global::Agwinterm.Pty.Proto.CreationPhase.CreationUnknown) {
+        Phase = other.Phase;
+      }
+      _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
+    }
+
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public void MergeFrom(pb::CodedInputStream input) {
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+      input.ReadRawMessage(this);
+    #else
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, input);
+            break;
+          case 10: {
+            Id = input.ReadString();
+            break;
+          }
+          case 18: {
+            Ticket = input.ReadString();
+            break;
+          }
+          case 24: {
+            Phase = (global::Agwinterm.Pty.Proto.CreationPhase) input.ReadEnum();
+            break;
+          }
+        }
+      }
+    #endif
+    }
+
+    #if !GOOGLE_PROTOBUF_REFSTRUCT_COMPATIBILITY_MODE
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    void pb::IBufferMessage.InternalMergeFrom(ref pb::ParseContext input) {
+      uint tag;
+      while ((tag = input.ReadTag()) != 0) {
+      if ((tag & 7) == 4) {
+        // Abort on any end group tag.
+        return;
+      }
+      switch(tag) {
+          default:
+            _unknownFields = pb::UnknownFieldSet.MergeFieldFrom(_unknownFields, ref input);
+            break;
+          case 10: {
+            Id = input.ReadString();
+            break;
+          }
+          case 18: {
+            Ticket = input.ReadString();
+            break;
+          }
+          case 24: {
+            Phase = (global::Agwinterm.Pty.Proto.CreationPhase) input.ReadEnum();
+            break;
+          }
         }
       }
     }
@@ -2130,7 +3194,7 @@ namespace Agwinterm.Pty.Proto {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[6]; }
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[9]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -2291,7 +3355,7 @@ namespace Agwinterm.Pty.Proto {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[7]; }
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[10]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -2452,7 +3516,7 @@ namespace Agwinterm.Pty.Proto {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[8]; }
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[11]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -2486,6 +3550,9 @@ namespace Agwinterm.Pty.Proto {
           break;
         case BodyOneofCase.List:
           List = other.List.Clone();
+          break;
+        case BodyOneofCase.Creation:
+          Creation = other.Creation.Clone();
           break;
       }
 
@@ -2573,6 +3640,18 @@ namespace Agwinterm.Pty.Proto {
       }
     }
 
+    /// <summary>Field number for the "creation" field.</summary>
+    public const int CreationFieldNumber = 7;
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public global::Agwinterm.Pty.Proto.CreationReply Creation {
+      get { return bodyCase_ == BodyOneofCase.Creation ? (global::Agwinterm.Pty.Proto.CreationReply) body_ : null; }
+      set {
+        body_ = value;
+        bodyCase_ = value == null ? BodyOneofCase.None : BodyOneofCase.Creation;
+      }
+    }
+
     private object body_;
     /// <summary>Enum of possible cases for the "body" oneof.</summary>
     public enum BodyOneofCase {
@@ -2581,6 +3660,7 @@ namespace Agwinterm.Pty.Proto {
       Create = 4,
       Attach = 5,
       List = 6,
+      Creation = 7,
     }
     private BodyOneofCase bodyCase_ = BodyOneofCase.None;
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -2617,6 +3697,7 @@ namespace Agwinterm.Pty.Proto {
       if (!object.Equals(Create, other.Create)) return false;
       if (!object.Equals(Attach, other.Attach)) return false;
       if (!object.Equals(List, other.List)) return false;
+      if (!object.Equals(Creation, other.Creation)) return false;
       if (BodyCase != other.BodyCase) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
@@ -2631,6 +3712,7 @@ namespace Agwinterm.Pty.Proto {
       if (bodyCase_ == BodyOneofCase.Create) hash ^= Create.GetHashCode();
       if (bodyCase_ == BodyOneofCase.Attach) hash ^= Attach.GetHashCode();
       if (bodyCase_ == BodyOneofCase.List) hash ^= List.GetHashCode();
+      if (bodyCase_ == BodyOneofCase.Creation) hash ^= Creation.GetHashCode();
       hash ^= (int) bodyCase_;
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
@@ -2674,6 +3756,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(50);
         output.WriteMessage(List);
       }
+      if (bodyCase_ == BodyOneofCase.Creation) {
+        output.WriteRawTag(58);
+        output.WriteMessage(Creation);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -2708,6 +3794,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(50);
         output.WriteMessage(List);
       }
+      if (bodyCase_ == BodyOneofCase.Creation) {
+        output.WriteRawTag(58);
+        output.WriteMessage(Creation);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -2735,6 +3825,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (bodyCase_ == BodyOneofCase.List) {
         size += 1 + pb::CodedOutputStream.ComputeMessageSize(List);
+      }
+      if (bodyCase_ == BodyOneofCase.Creation) {
+        size += 1 + pb::CodedOutputStream.ComputeMessageSize(Creation);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -2779,6 +3872,12 @@ namespace Agwinterm.Pty.Proto {
           }
           List.MergeFrom(other.List);
           break;
+        case BodyOneofCase.Creation:
+          if (Creation == null) {
+            Creation = new global::Agwinterm.Pty.Proto.CreationReply();
+          }
+          Creation.MergeFrom(other.Creation);
+          break;
       }
 
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
@@ -2844,6 +3943,15 @@ namespace Agwinterm.Pty.Proto {
             List = subBuilder;
             break;
           }
+          case 58: {
+            global::Agwinterm.Pty.Proto.CreationReply subBuilder = new global::Agwinterm.Pty.Proto.CreationReply();
+            if (bodyCase_ == BodyOneofCase.Creation) {
+              subBuilder.MergeFrom(Creation);
+            }
+            input.ReadMessage(subBuilder);
+            Creation = subBuilder;
+            break;
+          }
         }
       }
     #endif
@@ -2907,6 +4015,15 @@ namespace Agwinterm.Pty.Proto {
             List = subBuilder;
             break;
           }
+          case 58: {
+            global::Agwinterm.Pty.Proto.CreationReply subBuilder = new global::Agwinterm.Pty.Proto.CreationReply();
+            if (bodyCase_ == BodyOneofCase.Creation) {
+              subBuilder.MergeFrom(Creation);
+            }
+            input.ReadMessage(subBuilder);
+            Creation = subBuilder;
+            break;
+          }
         }
       }
     }
@@ -2929,7 +4046,7 @@ namespace Agwinterm.Pty.Proto {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[9]; }
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[12]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -2951,6 +4068,7 @@ namespace Agwinterm.Pty.Proto {
     public HelloReply(HelloReply other) : this() {
       protocol_ = other.protocol_;
       pid_ = other.pid_;
+      creationRevision_ = other.creationRevision_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -2984,6 +4102,21 @@ namespace Agwinterm.Pty.Proto {
       }
     }
 
+    /// <summary>Field number for the "creation_revision" field.</summary>
+    public const int CreationRevisionFieldNumber = 3;
+    private uint creationRevision_;
+    /// <summary>
+    /// 0 = legacy limitations; 1 = prepare/query/cancel + incarnation checks
+    /// </summary>
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public uint CreationRevision {
+      get { return creationRevision_; }
+      set {
+        creationRevision_ = value;
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -3001,6 +4134,7 @@ namespace Agwinterm.Pty.Proto {
       }
       if (Protocol != other.Protocol) return false;
       if (Pid != other.Pid) return false;
+      if (CreationRevision != other.CreationRevision) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -3010,6 +4144,7 @@ namespace Agwinterm.Pty.Proto {
       int hash = 1;
       if (Protocol != 0) hash ^= Protocol.GetHashCode();
       if (Pid != 0) hash ^= Pid.GetHashCode();
+      if (CreationRevision != 0) hash ^= CreationRevision.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -3036,6 +4171,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(16);
         output.WriteUInt32(Pid);
       }
+      if (CreationRevision != 0) {
+        output.WriteRawTag(24);
+        output.WriteUInt32(CreationRevision);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -3054,6 +4193,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(16);
         output.WriteUInt32(Pid);
       }
+      if (CreationRevision != 0) {
+        output.WriteRawTag(24);
+        output.WriteUInt32(CreationRevision);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -3069,6 +4212,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (Pid != 0) {
         size += 1 + pb::CodedOutputStream.ComputeUInt32Size(Pid);
+      }
+      if (CreationRevision != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeUInt32Size(CreationRevision);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -3087,6 +4233,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (other.Pid != 0) {
         Pid = other.Pid;
+      }
+      if (other.CreationRevision != 0) {
+        CreationRevision = other.CreationRevision;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -3115,6 +4264,10 @@ namespace Agwinterm.Pty.Proto {
             Pid = input.ReadUInt32();
             break;
           }
+          case 24: {
+            CreationRevision = input.ReadUInt32();
+            break;
+          }
         }
       }
     #endif
@@ -3140,6 +4293,10 @@ namespace Agwinterm.Pty.Proto {
           }
           case 16: {
             Pid = input.ReadUInt32();
+            break;
+          }
+          case 24: {
+            CreationRevision = input.ReadUInt32();
             break;
           }
         }
@@ -3164,7 +4321,7 @@ namespace Agwinterm.Pty.Proto {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[10]; }
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[13]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -3185,6 +4342,7 @@ namespace Agwinterm.Pty.Proto {
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public CreateReply(CreateReply other) : this() {
       id_ = other.id_;
+      creationTicket_ = other.creationTicket_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -3206,6 +4364,18 @@ namespace Agwinterm.Pty.Proto {
       }
     }
 
+    /// <summary>Field number for the "creation_ticket" field.</summary>
+    public const int CreationTicketFieldNumber = 2;
+    private string creationTicket_ = "";
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string CreationTicket {
+      get { return creationTicket_; }
+      set {
+        creationTicket_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -3222,6 +4392,7 @@ namespace Agwinterm.Pty.Proto {
         return true;
       }
       if (Id != other.Id) return false;
+      if (CreationTicket != other.CreationTicket) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -3230,6 +4401,7 @@ namespace Agwinterm.Pty.Proto {
     public override int GetHashCode() {
       int hash = 1;
       if (Id.Length != 0) hash ^= Id.GetHashCode();
+      if (CreationTicket.Length != 0) hash ^= CreationTicket.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -3252,6 +4424,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(10);
         output.WriteString(Id);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(18);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -3266,6 +4442,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(10);
         output.WriteString(Id);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(18);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -3278,6 +4458,9 @@ namespace Agwinterm.Pty.Proto {
       int size = 0;
       if (Id.Length != 0) {
         size += 1 + pb::CodedOutputStream.ComputeStringSize(Id);
+      }
+      if (CreationTicket.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(CreationTicket);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -3293,6 +4476,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (other.Id.Length != 0) {
         Id = other.Id;
+      }
+      if (other.CreationTicket.Length != 0) {
+        CreationTicket = other.CreationTicket;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -3315,6 +4501,10 @@ namespace Agwinterm.Pty.Proto {
             break;
           case 10: {
             Id = input.ReadString();
+            break;
+          }
+          case 18: {
+            CreationTicket = input.ReadString();
             break;
           }
         }
@@ -3340,6 +4530,10 @@ namespace Agwinterm.Pty.Proto {
             Id = input.ReadString();
             break;
           }
+          case 18: {
+            CreationTicket = input.ReadString();
+            break;
+          }
         }
       }
     }
@@ -3362,7 +4556,7 @@ namespace Agwinterm.Pty.Proto {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[11]; }
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[14]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -3391,6 +4585,7 @@ namespace Agwinterm.Pty.Proto {
       modes_ = other.modes_;
       scrollback_ = other.scrollback_.Clone();
       scrollbackBlob_ = other.scrollbackBlob_;
+      creationTicket_ = other.creationTicket_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -3525,6 +4720,18 @@ namespace Agwinterm.Pty.Proto {
       }
     }
 
+    /// <summary>Field number for the "creation_ticket" field.</summary>
+    public const int CreationTicketFieldNumber = 10;
+    private string creationTicket_ = "";
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string CreationTicket {
+      get { return creationTicket_; }
+      set {
+        creationTicket_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -3549,6 +4756,7 @@ namespace Agwinterm.Pty.Proto {
       if (Modes != other.Modes) return false;
       if(!scrollback_.Equals(other.scrollback_)) return false;
       if (ScrollbackBlob != other.ScrollbackBlob) return false;
+      if (CreationTicket != other.CreationTicket) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -3565,6 +4773,7 @@ namespace Agwinterm.Pty.Proto {
       if (Modes.Length != 0) hash ^= Modes.GetHashCode();
       hash ^= scrollback_.GetHashCode();
       if (ScrollbackBlob.Length != 0) hash ^= ScrollbackBlob.GetHashCode();
+      if (CreationTicket.Length != 0) hash ^= CreationTicket.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -3616,6 +4825,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(74);
         output.WriteBytes(ScrollbackBlob);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(82);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -3659,6 +4872,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(74);
         output.WriteBytes(ScrollbackBlob);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(82);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -3693,6 +4910,9 @@ namespace Agwinterm.Pty.Proto {
       size += scrollback_.CalculateSize(_repeated_scrollback_codec);
       if (ScrollbackBlob.Length != 0) {
         size += 1 + pb::CodedOutputStream.ComputeBytesSize(ScrollbackBlob);
+      }
+      if (CreationTicket.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(CreationTicket);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -3730,6 +4950,9 @@ namespace Agwinterm.Pty.Proto {
       scrollback_.Add(other.scrollback_);
       if (other.ScrollbackBlob.Length != 0) {
         ScrollbackBlob = other.ScrollbackBlob;
+      }
+      if (other.CreationTicket.Length != 0) {
+        CreationTicket = other.CreationTicket;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -3784,6 +5007,10 @@ namespace Agwinterm.Pty.Proto {
           }
           case 74: {
             ScrollbackBlob = input.ReadBytes();
+            break;
+          }
+          case 82: {
+            CreationTicket = input.ReadString();
             break;
           }
         }
@@ -3841,6 +5068,10 @@ namespace Agwinterm.Pty.Proto {
             ScrollbackBlob = input.ReadBytes();
             break;
           }
+          case 82: {
+            CreationTicket = input.ReadString();
+            break;
+          }
         }
       }
     }
@@ -3863,7 +5094,7 @@ namespace Agwinterm.Pty.Proto {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[12]; }
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[15]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
@@ -3891,6 +5122,7 @@ namespace Agwinterm.Pty.Proto {
       exitCode_ = other.exitCode_;
       title_ = other.title_;
       attached_ = other.attached_;
+      creationTicket_ = other.creationTicket_;
       _unknownFields = pb::UnknownFieldSet.Clone(other._unknownFields);
     }
 
@@ -3996,6 +5228,18 @@ namespace Agwinterm.Pty.Proto {
       }
     }
 
+    /// <summary>Field number for the "creation_ticket" field.</summary>
+    public const int CreationTicketFieldNumber = 9;
+    private string creationTicket_ = "";
+    [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
+    [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
+    public string CreationTicket {
+      get { return creationTicket_; }
+      set {
+        creationTicket_ = pb::ProtoPreconditions.CheckNotNull(value, "value");
+      }
+    }
+
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public override bool Equals(object other) {
@@ -4019,6 +5263,7 @@ namespace Agwinterm.Pty.Proto {
       if (ExitCode != other.ExitCode) return false;
       if (Title != other.Title) return false;
       if (Attached != other.Attached) return false;
+      if (CreationTicket != other.CreationTicket) return false;
       return Equals(_unknownFields, other._unknownFields);
     }
 
@@ -4034,6 +5279,7 @@ namespace Agwinterm.Pty.Proto {
       if (ExitCode != 0) hash ^= ExitCode.GetHashCode();
       if (Title.Length != 0) hash ^= Title.GetHashCode();
       if (Attached != false) hash ^= Attached.GetHashCode();
+      if (CreationTicket.Length != 0) hash ^= CreationTicket.GetHashCode();
       if (_unknownFields != null) {
         hash ^= _unknownFields.GetHashCode();
       }
@@ -4084,6 +5330,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(64);
         output.WriteBool(Attached);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(74);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(output);
       }
@@ -4126,6 +5376,10 @@ namespace Agwinterm.Pty.Proto {
         output.WriteRawTag(64);
         output.WriteBool(Attached);
       }
+      if (CreationTicket.Length != 0) {
+        output.WriteRawTag(74);
+        output.WriteString(CreationTicket);
+      }
       if (_unknownFields != null) {
         _unknownFields.WriteTo(ref output);
       }
@@ -4159,6 +5413,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (Attached != false) {
         size += 1 + 1;
+      }
+      if (CreationTicket.Length != 0) {
+        size += 1 + pb::CodedOutputStream.ComputeStringSize(CreationTicket);
       }
       if (_unknownFields != null) {
         size += _unknownFields.CalculateSize();
@@ -4195,6 +5452,9 @@ namespace Agwinterm.Pty.Proto {
       }
       if (other.Attached != false) {
         Attached = other.Attached;
+      }
+      if (other.CreationTicket.Length != 0) {
+        CreationTicket = other.CreationTicket;
       }
       _unknownFields = pb::UnknownFieldSet.MergeFrom(_unknownFields, other._unknownFields);
     }
@@ -4245,6 +5505,10 @@ namespace Agwinterm.Pty.Proto {
           }
           case 64: {
             Attached = input.ReadBool();
+            break;
+          }
+          case 74: {
+            CreationTicket = input.ReadString();
             break;
           }
         }
@@ -4298,6 +5562,10 @@ namespace Agwinterm.Pty.Proto {
             Attached = input.ReadBool();
             break;
           }
+          case 74: {
+            CreationTicket = input.ReadString();
+            break;
+          }
         }
       }
     }
@@ -4320,7 +5588,7 @@ namespace Agwinterm.Pty.Proto {
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]
     [global::System.CodeDom.Compiler.GeneratedCode("protoc", null)]
     public static pbr::MessageDescriptor Descriptor {
-      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[13]; }
+      get { return global::Agwinterm.Pty.Proto.PtyhostReflection.Descriptor.MessageTypes[16]; }
     }
 
     [global::System.Diagnostics.DebuggerNonUserCodeAttribute]

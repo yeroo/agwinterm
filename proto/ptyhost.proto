@@ -27,6 +27,9 @@ message Request {
     SessionRef kill = 6;
     List list = 7;
     Shutdown shutdown = 8;
+    PrepareCreate prepare_create = 9;
+    CreationRef query_create = 10;
+    CreationRef cancel_create = 11;
   }
 }
 
@@ -45,22 +48,39 @@ message Create {
   bool de_elevate = 8;
   bool fresh_env_off = 9;         // proto3 default false = freshEnv ON (matches v1 semantics)
   map<string, string> env = 10;
+  string creation_ticket = 11;  // creation_revision >= 1: host-issued, single-use spawn authority
 }
 
 message Attach {
   string id = 1;
   bool repaint = 2;
+  string creation_ticket = 3;   // optional expected incarnation; mismatch refuses
 }
 
 message SessionRef {
   string id = 1;
+  string creation_ticket = 2;   // optional expected incarnation; mismatch refuses
 }
 
 message Resize {
   string id = 1;
   uint32 cols = 2;
   uint32 rows = 3;
+  string creation_ticket = 4;   // optional expected incarnation; mismatch refuses
 }
+
+// Preparation never starts a child. A lost prepare reply may be abandoned safely. A client must
+// never allocate a replacement ticket or replay a legacy create after an ambiguous create reply.
+message PrepareCreate { string id = 1; }
+message CreationRef { string id = 1; string ticket = 2; }
+enum CreationPhase {
+  CREATION_UNKNOWN = 0;         // cannot start or address a child under this ticket
+  CREATION_PREPARED = 1;
+  CREATION_CREATING = 2;
+  CREATION_LIVE = 3;
+  CREATION_CANCELLING = 4;      // cleanup requested, NOT yet proven complete
+}
+message CreationReply { string id = 1; string ticket = 2; CreationPhase phase = 3; }
 
 message List {}
 message Shutdown {}
@@ -73,16 +93,19 @@ message Reply {
     CreateReply create = 4;
     AttachReply attach = 5;
     ListReply list = 6;
+    CreationReply creation = 7;
   }
 }
 
 message HelloReply {
   uint32 protocol = 1;
   uint32 pid = 2;
+  uint32 creation_revision = 3; // 0 = legacy limitations; 1 = prepare/query/cancel + incarnation checks
 }
 
 message CreateReply {
   string id = 1;
+  string creation_ticket = 2;
 }
 
 message AttachReply {
@@ -99,6 +122,7 @@ message AttachReply {
   // so a reattached view is not dim-until-repaint. Empty when the host can't produce it (a Rust
   // host without persist support yet); the client falls back to `scrollback`.
   bytes scrollback_blob = 9;
+  string creation_ticket = 10;
 }
 
 message SessionInfo {
@@ -110,6 +134,7 @@ message SessionInfo {
   int32 exit_code = 6;
   string title = 7;
   bool attached = 8;
+  string creation_ticket = 9;
 }
 
 message ListReply {

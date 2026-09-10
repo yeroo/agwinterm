@@ -26,7 +26,7 @@ pub struct ConPty {
     pub child: HANDLE,
     pub child_pid: u32,
     /// Read side of ConPTY output (the VT byte stream).
-    pub output: File,
+    pub output: Option<File>,
     /// Write side of ConPTY input (keystrokes).
     input_write: File,
     cols: i16,
@@ -190,7 +190,7 @@ impl ConPty {
                 hpc,
                 child: pi.hProcess,
                 child_pid: pi.dwProcessId,
-                output: File::from_raw_handle(out_read as *mut _),
+                output: Some(File::from_raw_handle(out_read as *mut _)),
                 input_write: File::from_raw_handle(in_write as *mut _),
                 cols,
                 rows,
@@ -216,9 +216,21 @@ impl ConPty {
         (self.cols, self.rows)
     }
 
-    pub fn kill(&self) {
+    /// The output drainer must already own its read handle before this is called. Closing the
+    /// pseudoconsole then ends that drainer instead of leaving an Arc cycle waiting forever.
+    pub fn kill_and_close(&mut self) -> bool {
         unsafe {
-            windows_sys::Win32::System::Threading::TerminateProcess(self.child, 1);
+            if WaitForSingleObject(self.child, 0) != WAIT_OBJECT_0 {
+                windows_sys::Win32::System::Threading::TerminateProcess(self.child, 1);
+                if WaitForSingleObject(self.child, 5000) != WAIT_OBJECT_0 {
+                    return false;
+                }
+            }
+            if self.hpc != 0 {
+                ClosePseudoConsole(self.hpc);
+                self.hpc = 0;
+            }
+            true
         }
     }
 }
@@ -228,10 +240,14 @@ impl Drop for ConPty {
         unsafe {
             // Close the pseudoconsole FIRST: without it the output pipe never EOFs
             // (same lesson as TerminalSession.Dispose).
-            ClosePseudoConsole(self.hpc);
+            if self.hpc != 0 {
+                ClosePseudoConsole(self.hpc);
+            }
             CloseHandle(self.child);
         }
-        let _ = self.output.flush();
+        if let Some(output) = &mut self.output {
+            let _ = output.flush();
+        }
     }
 }
 
