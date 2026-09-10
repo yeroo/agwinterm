@@ -19,8 +19,7 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
     private readonly object _lock = new();
     private PtyHostClient? _client;
     private bool _disposed;
-    private readonly StartupHostClaims _startupClaims = new();
-    private int _reapStarted;
+    private readonly StartupHostClaims _startupClaims;
 
     /// <param name="appId">Instance id — names the host's control pipe.</param>
     /// <param name="exePath">The host exe to spawn when none is running; null = require an
@@ -31,6 +30,7 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
     public ServerSessionBackend(string appId, string? exePath, string? spawnArgs = null, string name = "server")
     {
         _appId = appId;
+        _startupClaims = StartupHostClaims.ForNamespace(appId);
         _exePath = exePath;
         _spawnArgs = spawnArgs ?? $"--pty-host --pipe \"{appId}\"";
         _name = name;
@@ -45,12 +45,12 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
         return new ServerSession(this, id, cols, rows);
     }
 
-    /// <summary>One best-effort sweep after restore. Every handle created by this backend is a
+    /// <summary>One best-effort sweep after restore. Every handle created in this host namespace is a
     /// claim, even before its pane is published. Closed/failed handles stay conservatively claimed
     /// for this sweep; their own exact lifecycle cleanup remains responsible for their child.</summary>
     public void ReapUnclaimedStartupSessions()
     {
-        if (Interlocked.Exchange(ref _reapStarted, 1) != 0) return;
+        if (!_startupClaims.TryBeginSweep()) return;
         try
         {
             using var probe = ConnectExisting();

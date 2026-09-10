@@ -12,7 +12,10 @@ internal static class CreationProtocolAssertions
     internal static async Task StartupSweepKeepsPendingPane(string appId)
     {
         using var backend = new ServerSessionBackend(appId, null);
-        using var pendingPane = backend.Create("not-yet-published", 80, 24);
+        // The live config path resolves a new backend even when reapplying the same value.
+        // The original instance still owns the delayed sweep; the replacement owns this pane.
+        using var replacement = (ServerSessionBackend)SessionBackends.Resolve("server", appId, null);
+        using var pendingPane = replacement.Create("not-yet-published", 80, 24);
         using var client = PtyHostClient.Connect(appId);
         string orphan = client.PrepareCreate("unclaimed-orphan");
         try
@@ -28,7 +31,7 @@ internal static class CreationProtocolAssertions
             Assert.Equal("not-yet-published", Assert.Single(client.List()).Id);
             Assert.False(pendingPane.HasExited);
             Assert.True(orphanChild.WaitForExit(5000));
-            backend.ReapUnclaimedStartupSessions(); // one-shot, not a new claim epoch
+            replacement.ReapUnclaimedStartupSessions(); // shared one-shot, not a new claim epoch
             Assert.Equal("not-yet-published", Assert.Single(client.List()).Id);
         }
         finally

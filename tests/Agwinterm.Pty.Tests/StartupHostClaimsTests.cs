@@ -5,6 +5,26 @@ namespace Agwinterm.Pty.Tests;
 public class StartupHostClaimsTests
 {
     [Fact]
+    public void BackendReplacementSharesClaimsAndSweepEpochOnlyWithinItsHostNamespace()
+    {
+        string appId = "startup-claims-" + Guid.NewGuid().ToString("N");
+        var original = StartupHostClaims.ForNamespace(appId);
+        var replacement = StartupHostClaims.ForNamespace(appId.ToUpperInvariant());
+        var otherHost = StartupHostClaims.ForNamespace(appId + "-rust");
+        Assert.Same(original, replacement);
+        Assert.NotSame(original, otherHost);
+        replacement.Claim("new-pane");
+        Assert.True(original.TryBeginSweep());
+        Assert.False(replacement.TryBeginSweep());
+        Assert.False(original.TryReap("new-pane", () => throw new Exception("replacement pane must survive")));
+        Assert.True(otherHost.TryBeginSweep());
+        Assert.True(otherHost.TryReap("new-pane", () => { }));
+        original.Complete(); otherHost.Complete();
+        Assert.Same(original, StartupHostClaims.ForNamespace(appId));
+        Assert.False(StartupHostClaims.ForNamespace(appId).TryBeginSweep());
+    }
+
+    [Fact]
     public void PendingPublicationIsAlreadyClaimedAndComparisonIsCaseInsensitive()
     {
         var claims = new StartupHostClaims();

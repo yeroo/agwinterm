@@ -6,6 +6,14 @@ namespace Agwinterm.Pty;
 /// without waiting on host I/O or silently adopting a session being killed.</summary>
 internal sealed class StartupHostClaims
 {
+    // Live backend replacement must not create a new startup ownership epoch. Pipes are
+    // case-insensitive and shared by every backend for this namespace in the UI process.
+    // Retain one small coordinator per namespace for this process's lifetime, not per client.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, StartupHostClaims> Namespaces = new(StringComparer.OrdinalIgnoreCase);
+    internal static StartupHostClaims ForNamespace(string appId) => Namespaces.GetOrAdd(appId, _ => new());
+    private int _sweepStarted;
+    public bool TryBeginSweep() => Interlocked.Exchange(ref _sweepStarted, 1) == 0;
+
     private readonly object _gate = new();
     private readonly HashSet<string> _claimed = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _reaping = new(StringComparer.OrdinalIgnoreCase);
