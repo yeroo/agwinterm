@@ -522,7 +522,7 @@ internal partial class Program
                     {
                         Cell cc = CellAt(r, c);
                         if (cc.Width == 2 || cc.Width == 0 || cc.Rune > 0xFFFF) break;
-                        if (_config.BuiltinGlyphs && cc.Rune is (>= 0x2500 and <= 0x259F) or 0x2571 or 0x2572) break; // vector-drawn separately
+                        if (_config.BuiltinGlyphs && BuiltinBoxGlyphs.Supports(cc.Rune)) break; // same consumed set as the outer dispatch
                         bool blank = cc.Rune == ' ' || cc.Rune == '\0';
                         if (!blank && !GridTrue(cc.Rune)) break;   // fallback glyph → its own solo draw
                         // Blanks only need matching decoration lines (bold/italic is invisible on a

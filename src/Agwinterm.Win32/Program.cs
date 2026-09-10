@@ -757,7 +757,7 @@ internal partial class Program : ISessionHost, IWindowHost
         return f;
     }
 
-    // The configured family's font object, for per-codepoint coverage checks. A glyph that IS in
+    // The resolved terminal family's font object (possibly the installed fallback), for coverage checks. A glyph that IS in
     // the (monospace) family advances exactly one cell — safe to coalesce into text runs. A glyph
     // that falls back to another font (emoji, ⏺/✻ symbols, …) has arbitrary advance and MUST be
     // drawn solo, anchored to its own grid column, or runs drift and overpaint their neighbours
@@ -811,7 +811,7 @@ internal partial class Program : ISessionHost, IWindowHost
         catch { }   // no family match → every non-ASCII glyph draws solo (safe, just slower)
     }
 
-    /// <summary>Whether the configured family itself covers this codepoint (cached).</summary>
+    /// <summary>Whether the resolved terminal family itself covers this codepoint (cached).</summary>
     private static bool FontHasGlyph(int cp)
     {
         if (_glyphInFont.TryGetValue(cp, out bool has)) return has;
@@ -1265,12 +1265,21 @@ internal partial class Program : ISessionHost, IWindowHost
         _metrics.Clear();
         foreach (var f in _styledFmt.Values) { try { f.Dispose(); } catch { } }     // bold/italic variants bake in the family too
         _styledFmt.Clear();
-        MeasureCell();
-        foreach (var s in AllSessions()) RegridSession(s);
-        if (_cover is not null) RegridCover();
-        if (!_isQuickWindow && _quickHost?._cover is not null) _quickHost.RegridCover();
-        if (_fontFallbackNote is { } note) ShowToast(note, 8000);
-        RequestRedraw();
+        // Formats/metrics are process-wide; every open window must adopt their new geometry.
+        // Quick is not part of the persisted library-window index.
+        List<Program> windows;
+        lock (_windowIndex) windows = _byId.Values.ToList();
+        if (!windows.Contains(this)) windows.Add(this);
+        if (_quickHost is { } quick && !windows.Contains(quick)) windows.Add(quick);
+        foreach (var window in windows)
+        {
+            if (window._hwnd == IntPtr.Zero) continue;
+            window.MeasureCell();
+            foreach (var session in window.AllSessions()) window.RegridSession(session);
+            if (window._cover is not null) window.RegridCover();
+            if (_fontFallbackNote is { } note) window.ShowToast(note, 8000);
+            window.RequestRedraw();
+        }
     }
 
     private void MeasureCell()
