@@ -294,7 +294,12 @@ internal partial class Program
             if (!Program._config.ClipboardWrite) { VtLog.Write(_pane.Id, "OSC", $"52 clipboard write DENIED by config ({text.Length} chars)"); return; }
             _app.Post(() => _app.ClipboardSet(text));
         }
-        public void Respond(string reply) { _s.NotifyActivity(); _s.Write(Encoding.UTF8.GetBytes(reply)); } // query reply -> PTY
+        public void Respond(string reply)
+        {
+            // A late terminal query may be parsed while final output is settling after child death.
+            // Refusing its reply must not abort the output pump and lose the remaining output.
+            SessionInput.TryWrite(_s, Encoding.UTF8.GetBytes(reply));
+        }
         public void Bell() => _app.Post(() => _app.RingBell(_pane));                                     // BEL -> beep/flash per config
         public void Unhandled(string kind, string detail) => VtLog.Write(_pane.Id, kind, detail);       // AGWINTERM_VT_LOG tap
     }

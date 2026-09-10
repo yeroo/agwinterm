@@ -815,6 +815,7 @@ internal partial class Program
         // bytes, so a paste into it would answer `pasted` for text that reached no program (round 9
         // of #256): refused, before the clipboard is read, like the read-only pane.
         if (p.S.HasExited) return ISessionHost.RefusePrefix + SessionPastes.ExitedPane;
+        if (p.S.InputClosed) return ISessionHost.RefusePrefix + SessionPastes.InputUnavailable;
         // "text (or the clipboard when text is null/EMPTY)": the CLI always sends text, "" when the
         // caller gave none, so `?? ClipboardGet()` never ran and `session paste` pasted nothing.
         // ClipboardGet answers "" both for a clipboard with no text and for one it could not read.
