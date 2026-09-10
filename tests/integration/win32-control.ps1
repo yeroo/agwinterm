@@ -1139,6 +1139,13 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         }
         $p5After = & $p5Shape (Get-SessionSnapshot $p5Id)
         Check 'and none of them changed the overlay slots' ($p5Before -eq $p5After) "before=$p5Before after=$p5After"
+        # Exercise both production CLI parsers, not just the shared server/parser helper.
+        foreach ($textVerb in @(@('session','text'), @('session','overlay','text'))) {
+            $allRead=Invoke-Ctl ($textVerb + @('--all','--target',$p5Ovl))
+            $largeRead=Invoke-Ctl ($textVerb + @('--lines','2147483648','--target',$p5Ovl))
+            Check "CLI $($textVerb -join ' ') saturates large counts" ($allRead.ok -and $largeRead.ok -and
+                [string]$allRead.result.text -ceq [string]$largeRead.result.text) "all=$($allRead|ConvertTo-Json -Compress) large=$($largeRead|ConvertTo-Json -Compress)"
+        }
         # The slot moves with its pane: a 30/70 divider so the boxes differ, then swap: paneOverlays ["left"], the overlay measures the pane's NEW box.
         Invoke-Ctl @('session', 'resize', '--split-ratio', '0.3', '--target', $p5Id) | Out-Null
         $p5RightBox = $null
@@ -1373,7 +1380,7 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         Check '--target <id> --target is refused before sending: the last occurrence decides (#246)' `
             ($capDupCode -eq 2 -and ("$capDup" -match 'is empty') -and ("$capDup" -match 'Nothing sent')) "exit $capDupCode, output: $capDup"
         # #246: a capture whose save does not land is REFUSED, saying what it left: the slots are in
-        # memory (tree shows them), the checkpoint is not on disk. The state file is replaced by a
+        # memory (tree shows them), but this save did not persist them; an earlier checkpoint may remain. The state file is replaced by a
         # DIRECTORY of its own name, which the atomic File.Move cannot overwrite; the file goes back
         # afterwards. This is the sandbox's own app-id directory, never the user's.
         $capNoSave = $null; $capNodeNoSave = $null
@@ -1392,7 +1399,8 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         }
         Check 'a failed capture save reports only that this save did not persist the checkpoint (#246)' `
             ($capNoSave -and (-not $capNoSave.ok) -and ("$($capNoSave.error)" -match 'captured into memory') -and
-             ("$($capNoSave.error)" -match 'could not be written') -and ("$($capNoSave.error)" -match 'this save did not put the checkpoint on disk')) `
+             ("$($capNoSave.error)" -match 'could not be written') -and ("$($capNoSave.error)" -match 'this save did not put the checkpoint on disk') -and
+             ("$($capNoSave.error)" -notmatch 'will not survive|checkpoint is not on disk')) `
             "reply=$($capNoSave | ConvertTo-Json -Compress -Depth 5)"
         Check 'and the slot was left as captured: tree still shows it' `
             ($capNodeNoSave -and ("$($capNodeNoSave.capturedCommands.$survivorId)" -match $pingPattern)) `

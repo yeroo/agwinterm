@@ -189,6 +189,63 @@ public class ControlApiTests
     }
 
     [Theory]
+    [InlineData("false")]
+    [InlineData("true")]
+    [InlineData("42")]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    public void MalformedOperationsAndSelectors_RefuseBeforeDispatch(string value)
+    {
+        var (server, host) = New();
+        var initial = host.ActiveSess!;
+        initial.ReadOnly = true;
+        foreach (string command in new[] { "session.readonly", "session.switch" })
+            foreach (string args in new[] { "{\"op\":" + value + "}", value })
+            {
+                // An object without op intentionally selects the default, unlike an op object.
+                if (args == "{}") continue;
+                using var reply = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"" + command + "\",\"args\":" + args + "}"));
+                Assert.False(Ok(reply.RootElement));
+                Assert.True(initial.ReadOnly);
+                Assert.Same(initial, host.ActiveSess);
+            }
+        if (value == "null") return; // null selectors retain the documented omitted-selector meaning
+        foreach (string selector in new[] { "target", "window" })
+            foreach (string command in new[] { "session.readonly", "session.search", "session.switch" })
+            {
+                using var reply = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"" + command + "\",\"" + selector + "\":" + value + ",\"args\":{\"op\":\"off\",\"query\":\"wrong\"}}"));
+                Assert.False(Ok(reply.RootElement));
+                Assert.True(initial.ReadOnly);
+            }
+    }
+
+    [Fact]
+    public void OmittedOperation_Defaults_WithOmittedOrNullSelectors()
+    {
+        var (server, host) = New();
+        foreach (string fields in new[] { "", ",\"args\":{}", ",\"args\":{},\"target\":null,\"window\":null" })
+        {
+            bool before = host.ActiveSess!.ReadOnly;
+            using var reply = JsonDocument.Parse(server.Dispatch("{\"cmd\":\"session.readonly\"" + fields + "}"));
+            Assert.True(Ok(reply.RootElement));
+            Assert.Equal(!before, host.ActiveSess.ReadOnly);
+        }
+    }
+
+    [Fact]
+    public void Switch_NameThatLooksLikeRefusal_IsStillSuccessfulData()
+    {
+        var (server, host) = New();
+        host.ActiveSess!.Name = ISessionHost.RefusePrefix + "my session";
+        var reply = Dispatch(server, "session.switch", new { op = "begin" });
+        Assert.True(Ok(reply));
+        Assert.Equal(host.ActiveSess.Name, Result(reply));
+        Assert.True(host.SessionSwitch("begin").Ok);
+        Assert.False(host.SessionSwitch("typo").Ok);
+    }
+
+    [Theory]
     [InlineData("on", false, true)]
     [InlineData("off", true, false)]
     [InlineData("toggle", false, true)]

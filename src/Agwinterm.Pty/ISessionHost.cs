@@ -212,7 +212,8 @@ public interface ISessionHost
     /// <summary>Broadcast-input toggle for the frontmost window: op = on|off|toggle|state. Returns "on"/"off".</summary>
     string BroadcastOp(string op);
 
-    /// <summary>Read-only toggle for a target pane: op = on|off|toggle|state. Returns "on"/"off".
+    /// <summary>Read-only toggle for a target pane: op = on|off|toggle|state|get. Returns "on"/"off",
+    /// or <see cref="RefusePrefix"/> plus a reason for an unknown operation or missing target, without mutation.
     /// What "on" blocks: keys typed at the pane and pastes into it — the interactive paste and
     /// <see cref="SessionPaste"/>, which refuses. <c>session type</c> is NOT blocked (ControlServer
     /// writes it to the child's input directly): a script that must not reach a read-only pane
@@ -385,7 +386,8 @@ public interface ISessionHost
     /// first.</summary>
     string SessionPaste(string? target, string? text);
 
-    /// <summary>Open/drive the find bar over the active session; returns "N of M" / "no matches" / "closed".</summary>
+    /// <summary>Open/drive the find bar over the active session; returns "N of M" / "no matches" / "closed".
+    /// A missing target or active surface returns <see cref="RefusePrefix"/> plus a reason without changing search.</summary>
     string SessionSearch(string? target, string? query, string? action);
 
     /// <summary>Toggle/show/hide a session's scratch terminal: op = on|off|toggle. Returns false if the target isn't found.</summary>
@@ -577,9 +579,11 @@ public interface ISessionHost
     string SessionBackground(string? target, string action, string? path, int opacity, string? mode);
 
     /// <summary>Drive the MRU (Ctrl+Tab) session switcher state machine directly:
-    /// op = begin|advance|advance-back|commit|cancel. Returns the resulting active session name.
+    /// op = begin|advance (next)|advance-back (back/prev/previous)|commit|cancel.
+    /// Returns the resulting active session name with Ok=true, or Ok=false and a reason without
+    /// mutation for an unknown operation. Status is never encoded inside the session name.
     /// Lets the control API / tests exercise the walk without synthetic global key input.</summary>
-    string SessionSwitch(string op);
+    SessionSwitchReply SessionSwitch(string op);
 
     /// <summary>Run a custom command (by keymap label) or a raw command string, expanding {AGW_*} tokens and
     /// injecting $AGW_* env from the active session. <paramref name="mode"/> (send|new|overlay|detached)
@@ -688,7 +692,7 @@ public sealed class SingleSessionHost : ISessionHost
     public string UpdateApp() => "unsupported";
     public void WorkspaceFocus(string op) { }
     public string SessionBackground(string? target, string action, string? path, int opacity, string? mode) => "unsupported";
-    public string SessionSwitch(string op) => "unsupported";
+    public SessionSwitchReply SessionSwitch(string op) => new(false, "unsupported");
     public string CommandRun(string nameOrCommand, string? mode) => "unsupported";
     public string CommandList() => "";
     public string CommandLeader(string op) => "idle";
