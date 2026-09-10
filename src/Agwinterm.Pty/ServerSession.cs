@@ -171,7 +171,7 @@ public sealed class ServerSession : ISession
                 if (_startFence.Created()) KillHosted(); // close won while create was in flight
                 if (_startFence.IsClosed) return;
                 try { PublishAttachment(client.Attach(_id)); }
-                catch { if (_startFence.Close(kill: true)) KillHosted(); throw; }
+                catch { if (_startFence.AttachmentFailed()) KillHosted(); throw; }
             }, ct).ConfigureAwait(false);
         }
         catch (Exception ex)

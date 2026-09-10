@@ -12,6 +12,15 @@ internal sealed class SessionStartFence
     {
         lock (_gate) { _closed = true; _killRequested |= kill; return ClaimKill(); }
     }
+    public bool AttachmentFailed()
+    {
+        lock (_gate)
+        {
+            // A failed attach is cleanup for a live create, not authority to undo app-quit detach.
+            if (!_closed) { _closed = true; _killRequested = true; }
+            return ClaimKill();
+        }
+    }
     private bool ClaimKill()
     {
         if (!_created || !_killRequested || _killClaimed) return false;

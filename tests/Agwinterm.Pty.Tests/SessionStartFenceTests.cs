@@ -6,6 +6,16 @@ public class SessionStartFenceTests
 {
     [Theory]
     [InlineData(false)] [InlineData(true)]
+    public void FailedAttachReapsOnlyIfDetachHasNotAlreadyWon(bool detached)
+    {
+        var fence = new SessionStartFence(); Assert.False(fence.Created());
+        if (detached) Assert.False(fence.Close(false));
+        Assert.Equal(!detached, fence.AttachmentFailed());
+        Assert.False(fence.Publish(() => throw new Exception("must not publish failed attach")));
+        Assert.Equal(detached, fence.Close(true)); // explicit Dispose may strengthen detach later
+    }
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
     public void CloseBeforeCreateLeavesTheRightObligation(bool kill)
     {
         var fence = new SessionStartFence();
