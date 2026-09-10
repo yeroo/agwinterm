@@ -52,7 +52,7 @@ internal partial class Program
     /// When <paramref name="command"/> is set, that argv runs as the pane's process instead of the shell.</summary>
     private Pane CreatePane(string paneId, Workspace ws, string? cwd, float fontSize, string? command = null,
         bool shellWrap = false, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
-        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false)
+        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false, SessionCommand? sessionCommand = null)
     {
         var (cols, rows) = GridSizeFor(fontSize);
         // The ONLY session creation site (see ISessionBackend). Handoff panes are pinned in-process
@@ -138,6 +138,8 @@ internal partial class Program
                            new Microsoft.Win32.SafeHandles.SafeFileHandle(h.ConIn, true),
                            new Microsoft.Win32.SafeHandles.SafeFileHandle(h.Signal, true), h.Client, h.ClientPid);
         else if (adopted) { /* reattached to the surviving shell — nothing to launch */ }
+        else if (sessionCommand is { } launch)
+            pane.Start = session.StartAsync(launch.App, launch.QuotedArgs, verbatimCommandLine: true, extraEnv: env, cwd: cwd, freshEnv: _config.FreshEnv);
         else if (!string.IsNullOrWhiteSpace(command) && wait)
             // --wait: run the command, then hold on "press any key" so a build/test/deploy's final
             // output (or an early failure) stays readable before the session closes (agterm #255 —
@@ -405,7 +407,7 @@ internal partial class Program
     /// split, a close, a swap or a restore).</summary>
     private Ses CreateSession(string id, string? name, string? cwd, Workspace ws, bool makeActive, float? fontSize = null,
         string? command = null, bool interactive = false, Dictionary<string, string>? extraEnv = null, string? profileName = null,
-        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false, string? paneId = null)
+        bool deElevate = false, HandoffArgs? handoff = null, bool wait = false, string? paneId = null, SessionCommand? sessionCommand = null)
     {
         lock (_workspaces) if (!_workspaces.Contains(ws)) throw new InvalidOperationException("workspace no longer exists");
         // Elevated profile from a non-elevated app: hand off to a separate elevated window (UAC).
@@ -436,7 +438,7 @@ internal partial class Program
         // closing it by any path leaves none (the id then resolves to the focused pane, like a name —
         // the rule by condition is on ISessionHost.SplitClose), and a restore hands the saved pane-0
         // id in — see the summary.
-        ses.Panes.Add(CreatePane(paneId ?? id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff, wait: wait));
+        ses.Panes.Add(CreatePane(paneId ?? id, ws, cwd, fs, command, interactive: interactive, extraEnv: extraEnv, profileName: profileName, deElevate: deElevate, handoff: handoff, wait: wait, sessionCommand: sessionCommand));
         ses.Active = 0;
         DetectSessionElevation(ses);   // refine ⚡ from the shell's real integrity once it's running
 

@@ -154,7 +154,7 @@ public sealed class TerminalSession : ISession
 
     /// <summary>Quote one argument per the CommandLineToArgvW rules, so a joined command line round-trips
     /// back to the same argv (handles the -Command &lt;multiline script&gt; case).</summary>
-    private static string QuoteArg(string arg)
+    internal static string QuoteArg(string arg)
     {
         if (arg.Length > 0 && arg.IndexOfAny(new[] { ' ', '\t', '\n', '\v', '"' }) < 0) return arg;
         var sb = new System.Text.StringBuilder("\"");

@@ -263,9 +263,14 @@ public sealed class ControlServer : IDisposable
                     string? workspace = GetString(args, "workspace"), workspaceName = GetString(args, "workspace-name");
                     if (!string.IsNullOrEmpty(workspace) && !string.IsNullOrEmpty(workspaceName))
                         return Err(SessionNewWorkspaces.TwoSources(workspace, workspaceName));
+                    if (args.TryGetProperty("command-mode", out var modeValue) && modeValue.ValueKind != JsonValueKind.String)
+                        return Err("session.new: command-mode must be powershell or direct; nothing created");
+                    string? commandMode = GetString(args, "command-mode");
+                    if (!SessionCommand.TryCreate(GetString(args, "command"), commandMode, GetBool(args, "wait"),
+                        GetString(args, "profile"), out _, out var commandError)) return Err(commandError);
                     string created = host.NewSession(GetString(args, "name"), GetString(args, "cwd"), workspace,
                         GetString(args, "command"), workspaceName, GetBool(args, "create-workspace"), GetString(args, "profile"), GetBool(args, "no-select"), GetBool(args, "wait"),
-                        caller: GetString(args, "caller"));
+                        caller: GetString(args, "caller"), commandMode: commandMode);
                     return created.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
                         ? Err(created[ISessionHost.RefusePrefix.Length..])
                         : Ok(created);

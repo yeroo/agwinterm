@@ -231,7 +231,7 @@ try {
     # and the scratch prefix remain. Exact session resolution must win.
     $releaseLiteral = $releaseFile.Replace("'", "''")
     $exitCommand = "powershell.exe -NoLogo -NoProfile -Command `"while (-not (Test-Path -LiteralPath '$releaseLiteral')) { Start-Sleep -Milliseconds 100 }`""
-    $created = Invoke-Ctl @('session', 'new', '--name', 'win32-resolver', '--command', $exitCommand)
+    $created = Invoke-Ctl @('session', 'new', '--name', 'win32-resolver', '--command-mode', 'direct', '--command', $exitCommand)
     $sessionId = [string]$created.result
     $ready = $false
     for ($i = 0; $i -lt 30; $i++) {
@@ -787,7 +787,7 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         # directory can go, it reports no OSC 7 (cmd), so the overlay is spawned in the dead dir.
         $goneDir = Join-Path ([IO.Path]::GetTempPath()) ("agwinterm-gone-" + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $goneDir | Out-Null
-        $goneMade = Invoke-Ctl @('session', 'new', '--name', 'p2-227-gone', '--cwd', $goneDir, '--command', 'cmd.exe /c cd /d C:\ & ping -n 60 127.0.0.1 >nul', '--no-select')
+        $goneMade = Invoke-Ctl @('session', 'new', '--name', 'p2-227-gone', '--cwd', $goneDir, '--command-mode', 'direct', '--command', 'cmd.exe /c cd /d C:\ & ping -n 60 127.0.0.1 >nul', '--no-select')
         $goneId = [string]$goneMade.result
         for ($i = 0; $i -lt 30 -and -not (Get-SessionSnapshot $goneId); $i++) { Start-Sleep -Milliseconds 200 }
         $goneRemoved = $false
@@ -959,7 +959,7 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         # reads, which in the race is someone else's copy — details carry replies, booleans and lengths.
         $p6SinkMarker = 'agw-sink-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $p6Launch = New-PasteSinkLaunch $p6SinkMarker
-        $p6SinkMade = Invoke-Ctl @('session', 'new', '--name', 'p6-paste-sink', '--command', $p6Launch.Command, '--no-select')
+        $p6SinkMade = Invoke-Ctl @('session', 'new', '--name', 'p6-paste-sink', '--command-mode', 'direct', '--command', $p6Launch.Command, '--no-select')
         $p6Sink = if ($p6SinkMade.ok) { [string]$p6SinkMade.result } else { $null }   # the session id: a pane-class target (its one pane)
         $p6SinkUp = $false; $p6SinkTextLen = 0
         if ($p6Sink) {
@@ -1068,7 +1068,7 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         # exit is asynchronous and the refusal lags it by the output-settle window: the poll runs
         # until the EXPECTED refusal — a paste that lands before it is `pasted` (or, in the spawn
         # gap, `paste failed: Session not started.`) and ignored; the last reply is the detail.
-        $p6ExitMade = Invoke-Ctl @('session', 'new', '--name', 'p6-exited', '--command', 'cmd /c exit 0', '--no-select')
+        $p6ExitMade = Invoke-Ctl @('session', 'new', '--name', 'p6-exited', '--command-mode', 'direct', '--command', 'cmd /c exit 0', '--no-select')
         $p6Exited = if ($p6ExitMade.ok) { [string]$p6ExitMade.result } else { $null }
         $p6ExitPaste = $null
         if ($p6Exited) {

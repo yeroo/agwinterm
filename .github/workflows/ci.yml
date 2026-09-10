@@ -98,6 +98,11 @@ jobs:
         timeout-minutes: 10
         run: ./tests/integration/win32-control.ps1 -Strict
 
+      - name: Session command parity integration
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./tests/integration/hud-ui.ps1 -Suite Command -Strict
+
       - name: Passive HUD integration
         shell: pwsh
         timeout-minutes: 5

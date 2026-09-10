@@ -300,8 +300,10 @@ internal partial class Program
     // the active workspace, and that too is read here, synchronously, rather than inside the Post.
     public string NewSession(string? name, string? cwd, string? workspace, string? command = null,
         string? workspaceName = null, bool createWorkspace = false, string? profile = null, bool noSelect = false, bool wait = false,
-        string? caller = null)
+        string? caller = null, string? commandMode = null)
     {
+        if (!SessionCommand.TryCreate(command, commandMode, wait, profile, out var launch, out var error))
+            return ISessionHost.RefusePrefix + error;
         Workspace? ws = null;
         string? newWorkspaceName = null;   // set = create this workspace on the UI thread, then the session in it
         if (!string.IsNullOrEmpty(workspace))
@@ -361,7 +363,7 @@ internal partial class Program
                 target ??= CreateWorkspace(Guid.NewGuid().ToString(), newWorkspaceName!);
             }
             // --no-select creates the session in the background, leaving the current focus/selection (agterm #250).
-            CreateSession(id, name, cwd, target, makeActive: !noSelect, command: command, profileName: profile, wait: wait);
+            CreateSession(id, name, cwd, target, makeActive: !noSelect, profileName: profile, sessionCommand: launch);
         });
         return id;
     }

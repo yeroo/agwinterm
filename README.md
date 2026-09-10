@@ -442,3 +442,9 @@ Everything is rebindable in `keymap.conf` (see `F1` for the live list).
 
 [MIT](LICENSE) © 2026 Boris Kudriashov. Bundled theme files retain their upstream (iTerm2-Color-Schemes,
 MIT) licensing.
+
+### Session command launching
+
+`session new --command` runs PowerShell code and leaves an interactive prompt in both terminals.
+Use `--command-mode direct` for executable + arguments without a shell.
+See [command launching and migration](docs/session-commands.md), including `--wait` and portable workbench scripts.
