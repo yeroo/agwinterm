@@ -129,11 +129,13 @@ jobs:
         run: |
           function Invoke-Tests {
             if (Test-Path out.txt) { Remove-Item out.txt, err.txt -ErrorAction SilentlyContinue }
-            $p = Start-Process dotnet -ArgumentList 'test','Agwinterm.slnx','-c','Release','--no-build' `
+            $p = Start-Process dotnet -ArgumentList 'test','Agwinterm.slnx','-c','Release','--no-build','--logger','"console;verbosity=normal"' `
                  -NoNewWindow -PassThru -RedirectStandardOutput out.txt -RedirectStandardError err.txt
             if (-not $p.WaitForExit(360000)) {   # 6 min: the suite is ~30s, so this only trips on a deadlock
               try { $p.Kill($true) } catch {}
-              Write-Host '::warning::test run HUNG (issue #118 deadlock variant) - killed'
+              [void]$p.WaitForExit(10000)
+              Get-Content out.txt, err.txt -Raw -ErrorAction SilentlyContinue | Write-Host
+              Write-Host '::warning::test run exceeded six minutes; killed. Logs above distinguish test progress from a runner hang; #118 is a known possibility, not a diagnosis.'
               return 'retry'
             }
             $out = (Get-Content out.txt, err.txt -Raw -ErrorAction SilentlyContinue) -join "`n"
