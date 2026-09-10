@@ -277,6 +277,7 @@ $null=Rpc 'session.type' @{text="exit`r"} $session
 Check 'exited shell does not retain shell-name hint' (NavWait {$null-eq (Node $session).foregroundShell})
 
 $fontOriginal=Rpc 'config.get' @{key='font-family'}
+$libraryWindow=[string](@((Rpc 'window.list').windows|Where-Object open)[0].id)
 $installed=[Drawing.Text.InstalledFontCollection]::new()
 try {
     $familyNames=@($installed.Families|ForEach-Object Name)
@@ -300,7 +301,6 @@ try {
     Check 'font-rendered unsupported box glyphs cannot stall the UI' $responsive
     if(-not $responsive){throw 'Render thread stalled; stop before any unbounded screenshot call'}
     $null=NavPixels 'unsupported-box-glyphs'
-    $libraryWindow=[string](@((Rpc 'window.list').windows|Where-Object open)[0].id)
     $fontWindow=[string](Rpc 'window.new' @{name='Font geometry peer'})
     try {
         if(-not (NavWait {@((Rpc 'window.list').windows|Where-Object {$_.id-eq $fontWindow -and $_.open}).Count-eq 1})){throw 'Font peer window did not open'}
@@ -321,4 +321,4 @@ try {
         $null=Rpc 'window.close' @{} $fontWindow
         $null=Rpc 'window.select' @{} $libraryWindow
     }
-} finally {$installed.Dispose();$null=Rpc 'config.set' @{key='font-family';value=$fontOriginal}}
+} finally {$installed.Dispose();$null=Rpc 'config.set' @{key='font-family';value=$fontOriginal} -Window $libraryWindow}
