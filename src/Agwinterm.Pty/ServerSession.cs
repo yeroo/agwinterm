@@ -96,6 +96,9 @@ public sealed class ServerSession : ISession
 
     public int? ExitCode { get; private set; }
     public bool HasExited { get; private set; }
+    private volatile bool _inputClosed;
+    public bool InputClosed => _inputClosed || _disposed;
+    internal void MarkInputClosed() => _inputClosed = true;
     public event Action<int>? Exited;
 
     internal ServerSession(ServerSessionBackend backend, string id, int cols, int rows)
@@ -175,7 +178,7 @@ public sealed class ServerSession : ISession
             var msg = $"\r\n\x1b[31m[agwinterm] pty-host session failed to start:\x1b[0m\r\n  {ex.Message}\r\n";
             lock (_sync) Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(msg));
             OutputReceived?.Invoke();
-            ExitCode = 1; HasExited = true;
+            MarkInputClosed(); ExitCode = 1; HasExited = true;
             return;
         }
         _started = true;
@@ -259,6 +262,7 @@ public sealed class ServerSession : ISession
         catch (OperationCanceledException) { }
         catch (IOException) { }
         catch (ObjectDisposedException) { }
+        MarkInputClosed(); // EOF also means detached/superseded; that need not be a child exit.
         try { data.Dispose(); } catch { }                            // safe now: our read is done
         OnStreamEnded();
     }
@@ -298,9 +302,11 @@ public sealed class ServerSession : ISession
 
     public void Write(ReadOnlySpan<byte> bytes)
     {
+        if (InputClosed) throw new IOException("Session input is closed.");
         var data = _data ?? throw new InvalidOperationException("Session not started.");
-        data.Write(bytes);
-        data.Flush();
+        try { data.Write(bytes); data.Flush(); }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        { MarkInputClosed(); throw; }
     }
 
     public void Resize(int cols, int rows)

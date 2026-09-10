@@ -60,6 +60,10 @@ public interface ISession : IDisposable
     void Attach(SafeFileHandle conOut, SafeFileHandle conIn, SafeFileHandle signal, IntPtr clientProcess, int pid);
     int? ExitCode { get; }
     bool HasExited { get; }
+    /// <summary>Input is known unavailable, independently of final-output settlement. A false
+    /// value is not a child-liveness guarantee: hosted transports learn disconnect asynchronously.
+    /// A successful Write means transport acceptance, never application consumption/execution.</summary>
+    bool InputClosed => HasExited;
     /// <summary>Raised (background thread) when the child process exits, with its exit code — after
     /// the output it wrote last has settled into the emulator, so a handler that reads the grid reads
     /// a complete one (#246; see <see cref="TerminalSession"/>'s settle window). Not raised for a

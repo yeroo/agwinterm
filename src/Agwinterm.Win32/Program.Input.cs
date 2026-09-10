@@ -241,7 +241,7 @@ internal partial class Program
                 // and Send run together on the UI thread; local write failures propagate through
                 // queued CommandRun. Accepted transport input is not proof of child execution (#268).
                 var surface = ActiveSurface();
-                if (surface is null || _session is null || surface.S.HasExited)
+                if (surface is null || _session is null || surface.S.InputClosed)
                     return ISessionHost.RefusePrefix + "no live pane for send command";
                 if (surface.ReadOnly) return ISessionHost.RefusePrefix + "pane is read-only";
                 Send(expanded.Replace("\r", "").Replace("\n", "") + "\r");

@@ -83,15 +83,27 @@ public class ServerSessionTests : IDisposable
     /// <summary>#246: "the process has exited" is not "the pane is complete" — conhost flushes the
     /// last output after the child is gone. The host's exit watcher settles the pump before it
     /// closes the data pipe, so the grid an Exited handler reads has the program's last line. A
-    /// regression guard more than a proof (the echo usually lands first anyway): the assert is on
-    /// what the handler saw AT the event, not later.</summary>
+    /// controlled ordering test: first prove the replica has received output, then release the child
+    /// to exit. Cold create/attach scheduling cannot invalidate the premise. The assertion reads
+    /// the grid AT the event, not later; this does not claim lossless output before attachment.</summary>
     [Fact]
     public async Task Exited_FiresAfterTheLastOutputSettled()
     {
-        using var s = _backend.Create(Guid.NewGuid().ToString(), 80, 24);
+        string id = Guid.NewGuid().ToString();
+        using var s = _backend.Create(id, 80, 24);
+        string outputName = @"Local\agwinterm-output-" + Guid.NewGuid().ToString("N");
+        string exitName = @"Local\agwinterm-exit-" + Guid.NewGuid().ToString("N");
+        using var outputGate = new EventWaitHandle(false, EventResetMode.ManualReset, outputName);
+        using var exitGate = new EventWaitHandle(false, EventResetMode.ManualReset, exitName);
         var seen = new TaskCompletionSource<(int Code, string Grid)>(TaskCreationOptions.RunContinuationsAsynchronously);
         s.Exited += code => seen.TrySetResult((code, GridText(s)));
-        await s.StartAsync("cmd.exe", new[] { "/q", "/c", "echo settle-marker-246 & exit 3" }, verbatimCommandLine: true);
+        string script = $"$o=[Threading.EventWaitHandle]::OpenExisting('{outputName}'); $x=[Threading.EventWaitHandle]::OpenExisting('{exitName}'); " +
+            "if(-not $o.WaitOne(60000)){exit 41}; 'settle-marker-246'; if(-not $x.WaitOne(60000)){exit 42}; exit 3";
+        await s.StartAsync("powershell.exe", new[] { "-NoLogo", "-NoProfile", "-Command", script });
+        Assert.True(WaitFor(() => _backend.Client.List().Any(i => i.Id == id && i.Attached), 10000));
+        outputGate.Set();
+        Assert.True(WaitFor(() => GridText(s).Contains("settle-marker-246"), 60000), "output premise never reached replica");
+        exitGate.Set();
         var (exit, grid) = await seen.Task.WaitAsync(TimeSpan.FromSeconds(15));
         Assert.Equal(3, exit);
         Assert.Contains("settle-marker-246", grid);
