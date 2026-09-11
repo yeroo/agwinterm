@@ -124,7 +124,27 @@ if (-not $ok) {
                  "marker present in session.text of the target: $inPane"
 }
 Check 'search mutation guard has a real match' $ok $searchSaw
-Check 'missing search target refuses without replacing active query' (-not (Rpc 'session.search' @{query='MISSING-SEARCH-QUERY'} 'missing-pane' -AllowError).ok -and (Rpc 'session.search' @{} $session)-eq $findBefore)
+$missingRefused = -not (Rpc 'session.search' @{query='MISSING-SEARCH-QUERY'} 'missing-pane' -AllowError).ok
+$findAfter = Rpc 'session.search' @{} $session
+$stableSaw = ''
+if (-not ($missingRefused -and $findAfter -eq $findBefore)) {
+    $paneText = ''
+    try { $paneText = [string](Rpc 'session.text' @{} $session) } catch { $paneText = "unreadable: $($_.Exception.Message)" }
+    $markerCount = ([regex]::Matches($paneText, 'STABILIZATION-SEARCH-MARKER')).Count
+    $activeSession = ''
+    try { $activeSession = [string](Rpc 'window.state').activeSession } catch { $activeSession = 'unreadable' }
+    # The pane read twice, a second apart: if the two differ the shell is still writing, which is
+    # the one explanation that also covers the runner's other two failures (a shell env echo that
+    # had not arrived, and split shells not ready).
+    Start-Sleep -Seconds 1
+    $paneAgain = ''
+    try { $paneAgain = [string](Rpc 'session.text' @{} $session) } catch { $paneAgain = 'unreadable' }
+    $stableSaw = "missing-target refused: $missingRefused; before=<$findBefore> after=<$findAfter>; " +
+                 "marker occurrences in pane: $markerCount; activeSession=<$activeSession>; " +
+                 "pane still changing 1s later: $($paneAgain -cne $paneText); " +
+                 "pane tail=<$($paneText.Substring([Math]::Max(0,$paneText.Length-300)) -replace '\s+',' ')>"
+}
+Check 'missing search target refuses without replacing active query' ($missingRefused -and $findAfter -eq $findBefore) $stableSaw
 $null=Rpc 'session.search' @{action='close'} $session
 Check 'unknown switch operation refuses' (-not (Rpc 'session.switch' @{op='typo'} -NoTarget -AllowError).ok)
 $mixedCommand='Tool --Path C:/CaseSensitive/Project --Key AbC'
