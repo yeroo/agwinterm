@@ -44,6 +44,16 @@ named as such rather than left to look like a backlog nobody is working on.
 | `session.split.close` — closes **either** pane, the survivor's id as the reply; a one-pane session refused | 0.23.0 | agwinterm *(P4, #238)*, lite: P4-lite |
 | `session.swap` — the panes exchanged; axis, ratio sequence, focus's pane, the session-wide overlay, status and **every id** kept (a pane overlay travels with its pane since P5) | 0.26.0 | agwinterm *(P4, #238)*, lite: P4-lite *(agliteterm #30 — one flag read in its hidden-session model; see [lite-parity.md](lite-parity.md))* |
 | Pane-scoped overlays and reading an overlay — `--pane left\|right` on `session.overlay` `open` / `close` / `result` (the flag omitted = the session-wide slot, unchanged byte for byte; `left` = pane 0 and `right` = pane 1 whatever the axis; a pane overlay is that pane's **surface** while open, moves with its pane on a swap and dies with it), `session.overlay.copy`, `session.overlay.text [--all\|--lines N]`, `session.text --all`, `paneOverlays` in `tree` | 0.24.0 (`copy` / `text`), pane scoping 2026-08-01 | agwinterm *(P5, #250)*, lite *(P5-lite, agliteterm #40)* |
+| `session.rename` replies `{session, name}` — the session the name landed on and the name in effect; a pane id names the session that pane belongs to, a blank name and an unknown target are refused in their own words | — | agwinterm #287, and agliteterm's mirror of it |
+
+`session.rename`'s row is the third in the family P2 opened: `session.restore` stopped answering the
+constant "pinned" and named the pane, P3's `session.context` shipped `{session, context}`, and #287
+found `rename` still answering "renamed" for every outcome — so a caller that targeted a PANE could
+not see which session took the name. Widening to the owner is kept, deliberately and now visibly: a
+pane has no label of its own, and `AGWINTERM_SESSION_ID` IS a pane id, so refusing would refuse the
+verb's commonest call. That is the same rule the `session.overlay` note below records from the other
+side: a pane id is refused where the verb acts on a PANE and a `--pane` flag can name one, and lands
+on the session where the verb acts on a SESSION — what is never allowed is doing either one silently.
 
 The two `session.overlay` rows are the two halves of one item: #213 the *honesty* half (a pane id is
 refused rather than silently widened — still the rule for the verbs **without** `--pane`), P5 the

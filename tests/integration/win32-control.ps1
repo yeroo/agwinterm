@@ -1279,6 +1279,38 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         $ctxNode3 = Get-SessionSnapshot $sessionId
         Check 'a rename edits the name and leaves the context alone (two fields)' `
             ($ctxRename.ok -and $ctxNode3.name -eq 'p3-renamed' -and $ctxNode3.context -eq $ctxText) "name=$($ctxNode3.name) context=$($ctxNode3.context)"
+        # #287: the rename reply names the SESSION it landed on and the name in effect, the shape
+        # session.context replies in — it used to be the constant "renamed" for every outcome.
+        Check 'session.rename replies with the session id and the name in effect' `
+            ($ctxRename.result.session -eq $sessionId -and $ctxRename.result.name -eq 'p3-renamed') `
+            "reply=$($ctxRename | ConvertTo-Json -Compress)"
+        # And the reason that matters: a PANE id names the session the pane belongs to, and the reply
+        # SAYS so. $sessionId's own pane carries it, so split first to get an id that is a pane's alone.
+        $renSplit = Invoke-Ctl @('session', 'split', 'on', '--target', $sessionId)
+        Start-Sleep -Milliseconds 600
+        $renPaneId = [string]$renSplit.result
+        $renByPane = Invoke-Ctl @('session', 'rename', 'p287-from-the-pane', '--target', $renPaneId)
+        Start-Sleep -Milliseconds 400
+        $renNode = Get-SessionSnapshot $sessionId
+        Check 'a pane id renames the session that pane belongs to, and the reply names that session' `
+            ($renByPane.ok -and $renPaneId -and $renPaneId -ne $sessionId -and
+             $renByPane.result.session -eq $sessionId -and $renByPane.result.name -eq 'p287-from-the-pane' -and
+             $renNode.name -eq 'p287-from-the-pane') `
+            "pane=$renPaneId reply=$($renByPane | ConvertTo-Json -Compress) name=$($renNode.name)"
+        # Two conditions, two wordings: they used to share "session not found / blank name".
+        $renBlank = Invoke-Ctl @('session', 'rename', '   ', '--target', $sessionId)
+        $renGhost = Invoke-Ctl @('session', 'rename', 'p287-ghost', '--target', 'no-such-target-287')
+        Start-Sleep -Milliseconds 300
+        $renNode2 = Get-SessionSnapshot $sessionId
+        Check 'a blank name and an unknown target are refused in their own words, and the name stands' `
+            ((-not $renBlank.ok) -and ("$($renBlank.error)" -match 'blank') -and
+             (-not $renGhost.ok) -and ("$($renGhost.error)" -match 'session not found') -and
+             $renNode2.name -eq 'p287-from-the-pane') `
+            "blank=$($renBlank.error) ghost=$($renGhost.error) name=$($renNode2.name)"
+        Invoke-Ctl @('session', 'split', 'off', '--target', $sessionId) | Out-Null
+        Start-Sleep -Milliseconds 500
+        Invoke-Ctl @('session', 'rename', 'p3-renamed', '--target', $sessionId) | Out-Null
+        Start-Sleep -Milliseconds 300
         $ctxState = Get-ChildItem -LiteralPath (Join-Path $testAppDir 'windows') -Filter '*.json' -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
         Check 'the context is in the state file (what a restart reads)' `

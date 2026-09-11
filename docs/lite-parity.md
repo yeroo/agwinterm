@@ -621,6 +621,23 @@ and the list should grow as more turn up.
     products; a one-pane session's exit stays on screen as `(exited)` in lite.
   In both products, `session select` restores that session's workspace as current and clears an
   intentional empty-workspace selection.
+- **`session rename` names a session, and says which one** (agwinterm #287). One rule, both
+  products: the target resolves the way every content verb's does, a target that names a PANE lands on
+  the SESSION that pane belongs to, and the reply is `{session, name}` — the session the name landed on
+  and the name in effect, read back off the session. Widening to the owner is the right resolution and
+  not a guess the caller has to make: a program in a pane is handed that PANE's id as
+  `AGWINTERM_SESSION_ID`, the CLI sends it when no `--target` is passed, and a pane carries no label of
+  its own in either product (one sidebar row per session, no name field on lite's `P` line). What was
+  wrong in both was the reply: the constant `"renamed"`, so which session took the name was unknowable
+  — agwinterm's silent widening and lite's write onto a hidden session that `tree` never draws,
+  `resolveTarget` never matches by name and the state file never keeps, were the same defect wearing two
+  faces. The fix is `session.restore`'s from P2 and `session.context`'s from P3: name what it landed on.
+  One difference remains, and it is each product's cover model rather than this verb's rule: an
+  agwinterm scratch / overlay cover COVERS a session, so its id lands on that session (the window-level
+  quick terminal covers none and is refused); a lite cover is a hidden session with no owner at all
+  (`isCoverLocked` = hidden and `splitOwnerOf` is null), so it is refused there under the identity-cover
+  rule it shares with `flag`, `seen`, `duplicate`, `status` and `move`. Both refusals are the same
+  sentence in each product's own terms: a target that belongs to no session has nothing to name.
 - **The native core is shared.** Both load `agwinterm_core.dll` across the same C ABI, so emulator
   behaviour — widths, scrollback, alt screen — is common by construction. A difference there is a
   bug in one of the clients, not a parity gap.

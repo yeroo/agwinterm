@@ -456,7 +456,19 @@ internal sealed class FakeSessionHost : ISessionHost
     public void SessionGo(string dir) { }
     public bool SessionReorder(string? target, string dir) => Find(target) is not null;
     public bool SessionToWorkspace(string? target, string workspace) { var s = Find(target); var w = FindWs(workspace); if (s is null || w is null) return false; Workspaces.First(x => x.Sessions.Contains(s)).Sessions.Remove(s); w.Sessions.Add(s); return true; }
-    public bool SessionRename(string? target, string name) { var s = FindSes(target); if (s is null || string.IsNullOrWhiteSpace(name)) return false; s.Name = name; return true; }
+    // Mirrors the app (#287): FindSes is the pane-capable resolver, so a pane id lands on the session
+    // it belongs to; an unknown target is the app's "session not found"; the reply names the session
+    // the name landed on and the name read BACK off it. The blank check is the fake's tripwire, as
+    // SessionContext's Validate is — ControlServer refuses a blank name before the host is reached,
+    // so a test that drives the host directly with one must blow up, not see it stored.
+    public string SessionRename(string? target, string name)
+    {
+        var s = FindSes(target);
+        if (s is null) return ISessionHost.RefusePrefix + SessionNames.NoSession;
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("the server should have refused this: " + SessionNames.Blank, nameof(name));
+        s.Name = name;
+        return SessionNames.Reply(s.Id, s.Name);
+    }
     public string SessionHud(string? target, string action, HudSpec? spec)
     {
         var all = Workspaces.SelectMany(w => w.Sessions).ToArray();

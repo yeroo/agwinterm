@@ -442,17 +442,35 @@ internal partial class Program
         return true;
     }
 
-    public bool SessionRename(string? target, string name)
+    // session.rename (#287). Resolution is session.context's (FindSesForTarget: exact pane, exact
+    // session, pane prefix, session prefix / name; a split pane's id or a scratch or overlay cover id
+    // lands on the session it belongs to, the window-level quick terminal on nothing) — and the reply
+    // now SAYS which session that was. A pane id reaching the session it belongs to is the right
+    // resolution and stays: a pane carries no label of its own (the sidebar draws one row per
+    // session, the state file keeps one name per session), and a program inside a pane is handed
+    // that PANE's id as AGWINTERM_SESSION_ID, which the CLI sends when no --target is passed — so a
+    // bare `session rename <name>` from inside a split pane IS a pane-targeted rename and means the
+    // session. What was wrong was answering the constant "renamed" for it, leaving the caller unable
+    // to see which session took the name (session.restore's pre-P2 defect, one verb over).
+    //
+    // The write goes through the FIFO queued hop rather than Post(...), for session.context's reason:
+    // the reply carries the name IN EFFECT, read back off the session after the write. The target is
+    // resolved INSIDE the hop, so a session closed between the request and the write is refused
+    // rather than written to. A hop that cannot be queued (the window is closing, or its message
+    // queue refused the wake-up), that the window closes under, or that times out throws, which
+    // Dispatch turns into ok:false with nothing applied (#228 item 5). The server has already refused
+    // a blank name. The rename does not touch Context — the name and the context are two fields, and
+    // rename edits one of them.
+    public string SessionRename(string? target, string name)
     {
-        var ses = FindSesForTarget(target);
-        if (ses is null || string.IsNullOrWhiteSpace(name)) return false;
-        // The post's result IS the reply (#228 item 5), as for every verb that posts: a rename racing
-        // the window's WM_DESTROY used to answer ok with the action stranded in the queue; in P3 it
-        // returned the post's false, which the server read back as "session not found"; PostVerb's
-        // throw names the real reason. The rename does not touch Context — the name and the context
-        // are two fields, and rename edits one of them.
-        PostVerb(() => { ses.Name = name; ses.CustomName = name; RequestRedraw(); SaveState(); }); // CustomName drives the title bar
-        return true;
+        return InvokeOnUiQueued(() =>
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null) return ISessionHost.RefusePrefix + SessionNames.NoSession;
+            ses.Name = name; ses.CustomName = name;   // CustomName drives the title bar
+            RequestRedraw(); SaveState();
+            return SessionNames.Reply(ses.Id, ses.CustomName);
+        });
     }
 
     // session.context (P3). Resolution is rename's (FindSesForTarget: exact pane, exact session, pane
