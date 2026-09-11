@@ -154,15 +154,34 @@ public interface ISessionHost
     /// <summary>Relocate a session to another workspace (by id/prefix/active), appending.</summary>
     bool SessionToWorkspace(string? target, string workspace);
 
-    /// <summary>Rename a session: sets its custom name (shown in the sidebar and title bar). Resolves
-    /// the target the way every content verb does (exact pane, exact session, pane prefix, session
-    /// prefix / name — a scratch or overlay cover id lands on the session it covers). False when no
-    /// session resolves or the name is blank. A rename the window could not queue (it is closing, or
-    /// its message queue refused the wake-up) is a throw, not a false — the server reads false as
-    /// "session not found", and Dispatch turns the
-    /// throw into ok:false with the real reason (#228 item 5: every verb that posts to the UI thread
-    /// answers with the post's outcome, never a constant true; nothing was applied when it says so).</summary>
-    bool SessionRename(string? target, string name);
+    /// <summary>
+    /// <c>session.rename</c>: set a session's custom name (shown in the sidebar row and the title
+    /// bar, carried in <c>tree</c> as <c>name</c>, persisted so it survives a restart). The server
+    /// has already refused a blank name through <see cref="SessionNames"/>, so the host stores what
+    /// it is given.
+    /// <para><b>Resolution</b> is <see cref="SessionContext"/>'s, the other verb that writes a
+    /// session's labels: null / "" / "active" is the active session, else exact pane, exact session,
+    /// pane prefix, session prefix / unique name; a split pane's id, or a scratch or overlay cover's
+    /// id, resolves to the SESSION it belongs to, because a program launched in a pane or a cover
+    /// inherits that id as <c>AGWINTERM_SESSION_ID</c> and "this session" is the one it is part of —
+    /// and because a pane has no label of its own to write on. The window-level quick terminal
+    /// belongs to no session and is refused.</para>
+    /// <para><b>Returns</b> the JSON reply <see cref="SessionNames.Reply"/> builds —
+    /// <c>{"session":id,"name":text}</c> — naming the session the name LANDED ON and the name in
+    /// effect after the write, read back off the session rather than echoed from the request (#287:
+    /// the reply used to be the constant "renamed", so a caller that passed a pane id could not see
+    /// which session took the name — the defect P2 fixed on <c>session.restore</c> and P3 shipped
+    /// the shape for on <c>session.context</c>). A target that resolves to no session returns
+    /// <see cref="ISessionHost.RefusePrefix"/> + <see cref="SessionNames.NoSession"/> and changes
+    /// nothing.</para>
+    /// <para><b>Threading</b> is <see cref="SessionContext"/>'s: the write is applied on the UI
+    /// thread through the FIFO queued hop, the target is resolved INSIDE the hop (a session closed
+    /// between the request and the write is refused rather than written to), and a hop that cannot
+    /// be queued or that the window closes under throws, which Dispatch turns into ok:false with
+    /// nothing applied (#228 item 5: every verb that posts to the UI thread answers with the post's
+    /// outcome, never a constant true).</para>
+    /// </summary>
+    string SessionRename(string? target, string name);
 
     /// <summary>
     /// <c>session.context</c>: set (or, with <paramref name="context"/> null, clear) a session's
@@ -636,7 +655,9 @@ public sealed class SingleSessionHost : ISessionHost
     public void SessionGo(string dir) { }
     public bool SessionReorder(string? target, string dir) => false;
     public bool SessionToWorkspace(string? target, string workspace) => false;
-    public bool SessionRename(string? target, string name) => false;
+    // One session, no sidebar row and no title bar to draw a name in: the single-session host has
+    // nothing to rename, and says so with the wording every host uses for "no session".
+    public string SessionRename(string? target, string name) => ISessionHost.RefusePrefix + SessionNames.NoSession;
     public string SessionContext(string? target, string? context) => ISessionHost.RefusePrefix + SessionContexts.NoSession;
     public bool SessionSeen(string? target) => false;
     public string SidebarState() => $"visible tree {SidebarWidths.Default}";

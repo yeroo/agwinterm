@@ -291,7 +291,7 @@ public sealed class ControlServer : IDisposable
                         ? host.SessionToWorkspace(target, wsMove)
                         : host.SessionReorder(target, GetString(args, "dir") ?? "down"))
                         ? Ok("moved") : Err("not found");
-                case "session.rename": return host.SessionRename(target, GetString(args, "name") ?? "") ? Ok("renamed") : Err("session not found / blank name");
+                case "session.rename": return HandleSessionRename(host, target, args);
                 case "session.context": return HandleSessionContext(host, target, args);
                 case "session.hud.open": case "session.hud.update": case "session.hud.close":
                     {
@@ -721,6 +721,32 @@ public sealed class ControlServer : IDisposable
         => reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
             ? Err(reply[ISessionHost.RefusePrefix.Length..])
             : Ok(reply);
+
+    /// <summary>
+    /// session.rename: set a session's custom name and reply with the name IN EFFECT and the SESSION
+    /// it landed on (<c>{session, name}</c>, OkRaw) — the read-back is <c>tree</c>'s <c>name</c>.
+    /// <para>The reply used to be the constant "renamed" for every outcome, and the one refusal read
+    /// "session not found / blank name" — two conditions in one wording (#287). A caller that named a
+    /// PANE (a split pane's id, a cover's id, or just <c>$AGWINTERM_SESSION_ID</c>, which IS a pane
+    /// id) was told "renamed" while the name landed on the session that pane belongs to, and could
+    /// not see which session that was. Naming it is the fix P2 made on <c>session.restore</c> and P3
+    /// on <c>session.context</c>; the resolution itself is unchanged and is the right one, because a
+    /// pane has no label of its own and a bare <c>session rename</c> from inside a split pane sends
+    /// that pane's id.</para>
+    /// <para>The blank refusal happens HERE, before the host is reached, through
+    /// <see cref="SessionNames"/> — the one wording the fake and the app share — so a blank name and
+    /// an unknown target are two wordings for two conditions. A refusal leaves the old name in place:
+    /// the host is never called.</para>
+    /// </summary>
+    private static string HandleSessionRename(ISessionHost host, string? target, JsonElement args)
+    {
+        string name = (GetString(args, SessionNames.Key) ?? "").Trim();
+        if (name.Length == 0) return Err(SessionNames.Blank);
+        string reply = host.SessionRename(target, name);
+        return reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+            ? Err(reply[ISessionHost.RefusePrefix.Length..])
+            : OkRaw(reply);
+    }
 
     /// <summary>
     /// session.context: set or clear a session's one-line context and reply with the value IN EFFECT,

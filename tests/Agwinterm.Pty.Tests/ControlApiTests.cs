@@ -133,6 +133,58 @@ public class ControlApiTests
         Assert.Equal("renamed", host.ActiveSess!.Name);
     }
 
+    /// <summary>#287: the reply names the SESSION the name landed on and the name in effect, so a
+    /// caller that targeted a pane can see which session took it. It used to be the constant
+    /// "renamed" for every outcome.</summary>
+    [Fact]
+    public void SessionRename_RepliesWithTheSessionItLandedOnAndTheNameInEffect()
+    {
+        var (server, host) = New();
+        string id = host.ActiveSess!.Id;
+        var r = Dispatch(server, "session.rename", new { name = "  built  " });   // trimmed, as a context is
+        Assert.True(Ok(r));
+        var result = r.GetProperty("result");
+        Assert.Equal(id, result.GetProperty("session").GetString());
+        Assert.Equal("built", result.GetProperty("name").GetString());
+        Assert.Equal("built", host.ActiveSess.Name);
+    }
+
+    /// <summary>#287: a blank name and an unknown target were one wording ("session not found /
+    /// blank name") for two conditions. Each has its own now, and neither changes anything.</summary>
+    [Fact]
+    public void SessionRename_BlankAndUnknownTarget_AreTwoWordingsAndChangeNothing()
+    {
+        var (server, host) = New();
+        string was = host.ActiveSess!.Name;
+
+        var blank = Dispatch(server, "session.rename", new { name = "   " });
+        Assert.False(Ok(blank));
+        Assert.Equal(SessionNames.Blank, blank.GetProperty("error").GetString());
+
+        var ghost = Dispatch(server, "session.rename", new { name = "x" }, target: "no-such-id");
+        Assert.False(Ok(ghost));
+        Assert.Equal(SessionNames.NoSession, ghost.GetProperty("error").GetString());
+
+        Assert.Equal(was, host.ActiveSess.Name);
+    }
+
+    /// <summary>#287: a PANE target lands on the session that pane belongs to — the resolution every
+    /// content verb uses, and the one a bare `session rename` relies on, since the id a program in a
+    /// pane is handed as AGWINTERM_SESSION_ID is that pane's. The reply names the session, so the
+    /// widening is visible to the caller rather than silent.</summary>
+    [Fact]
+    public void SessionRename_PaneTarget_NamesTheSessionThePaneBelongsTo()
+    {
+        var (server, host) = New();
+        var ses = host.ActiveSess!;
+        string paneId = ses.PaneIds.Count > 0 ? ses.PaneIds[0] : ses.Id;
+
+        var r = Dispatch(server, "session.rename", new { name = "from the pane" }, target: paneId);
+        Assert.True(Ok(r));
+        Assert.Equal(ses.Id, r.GetProperty("result").GetProperty("session").GetString());
+        Assert.Equal("from the pane", ses.Name);
+    }
+
     [Fact]
     public void SessionFlag_TogglesFlag()
     {

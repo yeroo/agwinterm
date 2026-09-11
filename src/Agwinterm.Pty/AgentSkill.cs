@@ -96,7 +96,14 @@ public static class AgentSkill
         - `agwintermctl profiles list` — shell profiles (cmd, Windows PowerShell, PowerShell 7, Git Bash, WSL:*, custom); `* ` marks the default.
           Profiles live in `%LOCALAPPDATA%\agwinterm\profiles.json` (auto-seeded from detected shells; edit to add your own — name/command/args/cwd/icon/env); `agwintermctl profiles reload` re-reads it.
         - `agwintermctl session select <id>` / `session close <id>`
-        - `agwintermctl session rename <new-name> [--target ID]` — set a session's custom name (sidebar + title bar)
+        - `agwintermctl session rename <new-name> [--target ID]` — set a session's custom name (sidebar + title bar).
+          It names a SESSION, and a PANE id names the session that pane belongs to — worth knowing, because
+          `AGWINTERM_SESSION_ID` is your PANE's id and is what the CLI sends when you pass no `--target`: from
+          inside a split pane, a bare `session rename` names the session BOTH panes are in, not your half (a pane
+          has no label of its own — the sidebar draws one row per session). Replies `{session, name}` naming the
+          session it landed on and the name IN EFFECT, so you can see which one took it; read it back in
+          `tree --json` as `name`. A blank name is refused, and so is a target that belongs to no session
+          (the quick terminal).
         - `agwintermctl session context <text> [--target ID]` — ONE LINE of "what is this pane for", shown dimmed after the
           name in the title bar and the sidebar row and on the palette's second line, where the name has to stay short.
           It survives a restart (and `session reopen`), and `tree --json` reads it back as `context` on the session node
