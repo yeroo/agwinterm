@@ -100,10 +100,30 @@ Check 'missing readonly target refuses without protecting the active pane' (-not
 $null=Rpc 'session.write' @{text="`r`nSTABILIZATION-SEARCH-MARKER`r`n"} $session
 # Search uses a sent UI message and can overtake the posted emulator write. A no-change
 # config.set is not an acknowledgement of that write. Wait for the actual search result.
-Check 'search mutation guard has a real match' (NavWait {
+#
+# The failure detail is the point of the rest of this block. `session.search` searches the ACTIVE
+# surface and only accepts `--target` for API shape (Program.ControlHost.SessionSearch says so), so
+# this check silently depends on $session still being the active pane after the wheel fixture's
+# `session.split.close` above. When it went red on GitHub's runner image 20260907.229.1 (green on
+# 20260824.214.3, same code, and green locally) the bare `Check` said only "FAIL ... : " — which
+# rules nothing out. So say what was actually seen: what search answered, which session is active,
+# and whether the marker is in the pane's own text at all. The three together separate "the write
+# never landed" from "search is looking at another pane".
+$searchSaw = ''
+$ok = NavWait {
     $script:findBefore=Rpc 'session.search' @{query='STABILIZATION-SEARCH-MARKER'} $session
     return $script:findBefore-match 'of [1-9]'
-})
+}
+if (-not $ok) {
+    $activeSession = ''
+    try { $activeSession = [string](Rpc 'window.state').activeSession } catch { $activeSession = "unreadable: $($_.Exception.Message)" }
+    $paneText = ''
+    try { $paneText = [string](Rpc 'session.text' @{} $session) } catch { $paneText = "unreadable: $($_.Exception.Message)" }
+    $inPane = $paneText -match 'STABILIZATION-SEARCH-MARKER'
+    $searchSaw = "search answered <$findBefore>; window.state activeSession=<$activeSession>; " +
+                 "marker present in session.text of the target: $inPane"
+}
+Check 'search mutation guard has a real match' $ok $searchSaw
 Check 'missing search target refuses without replacing active query' (-not (Rpc 'session.search' @{query='MISSING-SEARCH-QUERY'} 'missing-pane' -AllowError).ok -and (Rpc 'session.search' @{} $session)-eq $findBefore)
 $null=Rpc 'session.search' @{action='close'} $session
 Check 'unknown switch operation refuses' (-not (Rpc 'session.switch' @{op='typo'} -NoTarget -AllowError).ok)
