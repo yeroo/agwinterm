@@ -120,8 +120,28 @@ if (-not $ok) {
     $paneText = ''
     try { $paneText = [string](Rpc 'session.text' @{} $session) } catch { $paneText = "unreadable: $($_.Exception.Message)" }
     $inPane = $paneText -match 'STABILIZATION-SEARCH-MARKER'
+    # Write it AGAIN. If the retry lands, the first write was lost and this is a race; if it does not,
+    # writes to this pane stopped working, which is a defect and not a timing artefact.
+    $retryLanded = 'not attempted'
+    try {
+        $null = Rpc 'session.write' @{text="`r`nSTABILIZATION-RETRY-MARKER`r`n"} $session
+        Start-Sleep -Milliseconds 800
+        $retryText = [string](Rpc 'session.text' @{} $session)
+        $retryLanded = [string]($retryText -match 'STABILIZATION-RETRY-MARKER')
+    } catch { $retryLanded = "threw: $($_.Exception.Message)" }
+    # What the session looks like structurally: a split left behind by the wheel fixture's
+    # `session.split.close` would mean the write and the read are not on the same pane.
+    $shape = ''
+    try {
+        $node = (Rpc 'tree').workspaces.sessions | Where-Object { $_.id -eq $session }
+        $shape = "paneCount=$($node.paneCount) focusedPane=$($node.focusedPane) paneIds=$($node.paneIds -join ',') active=$($node.active)"
+    } catch { $shape = "unreadable: $($_.Exception.Message)" }
+    $flat = ($paneText -replace '\s+',' ').Trim()
     $searchSaw = "search answered <$findBefore>; window.state activeSession=<$activeSession>; " +
-                 "marker present in session.text of the target: $inPane"
+                 "marker present in session.text of the target: $inPane; retry write landed: $retryLanded; " +
+                 "target session $shape; pane len=$($paneText.Length) head=<" +
+                 $flat.Substring(0,[Math]::Min(200,$flat.Length)) + "> tail=<" +
+                 $flat.Substring([Math]::Max(0,$flat.Length-200)) + ">"
 }
 Check 'search mutation guard has a real match' $ok $searchSaw
 $missingRefused = -not (Rpc 'session.search' @{query='MISSING-SEARCH-QUERY'} 'missing-pane' -AllowError).ok
