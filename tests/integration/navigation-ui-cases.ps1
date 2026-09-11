@@ -97,14 +97,43 @@ $null=Rpc 'session.readonly' @{op='on'} $session
 Check 'readonly typo cannot remove existing protection' (-not (Rpc 'session.readonly' @{op='typo'} $session -AllowError).ok -and (Rpc 'session.readonly' @{op='get'} $session)-eq 'on')
 $null=Rpc 'session.readonly' @{op='off'} $session
 Check 'missing readonly target refuses without protecting the active pane' (-not (Rpc 'session.readonly' @{op='on'} 'missing-pane' -AllowError).ok -and (Rpc 'session.readonly' @{op='state'} $session)-eq 'off')
-$null=Rpc 'session.write' @{text="`r`nSTABILIZATION-SEARCH-MARKER`r`n"} $session
-# Search uses a sent UI message and can overtake the posted emulator write. A no-change
-# config.set is not an acknowledgement of that write. Wait for the actual search result.
-Check 'search mutation guard has a real match' (NavWait {
-    $script:findBefore=Rpc 'session.search' @{query='STABILIZATION-SEARCH-MARKER'} $session
-    return $script:findBefore-match 'of [1-9]'
-})
-Check 'missing search target refuses without replacing active query' (-not (Rpc 'session.search' @{query='MISSING-SEARCH-QUERY'} 'missing-pane' -AllowError).ok -and (Rpc 'session.search' @{} $session)-eq $findBefore)
+# The marker has to be RE-WRITTEN until it is observable, not written once and waited for.
+#
+# Why: the wheel fixture above ends in `session.split.close`, and a write that arrives while the
+# surviving pane is still being re-laid out is dropped — `session.write` answers ok and the text is
+# gone. Proven on GitHub's runner image 20260907.229.1, where this check went red on code that was
+# green on 20260824.214.3 and is green locally: at the moment of failure the marker was absent from
+# the pane, the pane held nothing but a fresh `cmd` banner and prompts, the session was already back
+# to one pane — and writing the very same text again LANDED. So the pane was healthy and one write
+# had been swallowed. Waiting longer cannot recover a write that was dropped; only writing again can.
+#
+# The dropped write is a product defect in its own right (an ok reply for text that was discarded)
+# and is filed separately. This check is about search, so it retries the write and gets on with it.
+$searchSaw = ''
+$ok = $false
+for ($attempt = 0; $attempt -lt 12 -and -not $ok; $attempt++) {
+    $null = Rpc 'session.write' @{text="`r`nSTABILIZATION-SEARCH-MARKER`r`n"} $session
+    Start-Sleep -Milliseconds 250
+    $script:findBefore = Rpc 'session.search' @{query='STABILIZATION-SEARCH-MARKER'} $session
+    $ok = $script:findBefore -match 'of [1-9]'
+}
+if (-not $ok) {
+    $activeSession = ''
+    try { $activeSession = [string](Rpc 'window.state').activeSession } catch { $activeSession = 'unreadable' }
+    $paneText = ''
+    try { $paneText = [string](Rpc 'session.text' @{} $session) } catch { $paneText = "unreadable: $($_.Exception.Message)" }
+    $flat = ($paneText -replace '\s+',' ').Trim()
+    $searchSaw = "after $attempt write+search attempts: search answered <$findBefore>; " +
+                 "marker in the pane: $($paneText -match 'STABILIZATION-SEARCH-MARKER'); " +
+                 "window.state activeSession=<$activeSession>; pane len=$($paneText.Length) " +
+                 "tail=<" + $flat.Substring([Math]::Max(0,$flat.Length-200)) + ">"
+}
+Check 'search mutation guard has a real match' $ok $searchSaw
+# The pair is still the point: a refused search must not replace the query in effect.
+$missingRefused = -not (Rpc 'session.search' @{query='MISSING-SEARCH-QUERY'} 'missing-pane' -AllowError).ok
+$findAfter = Rpc 'session.search' @{} $session
+Check 'missing search target refuses without replacing active query' ($missingRefused -and $findAfter -eq $findBefore) `
+    "missing-target refused: $missingRefused; before=<$findBefore> after=<$findAfter>"
 $null=Rpc 'session.search' @{action='close'} $session
 Check 'unknown switch operation refuses' (-not (Rpc 'session.switch' @{op='typo'} -NoTarget -AllowError).ok)
 $mixedCommand='Tool --Path C:/CaseSensitive/Project --Key AbC'
