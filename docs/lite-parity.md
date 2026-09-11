@@ -621,7 +621,7 @@ and the list should grow as more turn up.
     products; a one-pane session's exit stays on screen as `(exited)` in lite.
   In both products, `session select` restores that session's workspace as current and clears an
   intentional empty-workspace selection.
-- **`session rename` names a session, and says which one** (agwinterm #287, lite #82). One rule, both
+- **`session rename` names a session, and says which one** (agwinterm #287). One rule, both
   products: the target resolves the way every content verb's does, a target that names a PANE lands on
   the SESSION that pane belongs to, and the reply is `{session, name}` — the session the name landed on
   and the name in effect, read back off the session. Widening to the owner is the right resolution and
