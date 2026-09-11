@@ -91,7 +91,12 @@
         "--target",
         "{alpha}"
       ],
-      "result": "string"
+      "result": "object",
+      "fields": [
+        "session",
+        "name"
+      ],
+      "note": "agwinterm #287: a rename names a SESSION, and the reply says WHICH one \u2014 the session the name landed on and the name IN EFFECT, read off the session after the write, the shape session.context ships. It answered the constant \"renamed\" in both products, so a caller that named a PANE (a split pane's id, a cover's id, or just $AGWINTERM_SESSION_ID, which IS a pane id) could not see which session took the name. Widening to the owner is kept and is the right resolution: a pane carries no label of its own, and a bare `session rename` sends the caller's own pane id, so refusing it would refuse the verb's commonest call."
     },
     {
       "verb": "session.context",
