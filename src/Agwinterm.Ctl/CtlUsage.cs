@@ -31,9 +31,9 @@ public static class CtlUsage
           agwintermctl session select <target>
           agwintermctl session close [target]
           agwintermctl session rename <new-name...> [--target ID]
-      (names a SESSION; a pane id - including $AGWINTERM_SESSION_ID, which IS a pane id - names the
-      session that pane belongs to. Replies {session,name}: the session it landed on and the name in
-      effect. Blank is refused; so is a target that belongs to no session)
+              (names a SESSION; a pane id - including $AGWINTERM_SESSION_ID, which IS a pane id - names
+              the session that pane belongs to. Replies {session,name}: the session it landed on and the
+              name in effect. Blank is refused; so is a target that belongs to no session)
           agwintermctl session split [on|off|toggle] [--axis vertical|horizontal] [--target ID]
               (replies with a PANE ID: on/toggle-on = the split pane's, also when the session was already split;
               off/toggle-off = the survivor's. Default op = toggle. The axis names the ARRANGEMENT, agterm's words:
