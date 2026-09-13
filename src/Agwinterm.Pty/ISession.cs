@@ -109,7 +109,14 @@ public interface ISession : IDisposable
     /// policy), the bell, a notification (<c>OSC 9</c>, <c>OSC 777</c> — its control-API event
     /// always, badge and sound per focus and config), taskbar progress (<c>OSC 9;4</c>), a VT-log
     /// line for an unhandled sequence or a denied clipboard write. Read-only does not gate any of
-    /// it. This is the one statement of that; the other docs point here.</summary>
+    /// it. (5) What a payload paints is not durable. Its cells exist in this emulator alone: the
+    /// child's ConPTY never saw them, so anything that repaints the screen from ConPTY's own buffer
+    /// paints over them — the child's next output, and the full repaint ConPTY does on every resize,
+    /// which a window resize, <c>session split</c>, <c>session resize --split-ratio</c> and
+    /// <c>session split close</c> all trigger — and an erase does not push them into scrollback, so
+    /// <c>session text --all</c> and search stop finding them as well (agwinterm #289). A caller that
+    /// needs its text seen writes it once the layout has settled, or reads it back. This is the one
+    /// statement of that; the other docs point here.</summary>
     void Inject(ReadOnlySpan<byte> bytes);
     /// <summary>Run a mutation against the emulator under <see cref="SyncRoot"/>.</summary>
     void MutateLocked(Action<ITerminalCore> mutate);

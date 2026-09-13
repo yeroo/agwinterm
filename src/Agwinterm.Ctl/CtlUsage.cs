@@ -99,6 +99,7 @@ public static class CtlUsage
               newlines, a leading -- or runs of spaces are sent; invalid UTF-8 is refused, nothing sent; one
               trailing newline is dropped. "quick type" is `session type --target quick:` — the quick pane's id)
           agwintermctl session write <text...> [--target ID]                    (also takes --stdin)
+              (display only: the program's next repaint, or any pane resize, paints over it)
           agwintermctl session restore <command...>|none --target PANE          (pin a command re-run on every restart;
               target mandatory; replies {action,pane,session}; read back in `tree --json` as restoreCommands)
           agwintermctl restore capture [--target ID]       (capture the foreground command of every real pane — or the one

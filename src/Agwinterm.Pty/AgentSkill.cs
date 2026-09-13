@@ -193,7 +193,9 @@ public static class AgentSkill
           when you really mean one (an escape sequence for a TUI, a lone ^C). `session write` is NOT the way — it
           injects into the display, not into the program's input; but a terminal query in the payload is answered
           onto the program's input, and a mode it sets (mouse, focus, bracketed paste, key encoding) changes what
-          the program receives from then on
+          the program receives from then on. What it paints is NOT durable: the program's next repaint, and the one
+          every pane resize triggers (a window resize, `session split`, a split-ratio change, `session split close`),
+          paints over it, and it does not survive into scrollback — write once the layout has settled, or read it back
         - `agwintermctl session type --stdin --target <id>`      — the text is STDIN, as bytes. This is how text with
           quotes, newlines, runs of spaces or a leading `--` is sent: positionals are re-joined with one space and
           the option parser eats a leading `--`, both silently. Pipe a here-string (`@"..."@ | agwintermctl session
