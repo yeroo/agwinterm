@@ -103,7 +103,9 @@ internal partial class Program
                 if (_frontmostId == target.Id) _frontmostId = _windowIndex.FirstOrDefault(m => m.IsOpen)?.Id ?? _windowIndex.FirstOrDefault()?.Id;
             }
             SweepWindowBackgrounds(target.Id); // remove watermark files for that window's sessions
-            try { File.Delete(Path.Combine(AppDir, "windows", target.Id + ".json")); } catch { }
+            string gone = Path.Combine(AppDir, "windows", target.Id + ".json");
+            try { File.Delete(gone); } catch { }
+            _stateWriter.Forget(gone);
             SaveIndex();
         });
         return true;
@@ -699,7 +701,13 @@ internal partial class Program
 
     public string RestoreClear()
     {
-        try { if (File.Exists(StatePath)) { File.Delete(StatePath); return "restore state cleared"; } return "no restore state"; }
+        try
+        {
+            if (!File.Exists(StatePath)) return "no restore state";
+            File.Delete(StatePath);
+            _stateWriter.Forget(StatePath);   // the next save with the same bytes must write, not skip
+            return "restore state cleared";
+        }
         catch (Exception ex) { return "error: " + ex.Message; }
     }
 
@@ -1327,7 +1335,7 @@ internal partial class Program
         if (!TryCaptureForegroundCommands(snap.Select(x => x.pid).Where(pid => pid > 0), timeoutMs: 15000, out var byPid))
             return RestoreCaptureResult.Refuse(RestoreCaptureReply.QueryFailed);
 
-        return InvokeOnUiQueued(() =>
+        var (result, json, landedCount) = InvokeOnUiQueued(() =>
         {
             var landed = new List<CapturedPane>(snap.Count);
             lock (_workspaces)
@@ -1337,14 +1345,20 @@ internal partial class Program
                     pane.CapturedCommand = pid > 0 && byPid.TryGetValue(pid, out var cmd) ? cmd : null;
                     landed.Add(new CapturedPane(pane.Id, ses.Id, pane.CapturedCommand));
                 }
-            // The reply claims a checkpoint ON DISK. A save that did not land is a refusal that says
-            // what did happen: the slots are in memory (tree shows them) and are left as captured —
-            // rolling them back would make the tree disagree with a query that read the processes
-            // correctly (#246; lite's restore.capture refuses the same way).
-            if (landed.Count > 0 && !TrySaveState(out string? why))
-                return RestoreCaptureResult.Refuse(RestoreCaptureReply.NotSaved(landed.Count, why));
-            return new RestoreCaptureResult(landed, _config.RestoreCommands);
+            // The snapshot is built here, on the UI thread, where the tree is; it is written below,
+            // on this pipe thread, so the window never waits on the file (#294).
+            string? snapshot = null;
+            if (landed.Count > 0 && (snapshot = BuildStateSnapshot(out string? buildWhy)) is null)
+                return (RestoreCaptureResult.Refuse(RestoreCaptureReply.NotSaved(landed.Count, buildWhy)), (string?)null, landed.Count);
+            return (new RestoreCaptureResult(landed, _config.RestoreCommands), snapshot, landed.Count);
         });
+        // The reply claims a checkpoint ON DISK. A save that did not land is a refusal that says
+        // what did happen: the slots are in memory (tree shows them) and are left as captured —
+        // rolling them back would make the tree disagree with a query that read the processes
+        // correctly (#246; lite's restore.capture refuses the same way).
+        if (json is not null && !PublishState(json, out string? why))
+            return RestoreCaptureResult.Refuse(RestoreCaptureReply.NotSaved(landedCount, why));
+        return result;
     }
 
     // ---- Control-API event bus (agterm #273): a bounded, cursor-polled log of status / notification /

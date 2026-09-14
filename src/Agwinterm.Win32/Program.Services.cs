@@ -1266,17 +1266,19 @@ internal partial class Program
     }
 
     /// <summary>Persist the window library index (atomic). Best-effort.</summary>
-    private static void SaveIndex()
+    /// <summary>Snapshot the window library to windows.json. The bytes are built here; the write goes
+    /// through <see cref="_stateWriter"/>, off this thread, unless <paramref name="sync"/> — a window
+    /// closing needs its IsOpen flag on disk before the process can go.</summary>
+    private static void SaveIndex(bool sync = false)
     {
         try
         {
             List<WinMeta> copy;
             lock (_windowIndex) copy = _windowIndex.Select(m => new WinMeta { Id = m.Id, Name = m.Name, IsOpen = m.IsOpen, X = m.X, Y = m.Y, W = m.W, H = m.H, Max = m.Max }).ToList();
             var idx = new WindowsIndexFile { Version = 1, Frontmost = _frontmostId, Windows = copy };
-            Directory.CreateDirectory(AppDir);
-            string tmp = WindowsIndexPath + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(idx, RestoreState.Json));
-            File.Move(tmp, WindowsIndexPath, overwrite: true);
+            string json = JsonSerializer.Serialize(idx, RestoreState.Json);
+            if (sync) _stateWriter.Publish(WindowsIndexPath, json, out _);
+            else _stateWriter.Enqueue(WindowsIndexPath, json);
         }
         catch { }
     }
@@ -1433,22 +1435,56 @@ internal partial class Program
         return true;
     }
 
-    /// <summary>Snapshot the tree/selection/sidebar to disk atomically. No-op while restoring. Returns
-    /// whether THIS call put the snapshot on disk; every failure (no state directory, an unwritable
-    /// one, a full disk) is swallowed here and reported only through the return value, which the
-    /// UI-thread callers ignore as they always have and <see cref="RestoreCapture"/> refuses on (#246).
+    // The one writer every window shares (StateWriter has the why: #294, a rename held by an
+    // endpoint-security filter hung the window for as long as the filter took). Snapshots are built
+    // on the UI thread, where the data is; only the file I/O leaves it. A background write's failure
+    // goes to the debug output, where the swallowed failures went before.
+    private static readonly Agwinterm.Core.StateWriter _stateWriter =
+        new(TimeSpan.FromMilliseconds(200), m => System.Diagnostics.Debug.WriteLine(m));
+
+    /// <summary>Snapshot the tree/selection/sidebar and hand the bytes to the state writer; this
+    /// thread never waits on the file (#294). No-op while restoring. Returns whether a snapshot was
+    /// taken, not whether it is on disk yet — the UI-thread callers ignore it as they always have; a
+    /// caller whose reply claims a checkpoint on disk uses <see cref="BuildStateSnapshot"/> and
+    /// <see cref="PublishState"/> instead (<see cref="RestoreCapture"/>, #246).
     /// <paramref name="captureCommands"/> (quit only) first captures each pane's foreground command into its
     /// <see cref="Pane.CapturedCommand"/> when restore-commands is on; every save then writes that field —
-    /// one slot, one reader, so a `restore capture` checkpoint survives the ordinary saves in between (P3).</summary>
-    private bool SaveState(bool captureCommands = false) => TrySaveState(out _, captureCommands);
+    /// one slot, one reader, so a `restore capture` checkpoint survives the ordinary saves in between (P3).
+    /// A quit's save is also written synchronously: the shells are torn down right after it, and a
+    /// snapshot still in the writer's queue would be older than this one and fenced out anyway.</summary>
+    private bool SaveState(bool captureCommands = false)
+    {
+        string? json = BuildStateSnapshot(out _, captureCommands);
+        if (json is null) return false;
+        if (captureCommands)
+        {
+            bool ok = _stateWriter.Publish(StatePath, json, out _);
+            SaveIndex(sync: true);
+            return ok;
+        }
+        _stateWriter.Enqueue(StatePath, json);
+        SaveIndex();
+        return true;
+    }
 
-    /// <summary><see cref="SaveState"/> with the reason a save did not land, for a caller whose reply
-    /// claims durability.</summary>
-    private bool TrySaveState(out string? why, bool captureCommands = false)
+    /// <summary>Write a snapshot from <see cref="BuildStateSnapshot"/> NOW, on this thread, with the
+    /// reason it did not land. Build on the UI thread, publish on any: the caller's reply then
+    /// describes a file that exists, and the window never waited for it.</summary>
+    private bool PublishState(string json, out string? why)
+    {
+        bool ok = _stateWriter.Publish(StatePath, json, out why);
+        SaveIndex();
+        return ok;
+    }
+
+    /// <summary>The state file's bytes for the tree as it is now (UI thread: it reads the workspaces,
+    /// the panes' cwds and, with restore-buffer, their emulators). Null, with <paramref name="why"/>,
+    /// when there is nothing to save (a quick window, a restore in progress) or the snapshot failed.</summary>
+    private string? BuildStateSnapshot(out string? why, bool captureCommands = false)
     {
         why = null;
-        if (_isQuickWindow) { why = "quick terminal is not restored"; return false; }
-        if (_restoring) { why = "the window is still restoring its saved state"; return false; }
+        if (_isQuickWindow) { why = "quick terminal is not restored"; return null; }
+        if (_restoring) { why = "the window is still restoring its saved state"; return null; }
         try
         {
             // Snapshot rows under the workspaces lock, then read each cwd (which locks the
@@ -1521,14 +1557,8 @@ internal partial class Program
                 st.Workspaces.Add(wss);
             }
 
-            string path = StatePath;
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            string tmp = path + ".tmp";
-            File.WriteAllText(tmp, RestoreState.Serialize(st));
-            File.Move(tmp, path, overwrite: true); // atomic replace so a crash never leaves a truncated file
-
             // Mirror name + geometry into the window-library entry so windows.json can position the
-            // window at next launch without loading the per-window tree first.
+            // window at next launch without loading the per-window tree first (the caller saves it).
             lock (_windowIndex)
             {
                 var meta = _windowIndex.FirstOrDefault(m => m.Id == Id);
@@ -1538,10 +1568,9 @@ internal partial class Program
                     if (st.WindowWidth > 0) { meta.X = st.WindowX; meta.Y = st.WindowY; meta.W = st.WindowWidth; meta.H = st.WindowHeight; meta.Max = st.WindowMaximized; }
                 }
             }
-            SaveIndex();
-            return true;
+            return RestoreState.Serialize(st);
         }
-        catch (Exception ex) { why = ex.Message; return false; }   // persistence is best-effort for the UI callers
+        catch (Exception ex) { why = ex.Message; return null; }   // persistence is best-effort for the UI callers
     }
 
     // Window geometry loaded from state.json at startup (applied at window creation).

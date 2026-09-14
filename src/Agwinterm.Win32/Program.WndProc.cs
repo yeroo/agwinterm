@@ -665,8 +665,12 @@ internal partial class Program
                         if (nf is not null) { Frontmost = nf; _frontmostId = nf.Id; }
                     }
                 }
-                SaveIndex();
-                if (lastWindow) { DestroyQuickHost(); PostQuitMessage(0); }
+                SaveIndex(sync: lastWindow);   // the last window out needs the index on disk before the process goes
+                if (lastWindow)
+                {
+                    _stateWriter.Shutdown(TimeSpan.FromSeconds(5));   // whatever is still queued is older than the saves above and fenced; the join is for tidiness
+                    DestroyQuickHost(); PostQuitMessage(0);
+                }
                 return IntPtr.Zero;
         }
         return DefWindowProcW(hwnd, msg, wParam, lParam);

@@ -181,6 +181,21 @@ function Get-SessionSnapshot([string]$id) {
 }
 
 # The ACTIVE session's node — the one a verb sent without --target acts on.
+# The state file is written by a background thread that lets a burst of tree changes settle first
+# (#294: the UI thread no longer waits on the file). A check that reads it right after a verb polls
+# for the bytes it expects instead of racing the writer; the newest windows\*.json is returned either
+# way, so a failing check still names the file it read.
+function Wait-StateFile([scriptblock]$Test, [int]$Ms = 3000) {
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($Ms)
+    do {
+        $f = Get-ChildItem -LiteralPath (Join-Path $testAppDir 'windows') -Filter '*.json' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($f -and (& $Test (Get-Content -LiteralPath $f.FullName -Raw))) { return $f }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $f
+}
+
 function Get-ActiveSessionSnapshot {
     $tree = Invoke-Ctl @('tree')
     if (-not $tree.ok) { return $null }
@@ -1220,8 +1235,7 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
             "widthPx before=$($metricsBefore.result.widthPx) after=$($metricsAfter.result.widthPx)"
         Check 'sidebar state carries the width' ($stateAfter.ok -and [string]$stateAfter.result -eq 'visible tree 320') `
             "state=$($stateAfter.result)"
-        $stateFile = Get-ChildItem -LiteralPath (Join-Path $testAppDir 'windows') -Filter '*.json' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $stateFile = Wait-StateFile { param($t) $t -match '"SidebarWidth":\s*320' }
         $persisted = $stateFile -and ((Get-Content -LiteralPath $stateFile.FullName -Raw) -match '"SidebarWidth":\s*320')
         Check 'sidebar.width is persisted to the state file (what a restart reads)' $persisted `
             "file=$($stateFile.FullName)"
@@ -1311,8 +1325,8 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         Start-Sleep -Milliseconds 500
         Invoke-Ctl @('session', 'rename', 'p3-renamed', '--target', $sessionId) | Out-Null
         Start-Sleep -Milliseconds 300
-        $ctxState = Get-ChildItem -LiteralPath (Join-Path $testAppDir 'windows') -Filter '*.json' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $ctxPattern = '"Context":\s*"' + [regex]::Escape($ctxText) + '"'
+        $ctxState = Wait-StateFile { param($t) $t -match $ctxPattern }.GetNewClosure()
         Check 'the context is in the state file (what a restart reads)' `
             ($ctxState -and ((Get-Content -LiteralPath $ctxState.FullName -Raw) -match ('"Context":\s*"' + [regex]::Escape($ctxText) + '"'))) "file=$($ctxState.FullName)"
         $ctxClear = Invoke-Ctl @('session', 'context', '--clear', '--target', $sessionId)
@@ -1399,8 +1413,7 @@ for ($i = 0; $i -lt 60; $i++) { & '__CTL__' session overlay resize --size-percen
         $capNode2 = Get-SessionSnapshot $sessionId
         Check 'and neither refusal touched the slot' ("$($capNode2.capturedCommands.$survivorId)" -match $pingPattern) `
             "capturedCommands=$($capNode2.capturedCommands | ConvertTo-Json -Compress)"
-        $capState = Get-ChildItem -LiteralPath (Join-Path $testAppDir 'windows') -Filter '*.json' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $capState = Wait-StateFile { param($t) $t -match '(?i)"Command":\s*"[^"]*ping' }
         Check 'the capture is in the state file under Command (what a restart, or a kill, leaves)' `
             ($capState -and ((Get-Content -LiteralPath $capState.FullName -Raw) -match '(?i)"Command":\s*"[^"]*ping')) "file=$($capState.FullName)"
         # #246: the splitter's LAST occurrence of an option decides whether it consumed a value.
