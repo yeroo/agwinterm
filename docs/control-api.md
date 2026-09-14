@@ -1,7 +1,8 @@
 # The control API
 
 agwinterm is scriptable through a local named pipe speaking newline-delimited JSON, with
-`agwintermctl` as the CLI wrapper. `agwintermctl --help` lists every verb; this page collects the
+`agwintermctl` as the CLI wrapper. `agwintermctl --help` lists the core verbs and the agent skill
+(`agwintermctl install skill`) carries the full set; this page collects the
 replies a script can rely on, and the ones that answer a question a script would otherwise have to
 guess at.
 

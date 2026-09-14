@@ -12,7 +12,7 @@
 
 The motivation is the one behind [umputun's agterm](https://github.com/umputun/agterm), which this project follows on Windows: running several coding agents at once means many long-lived sessions, each progressing on its own, and a tabbed terminal loses track of them quickly. Each agent works in a named session and reports whether it is active, blocked, or done, so it is obvious which one needs you. An installable skill teaches an agent the control model, so it can drive the terminal itself.
 
-It is an independent, from-scratch implementation in C#; no agterm code is used. It is also a real Windows terminal in its own right: it can be the OS default terminal, it is fully usable with a screen reader, and with nothing scripted at all it is a capable everyday terminal. On macOS, use the original: **[github.com/umputun/agterm](https://github.com/umputun/agterm)**.
+It is an independent, from-scratch implementation in C# (agterm is Swift on libghostty); no agterm code is used. It is also a real Windows terminal in its own right: it can be the OS default terminal, it is fully usable with a screen reader, and with nothing scripted at all it is a capable everyday terminal. On macOS, use the original: **[github.com/umputun/agterm](https://github.com/umputun/agterm)**.
 
 What it does:
 
@@ -20,13 +20,13 @@ What it does:
 - **Control API and CLI.** `agwintermctl` drives almost everything over a named pipe, with full read-back: the tree with split ratios and pane ids, window state, session output, a pane's caret column, the age of a status.
 - **Splits, scratch, quick terminal and overlays.** Split a session side by side or stacked, open a scratch or a detached quick terminal, run a program in an overlay over a session or over one pane of it, or show a passive HUD.
 - **Agent status and skill.** Agents report their state through hooks or the API as a colored dot and a title-bar bell. Opt-in installers add the agent skill, Claude Code / Codex status hooks, shell integration and the CLI on `PATH`.
-- **Claude Code binding and auto-resume.** A `claude` wrapper ties each conversation to its pane, so a restart re-launches every bound pane and the conversation comes back. Updating Claude Code restarts every running session into its own conversation.
-- **Restore, and shells that survive the UI.** Sessions come back with their layout, pinned or captured commands. The experimental pty-host server mode keeps every shell running through a UI quit, update or crash.
+- **Claude Code binding and auto-resume.** A `claude` wrapper ties each conversation to its pane, so a restart re-launches every bound pane and the conversation comes back. Updating Claude Code restarts every running Claude session into its own conversation.
+- **Restore, and shells that survive the UI.** Sessions come back with their layout and pinned commands, and with captured commands when `restore-commands` is on. The experimental pty-host server mode keeps every shell running through a UI quit, update or crash.
 - **A real Windows terminal.** Default Terminal Application registration, ~33k lines/s output, Sixel and Kitty graphics, the Kitty keyboard protocol, ligatures, elevated and de-elevated sessions side by side.
 - **Accessible.** The terminal is a UIA text document for Narrator and NVDA, every control is in the UIA tree, and new output is announced.
 - **Themes.** ~580 bundled themes retint the whole window, fonts apply live, and an optional mode follows Windows light/dark.
 
-A lot of "does it have X?" questions have the same answer: bind X yourself. A `command` line in `keymap.conf` turns any shell line into a key chord or leader chord, and an overlay gives an interactive program a real terminal over the session, so a git UI or a file manager is one line away. Install the agent skill and ask the agent in your session for what you want; it knows the syntax.
+A lot of "does it have X?" questions have the same answer: bind X yourself. A `command` line in `keymap.conf` names any shell line and a `map` line binds it to a key chord or leader chord, and an overlay gives an interactive program a real terminal over the session, so a git UI or a file manager is two lines away. Install the agent skill and ask the agent in your session for what you want; it knows the syntax.
 
 ![agwinterm](docs/img/screenshot.png)
 
@@ -45,11 +45,11 @@ The Settings window, on the Agent Status tab, where the status colors and the bl
 - **Workspace.** A named group of sessions for one project or context.
 - **Session.** One running shell with a name, a working directory, an optional one-line context, and its own scrollback. It is the row you see in the sidebar, and it keeps running while you work in another one.
 - **Split, scratch and quick.** A session can split into two shells side by side or stacked, both sharing its one sidebar row. A scratch terminal opens over it for a quick aside; the quick terminal is a detached window of its own.
-- **Overlay.** One program running in a temporary terminal over a session, or over one pane of a split. It disappears when the program exits and leaves the shell underneath unchanged.
+- **Overlay.** One program running in a temporary terminal over a session, or over one pane of a split. It disappears when the program exits (unless opened with `--wait`, which keeps it until closed) and leaves the shell underneath unchanged.
 
 ## Install
 
-Pre-built releases are for **Windows x64**. Both artifacts are self-contained (no .NET runtime needed) and need no admin rights.
+Pre-built releases are for **Windows x64**. Both artifacts are self-contained (no .NET runtime needed) and need no admin rights. The package managers all use the release artifacts and self-update on new releases.
 
 ```powershell
 # Scoop (portable build)
@@ -76,7 +76,7 @@ Binaries are currently **unsigned**, so SmartScreen warns on first run → *More
 gh attestation verify <file> --repo yeroo/agwinterm
 ```
 
-The installer is deliberately minimal. The integrations are **opt-in from inside the app**, from the command palette (`Ctrl+Shift+P`) or Settings, and safe to rerun: *Install Command-Line Tool (PATH)*, *Install Agent Status Hooks*, *Install Agent Skill*, *Install Shell Integration*, and default-terminal registration. The same are `agwintermctl install ...` verbs.
+The installer is deliberately minimal. The integrations are **opt-in from inside the app**, from the command palette (`Ctrl+Shift+P`) or Settings, and safe to rerun: *Install Command-Line Tool (PATH)*, *Install Agent Status Hooks*, *Install Agent Skill* and *Install Shell Integration* (the same four are `agwintermctl install cli|hooks|skill|shell`), and default-terminal registration in *Settings → General*.
 
 On an older or low-RAM machine, take **[agliteterm](https://github.com/yeroo/agliteterm)** instead: half the download, no .NET at all, and the same shared control-API subset. The two install independently and can live side by side.
 
@@ -96,7 +96,7 @@ agwintermctl tree --json                                                # dump t
 
 `session type` returns once the keystrokes are queued, so a following `session text` races the shell, and `session write` only paints: the program's next repaint, or any pane resize, paints over it.
 
-The same interface covers windows, splits, overlays, dashboards, HUDs, notifications, events, themes, images and restoration. `agwintermctl --help` lists every verb, and [docs/control-api.md](docs/control-api.md) documents the replies a script can rely on.
+The same interface covers windows, splits, overlays, dashboards, HUDs, notifications, events, themes, images and restoration. `agwintermctl --help` lists the session, sidebar, restore, surface and image verbs; the agent skill (`agwintermctl install skill`) carries the full set, and [docs/control-api.md](docs/control-api.md) documents the replies a script can rely on.
 
 ## Documentation
 
@@ -113,7 +113,7 @@ Report bugs in [Issues](https://github.com/yeroo/agwinterm/issues).
 ## Related projects
 
 - **[agterm](https://github.com/umputun/agterm)** by [umputun](https://github.com/umputun) is the macOS original whose design this project follows.
-- **[agliteterm](https://github.com/yeroo/agliteterm)** is the lightweight sibling, in its own repository (it was `agwinterm-lite` until 0.17.4): one small C++ exe over the same Rust emulator core, built for machines where a .NET app is too much.
+- **[agliteterm](https://github.com/yeroo/agliteterm)** is the lightweight sibling, in its own repository (it was `agwinterm-lite` until 0.17.4): one small C++ exe over the same Rust emulator core and pty-host, built for machines where a .NET app is too much.
 
 <details>
 <summary>agwinterm and agliteterm, side by side</summary>
@@ -124,7 +124,7 @@ Report bugs in [Issues](https://github.com/yeroo/agwinterm/issues).
 | Chrome | custom-drawn | real native controls |
 | Download | 31 MB | 15 MB |
 | Fonts | any TrueType, ligatures, images/sixel | bundled bitmap packs, raster-crisp at fixed sizes |
-| Control API | the full set — `search`, `command run`, `dashboard`, `theme`, `image`, profiles… | the shared core, incl. `events` and `session output` |
+| Control API | the full set — `search`, `command run`, `dashboard`, `theme`, `image`, profiles… | the shared core (the 41 verbs of the shared contract when this table was written), incl. `events` and `session output` |
 | Best for | your main machine | old, small, or remote/RDP machines |
 
 Neither is a cut-down build of the other; they are separate programs that agreed on an interface, so a script does not have to care which one it is talking to:
@@ -133,7 +133,7 @@ Neither is a cut-down build of the other; they are separate programs that agreed
 - **The same session environment.** `AGWINTERM_*` is unchanged in agliteterm, so the agent skill, status hooks and portable `agwintermctl` commands use the same targeting conventions in both.
 - **The same core.** agliteterm builds against an ABI-pinned `agwinterm_core.dll` published from this repo, and refuses to build if the published `abiVersion` is not the one it requires.
 
-Coming from `agwinterm-lite`? Nothing to do: 0.17.4's updater points at the agliteterm feed. agliteterm installs *alongside* rather than replacing it and adopts that profile's sessions, settings and fonts on first run, so nothing is lost and a rollback still works. Scripts using `--pipe agwinterm-lite` keep working. Releases here still carry a frozen `agwinterm-lite-setup-0.17.4.exe` so installs that predate the handover can find their way across.
+Coming from `agwinterm-lite`? Nothing to do: 0.17.4's updater points at the agliteterm feed. agliteterm installs *alongside* rather than replacing it and adopts that profile's sessions, settings and fonts on first run, so nothing is lost and a rollback still works. Scripts using `--pipe agwinterm-lite` keep working: the default instance answers on both names. Releases here still carry a frozen `agwinterm-lite-setup-0.17.4.exe` so installs that predate the handover can find their way across.
 
 </details>
 

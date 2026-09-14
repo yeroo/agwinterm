@@ -28,12 +28,13 @@
 - **Shells that survive the UI** (EXPERIMENTAL): flip *Settings → General → Session host* to
   **Pty-host server** (`session-host = server`) and your sessions live in a tiny headless process.
   Quit, self-update, or even crash the UI and every shell (including a running Claude conversation)
-  **keeps running**; the next start reattaches each pane to its live session. Closing a pane still
-  closes its shell.
+  **keeps running**; the next start reattaches each pane to its live session, same process, same
+  state. Closing a pane still closes its shell.
 - **Splits** — side by side or stacked (`--axis vertical|horizontal`, agterm's words), either pane
   closable, the two swappable with every id kept; a split collapses to the survivor when a pane exits.
 - **Scratch** and **quick** terminals ([quick terminal](quick-terminal.md)), ephemeral **overlays**
-  over a session or over **one pane** of it (`--pane left|right`), a passive [session HUD](session-hud.md),
+  over a session or over **one pane** of it (`--pane left|right`; open/close/result/copy/text via the
+  [control API](control-api.md)), a passive [session HUD](session-hud.md),
   a [native picker](native-picker.md), and **multi-window** with per-window addressing.
 
 ## A real Windows terminal
