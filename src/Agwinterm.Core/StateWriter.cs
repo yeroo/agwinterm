@@ -133,26 +133,35 @@ public sealed class StateWriter
 
     /// <summary>Remove the file, as the newest thing that happened to it: a snapshot still queued or
     /// in flight is older and cannot put it back. The file's bytes are forgotten, so the next
-    /// snapshot with the same bytes is written rather than skipped. Missing already counts as removed.</summary>
-    public bool Delete(string path, out string? why)
+    /// snapshot with the same bytes is written rather than skipped — the file may have been recreated
+    /// with other bytes in between. Missing already counts as removed; <paramref name="removed"/> says
+    /// whether there was anything to remove, on disk or still queued, so a caller can tell "cleared"
+    /// from "there was no state" without a File.Exists of its own that a queued snapshot would slip past.</summary>
+    public bool Delete(string path, out string? why, out bool removed)
     {
         why = null;
-        Slot s; long stamp;
-        lock (_lock) { s = SlotFor(path); stamp = ++_clock; s.Pending = null; }
+        Slot s; long stamp; bool dropped;
+        lock (_lock) { s = SlotFor(path); stamp = ++_clock; dropped = s.Pending is not null; s.Pending = null; }
         lock (s.WriteLock)
         {
+            bool existed = File.Exists(path);
             try { File.Delete(path); }
             catch (Exception ex) { why = ex.Message; }
             s.Published = stamp;
             s.PublishedText = null;
+            removed = existed || dropped;
             return why is null;
         }
     }
 
+    /// <inheritdoc cref="Delete(string, out string?, out bool)"/>
+    public bool Delete(string path, out string? why) => Delete(path, out why, out _);
+
     /// <summary>Stop the worker: it writes whatever is still pending (an older snapshot than a
-    /// synchronous publish is fenced, so this cannot go backwards) and exits. Bounded by
-    /// <paramref name="wait"/>; a worker stuck in the filesystem past that is left to die with the
-    /// process, which is what it would have done anyway.</summary>
+    /// synchronous publish is fenced, so this cannot go backwards) and exits. The drain is
+    /// load-bearing: a window that closed while others were open only queued its close-time tree,
+    /// and this is that snapshot's last chance. Bounded by <paramref name="wait"/>: a worker stuck in
+    /// the filesystem past that is left to die with the process, and what it was holding is lost.</summary>
     public void Shutdown(TimeSpan wait)
     {
         _stopping.Set();

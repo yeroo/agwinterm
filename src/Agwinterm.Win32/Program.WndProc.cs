@@ -671,7 +671,11 @@ internal partial class Program
                 SaveIndex(sync: lastWindow);   // the last window out needs the index on disk before the process goes
                 if (lastWindow)
                 {
-                    _stateWriter.Shutdown(TimeSpan.FromSeconds(5));   // whatever is still queued is older than the saves above and fenced; the join is for tidiness
+                    // This window's own tree and the index were written above; a window that closed
+                    // while others were open only QUEUED its close-time tree, and this drain is that
+                    // snapshot's last chance before the process goes. Bounded: on the #294 machine a
+                    // worker held in the filter past this loses what it was holding.
+                    _stateWriter.Shutdown(TimeSpan.FromSeconds(15));
                     DestroyQuickHost(); PostQuitMessage(0);
                 }
                 return IntPtr.Zero;

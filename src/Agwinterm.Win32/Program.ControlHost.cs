@@ -701,11 +701,12 @@ internal partial class Program
     {
         try
         {
-            if (!File.Exists(StatePath)) return "no restore state";
-            // Through the writer, as the newest thing that happened to the file: a snapshot still
-            // queued or in flight is older and cannot put it back, and the next save with the same
-            // bytes writes rather than skips.
-            return _stateWriter.Delete(StatePath, out string? why) ? "restore state cleared" : "error: " + why;
+            // Through the writer, unconditionally: a snapshot still queued or in flight is older than
+            // this delete and cannot put the file back, and the next save with the same bytes writes
+            // rather than skips. A File.Exists guard here would return "no restore state" while a
+            // pre-clear snapshot sat in the settle, and that snapshot would then land.
+            if (!_stateWriter.Delete(StatePath, out string? why, out bool removed)) return "error: " + why;
+            return removed ? "restore state cleared" : "no restore state";
         }
         catch (Exception ex) { return "error: " + ex.Message; }
     }

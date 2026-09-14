@@ -108,22 +108,24 @@ public sealed class StateWriterTests : IDisposable
     [Fact]
     public void A_reserved_stamp_orders_a_late_publish_where_it_was_built()
     {
-        var w = new StateWriter(TimeSpan.FromMilliseconds(20), _log.Add);
+        // A settle no test waits for keeps the worker asleep until Shutdown drains it, so what the
+        // queue holds after each publish is observed, not raced.
         // Built first, written last: the queued snapshot is newer and must win.
+        var w = new StateWriter(TimeSpan.FromSeconds(30), _log.Add);
         long early = w.Reserve();
         w.Enqueue(P("a.json"), "newer");
         Assert.True(w.Publish(P("a.json"), "older", early, out _));
         Assert.Equal(1, w.PendingCount);             // the newer snapshot stays queued
-        WaitDrains(w, 1);
+        w.Shutdown(TimeSpan.FromSeconds(5));         // drains it
         Assert.Equal("newer", File.ReadAllText(P("a.json")));
         // Built last: the queued snapshot is older and is dropped, not written after.
-        w.Enqueue(P("a.json"), "stale");
-        long late = w.Reserve();
-        Assert.True(w.Publish(P("a.json"), "final", late, out _));
-        Assert.Equal(0, w.PendingCount);
-        WaitDrains(w, 2);
-        Assert.Equal("final", File.ReadAllText(P("a.json")));
-        w.Shutdown(TimeSpan.FromSeconds(5));
+        var w2 = new StateWriter(TimeSpan.FromSeconds(30), _log.Add);
+        w2.Enqueue(P("b.json"), "stale");
+        long late = w2.Reserve();
+        Assert.True(w2.Publish(P("b.json"), "final", late, out _));
+        Assert.Equal(0, w2.PendingCount);
+        w2.Shutdown(TimeSpan.FromSeconds(5));
+        Assert.Equal("final", File.ReadAllText(P("b.json")));
     }
 
     [Fact]
@@ -139,7 +141,10 @@ public sealed class StateWriterTests : IDisposable
         gate.Release.Set();                          // Y is older than the delete
         WaitDrains(w, 1);
         Assert.False(File.Exists(P("a.json")), "a snapshot in flight resurrected a deleted file");
-        Assert.True(w.Publish(P("a.json"), "X", out _));   // the same bytes as before the delete: a real write
+        // The bytes were forgotten with the file: recreated with other bytes, the same snapshot as
+        // before the delete is a real write, not a skip that leaves "other" in place.
+        File.WriteAllText(P("a.json"), "other");
+        Assert.True(w.Publish(P("a.json"), "X", out _));
         Assert.Equal("X", File.ReadAllText(P("a.json")));
         w.Shutdown(TimeSpan.FromSeconds(5));
     }

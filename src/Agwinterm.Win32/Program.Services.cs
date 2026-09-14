@@ -1267,7 +1267,8 @@ internal partial class Program
 
     /// <summary>Snapshot the window library to windows.json. Best-effort. The bytes are built here;
     /// the write goes through <see cref="_stateWriter"/>, off this thread, unless <paramref name="sync"/>
-    /// — only the last window out writes it synchronously, because the process goes right after.</summary>
+    /// — the last window out, or every window of an update-quit, writes it synchronously, because the
+    /// process goes right after.</summary>
     private static void SaveIndex(bool sync = false)
     {
         try
