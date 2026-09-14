@@ -1,14 +1,4 @@
-<div align="center">
-
-<img src="docs/agwinterm-icon.png" width="96" alt="agwinterm icon" />
-
-# agwinterm
-
-**A native Windows terminal built for AI coding agents.**
-
-Workspaces, sessions, splits, live agent-status, a scriptable control API, full screen-reader
-accessibility, and OS default-terminal integration — in a fast, custom-drawn Win32 + Direct2D shell.
-A Windows homage to [umputun's **agterm**](https://github.com/umputun/agterm).
+# agwinterm - a native Windows terminal built for AI coding agents
 
 [![CI](https://github.com/yeroo/agwinterm/actions/workflows/ci.yml/badge.svg)](https://github.com/yeroo/agwinterm/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yeroo/agwinterm/badge)](https://scorecard.dev/viewer/?uri=github.com/yeroo/agwinterm)
@@ -16,134 +6,50 @@ A Windows homage to [umputun's **agterm**](https://github.com/umputun/agterm).
 [![Downloads](https://img.shields.io/github/downloads/yeroo/agwinterm/total.svg)](https://github.com/yeroo/agwinterm/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-<img src="docs/img/screenshot.png" width="820" alt="agwinterm screenshot" />
+**[Releases](https://github.com/yeroo/agwinterm/releases)** · [User guide](docs/user-guide.md) · [Control API](docs/control-api.md) · [agliteterm](https://github.com/yeroo/agliteterm)
 
-</div>
+`agwinterm` is a native Windows terminal with a full control API, in a fast, custom-drawn Win32 + Direct2D shell. Shells are organized into workspaces, each holding the sessions for one project or context, and everything it holds is an object a script can address. The bundled `agwintermctl` creates sessions and types into them, reads a pane's text back, runs a program in an overlay and returns its exit status, sets a session's status, opens a dashboard, moves windows, and reads all of that state back out over a local named pipe.
 
----
+The motivation is the one behind [umputun's agterm](https://github.com/umputun/agterm), which this project follows on Windows: running several coding agents at once means many long-lived sessions, each progressing on its own, and a tabbed terminal loses track of them quickly. Each agent works in a named session and reports whether it is active, blocked, or done, so it is obvious which one needs you. An installable skill teaches an agent the control model, so it can drive the terminal itself.
 
-## 💜 Kudos to umputun and agterm
+It is an independent, from-scratch implementation in C#; no agterm code is used. It is also a real Windows terminal in its own right: it can be the OS default terminal, it is fully usable with a screen reader, and with nothing scripted at all it is a capable everyday terminal. On macOS, use the original: **[github.com/umputun/agterm](https://github.com/umputun/agterm)**.
 
-agwinterm exists because of **[umputun](https://github.com/umputun)** and his terminal
-**[agterm](https://github.com/umputun/agterm)**. agterm's design — a terminal that treats AI coding
-agents as first-class citizens, with per-session status, [workspace navigation](docs/navigation.md), a [detached quick terminal](docs/quick-terminal.md),
-a [native API picker](docs/native-picker.md), and a language-agnostic control socket — is the blueprint this project follows on Windows.
+What it does:
 
-This is an **independent, from-scratch implementation** written in C# on a native Win32/Direct2D
-stack (agterm is Swift on libghostty); no agterm code is used. It is a **tribute and a port of the
-ideas/UX**, built so Windows users can have the same agent-first workflow. If you're on macOS, go use
-the real thing: **[github.com/umputun/agterm](https://github.com/umputun/agterm)**. Thank you, umputun. 🙏
+- **Workspaces and sessions.** Sessions are grouped under named workspaces in a sidebar with drag-reorder, flags, unread badges, multi-select, and reopen for closed sessions and workspaces. A live **dashboard** shows a grid of sessions at once.
+- **Control API and CLI.** `agwintermctl` drives almost everything over a named pipe, with full read-back: the tree with split ratios and pane ids, window state, session output, a pane's caret column, the age of a status.
+- **Splits, scratch, quick terminal and overlays.** Split a session side by side or stacked, open a scratch or a detached quick terminal, run a program in an overlay over a session or over one pane of it, or show a passive HUD.
+- **Agent status and skill.** Agents report their state through hooks or the API as a colored dot and a title-bar bell. Opt-in installers add the agent skill, Claude Code / Codex status hooks, shell integration and the CLI on `PATH`.
+- **Claude Code binding and auto-resume.** A `claude` wrapper ties each conversation to its pane, so a restart re-launches every bound pane and the conversation comes back. Updating Claude Code restarts every running session into its own conversation.
+- **Restore, and shells that survive the UI.** Sessions come back with their layout, pinned or captured commands. The experimental pty-host server mode keeps every shell running through a UI quit, update or crash.
+- **A real Windows terminal.** Default Terminal Application registration, ~33k lines/s output, Sixel and Kitty graphics, the Kitty keyboard protocol, ligatures, elevated and de-elevated sessions side by side.
+- **Accessible.** The terminal is a UIA text document for Narrator and NVDA, every control is in the UIA tree, and new output is announced.
+- **Themes.** ~580 bundled themes retint the whole window, fonts apply live, and an optional mode follows Windows light/dark.
 
----
+A lot of "does it have X?" questions have the same answer: bind X yourself. A `command` line in `keymap.conf` turns any shell line into a key chord or leader chord, and an overlay gives an interactive program a real terminal over the session, so a git UI or a file manager is one line away. Install the agent skill and ask the agent in your session for what you want; it knows the syntax.
 
-> ### Also: [**agliteterm**](https://github.com/yeroo/agliteterm) — the lightweight one
->
-> A second terminal in the same family, for **older or low-RAM machines**: a single small C++ exe
-> (Win32/WTL, **no .NET runtime**) with real native controls instead of custom-drawn chrome, over
-> the **same Rust emulator core and pty-host** as this app — **half the download** (15 MB vs 31 MB)
-> and a fraction of the moving parts.
->
-> It speaks the **shared `agwintermctl` control-API subset** and sets the same `AGWINTERM_*`
-> session variables, so portable scripts and hooks work in both. The subset is enforced by a
-> conformance suite in both repositories; agwinterm-only extensions such as `image.frameshm` and
-> `session.metrics` must be capability-probed.
->
-> **[→ github.com/yeroo/agliteterm](https://github.com/yeroo/agliteterm)**
+![agwinterm](docs/img/screenshot.png)
 
+<details>
+<summary>More screenshots</summary>
 
-## Highlights
+The Settings window, on the Agent Status tab, where the status colors and the blocked sound are chosen:
 
-### Agent-first
-- **Workspaces → sessions → panes** in a custom-drawn sidebar (drag-reorder, rename, flag, focus,
-  unread badges, **multi-select with Ctrl/Shift+click** for batch flag / move / close, reopen closed
-  sessions *and workspaces* with `Ctrl+Shift+R`).
-- **Dashboard** (`Ctrl+Shift+D`): a grid of **live** session previews — arrow-navigate, Enter or
-  double-click to jump in; or drive it with `agwintermctl dashboard <ids>`.
-- **Agent status** per session (idle / active / blocked / completed) as a colored dot + title-bar
-  bell — driven by your agent via hooks or the control API, with blink, auto-reset, and sounds.
-  Run `agwintermctl install hooks` (or the palette entry) once to wire Claude Code / Codex up.
-- **Claude Code session binding & auto-resume**: the same installer adds a transparent `claude`
-  wrapper (active only inside agwinterm) that ties Claude's session id to the agwinterm pane. You
-  just type `claude` — a fresh pane starts a bound session, and a pane that already has a transcript
-  **resumes** it. On restart, agwinterm re-launches each bound pane and the conversation comes back —
-  no guessing which shell was which. Already had Claude running before installing this? Run
-  `agwintermctl claude adopt` (or palette → *Make Claude Sessions Resumable*) once to bind your
-  existing conversations to their panes.
-- **Update Claude Code** (palette → *Update Claude Code*, or `agwintermctl claude update`): agwinterm
-  quietly notices when a new Claude Code ships (npm registry; `claude-update-check = false` to opt
-  out), then — on your command — runs `claude update` in an overlay terminal and **restarts every
-  running Claude session**, each resuming its own conversation (YOLO panes stay YOLO).
-- **agwinterm self-update** (palette → *Update agwinterm*, or `agwintermctl app update`): notices new
-  releases on GitHub (`update-check = false` to opt out), then — on your command — downloads the
-  right artifact for your install (installer or portable exe), **verifies its SHA-256** against the
-  release digest, restarts, and your sessions restore. scoop/chocolatey installs are never touched —
-  the hint points at your package manager instead.
-- **Shells that survive the UI** (EXPERIMENTAL): flip *Settings → General → Session host* to
-  **Pty-host server** (`session-host = server`) and your sessions live in a tiny headless process —
-  quit, self-update, or even crash the UI and every shell (including a running Claude conversation)
-  **keeps running**; the next start reattaches each pane to its live session, same process, same
-  state. Closing a pane still closes its shell. The tmux idea, native on Windows.
-- **A scriptable control API**: `agwintermctl` (or newline-JSON over a named pipe) — any language can
-  drive it, including full **read-back** (tree with split ratios + pane ids, window state, session
-  output). Opt-in installers for the **agent skill** and **Claude Code / Codex status hooks**.
-- **Splits** — side by side or stacked (`--axis vertical|horizontal`, agterm's words), either pane
-  closable, the two swappable with every id kept; a split collapses to the survivor when a pane exits —
-  **scratch** & **quick** terminals, ephemeral **overlays** over a session or over **one pane** of it (`--pane left|right`; open/close/result/copy/text via API), **multi-window**
-  with per-window addressing.
+![Settings](docs/img/settings.png)
 
-### A real Windows terminal
-- **Default Terminal Application**: register agwinterm from *Settings → General* (per-user, no admin,
-  one-click revert) and every console app you launch — `cmd` from Win+R, double-clicked `.exe`s —
-  opens as an agwinterm session via the ConPTY handoff, titled by the app.
-- **Fast**: sustained output at **~33k lines/s** (~87 % of a bare conhost window), 0.4 s cold start,
-  ~0 % idle CPU, and a leak-hunted session lifecycle (`tools/profile-memory.ps1` keeps it honest).
-- Sixel + Kitty graphics, win32-input-mode + Kitty keyboard protocol, SGR and SGR-Pixels mouse
-  reporting (`?1006`/`?1016`, including DECRQM discovery and device-pixel coordinates), ligatures
-  (toggleable), builtin box-drawing glyphs, buffer restore, block selection + keyboard mark mode,
-  read-only panes, elevated & de-elevated sessions side by side (⚡ marker), FTCS/OSC-133 prompt
-  marks with jump-to-prompt, taskbar progress (OSC 9;4).
-- Shells are launched with `TERM_PROGRAM=agwinterm` (+ the usual `AGWINTERM_*` vars), so prompt
-  engines, tmux and scripts can detect the host terminal.
+</details>
 
-### Accessible — screen readers are first-class
-- The terminal is a **UIA text document**: Narrator/NVDA read it line by line, track the caret
-  (tight one-cell focus box), and **new output is announced automatically** after it settles.
-- **Everything is in the UIA tree**: sessions, every chrome button, settings tabs and controls —
-  scannable (Caps Lock + arrows), focusable, and invokable. Dialogs are **modally scoped** so the
-  reader can't wander behind them.
-- **F6** moves keyboard focus between the terminal and the session list (arrows + Enter there);
-  the **Settings dialog is fully keyboard-navigable** — Tab reaches the tab headers too (Enter
-  switches), with a classic keyboard-only dotted focus rectangle; buttons **speak on hover** and
-  show **tooltips**.
-- **F1 help** lists the *effective* keybindings and — when a reader is attached — speaks a spoken
-  orientation guide for low-vision users.
+## The model
 
-### Looks & feel
-- **Whole-window theming** with **~580 bundled themes** (the ghostty / iTerm2 set) — sidebar, title
-  bar, and terminal retint together. **Fonts apply live** from Settings, and there's an optional
-  **follow Windows light/dark** mode that swaps between a light and a dark theme you choose.
-- **Configurable sidebar font size**, sidebar tint, window opacity, and inactive-pane muting.
-- **cwd in the title** out of the box (composes with oh-my-posh) + an **oh-my-posh theme picker**.
-- Toolbar modes (normal / compact / **hidden** full-bleed), window opacity, unfocused dim,
-  per-session background watermarks.
-- **MRU `Ctrl+Tab` switcher**, fuzzy **command / session / action palettes**, search, tmux-style
-  **leader chords**, custom commands with `{AGW_*}` tokens and run modes.
+- **Window.** A top-level bundle of workspaces and sessions with its own sidebar; `agwintermctl window` addresses each one.
+- **Workspace.** A named group of sessions for one project or context.
+- **Session.** One running shell with a name, a working directory, an optional one-line context, and its own scrollback. It is the row you see in the sidebar, and it keeps running while you work in another one.
+- **Split, scratch and quick.** A session can split into two shells side by side or stacked, both sharing its one sidebar row. A scratch terminal opens over it for a quick aside; the quick terminal is a detached window of its own.
+- **Overlay.** One program running in a temporary terminal over a session, or over one pane of a split. It disappears when the program exits and leaves the shell underneath unchanged.
 
 ## Install
 
-Grab either from the [**Releases**](https://github.com/yeroo/agwinterm/releases) page:
-
-- **`agwinterm-setup-<version>.exe`** — per-user installer (Start-menu shortcut + uninstaller).
-- **`agwinterm-portable-<version>-win-x64.exe`** — **portable**: a single self-contained exe, no
-  installation — run it from anywhere (settings still live under `%LOCALAPPDATA%\agwinterm`).
-
-Both are **self-contained** (no .NET runtime needed) and need **no admin rights**.
-
-> On an older or low-RAM machine, take **[agliteterm](https://github.com/yeroo/agliteterm/releases)**
-> instead — half the download, no .NET at all, and the same shared control-API subset. The two install
-> independently and can live side by side.
-
-Or install from a package manager (all use the release artifacts and self-update on new releases):
+Pre-built releases are for **Windows x64**. Both artifacts are self-contained (no .NET runtime needed) and need no admin rights.
 
 ```powershell
 # Scoop (portable build)
@@ -157,219 +63,60 @@ winget install yeroo.agwinterm
 choco install agwinterm
 ```
 
-**winget and Chocolatey get checkpoint releases only** — versions whose patch number is a multiple
-of 9 (0.17.9, 0.17.18, 0.17.27...). Both are human-moderated, and this project releases faster than
-those queues drain, so submitting every version just stacks them up behind each other. Everything in
-between still ships as a GitHub release, and both the in-app updater and scoop pick those up
-immediately — so **the fastest way to stay current is the installer or scoop**, not winget or choco.
+Direct download, from the [releases page](https://github.com/yeroo/agwinterm/releases):
 
+- **`agwinterm-setup-<version>.exe`** — per-user installer (Start-menu shortcut and uninstaller).
+- **`agwinterm-portable-<version>-win-x64.exe`** — a single self-contained exe, no installation; settings still live under `%LOCALAPPDATA%\agwinterm`.
 
-- Binaries are currently **unsigned**, so SmartScreen will warn on first run → *More info → Run
-  anyway*. Release artifacts carry **Sigstore build-provenance attestations** — verify with
-  `gh attestation verify <file> --repo yeroo/agwinterm`.
-- The installer is deliberately minimal (copies files + shortcuts). The integrations
-  (put `agwintermctl` on PATH, agent status hooks, agent skill, shell integration, default-terminal
-  registration) are **opt-in from inside the app** — command palette (`Ctrl+Shift+P`) or Settings.
+**winget and Chocolatey get checkpoint releases only** — versions whose patch number is a multiple of 9 (0.17.9, 0.17.18, 0.17.27...). Both are human-moderated, and this project releases faster than those queues drain. Everything in between ships as a GitHub release, and both the in-app updater and Scoop pick those up immediately, so **the fastest way to stay current is the installer or Scoop**.
 
-## Build from source
-
-Requires the **.NET 10 SDK** (see [`global.json`](global.json)) on Windows x64.
+Binaries are currently **unsigned**, so SmartScreen warns on first run → *More info → Run anyway*. Release artifacts carry **Sigstore build-provenance attestations**:
 
 ```powershell
-# build + test
-dotnet build Agwinterm.slnx -c Release
-dotnet test  Agwinterm.slnx -c Release
-
-# run the app
-dotnet run --project src/Agwinterm.Win32 -c Release
-
-# build the installer (needs Inno Setup 6)
-./installer/build.ps1
-
-# build the portable single-file exe (no Inno Setup needed)
-./installer/build-portable.ps1
+gh attestation verify <file> --repo yeroo/agwinterm
 ```
 
-### Dev builds run side-by-side with the installed release
+The installer is deliberately minimal. The integrations are **opt-in from inside the app**, from the command palette (`Ctrl+Shift+P`) or Settings, and safe to rerun: *Install Command-Line Tool (PATH)*, *Install Agent Status Hooks*, *Install Agent Skill*, *Install Shell Integration*, and default-terminal registration. The same are `agwintermctl install ...` verbs.
 
-A **Debug** build uses a separate instance identity, `agwinterm-dev`, so it keeps its **own** data
-dir (`%LOCALAPPDATA%\agwinterm-dev`: config, sessions, keymap, themes) and its **own** control pipe —
-it never touches, or fights over the pipe with, your installed **Release** (`agwinterm`). So you can
-daily-drive the release and run dev builds at the same time.
+On an older or low-RAM machine, take **[agliteterm](https://github.com/yeroo/agliteterm)** instead: half the download, no .NET at all, and the same shared control-API subset. The two install independently and can live side by side.
+
+## Scripting agwinterm
+
+`agwintermctl` drives a running agwinterm over a local named pipe speaking newline-delimited JSON, one command per invocation. Inside a session `AGWINTERM_PIPE` and `AGWINTERM_SESSION_ID` are already set, so a bare `agwintermctl` targets the instance and pane it runs in. Terminal output is not streamed; `session text` reads a session's buffer when a script needs to see it.
 
 ```powershell
-dotnet run --project src/Agwinterm.Win32           # Debug -> the "agwinterm-dev" instance
-agwintermctl --pipe agwinterm-dev tree             # drive the dev instance from outside
-agwintermctl tree                                  # (default pipe) drives the release
+$sid = agwintermctl session new --workspace-name demo --create-workspace --cwd $PWD --no-select  # the new session's id
+agwintermctl session split on --axis horizontal --target $sid           # add a stacked shell; answers its pane id
+agwintermctl session type "git status`n" --target $sid                  # drive a session you are not looking at
+agwintermctl session text --target $sid --lines 10                      # read its terminal back
+agwintermctl session status blocked --target $sid                       # set the sidebar status dot
+agwintermctl session overlay open "lazygit" --block                     # run a program over the session, get its exit
+agwintermctl tree --json                                                # dump the whole model as JSON
 ```
 
-Inside any session, `AGWINTERM_PIPE` is already set, so a bare `agwintermctl` auto-targets the
-instance it's running in. Force a specific identity with `--app-id <name>` or `AGWINTERM_APP_ID`
-(handy for a second throwaway instance). Dev builds also skip registering as the default-terminal
-COM server, so they never intercept the release's console handoffs.
+`session type` returns once the keystrokes are queued, so a following `session text` races the shell, and `session write` only paints: the program's next repaint, or any pane resize, paints over it.
 
-## Control it from anything (`agwintermctl`)
+The same interface covers windows, splits, overlays, dashboards, HUDs, notifications, events, themes, images and restoration. `agwintermctl --help` lists every verb, and [docs/control-api.md](docs/control-api.md) documents the replies a script can rely on.
 
-agwinterm is scriptable through a local named pipe speaking newline-delimited JSON, with
-`agwintermctl` as the CLI wrapper. A few examples:
+## Documentation
 
-```powershell
-agwintermctl tree --json                     # workspace/session tree (+ splits, badges, overlays, paneOverlays)
-agwintermctl window state                    # sidebar/fullscreen/active read-back
-agwintermctl sidebar width 300               # move the divider; the reply is the width in effect
-agwintermctl session split on --axis horizontal   # stack the panes; the reply is the split pane's id
-agwintermctl session split close --target <pane>  # close EITHER pane; the reply is the survivor's id
-agwintermctl session swap                    # the two panes change places; every id stays where it was
-agwintermctl session status blocked --sound  # report agent status (a dot + bell in the UI)
-agwintermctl session new --name build        # from a pane: lands in THAT pane's workspace, not the last-clicked one
-agwintermctl session new --name build --workspace-name CI --create-workspace
-agwintermctl session new --workspace no-such   # refused, no session: an unknown workspace is never swapped for the active one
-agwintermctl session type "npm test`n"       # type into the active session
-@"
-say "hi"
-"@ | agwintermctl session type --stdin   # text with quotes/newlines: stdin as bytes (see below)
-agwintermctl session overlay open "git diff" --size-percent 60
-agwintermctl session hud "Reviewing" --spinner --position top-right  # passive status, shell stays usable
-agwintermctl session hud update "Ready"                             # replace message in place
-agwintermctl session hud close
-agwintermctl session overlay open "lazygit" --pane right    # over the right pane only; the left pane stays live
-agwintermctl session overlay text --pane right --all        # the overlay's own screen + scrollback (session text reads the shell under it)
-agwintermctl session restore "npm run dev" --target <pane>   # re-run on every restart; reply names the pane
-agwintermctl restore capture                 # capture every pane's running command into its restore slot NOW, not only at quit
-agwintermctl session rename api              # the custom name in the sidebar and title bar
-agwintermctl session context "reviewing PR 226, left pane is the diff"   # one line of what the session is FOR; survives a restart
-agwintermctl dashboard build test deploy     # grid overview of chosen sessions
-agwintermctl theme set "Tokyo Night"         # retint the whole window
-agwintermctl window new --name scratchpad    # open a second window
-agwintermctl surface cursor --target <pane>  # the caret column of a pane, as a bare integer
-agwintermctl version                         # which CLI ran, and which app answered the pipe
-```
+- [User guide](docs/user-guide.md): agent features, the terminal, accessibility, themes, keyboard essentials, and where configuration lives.
+- [Control API](docs/control-api.md): a tour of `agwintermctl`, and the replies and refusals of the verbs a script leans on.
+- [Launching a session command](docs/session-commands.md): `session new --command`, direct mode, `--wait`.
+- [Workspace navigation](docs/navigation.md), [quick terminal](docs/quick-terminal.md), [session HUD](docs/session-hud.md), [native picker](docs/native-picker.md).
+- [Default terminal](docs/defterm-testing.md): how the console handoff is exercised.
+- [agterm parity](docs/agterm-parity.md) and [agliteterm parity](docs/lite-parity.md): where both products stand.
+- [CONTRIBUTING.md](CONTRIBUTING.md): building from source, dev builds side by side with the release, the contract with agliteterm.
 
-Thirteen of those answer a question a script would otherwise have to guess at:
+Report bugs in [Issues](https://github.com/yeroo/agwinterm/issues).
 
-- `surface cursor` returns the caret **column** and nothing else, so "is that agent's composer empty
-  before I type into it" is a comparison, not a hunt for its placeholder text. A different column is
-  proof of a draft; the same column is not proof of none (a draft exactly one wrap width long parks
-  the caret where it started), so back a match with `session text` of that row. It resolves its
-  target exactly as `session text` and `session type` do, so the pane you check is the pane you type
-  into.
-- `tree --json` reports `statusChangedAt` per session — epoch **seconds** of the last status write on
-  the pane whose status the node shows, restamped even when the same status is re-asserted.
-  `now - statusChangedAt` is how long ago that agent last spoke, which is what separates a working
-  agent from one whose hook died. In a split session it is the clock of the pane whose status won:
-  a write to a pane that loses the aggregate does not move it, but panes tied at the winning status
-  all do — two `active` panes report the freshest of the two, so the session-level age cannot tell a
-  dead hook from a live one beside it (nothing reports the stamp per pane).
-- `version` prints two greppable lines: the `cli` that ran (version and its resolved path — several
-  `agwintermctl.exe` can coexist off `PATH`) and the `app` that answered (version and pipe). It exits 0
-  and still prints the `cli` line when nothing is listening, which is the case it exists for. `--json`
-  gives the machine-readable form.
-- `session type --stdin` takes the text from standard input as bytes, so quotes, newlines, runs of
-  spaces and a leading `--` arrive intact: the argv form re-joins positionals with one space and the
-  option parser eats a leading `--`, both silently. Exactly one trailing newline is dropped (the one
-  the shell adds), so end with two to press Enter. Invalid UTF-8 is refused with its byte offset and
-  nothing is sent; `--stdin` beside positional text or `--select` is refused as ambiguous. There is no
-  `quick type` verb here: the quick terminal is a pane whose id starts with `quick:`, so it is
-  `session type --stdin --target quick:`.
-- `session overlay open --size-percent N` and `overlay resize --size-percent N` take 1..100 and
-  **refuse** anything else, naming the value and the range. `0`, `150` and `sixty` used to open a
-  full-screen overlay and report success; now nothing opens and `ok` is false. Omit the flag for the
-  full content region. `resized N%` is always the N that was asked for. The verb's other failures
-  are refusals too: `open` with no command; `open` and `resize` whenever no session resolves (a
-  `--target` that matches nothing, or no target and no active session); a `close` whose `--target`
-  names nothing; `open`, `close` and `resize` without `--pane` whose `--target` names one pane of a
-  split session (a session-wide overlay covers the whole session — the refusal names the session id
-  to pass instead, and `--pane left|right` is how one pane is named); and `resize`
-  with no overlay open. The pane form has its own, each starting with agterm's phrase: `pane not
-  visible` (`--pane right` on a one-pane session), `pane overlay already open` (a pane slot never
-  silently replaces — the session-wide slot still does), `no overlay` (`copy` / `text` / `result` on
-  an empty slot), `no selection`, `overlay still running` / `no overlay result` (`result --pane`);
-  a `--pane` word other than exactly `left`/`right`, a `--target` pane id naming the other side than
-  `--pane`, `--pane` with `--size-percent` and `resize --pane` are refused with nothing sent (a pane
-  overlay is always full-pane). `close` stays `ok` when the session resolves and
-  has no overlay, or when the target is absent, empty or `active` while nothing is active — there is
-  nothing to close, and nothing is what you asked for. Two replies are not refusals: a `resize` whose
-  reply says the window did not run it within 15 s is still queued and may land later; and
-  `open --block` answers the outcome of the overlay it opened — `closed` when that overlay was closed
-  or replaced first, `exit 1` also when its program could not be started at all (a blocking open
-  closes its pane as it replies, so to tell that from a program that ran and failed, open with
-  `--wait` instead, poll `overlay result` for its `exit N`, read the pane by the id the open
-  returned, and close it by that id — a close whose overlay is already gone is refused, which is
-  the same end state), and
-  `ok:false` with the status unknown when the window closed under it. `overlay result` stays one
-  value per window, written by whichever session's session-wide overlay exits next; `result --pane left|right`
-  (or `result --target <pane overlay id>` while that overlay is up) is that slot's own `exit N`, and a
-  pane overlay's exit never writes the window-wide value.
-- `session restore` replies `{action, pane, session}` instead of the word "pinned": `pane` is the pane
-  the target resolved to (a session name lands on its focused pane, a session id on the pane that
-  carries that id while one does — pane 0 of a fresh session, either side after a `session swap` —
-  and on the focused pane while none does, i.e. once the carrier was closed by any path; exactly as
-  `session type` does), and `action` is `pinned` or `cleared` (`none` clears). The target
-  is mandatory, because a pin outlives whatever pane is active now. `tree --json` reads the pins back
-  as `restoreCommands`, an object keyed by pane id that lists only pinned panes.
-- `restore capture [--target ID]` fills the captured-command slot of every real pane (or of one) **now**
-  and saves, and replies per pane with what it found. Until this verb the capture ran exactly once,
-  on a clean quit, which is the one exit a crash, a `Stop-Process`, a power cut or a missed update
-  never reaches, so the restart that most needed the command was the restart guaranteed to have
-  none. A pane's `captured` is the command line its shell is running, or `null` when the shell has
-  no child worth restoring (the shells on `restore-denylist.conf` never count), and null is written
-  too: a fresh capture replaces an older checkpoint. The reply's `replayOnRestore` is the
-  `restore-commands` setting, off by default: the capture always happens, the typing-back at restart
-  only happens when that is on, and a script that wants the replay checks the flag rather than
-  assuming. It takes one process query for all panes, so allow seconds, not milliseconds. An unknown
-  target, an empty one (`--target ''` — only an OMITTED target means every pane), a
-  scratch/overlay/quick pane, or a query that fails is refused and nothing is written. One refusal
-  leaves something behind and says so — "captured into memory but the state file could not be
-  written": the slots are filled (`tree` shows them), but this save did not put the new checkpoint
-  on disk. An earlier checkpoint may remain; fix the state directory and capture again.
-  `tree --json` reads the slots back as `capturedCommands`, keyed by pane id like `restoreCommands`.
-- `session context "<text>"` sets one line of **what a session is for**, shown dimmed after the name
-  in the title bar and the sidebar row and on the session palette's second line, where a name has to
-  stay short. It survives a restart and an undo-close, and `tree --json` carries it as `context` on
-  the session node, so an agent that sets it when it starts a task leaves a note every other agent
-  can read. It is one line by rule: a newline, tab or other control character is refused rather than
-  drawn (the control-byte class from #213), blank is refused, and more than 200 characters is refused
-  because the ceiling is the width of the row, not a storage limit. `--clear` removes it, and
-  `--stdin` takes it as bytes the way `session type --stdin` does. The reply `{session, context}` is
-  the value **in effect** after the write, read off the session rather than echoed from the request.
-  `session rename <name>` is its neighbour: the short custom name, same target resolution, and the
-  two survive each other (renaming does not clear the context).
-- `session split` answers the **pane id** it produced instead of the word "split", so the shell you
-  just asked for is addressable from the reply: `on` on an already-split session answers the existing
-  split pane's id and changes nothing, `off` answers the survivor's. `--axis vertical|horizontal` picks
-  the arrangement in agterm's words — vertical is left/right panes, horizontal is top/bottom — and is
-  remembered for the life of the session, through `off`, and across a restart only while the session
-  is still split (a collapsed session writes no axis key); `tree --json` carries it as `axis` on a
-  split session. `session split close --target <pane>` closes **either** pane and answers the survivor's id
-  (`off` can only keep pane 0); a one-pane session is refused, because `session close` is that verb.
-  `session swap` exchanges the two panes and keeps the axis, the divider position, the focus's pane
-  and **every id**: a swap moves panes, never ids, so a handle you hold keeps reaching the same shell
-  on the other side. Its reply `{session, paneIds, focusedPane, axis}` is the tree's split block after
-  the swap.
-- `sidebar width [N]` reads or sets the sidebar width in device-independent pixels and replies
-  `{width, visible, applied}` with the width **actually in effect**, so a script compares what it
-  asked for with what it got. Outside 120..600 is refused with the range named and nothing moves
-  (`sidebar hide` is how to ask for none). A set while the sidebar is hidden is remembered and
-  persisted but reported `applied:false` rather than as a width nobody can see. `sidebar state` now
-  reads `visible tree 220`: visibility, mode and width. And a `sidebar` op the app cannot do is
-  refused instead of acknowledged (`on`/`off` are real aliases of `show`/`hide`).
+## Related projects
 
-- `session new` with no `--workspace` creates the session **in the caller's own workspace**: the CLI
-  sends the pane it runs in (its `AGWINTERM_SESSION_ID`), and the session goes next to it. Before,
-  it went to the *active* workspace, a global the UI moves on every click, so an agent creating
-  several sessions scattered them wherever the user had last clicked. An agent gets sessions beside
-  itself unless it says otherwise, and `--workspace` / `--workspace-name` are how it says otherwise.
-  Only a CLI with no pane identity, or one whose pane has since been closed, still lands in the
-  active workspace; a stale caller is not refused, because that would break a working script.
+- **[agterm](https://github.com/umputun/agterm)** by [umputun](https://github.com/umputun) is the macOS original whose design this project follows.
+- **[agliteterm](https://github.com/yeroo/agliteterm)** is the lightweight sibling, in its own repository (it was `agwinterm-lite` until 0.17.4): one small C++ exe over the same Rust emulator core, built for machines where a .NET app is too much.
 
-Inside a session you get `AGWINTERM_SESSION_ID`, `AGWINTERM_WINDOW_ID`, and `AGWINTERM_PIPE`.
-Run `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.
-
-## agliteterm — the lightweight sibling
-
-**[agliteterm](https://github.com/yeroo/agliteterm)** is its own product, in its own repository. It
-was `agwinterm-lite` until 0.17.4. Same family, different trade: a single small C++ exe over the
-same Rust emulator core, built for machines where a .NET app is too much.
+<details>
+<summary>agwinterm and agliteterm, side by side</summary>
 
 |                | **agwinterm** | **agliteterm** |
 |---|---|---|
@@ -377,74 +124,27 @@ same Rust emulator core, built for machines where a .NET app is too much.
 | Chrome | custom-drawn | real native controls |
 | Download | 31 MB | 15 MB |
 | Fonts | any TrueType, ligatures, images/sixel | bundled bitmap packs, raster-crisp at fixed sizes |
-| Control API | the full set — `search`, `command run`, `dashboard`, `theme`, `image`, profiles… | the shared core (41 verbs), incl. `events` and `session output` |
+| Control API | the full set — `search`, `command run`, `dashboard`, `theme`, `image`, profiles… | the shared core, incl. `events` and `session output` |
 | Best for | your main machine | old, small, or remote/RDP machines |
 
-Neither is a cut-down build of the other — they are separate programs that agreed on an interface.
+Neither is a cut-down build of the other; they are separate programs that agreed on an interface, so a script does not have to care which one it is talking to:
 
-**What that interface guarantees**, so a script does not have to care which one it is talking to:
+- **The same portable control-API subset.** `tests/conformance/control-api.json` is the canonical spec for that subset, and **both repositories run it in CI**. agwinterm also has product-specific verbs such as `image.frameshm` and `session.metrics`; callers must capability-probe those rather than assume agliteterm implements them.
+- **The same session environment.** `AGWINTERM_*` is unchanged in agliteterm, so the agent skill, status hooks and portable `agwintermctl` commands use the same targeting conventions in both.
+- **The same core.** agliteterm builds against an ABI-pinned `agwinterm_core.dll` published from this repo, and refuses to build if the published `abiVersion` is not the one it requires.
 
-- **The same portable control-API subset.** `tests/conformance/control-api.json` is the canonical
-  spec for that subset, and **both repositories run it in CI**. Agwinterm also has product-specific
-  verbs such as `image.frameshm` and `session.metrics`; callers must capability-probe those rather
-  than assume agliteterm implements them.
-- **The same session environment.** `AGWINTERM_*` is unchanged in agliteterm, so the agent skill,
-  status hooks and portable `agwintermctl` commands use the same targeting conventions in both.
-- **The same core.** agliteterm builds against an ABI-pinned `agwinterm_core.dll` published from
-  this repo, and refuses to build if the published `abiVersion` is not the one it requires.
-
-<details>
-<summary>Coming from <code>agwinterm-lite</code>?</summary>
-
-Nothing to do — 0.17.4's updater points at the agliteterm feed. agliteterm installs *alongside*
-rather than replacing it and adopts that profile's sessions, settings and fonts on first run, so
-nothing is lost and a rollback still works. Scripts using `--pipe agwinterm-lite` keep working: the
-default instance answers on both names. Releases here still carry a frozen
-`agwinterm-lite-setup-0.17.4.exe` so installs that predate the handover can still find their way
-across.
+Coming from `agwinterm-lite`? Nothing to do: 0.17.4's updater points at the agliteterm feed. agliteterm installs *alongside* rather than replacing it and adopts that profile's sessions, settings and fonts on first run, so nothing is lost and a rollback still works. Scripts using `--pipe agwinterm-lite` keep working. Releases here still carry a frozen `agwinterm-lite-setup-0.17.4.exe` so installs that predate the handover can find their way across.
 
 </details>
 
-## Keyboard essentials
+## Attribution
 
-| Key | Action |
-|---|---|
-| `F1` | Help (effective keybindings + accessibility guide) |
-| `F6` | Move focus terminal ⇄ session list |
-| `Ctrl+Shift+D` | Dashboard — grid of live sessions |
-| `Ctrl+Shift+T` / `Ctrl+Shift+R` | New session / reopen closed |
-| `Ctrl+Tab` | MRU session switcher |
-| `Ctrl+D` | Split pane · `` Ctrl+` `` quick terminal · `Ctrl+J` scratch |
-| `Ctrl+Shift+P` | Action palette |
-| `F11` | Fullscreen |
+agwinterm exists because of **[umputun](https://github.com/umputun)** and **[agterm](https://github.com/umputun/agterm)**. agterm's design — a terminal that treats AI coding agents as first-class citizens, with per-session status, workspace navigation, a detached quick terminal, a native picker, and a language-agnostic control socket — is the blueprint this project follows. agwinterm is a tribute and a port of the ideas and UX, not of the code. Thank you, umputun. 💜
 
-Everything is rebindable in `keymap.conf` (see `F1` for the live list).
-
-## Configuration
-
-- **`%LOCALAPPDATA%\agwinterm\agwinterm.conf`** — appearance & behavior (also editable in Settings).
-- **`%LOCALAPPDATA%\agwinterm\keymap.conf`** — keybindings + custom commands + leader chords.
-- Themes: the bundled set ships with the app; drop extra ghostty-format `*.conf` files in
-  `%LOCALAPPDATA%\agwinterm\themes\`.
-
-## Acknowledgements
-
-- **[umputun / agterm](https://github.com/umputun/agterm)** — the original and the inspiration for every
-  bit of this project's UX. 💜
-- **[Ghostty](https://ghostty.org)** & **[iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes)**
-  — the bundled color themes are the community ghostty/iTerm2 set.
-- **[Vortice.Windows](https://github.com/amerkoleci/Vortice.Windows)** (Direct2D/DirectWrite),
-  **[Porta.Pty](https://www.nuget.org/packages/Porta.Pty)** (ConPTY), and
-  **[microsoft/terminal](https://github.com/microsoft/terminal)**'s OpenConsole for the
-  default-terminal handoff.
+- **[Ghostty](https://ghostty.org)** and **[iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes)**: the bundled color themes are the community ghostty/iTerm2 set.
+- **[Vortice.Windows](https://github.com/amerkoleci/Vortice.Windows)** (Direct2D/DirectWrite), **[Porta.Pty](https://www.nuget.org/packages/Porta.Pty)** (ConPTY), and **[microsoft/terminal](https://github.com/microsoft/terminal)**'s OpenConsole for the default-terminal handoff.
+- Bundled fonts, with versions and licenses, are listed in [THIRD_PARTY_FONTS.md](THIRD_PARTY_FONTS.md).
 
 ## License
 
-[MIT](LICENSE) © 2026 Boris Kudriashov. Bundled theme files retain their upstream (iTerm2-Color-Schemes,
-MIT) licensing.
-
-### Session command launching
-
-`session new --command` runs PowerShell code and leaves an interactive prompt in both terminals.
-Use `--command-mode direct` for executable + arguments without a shell.
-See [command launching and migration](docs/session-commands.md), including `--wait` and portable workbench scripts.
+[MIT](LICENSE) © 2026 Boris Kudriashov. Bundled theme files retain their upstream (iTerm2-Color-Schemes, MIT) licensing.

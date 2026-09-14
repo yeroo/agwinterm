@@ -15,7 +15,7 @@ namespace Agwinterm.Ctl;
 public static class CtlUsage
 {
     /// <summary>The one-line summary printed with no arguments at all.</summary>
-    public const string Short = "usage: agwintermctl <ping|version|tree|session|surface|image|install> ... (see README.md, \"Control it from anything\")";
+    public const string Short = "usage: agwintermctl <ping|version|tree|session|surface|image|install> ... (see docs/control-api.md)";
 
     /// <summary>Every verb and flag, the text <c>--help</c> prints. Moved here from the comment it
     /// used to be; keep it and the code in step, because this is now what users read.</summary>
