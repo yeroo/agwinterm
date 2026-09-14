@@ -180,7 +180,6 @@ function Get-SessionSnapshot([string]$id) {
     return $null
 }
 
-# The ACTIVE session's node — the one a verb sent without --target acts on.
 # The state file is written by a background thread that lets a burst of tree changes settle first
 # (#294: the UI thread no longer waits on the file). A check that reads it right after a verb polls
 # for the bytes it expects instead of racing the writer; the newest windows\*.json is returned either
@@ -196,6 +195,7 @@ function Wait-StateFile([scriptblock]$Test, [int]$Ms = 3000) {
     return $f
 }
 
+# The ACTIVE session's node — the one a verb sent without --target acts on.
 function Get-ActiveSessionSnapshot {
     $tree = Invoke-Ctl @('tree')
     if (-not $tree.ok) { return $null }

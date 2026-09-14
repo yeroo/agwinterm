@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 namespace Agwinterm.Core;
 
 /// <summary>
@@ -14,43 +12,48 @@ namespace Agwinterm.Core;
 /// finished bytes and returns at once; a single background thread lets a burst settle and writes
 /// the newest snapshot per path, once.</para>
 ///
-/// <para>Three rules keep that from losing or misordering a save, and each has a test:</para>
+/// <para>Three rules keep that from losing or misordering a save, and each has a test in
+/// <c>StateWriterTests</c> that fails with its line removed:</para>
 /// <list type="bullet">
-/// <item><b>Newest wins.</b> Every snapshot takes a stamp from one clock. A write whose stamp is
-/// below the path's last published stamp is dropped: the file already holds something newer. So a
-/// synchronous <see cref="Publish"/> (quit, a verb whose reply claims a checkpoint on disk) can
-/// never be overwritten by an older snapshot still waiting in the queue.</item>
+/// <item><b>Newest wins, by the clock at snapshot time.</b> Every snapshot takes a stamp from one
+/// clock when it is BUILT — <see cref="Enqueue"/> stamps as it queues, a synchronous caller stamps
+/// with <see cref="Reserve"/> where it builds and publishes with that stamp later. A write whose
+/// stamp is below the path's last published stamp is dropped: the file already holds something
+/// newer. So a snapshot built on the UI thread and written on a pipe thread cannot land over a
+/// newer one the UI thread queued in between.</item>
 /// <item><b>Unchanged bytes are not rewritten.</b> A snapshot equal to the last published text,
 /// while that file still exists, costs one existence probe and no write — and it still advances
 /// the published stamp, exactly as a write would, so an older snapshot behind it is fenced out the
 /// same way (the bug lite's first cut had).</item>
 /// <item><b>A snapshot that must be on disk is written on the caller's thread.</b>
-/// <see cref="Publish"/> writes now and reports why when it could not; it shares the fence and the
-/// per-path write lock with the worker, so it waits for a write in flight rather than racing it.</item>
+/// <see cref="Publish(string, string, long, out string?)"/> writes now and reports why when it
+/// could not; it shares the fence and the per-path write lock with the worker, so it waits for a
+/// write in flight rather than racing it.</item>
 /// </list>
 ///
 /// <para>Writes are <c>path.tmp</c> then <c>File.Move(overwrite)</c>, as before, so a crash never
-/// leaves a truncated file. If the worker thread cannot start, <see cref="Enqueue"/> writes inline —
-/// persistence never silently stops.</para>
+/// leaves a truncated file. <see cref="Delete"/> removes a file under the same fence, so a snapshot
+/// still queued cannot resurrect it. If the worker thread cannot start, <see cref="Enqueue"/>
+/// writes inline — persistence never silently stops.</para>
 /// </summary>
 public sealed class StateWriter
 {
     private sealed class Slot
     {
-        public long Stamp;              // the newest snapshot taken for this path (under _lock)
-        public string? Pending;         // that snapshot's text while it waits for the worker (under _lock)
+        public long PendingStamp;       // the stamp of Pending (under _lock)
+        public string? Pending;         // a snapshot waiting for the worker (under _lock)
         public long Published;          // the stamp of the text on disk, or skipped as equal (under WriteLock)
-        public string? PublishedText;   // its bytes; null = nothing published by this process yet
+        public string? PublishedText;   // its bytes; null = not known to be on disk
         public readonly object WriteLock = new();
     }
 
     private readonly Dictionary<string, Slot> _slots = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
     private readonly AutoResetEvent _wake = new(false);
+    private readonly ManualResetEvent _stopping = new(false);   // interrupts the settle, unlike an Enqueue
     private readonly TimeSpan _settle;
     private readonly Action<string>? _log;
     private readonly Thread? _worker;
-    private volatile bool _stop;
     private long _clock;
 
     /// <param name="settle">How long the worker lets a burst of snapshots settle before writing the
@@ -73,8 +76,16 @@ public sealed class StateWriter
         }
     }
 
-    /// <summary>Snapshots taken for which no write has been attempted yet (tests).</summary>
-    public int PendingCount { get { lock (_lock) return _slots.Values.Count(s => s.Pending is not null); } }
+    /// <summary>Snapshots queued for which no write has been attempted yet.</summary>
+    internal int PendingCount { get { lock (_lock) return _slots.Values.Count(s => s.Pending is not null); } }
+
+    /// <summary>How many times the worker has drained its queue (tests wait on it).</summary>
+    internal long Drains => Interlocked.Read(ref _drains);
+    private long _drains;
+
+    /// <summary>Test seam: runs on the worker with each path it is about to write, after the snapshot
+    /// left the queue and before the fence is checked — where a synchronous publish can overtake it.</summary>
+    internal Action<string>? BeforeWrite;
 
     private Slot SlotFor(string path)
     {
@@ -90,29 +101,52 @@ public sealed class StateWriter
         lock (_lock)
         {
             var s = SlotFor(path);
-            s.Stamp = ++_clock;
+            s.PendingStamp = ++_clock;
             s.Pending = text;
         }
         _wake.Set();
     }
 
-    /// <summary>Write <paramref name="text"/> to <paramref name="path"/> now, on this thread. Returns
+    /// <summary>A stamp for a snapshot about to be built, taken where the tree is read so that its
+    /// place in the order is the moment of the snapshot, not of the write. Pass it to
+    /// <see cref="Publish(string, string, long, out string?)"/>.</summary>
+    public long Reserve() { lock (_lock) return ++_clock; }
+
+    /// <summary>Write <paramref name="text"/> now, on this thread, as a snapshot taken now.</summary>
+    public bool Publish(string path, string text, out string? why) => Publish(path, text, Reserve(), out why);
+
+    /// <summary>Write <paramref name="text"/> to <paramref name="path"/> now, on this thread, as the
+    /// snapshot stamped <paramref name="stamp"/> by <see cref="Reserve"/>. A queued snapshot no newer
+    /// than it is dropped; a newer one stays queued and is written by the worker in its turn. Returns
     /// false with <paramref name="why"/> when the bytes did not reach the file; true when they did, or
     /// when the file already holds them, or when a newer snapshot has already been published.</summary>
-    public bool Publish(string path, string text, out string? why)
+    public bool Publish(string path, string text, long stamp, out string? why)
     {
-        Slot s; long stamp;
-        lock (_lock) { s = SlotFor(path); stamp = s.Stamp = ++_clock; s.Pending = null; }
+        Slot s;
+        lock (_lock)
+        {
+            s = SlotFor(path);
+            if (s.Pending is not null && s.PendingStamp <= stamp) s.Pending = null;
+        }
         return Write(s, path, text, stamp, out why);
     }
 
-    /// <summary>The file was removed (or replaced) by something other than this writer: forget what it
-    /// held, so the next snapshot with the same bytes is written rather than skipped.</summary>
-    public void Forget(string path)
+    /// <summary>Remove the file, as the newest thing that happened to it: a snapshot still queued or
+    /// in flight is older and cannot put it back. The file's bytes are forgotten, so the next
+    /// snapshot with the same bytes is written rather than skipped. Missing already counts as removed.</summary>
+    public bool Delete(string path, out string? why)
     {
-        Slot s;
-        lock (_lock) s = SlotFor(path);
-        lock (s.WriteLock) s.PublishedText = null;
+        why = null;
+        Slot s; long stamp;
+        lock (_lock) { s = SlotFor(path); stamp = ++_clock; s.Pending = null; }
+        lock (s.WriteLock)
+        {
+            try { File.Delete(path); }
+            catch (Exception ex) { why = ex.Message; }
+            s.Published = stamp;
+            s.PublishedText = null;
+            return why is null;
+        }
     }
 
     /// <summary>Stop the worker: it writes whatever is still pending (an older snapshot than a
@@ -121,7 +155,7 @@ public sealed class StateWriter
     /// process, which is what it would have done anyway.</summary>
     public void Shutdown(TimeSpan wait)
     {
-        _stop = true;
+        _stopping.Set();
         _wake.Set();
         if (_worker is { IsAlive: true } && !_worker.Join(wait))
             _log?.Invoke($"state writer did not finish within {wait.TotalSeconds:0} s of shutdown");
@@ -129,14 +163,14 @@ public sealed class StateWriter
 
     private void Run()
     {
-        while (!_stop)
+        while (true)
         {
             _wake.WaitOne();
-            if (_stop) break;
-            if (_settle > TimeSpan.Zero) Thread.Sleep(_settle);   // a burst becomes one write
+            // The settle is cut short by a shutdown, never by another Enqueue (that is the burst it exists for).
+            bool stopping = _settle <= TimeSpan.Zero ? _stopping.WaitOne(0) : _stopping.WaitOne(_settle);
             Drain();
+            if (stopping) return;
         }
-        Drain();
     }
 
     private void Drain()
@@ -145,11 +179,15 @@ public sealed class StateWriter
         lock (_lock)
         {
             work = _slots.Where(kv => kv.Value.Pending is not null)
-                         .Select(kv => (kv.Key, kv.Value, kv.Value.Pending!, kv.Value.Stamp)).ToList();
+                         .Select(kv => (kv.Key, kv.Value, kv.Value.Pending!, kv.Value.PendingStamp)).ToList();
             foreach (var (_, slot, _, _) in work) slot.Pending = null;
         }
         foreach (var (path, slot, text, stamp) in work)
+        {
+            BeforeWrite?.Invoke(path);
             if (!Write(slot, path, text, stamp, out var why)) _log?.Invoke($"state save to {path} failed: {why}");
+        }
+        Interlocked.Increment(ref _drains);
     }
 
     private static bool Write(Slot s, string path, string text, long stamp, out string? why)

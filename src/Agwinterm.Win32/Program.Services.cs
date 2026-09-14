@@ -1265,10 +1265,9 @@ internal partial class Program
         }
     }
 
-    /// <summary>Persist the window library index (atomic). Best-effort.</summary>
-    /// <summary>Snapshot the window library to windows.json. The bytes are built here; the write goes
-    /// through <see cref="_stateWriter"/>, off this thread, unless <paramref name="sync"/> — a window
-    /// closing needs its IsOpen flag on disk before the process can go.</summary>
+    /// <summary>Snapshot the window library to windows.json. Best-effort. The bytes are built here;
+    /// the write goes through <see cref="_stateWriter"/>, off this thread, unless <paramref name="sync"/>
+    /// — only the last window out writes it synchronously, because the process goes right after.</summary>
     private static void SaveIndex(bool sync = false)
     {
         try
@@ -1450,13 +1449,15 @@ internal partial class Program
     /// <paramref name="captureCommands"/> (quit only) first captures each pane's foreground command into its
     /// <see cref="Pane.CapturedCommand"/> when restore-commands is on; every save then writes that field —
     /// one slot, one reader, so a `restore capture` checkpoint survives the ordinary saves in between (P3).
-    /// A quit's save is also written synchronously: the shells are torn down right after it, and a
-    /// snapshot still in the writer's queue would be older than this one and fenced out anyway.</summary>
-    private bool SaveState(bool captureCommands = false)
+    /// With <paramref name="sync"/> — the last window out, or an update-quit — it is written before
+    /// returning: the process goes right after, and a snapshot still queued is older and fenced out.
+    /// Closing one window of several enqueues like any other save: a synchronous write there would
+    /// stall the UI thread every window shares.</summary>
+    private bool SaveState(bool captureCommands = false, bool sync = false)
     {
         string? json = BuildStateSnapshot(out _, captureCommands);
         if (json is null) return false;
-        if (captureCommands)
+        if (sync)
         {
             bool ok = _stateWriter.Publish(StatePath, json, out _);
             SaveIndex(sync: true);
@@ -1468,14 +1469,11 @@ internal partial class Program
     }
 
     /// <summary>Write a snapshot from <see cref="BuildStateSnapshot"/> NOW, on this thread, with the
-    /// reason it did not land. Build on the UI thread, publish on any: the caller's reply then
-    /// describes a file that exists, and the window never waited for it.</summary>
-    private bool PublishState(string json, out string? why)
-    {
-        bool ok = _stateWriter.Publish(StatePath, json, out why);
-        SaveIndex();
-        return ok;
-    }
+    /// reason it did not land. <paramref name="stamp"/> comes from <see cref="Core.StateWriter.Reserve"/>
+    /// taken in the same UI hop as the build, so the snapshot's place in the order is the moment it
+    /// was built, not the moment this thread got to write it: a newer snapshot the UI thread queued in
+    /// between wins, whichever lands first. The hop saves the index itself.</summary>
+    private bool PublishState(string json, long stamp, out string? why) => _stateWriter.Publish(StatePath, json, stamp, out why);
 
     /// <summary>The state file's bytes for the tree as it is now (UI thread: it reads the workspaces,
     /// the panes' cwds and, with restore-buffer, their emulators). Null, with <paramref name="why"/>,

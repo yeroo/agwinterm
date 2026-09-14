@@ -103,9 +103,7 @@ internal partial class Program
                 if (_frontmostId == target.Id) _frontmostId = _windowIndex.FirstOrDefault(m => m.IsOpen)?.Id ?? _windowIndex.FirstOrDefault()?.Id;
             }
             SweepWindowBackgrounds(target.Id); // remove watermark files for that window's sessions
-            string gone = Path.Combine(AppDir, "windows", target.Id + ".json");
-            try { File.Delete(gone); } catch { }
-            _stateWriter.Forget(gone);
+            _stateWriter.Delete(Path.Combine(AppDir, "windows", target.Id + ".json"), out _);   // fenced: a snapshot still queued cannot put it back
             SaveIndex();
         });
         return true;
@@ -704,9 +702,10 @@ internal partial class Program
         try
         {
             if (!File.Exists(StatePath)) return "no restore state";
-            File.Delete(StatePath);
-            _stateWriter.Forget(StatePath);   // the next save with the same bytes must write, not skip
-            return "restore state cleared";
+            // Through the writer, as the newest thing that happened to the file: a snapshot still
+            // queued or in flight is older and cannot put it back, and the next save with the same
+            // bytes writes rather than skips.
+            return _stateWriter.Delete(StatePath, out string? why) ? "restore state cleared" : "error: " + why;
         }
         catch (Exception ex) { return "error: " + ex.Message; }
     }
@@ -1335,7 +1334,7 @@ internal partial class Program
         if (!TryCaptureForegroundCommands(snap.Select(x => x.pid).Where(pid => pid > 0), timeoutMs: 15000, out var byPid))
             return RestoreCaptureResult.Refuse(RestoreCaptureReply.QueryFailed);
 
-        var (result, json, landedCount) = InvokeOnUiQueued(() =>
+        var (result, json, stamp, landedCount) = InvokeOnUiQueued(() =>
         {
             var landed = new List<CapturedPane>(snap.Count);
             lock (_workspaces)
@@ -1345,18 +1344,25 @@ internal partial class Program
                     pane.CapturedCommand = pid > 0 && byPid.TryGetValue(pid, out var cmd) ? cmd : null;
                     landed.Add(new CapturedPane(pane.Id, ses.Id, pane.CapturedCommand));
                 }
-            // The snapshot is built here, on the UI thread, where the tree is; it is written below,
-            // on this pipe thread, so the window never waits on the file (#294).
-            string? snapshot = null;
-            if (landed.Count > 0 && (snapshot = BuildStateSnapshot(out string? buildWhy)) is null)
-                return (RestoreCaptureResult.Refuse(RestoreCaptureReply.NotSaved(landed.Count, buildWhy)), (string?)null, landed.Count);
-            return (new RestoreCaptureResult(landed, _config.RestoreCommands), snapshot, landed.Count);
+            // The snapshot is built here, on the UI thread, where the tree is, and STAMPED here, so
+            // its place in the order is this moment; it is written below, on the pipe thread, so the
+            // window never waits on the file (#294). A save the UI thread queues between the two is
+            // newer and wins, whichever lands first.
+            string? snapshot = null; long reserved = 0;
+            if (landed.Count > 0)
+            {
+                reserved = _stateWriter.Reserve();
+                if ((snapshot = BuildStateSnapshot(out string? buildWhy)) is null)
+                    return (RestoreCaptureResult.Refuse(RestoreCaptureReply.NotSaved(landed.Count, buildWhy)), (string?)null, 0L, landed.Count);
+                SaveIndex();
+            }
+            return (new RestoreCaptureResult(landed, _config.RestoreCommands), snapshot, reserved, landed.Count);
         });
         // The reply claims a checkpoint ON DISK. A save that did not land is a refusal that says
         // what did happen: the slots are in memory (tree shows them) and are left as captured —
         // rolling them back would make the tree disagree with a query that read the processes
         // correctly (#246; lite's restore.capture refuses the same way).
-        if (json is not null && !PublishState(json, out string? why))
+        if (json is not null && !PublishState(json, stamp, out string? why))
             return RestoreCaptureResult.Refuse(RestoreCaptureReply.NotSaved(landedCount, why));
         return result;
     }
