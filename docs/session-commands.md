@@ -49,6 +49,5 @@ on direct process lifetime or argv parsing. Use a matching updated `agwintermctl
 and terminal; older CLIs do not send the new option. Lite's ordinary PowerShell
 command behavior remains the same. These rules apply to `session new`; overlays,
 shell profiles, custom commands and restore replay retain their separate contracts.
-In Lite, duplicating or cold-restoring a bare `powershell.exe` direct session adds
-the usual prompt wrapper; exact empty argv currently applies only to its initial launch
-([tracked follow-up](https://github.com/yeroo/agliteterm/issues/79)).
+In Lite, an exact empty argv (a bare `powershell.exe` direct session) stays exact across
+duplicate, Reopen Closed and a cold restore since agliteterm 0.19.3 (agliteterm #79).

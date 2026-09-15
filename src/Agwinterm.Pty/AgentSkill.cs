@@ -392,6 +392,9 @@ public static class AgentSkill
         until the session is closed and reopened (a reopened session's pane 0 carries the id again). In a split session,
         address panes by their own ids. The split verbs take `--target <id>` as a
         session or either of its panes and act on THAT session, not the active one; `focus` and `resize` act on the active session.
+        - TO GET A PANE, USE `session split on`. The bare form is `toggle`: on a session that is already split it CLOSES the split
+          and answers the SURVIVOR's id — the session's own shell, the pane you may be typing in — so a launcher that calls it
+          twice types its second command into itself (seen in the field). `on` answers the split pane's id every time, split or not.
         - `agwintermctl session split [on|off|toggle] [--axis vertical|horizontal] [--target <id>]` — REPLIES WITH A PANE ID, a bare
           string: `on` = the split pane's id — ALSO when the session was already split (nothing changes; a caller that does not
           know whether it split gets something addressable either way); `off` = the survivor's id (pane 0), also when already

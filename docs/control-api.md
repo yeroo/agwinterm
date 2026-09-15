@@ -197,6 +197,10 @@ survive each other (renaming does not clear the context).
 asked for is addressable from the reply: `on` on an already-split session answers the existing split
 pane's id and changes nothing, `off` answers the survivor's.
 
+**To get a pane, use `on`.** The bare form is a toggle: on a session that is already split it closes
+the split and answers the survivor's id — the session's own shell — so a script that asks twice ends
+up addressing the pane it runs in.
+
 - `--axis vertical|horizontal` picks the arrangement in agterm's words — vertical is left/right
   panes, horizontal is top/bottom. It is remembered for the life of the session, through `off`, and
   across a restart only while the session is still split (a collapsed session writes no axis key);
