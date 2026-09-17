@@ -873,6 +873,7 @@ internal partial class Program
                         A("Starship Theme…", "", () => TogglePalette(PaletteKind.Starship));
                     A("Install Nerd Font…", "", () => TogglePalette(PaletteKind.Fonts));   // omp/starship themes need one
                     A("Settings…", "", OpenSettingsWindow);
+                    A("About agwinterm", "", ShowAbout);
                     A("Custom Commands…", "Ctrl+Shift+O", () => TogglePalette(PaletteKind.Custom));
                     // Opt-in integrations (agterm's Help-menu trio + shell) — the installer stays minimal.
                     A("Install Command-Line Tool (PATH)", "", InstallCli);
