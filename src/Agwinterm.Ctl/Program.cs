@@ -384,6 +384,7 @@ switch (area)
                 }
                 if (ovAction == "text")
                 {
+                    if (options.ContainsKey("styles")) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.StylesRefusal); return 2; }
                     if (options.ContainsKey("all") && options.ContainsKey("lines")) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.AllWithLines); return 2; }
                     if (options.ContainsKey("all")) cargs["all"] = true;
                     if (Opt("lines") is { } ovLinesRaw)   // refused, not dropped, as on session text

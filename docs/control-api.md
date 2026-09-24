@@ -102,7 +102,7 @@ with a palette/RGB colour instead of SGR 2 needs that application's colour conve
 alone is not proof of an empty composer. The snapshot does not reserve the pane against later input.
 
 Targeting is unchanged, including quick-terminal and overlay **ids**. `session overlay text
---styles` is not supported; use `session text --styles --target <overlay-id>`. agliteterm does
+--styles` is refused before reading; use `session text --styles --target <overlay-id>`. agliteterm does
 not yet support this flag (see [parity tracker](lite-parity.md)).
 
 ## `statusChangedAt` in `tree --json`

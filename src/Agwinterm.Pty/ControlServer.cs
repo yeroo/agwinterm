@@ -683,6 +683,7 @@ public sealed class ControlServer : IDisposable
         }
         if (!TryOverlaySize(args, out int sizePercent, out string? sizeErr)) return Err(sizeErr!);
         var textArgs = OverlayTextArgs.Screen;
+        if (action == "text" && GetBool(args, "styles")) return Err(OverlayPanes.StylesRefusal);
         if (action == "text" && !TryTextArgs(args, out textArgs, out string? textErr)) return Err(textErr!);
         string ovl = host.SessionOverlay(target, action, GetString(args, "command"), sizePercent,
             GetBool(args, "wait"), GetBool(args, "block"), pane, textArgs);

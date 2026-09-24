@@ -205,23 +205,12 @@ public class SurfaceTextStylesTests
         using var server = new ControlServer(session, pipe);
         Feed(session, "> \u001b[2mhint");
         server.Start();
-        var start = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "agwintermctl.exe"))
-        {
-            UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardOutput = true, RedirectStandardError = true,
-        };
-        foreach (string arg in new[] { "session", "text", "--styles", "--all", "--pipe", pipe, "--target", "active" })
-            start.ArgumentList.Add(arg);
-        if (envelope) start.ArgumentList.Add("--json");
-        using var process = Process.Start(start)!;
-        var stdout = process.StandardOutput.ReadToEndAsync();
-        var stderr = process.StandardError.ReadToEndAsync();
-        try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10)); }
-        finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-        string error = await stderr;
-        Assert.True(process.ExitCode == 0, $"CLI exit {process.ExitCode}: {error}");
-        Assert.Equal("", error);
-        using var doc = JsonDocument.Parse(await stdout);
+        var args = new List<string> { "session", "text", "--styles", "--all", "--pipe", pipe, "--target", "active" };
+        if (envelope) args.Add("--json");
+        var (exitCode, stdout, stderr) = await RunCtl(args);
+        Assert.True(exitCode == 0, $"CLI exit {exitCode}: {stderr}");
+        Assert.Equal("", stderr);
+        using var doc = JsonDocument.Parse(stdout);
         var result = doc.RootElement;
         if (envelope)
         {
@@ -230,6 +219,56 @@ public class SurfaceTextStylesTests
         }
         Assert.True(Runs(result)[1].GetProperty("faint").GetBoolean());
         Assert.Equal("hint", Runs(result)[1].GetProperty("text").GetString());
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("\"true\"")]
+    [InlineData("\"1\"")]
+    public void OverlayTextRefusesStylesBeforeReadingTheHost(string value)
+    {
+        using var server = new ControlServer(new FakeSessionHost());
+        // No overlay exists: reaching the host would return "no overlay", not this refusal.
+        using var doc = JsonDocument.Parse(server.Dispatch(
+            "{\"cmd\":\"session.overlay\",\"args\":{\"action\":\"text\",\"styles\":" + value + "}}"));
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal(OverlayPanes.StylesRefusal, doc.RootElement.GetProperty("error").GetString());
+        using var plain = JsonDocument.Parse(server.Dispatch(
+            "{\"cmd\":\"session.overlay\",\"args\":{\"action\":\"text\",\"styles\":false}}"));
+        Assert.Equal("no overlay", plain.RootElement.GetProperty("error").GetString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CliRefusesOverlayStylesBeforeConnecting(bool pane)
+    {
+        // A unique, unserved pipe makes a connection attempt fail; exit 2 and this refusal
+        // prove that the CLI rejected the option locally, before sending anything.
+        var args = new List<string> { "session", "overlay", "text", "--styles", "--pipe",
+            "agwinterm-test-unserved-" + Guid.NewGuid().ToString("N") };
+        if (pane) args.AddRange(["--pane", "left"]);
+        var (exitCode, stdout, stderr) = await RunCtl(args);
+        Assert.Equal(2, exitCode);
+        Assert.Equal("", stdout);
+        Assert.Equal(OverlayPanes.StylesRefusal + Environment.NewLine, stderr);
+        Assert.Contains("session text --styles --target <overlay-id>", stderr);
+    }
+
+    private static async Task<(int ExitCode, string Stdout, string Stderr)> RunCtl(IEnumerable<string> args)
+    {
+        var start = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "agwintermctl.exe"))
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        foreach (string arg in args) start.ArgumentList.Add(arg);
+        using var process = Process.Start(start)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10)); }
+        finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+        return (process.ExitCode, await stdout, await stderr);
     }
 
     public sealed class NativeCoreFactAttribute : FactAttribute

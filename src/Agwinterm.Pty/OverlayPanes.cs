@@ -178,6 +178,9 @@ public static class OverlayPanes
     /// and <c>session overlay text</c> alike (one reader, two verbs).</summary>
     public const string AllWithLines = "--all and --lines cannot be combined: --all reads the whole buffer (screen + scrollback), --lines N the last N lines; pass one. Nothing read.";
 
+    /// <summary>The overlay-slot reader cannot return attributes; read its surface by id instead.</summary>
+    public const string StylesRefusal = "session overlay text: --styles is not supported here; use `session text --styles --target <overlay-id>`. Nothing read.";
+
     /// <summary>The reply object for <c>copy</c> and <c>text</c>: <c>{"text":…}</c>.</summary>
     public static string TextReply(string text) =>
         "{\"" + TextKey + "\":" + JsonSerializer.Serialize(text) + "}";
