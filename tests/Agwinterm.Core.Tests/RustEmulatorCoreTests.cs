@@ -156,10 +156,12 @@ public class RustEmulatorCoreTests
         if (!Available) return;
         // Exercise every IHostActions member through the VT stream: OSC 9 notify, OSC 9;4 progress,
         // OSC 777 notify, OSC 52 clipboard (base64 "aGk=" -> "hi"), the kitty keyboard-flags query
-        // (Respond), and one each of the Unhandled taps (CSI, C0 BEL, ESC).
+        // (Respond), and one each of the Unhandled taps (CSI, C0 BEL, ESC). OSC 9;9 (a cwd report)
+        // must fire nothing on either core (#313).
         string script =
             "\x1b]9;build done\x07" +
             "\x1b]9;4;1;42\x07" +
+            "\x1b]9;9;C:/work\x07" +
             "\x1b]777;notify;Title;Body;x\x07" +
             "\x1b]52;c;aGk=\x07" +
             "\x1b[?u" +
