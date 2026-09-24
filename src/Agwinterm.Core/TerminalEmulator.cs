@@ -655,7 +655,9 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 {
                     // OSC 9;9 — ConEmu "set working directory": the cwd form ConPTY passes through
                     // (it swallows OSC 7), so under a pty-host this is how the live cwd arrives.
+                    // A cwd report, not a message: it must not fall through to Notify (#313).
                     Cwd = text[2..].Trim('"');
+                    break;
                 }
                 else if (text.StartsWith("4;", StringComparison.Ordinal))
                 {

@@ -130,6 +130,18 @@ public class OscTests
         Assert.Equal("42 done", host.Notifications.Single().Body);
     }
 
+    // OSC 9;9 (ConEmu set-working-directory) is a cwd report, like OSC 7: a shell emitting it at every
+    // prompt must not raise a "9;<path>" notification each time (#313).
+    [Fact]
+    public void Osc9_9_SetsCwdNotNotification()
+    {
+        var t = new TerminalEmulator(40, 3);
+        var host = new RecordingHost(); t.Host = host;
+        t.Feed(Encoding.UTF8.GetBytes("\x1b]9;9;C:/work/repo\x07\x1b]9;9;\"C:\\work\\quoted\"\x1b\\"));
+        Assert.Equal("C:\\work\\quoted", t.Cwd);
+        Assert.Empty(host.Notifications);
+    }
+
     // FTCS (OSC 133) shell-integration marks: prompt/output boundaries + exit codes.
 
     [Fact]
