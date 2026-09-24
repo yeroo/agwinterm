@@ -1,4 +1,3 @@
-using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 
@@ -671,15 +670,18 @@ if (cmd == "version")
     return 0;
 }
 
+// The reply is bounded (#315): a blocking overlay open answers when its overlay closes, so it alone
+// waits without a limit unless --timeout says otherwise.
+if (!Agwinterm.Ctl.CtlRequest.TryResolveTimeout(Opt("timeout"), waitsByDesign: cmd == "session.overlay" && cargs.ContainsKey("block"),
+        out var replyTimeout, out var timeoutError))
+{
+    Console.Error.WriteLine(timeoutError);
+    return 2;
+}
+
 try
 {
-    using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut);
-    pipe.Connect(3000);
-    // leaveOpen so the reader/writer don't each try to close the same pipe (double-close throws).
-    using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true };
-    using var reader = new StreamReader(pipe, Encoding.UTF8, false, 1024, leaveOpen: true);
-    writer.WriteLine(requestJson);
-    string? response = reader.ReadLine();
+    string? response = Agwinterm.Ctl.CtlRequest.Exchange(pipeName, requestJson, replyTimeout);
     if (response is null) { Console.Error.WriteLine("no response"); return 1; }
 
     if (jsonOut) { Console.WriteLine(response); }
@@ -707,6 +709,11 @@ try
 catch (TimeoutException)
 {
     Console.Error.WriteLine($"could not connect to agwinterm pipe '\\\\.\\pipe\\{pipeName}' (is agwinterm running?)");
+    return 1;
+}
+catch (Agwinterm.Ctl.ReplyTimeoutException ex)
+{
+    Console.Error.WriteLine($"agwinterm pipe '\\\\.\\pipe\\{pipeName}': {ex.Message}");
     return 1;
 }
 catch (Exception ex)

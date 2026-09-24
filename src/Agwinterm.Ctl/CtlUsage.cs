@@ -120,6 +120,8 @@ public static class CtlUsage
               (several entries applied as one all-or-nothing frame; see docs/specs/image-frameshm.md)
           agwintermctl install hooks
         Target defaults to $AGWINTERM_SESSION_ID (the current session) when not given.
+        --timeout <seconds> bounds the wait for the app's reply (default 30, 0 = no limit; a
+            `session overlay open --block` waits for its overlay without a limit unless given).
         """;
 
     /// <summary>
