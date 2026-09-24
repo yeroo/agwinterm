@@ -155,6 +155,14 @@ public static class AgentSkill
           `--all` is the whole buffer, screen + scrollback (`--all` with `--lines` is refused, nothing read). A pane id
           reads the shell in that pane even while a pane overlay covers it; the overlay's own id, or no target while
           the focused pane holds one, reads the overlay (see Overlays)
+        - `agwintermctl session text --styles [--all|--lines N] [--target <id>]` — JSON `{cols,rows:[{row,runs}],cursor:{row,col}}`
+          from one snapshot. Runs carry `col,width,text,faint,bold,italic,underline,inverse,strike,fg,bg`; colours are
+          `default`, `idx:N`, or `#rrggbb`. Coordinates/widths are grid cells, not character counts; negative rows are
+          history. Trailing whitespace (even styled) and trailing empty rows trim like plain text. On a known composer
+          using faint suggestions, inspect runs in the cursor row where `col+width > cursor.col`: an all-faint suffix
+          is consistent with a suggestion, a non-faint run with a draft. Verify the composer and text before the caret;
+          this is an app-specific heuristic, not proof. `--json` keeps the reply envelope; agliteterm does not yet support
+          `--styles`. For an overlay use its id with `session text`, not `session overlay text --styles`.
         - `agwintermctl session copy [--target <id>]`            — return the session's current mouse text selection ("" if none);
           resolved like `session text`: `--target <pane id>` reads the shell under a pane overlay, no target or
           `--target active` reads the focused surface (the overlay while one is up), and `session overlay copy`

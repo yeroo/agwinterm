@@ -893,11 +893,12 @@ public sealed class ControlServer : IDisposable
     /// <summary>Dump the target session's active-pane buffer as plain text — <see cref="SurfaceText.Dump"/>,
     /// the one reader <c>session overlay text</c> shares (P5): `lines` reaches back into scrollback,
     /// `all` takes the whole buffer, omitted keeps the old meaning exactly — the visible screen; the
-    /// pair is refused (<see cref="TryTextArgs"/>).</summary>
+    /// pair is refused (<see cref="TryTextArgs"/>). Optional <c>styles</c> returns attribute runs
+    /// and the cursor from the same snapshot instead of a plain string.</summary>
     private static string HandleText(ISession s, JsonElement args)
     {
         if (!TryTextArgs(args, out var text, out string? err)) return Err(err!);
-        return Ok(SurfaceText.Dump(s, text));
+        return GetBool(args, "styles") ? OkRaw(SurfaceText.DumpStyled(s, text)) : Ok(SurfaceText.Dump(s, text));
     }
 
     private static string HandleStatus(ISession s, JsonElement args)

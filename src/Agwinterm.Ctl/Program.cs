@@ -284,6 +284,7 @@ switch (area)
                 // text` refuses it the same way), so nothing is sent for a read that meant two things.
                 if (options.ContainsKey("all") && options.ContainsKey("lines")) { Console.Error.WriteLine(Agwinterm.Pty.OverlayPanes.AllWithLines); return 2; }
                 if (options.ContainsKey("all")) cargs["all"] = true;
+                if (options.ContainsKey("styles")) cargs["styles"] = true;
                 // An unparseable --lines is refused, not dropped: `--lines 5O` used to read the screen and report success.
                 if (Opt("lines") is { } textLinesRaw)
                 {

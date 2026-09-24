@@ -60,6 +60,51 @@ same column is not proof of none (a draft exactly one wrap width long parks the 
 started), so back a match with `session text` of that row. It resolves its target exactly as
 `session text` and `session type` do, so the pane you check is the pane you type into.
 
+## `session text --styles`
+
+`agwintermctl session text --styles [--all|--lines N] [--target ID]` reads text and its
+rendering attributes. The wire request is `session.text` with `args.styles: true`.
+The CLI prints the result object below; adding `--json` keeps the usual `{ok,result}` envelope.
+Omitting `styles` or setting it to false keeps the existing plain string result unchanged.
+
+```json
+{"cols":80,"rows":[{"row":0,"runs":[{"col":0,"width":2,"text":"> ","faint":false,"bold":false,"italic":false,"underline":false,"inverse":false,"strike":false,"fg":"default","bg":"default"},{"col":2,"width":10,"text":"suggestion","faint":true,"bold":false,"italic":false,"underline":false,"inverse":false,"strike":false,"fg":"default","bg":"default"}]}],"cursor":{"row":0,"col":2}}
+```
+
+Rows and columns are zero-based grid coordinates. Row 0 is the top of the visible screen;
+negative rows are scrollback (`-1` is the newest history row). Each run's `col` and `width`
+describe its grid extent, including the second cell of a wide glyph; spacer cells add no text.
+UTF-16 length or Unicode character count is **not** its width. All six flags are always present;
+`faint` is SGR 2 (dim), and `inverse` is reported as stored, without swapping foreground/background.
+Colours are the program's specifications, independent of the current theme: `default`, `idx:N`
+(palette index 0–255), or lowercase `#rrggbb` for truecolor. Adjacent cells with identical
+attributes and colour specifications merge into one run.
+
+The cursor and runs come from one locked snapshot of the pane's emulator (the local replica for
+a server session). The cursor column can equal `cols` while wrapping is deferred. This is a
+text-oriented attribute view: all trailing Unicode whitespace, including styled spaces and
+U+3000, is trimmed just like plain `session text`. Trailing empty rows are omitted; interior
+empty rows have `runs: []`. Joining run texts per row, then rows with newlines, reproduces the
+plain dump. A cursor on a trimmed-empty row is still returned, even when that row is omitted.
+
+Default selection is the visible screen. `--lines N` selects the last N rows ending at the
+screen bottom, reaching into history when needed (`0` means the screen); `--all` includes all
+history. `--all` with `--lines` is refused. Restored history seeded from plain text is marked
+dim by the emulator, so these restored rows also report `faint: true`.
+
+For a known single-line composer that renders suggestions with SGR 2, find the cursor's row
+and select runs where `run.col + run.width > cursor.col`. If all those runs are faint (or the
+row has no text), the suffix is consistent with an empty composer showing a suggestion.
+A non-faint overlapping run distinguishes a real draft, including one whose caret moved back
+inside that run. This is an application-specific heuristic: verify the composer and any text
+before the caret, and handle its cursor decoration if it uses inverse video. Grey text encoded
+with a palette/RGB colour instead of SGR 2 needs that application's colour convention; colour
+alone is not proof of an empty composer. The snapshot does not reserve the pane against later input.
+
+Targeting is unchanged, including quick-terminal and overlay **ids**. `session overlay text
+--styles` is not supported; use `session text --styles --target <overlay-id>`. agliteterm does
+not yet support this flag (see [parity tracker](lite-parity.md)).
+
 ## `statusChangedAt` in `tree --json`
 
 Each session reports `statusChangedAt` — epoch **seconds** of the last status write on the pane whose
