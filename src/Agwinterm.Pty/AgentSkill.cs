@@ -53,8 +53,8 @@ public static class AgentSkill
         (A default blocked cue can also be set once via `blocked-sound =` in the config.)
 
         Better: run `agwintermctl install hooks` once. It wires Claude Code hooks so your status updates
-        automatically (active while working, blocked on permission prompts, completed on stop); writes a
-        Codex `notify` script (prints the one config.toml line to add); and installs a generic
+        automatically (active while working, blocked on permission prompts, completed on stop); merges the
+        same status hooks into Codex's ~/.codex/hooks.json (trust them once in Codex with /hooks); and installs a generic
         PowerShell-profile bridge that marks any command matching `$env:AGWINTERM_AGENT_RE` active/completed.
 
         ## Manage sessions & workspaces

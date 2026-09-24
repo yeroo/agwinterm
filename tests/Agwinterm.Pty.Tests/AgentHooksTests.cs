@@ -51,6 +51,38 @@ public class AgentHooksTests
         Assert.Null(AgentHooks.MergeClaudeSettings("{ not valid json", Wrapper));
     }
 
+    private const string CodexScript = @"C:\Users\x\AppData\Local\agwinterm\agwinterm-codex-hook.ps1";
+
+    [Fact]
+    public void MergeCodex_IntoEmpty_AddsFourEventsWithTheirStates()
+    {
+        var hooks = JsonNode.Parse(AgentHooks.MergeCodexHooks(null, CodexScript)!)!.AsObject()["hooks"]!.AsObject();
+        Assert.Equal(new[] { "UserPromptSubmit", "PostToolUse", "PermissionRequest", "Stop" }, hooks.Select(kv => kv.Key));
+        string Command(string evt) => hooks[evt]![0]!["hooks"]![0]!["command"]!.GetValue<string>();
+        Assert.EndsWith($"\"{CodexScript}\" active", Command("UserPromptSubmit"));
+        Assert.EndsWith($"\"{CodexScript}\" active", Command("PostToolUse"));
+        Assert.EndsWith($"\"{CodexScript}\" blocked", Command("PermissionRequest"));
+        Assert.EndsWith($"\"{CodexScript}\" stop", Command("Stop"));   // the script resolves completed/blocked
+    }
+
+    [Fact]
+    public void MergeCodex_IsIdempotentAndKeepsTheUsersHooks()
+    {
+        string existing = "{\"description\":\"mine\",\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo hi\"}]}]}}";
+        string once = AgentHooks.MergeCodexHooks(existing, CodexScript)!;
+        string twice = AgentHooks.MergeCodexHooks(once, CodexScript)!;
+        var root = JsonNode.Parse(twice)!.AsObject();
+        Assert.Equal("mine", root["description"]!.GetValue<string>());
+        Assert.Equal(2, root["hooks"]!["Stop"]!.AsArray().Count);           // the user's entry, then ours once
+        Assert.Single(root["hooks"]!["PermissionRequest"]!.AsArray());
+    }
+
+    [Fact]
+    public void MergeCodex_RefusesMalformedFile()
+    {
+        Assert.Null(AgentHooks.MergeCodexHooks("{ not valid json", CodexScript));
+    }
+
     [Fact]
     public void WrapperScript_RoutesStatusToItsOwnPane()
     {
@@ -58,6 +90,7 @@ public class AgentHooksTests
         // routes to the *focused* pane and multi-session status lands on the wrong dot.
         Assert.Contains("\"target\":\"' + $env:AGWINTERM_SESSION_ID + '\"", AgentHooks.WrapperScript);
         Assert.Contains("\"target\":\"' + $env:AGWINTERM_SESSION_ID + '\"", AgentHooks.CodexNotifyScript);
+        Assert.Contains("\"target\":\"' + $env:AGWINTERM_SESSION_ID + '\"", AgentHooks.CodexHookScript);
         Assert.Contains("\"target\":\"' + $env:AGWINTERM_SESSION_ID + '\"", GenericAgentInstaller.Block);
     }
 
