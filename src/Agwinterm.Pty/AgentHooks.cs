@@ -4,12 +4,15 @@ using System.Text.Json.Nodes;
 namespace Agwinterm.Pty;
 
 /// <summary>
-/// Installs Claude Code status hooks (agterm-style self-setup). Writes a PowerShell
-/// wrapper that pushes session status to agwinterm's control pipe, and idempotently
-/// merges the four hooks into ~/.claude/settings.json:
+/// Installs Claude Code and Codex status hooks (agterm-style self-setup). Writes PowerShell
+/// wrappers that push session status to agwinterm's control pipe, and idempotently merges the
+/// hooks into each agent's hook file. ~/.claude/settings.json:
 ///   UserPromptSubmit -> active, PostToolUse -> active, Stop -> completed,
 ///   Notification(permission_prompt) -> blocked.
-/// The wrapper no-ops (exit 0) outside agwinterm and never fails a turn.
+/// ~/.codex/hooks.json (same schema):
+///   UserPromptSubmit -> active, PostToolUse -> active, PermissionRequest -> blocked,
+///   Stop -> completed, or blocked when the last message is a question.
+/// The wrappers no-op (exit 0) outside agwinterm and never fail a turn.
 /// </summary>
 public static class AgentHooks
 {
@@ -19,9 +22,12 @@ public static class AgentHooks
     public static string WrapperPath => Path.Combine(LocalAppData, "agwinterm", "agwinterm-agent-status.ps1");
     public static string ClaudeSettingsPath => Path.Combine(Home, ".claude", "settings.json");
     public static string CodexNotifyPath => Path.Combine(LocalAppData, "agwinterm", "agwinterm-codex-notify.ps1");
-    public static string CodexConfigPath => Path.Combine(Home, ".codex", "config.toml");
+    public static string CodexHookPath => Path.Combine(LocalAppData, "agwinterm", "agwinterm-codex-hook.ps1");
+    public static string CodexHooksPath => Path.Combine(Home, ".codex", "hooks.json");
 
-    /// <summary>Codex `notify` program: receives the event JSON as argv[0], maps it to a session status.</summary>
+    /// <summary>Codex `notify` program: receives the event JSON as argv[0], maps it to a session status.
+    /// Superseded by <see cref="CodexHookScript"/>; still written so a config.toml `notify` line from an
+    /// earlier install keeps pointing at a script that exists.</summary>
     public const string CodexNotifyScript =
         """
         param([string]$Json)
@@ -51,6 +57,40 @@ public static class AgentHooks
         exit 0
         """;
 
+    /// <summary>Codex hooks.json handler: argv[0] is the status (or <c>stop</c>), the event JSON arrives on
+    /// stdin. Stop resolves to blocked when the turn ends on a question, like the notify script did.</summary>
+    public const string CodexHookScript =
+        """
+        param([string]$State)
+        # agwinterm Codex hook: push a hooks.json event as session status. No-op outside agwinterm.
+        if (-not $env:AGWINTERM_SESSION_ID) { exit 0 }
+        $o = $null
+        try { $o = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::UTF8).ReadToEnd() | ConvertFrom-Json } catch { }
+        # A nested `codex exec` (an agent running it from a tool shell) inherits AGWINTERM_SESSION_ID and
+        # fires the same hooks. Its rollout, already written when a hook runs, says source "exec"; the
+        # TUI's says "cli". Only the pane's own TUI drives the pane's status.
+        try {
+          if ($o -and $o.transcript_path -and (Test-Path -LiteralPath $o.transcript_path)) {
+            $meta = Get-Content -LiteralPath $o.transcript_path -TotalCount 1 -Encoding UTF8 | ConvertFrom-Json
+            if ($meta.payload.source -and $meta.payload.source -ne 'cli') { exit 0 }
+          }
+        } catch { }
+        if ($State -eq 'stop') {
+          # A turn that ends on a question is waiting for the user, not done (agterm #276).
+          $msg = "$($o.last_assistant_message)".TrimEnd()
+          $State = if ($msg.EndsWith('?')) { 'blocked' } else { 'completed' }
+        }
+        $pipe = if ($env:AGWINTERM_PIPE) { $env:AGWINTERM_PIPE } else { 'agwinterm' }
+        try {
+          $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe, [System.IO.Pipes.PipeDirection]::InOut)
+          $c.Connect(1000)
+          $w = New-Object System.IO.StreamWriter($c); $w.AutoFlush = $true
+          $w.WriteLine('{"cmd":"session.status","target":"' + $env:AGWINTERM_SESSION_ID + '","args":{"status":"' + $State + '"}}')
+          $c.Dispose()
+        } catch { }
+        exit 0
+        """;
+
     public const string WrapperScript =
         """
         param([string]$State)
@@ -75,6 +115,16 @@ public static class AgentHooks
         ("Notification", "permission_prompt", "blocked"),
     };
 
+    // Codex has a real PermissionRequest event where Claude has Notification(permission_prompt);
+    // "stop" is resolved by the script, which reads the last message from stdin.
+    private static readonly (string Event, string? Matcher, string State)[] CodexHooks =
+    {
+        ("UserPromptSubmit", null, "active"),
+        ("PostToolUse", null, "active"),
+        ("PermissionRequest", null, "blocked"),
+        ("Stop", null, "stop"),
+    };
+
     private static string Command(string wrapper, string state)
         => $"powershell -NoProfile -ExecutionPolicy Bypass -File \"{wrapper}\" {state}";
 
@@ -84,7 +134,15 @@ public static class AgentHooks
     /// (we refuse to clobber a hand-maintained file). Idempotent: entries already referencing
     /// the wrapper are not duplicated.
     /// </summary>
-    public static string? MergeClaudeSettings(string? existing, string wrapper)
+    public static string? MergeClaudeSettings(string? existing, string wrapper) => MergeHooks(existing, wrapper, Hooks);
+
+    /// <summary>
+    /// Merge the Codex status hooks into an existing ~/.codex/hooks.json string, under the same rules as
+    /// <see cref="MergeClaudeSettings"/>: the two files share the event → matcher group → handlers schema.
+    /// </summary>
+    public static string? MergeCodexHooks(string? existing, string script) => MergeHooks(existing, script, CodexHooks);
+
+    private static string? MergeHooks(string? existing, string wrapper, (string Event, string? Matcher, string State)[] table)
     {
         JsonObject root;
         if (string.IsNullOrWhiteSpace(existing))
@@ -106,7 +164,7 @@ public static class AgentHooks
             root["hooks"] = hooks;
         }
 
-        foreach (var (evt, matcher, state) in Hooks)
+        foreach (var (evt, matcher, state) in table)
         {
             if (hooks[evt] is not JsonArray arr)
             {
@@ -143,8 +201,8 @@ public static class AgentHooks
         return false;
     }
 
-    /// <summary>Write the wrappers, merge the Claude hooks, install the generic bridge, and print the
-    /// Codex config line. Returns a multi-line human-readable summary covering every agent.</summary>
+    /// <summary>Write the wrappers, merge the Claude and Codex hooks, and install the launcher and the
+    /// generic bridge. Returns a multi-line human-readable summary covering every agent.</summary>
     public static string Install()
     {
         var lines = new List<string>();
@@ -164,17 +222,26 @@ public static class AgentHooks
             lines.Add("Claude Code: status hooks -> " + ClaudeSettingsPath);
         }
 
-        // --- Codex: notify script (config line must be added by the user; we don't rewrite TOML) ---
+        // --- Codex: hook script + hooks.json (JSON, so merged like settings.json; no TOML rewriting) ---
         try
         {
+            File.WriteAllText(CodexHookPath, CodexHookScript);
+            // An earlier install told the user to point config.toml's `notify` at this script: keep it
+            // there. It pushes the same state the Stop hook does, so leaving the line in is harmless.
             File.WriteAllText(CodexNotifyPath, CodexNotifyScript);
-            string tomlLine = "notify = [\"powershell\",\"-NoProfile\",\"-ExecutionPolicy\",\"Bypass\",\"-File\",\""
-                + CodexNotifyPath.Replace("\\", "\\\\") + "\"]";
-            lines.Add("Codex: wrote " + CodexNotifyPath);
-            lines.Add("  add this line to " + CodexConfigPath + " :");
-            lines.Add("    " + tomlLine);
+            string? codexExisting = File.Exists(CodexHooksPath) ? File.ReadAllText(CodexHooksPath) : null;
+            string? codexMerged = MergeCodexHooks(codexExisting, CodexHookPath);
+            if (codexMerged is null)
+                lines.Add("Codex: refused — ~/.codex/hooks.json exists but isn't valid JSON; left untouched");
+            else
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(CodexHooksPath)!);
+                File.WriteAllText(CodexHooksPath, codexMerged);
+                lines.Add("Codex: status hooks -> " + CodexHooksPath);
+                lines.Add("  Codex runs new hooks only once you trust them: open /hooks in Codex and approve them");
+            }
         }
-        catch (Exception ex) { lines.Add("Codex: failed to write notify script: " + ex.Message); }
+        catch (Exception ex) { lines.Add("Codex: failed to install hooks: " + ex.Message); }
 
         // --- Claude launcher: transparent `claude` wrapper (session-id binding + auto-resume) ---
         lines.Add("Claude launcher: " + ClaudeIntegration.Install());
