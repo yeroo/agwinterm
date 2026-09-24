@@ -18,6 +18,12 @@ bare `agwintermctl` targets the instance and pane it runs in. `--pipe <name>` ad
 (a Debug build is `agwinterm-dev`). Target defaults to `$AGWINTERM_SESSION_ID` when not given. Run
 `agwintermctl install skill` (or the palette entry) to teach Claude Code / Codex the full verb set.
 
+The CLI waits at most 30 s for the app's reply and then exits 1 with "no reply from agwinterm within
+30 s" (the request may still have been carried out). `--timeout <seconds>` changes the limit and
+`--timeout 0` removes it. `session overlay open --block` answers when its overlay closes, so it waits
+without a limit unless `--timeout` is given. A hook or script that runs `agwintermctl` under its own
+deadline should pass a shorter `--timeout`, so the CLI gives up before the runner abandons it.
+
 ## A tour
 
 ```powershell

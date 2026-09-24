@@ -29,7 +29,7 @@ public static class FrameShmCli
     /// pipe name under both its spellings. One list, so a verb that must know whether an option
     /// legitimately consumed the next word (session type --stdin) and this allow-list cannot drift
     /// apart — the next alias on the pipe selector goes here and nowhere else.</summary>
-    public static readonly string[] GlobalValuedOptions = { "target", "window", "pipe", "socket" };
+    public static readonly string[] GlobalValuedOptions = { "target", "window", "pipe", "socket", "timeout" };
 
     private static readonly HashSet<string> AllowedOptions =
         new(NumericFields.Concat(GlobalValuedOptions), StringComparer.OrdinalIgnoreCase)
