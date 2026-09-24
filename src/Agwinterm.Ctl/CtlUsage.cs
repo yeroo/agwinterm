@@ -67,8 +67,9 @@ public static class CtlUsage
               else is refused rather than acknowledged)
           agwintermctl session status <idle|active|blocked|completed> [--sound [name]] [--blink] [--auto-reset] [--target ID]
           agwintermctl session metrics [<pane-id>] [--json] (live cell + pane pixel metrics)
-          agwintermctl session text [--all|--lines N] [--target ID]   (N reaches into scrollback; --all = the whole
-              buffer, screen + scrollback; default = screen; --all with --lines is refused)
+          agwintermctl session text [--styles] [--all|--lines N] [--target ID]   (N reaches into scrollback;
+              --all = screen + scrollback; default = screen; --all with --lines is refused;
+              --styles = JSON attribute runs with grid columns and a cursor snapshot)
           agwintermctl session hud [open|update] <message...> [--detail TEXT] [--spinner|--spinner-style STYLE]
               [--position ANCHOR] [--size-percent N] [--background-color HEX] [--text-color HEX] [--target ID]
           agwintermctl session hud close [--target ID]   (see docs/session-hud.md)
@@ -147,9 +148,9 @@ public static class CtlUsage
         return false;
     }
 
-    /// <summary>What <c>session text</c> accepts: its own two flags plus the global selectors.</summary>
+    /// <summary>What <c>session text</c> accepts: its own flags plus the global selectors.</summary>
     private static readonly HashSet<string> TextOptions =
-        new(FrameShmCli.GlobalValuedOptions, StringComparer.OrdinalIgnoreCase) { "all", "lines" };
+        new(FrameShmCli.GlobalValuedOptions, StringComparer.OrdinalIgnoreCase) { "all", "lines", "styles" };
 
     /// <summary>
     /// Refuse an option <c>session text</c> does not read, instead of dropping it.
@@ -168,7 +169,7 @@ public static class CtlUsage
             if (TextOptions.Contains(key)) continue;
             refusal = string.Equals(key, OverlayPanesPaneKey, StringComparison.OrdinalIgnoreCase)
                 ? "session text: --pane is a `session overlay` flag, not a `session text` one — it was DROPPED here, so this call would have read the focused pane and reported success. To read the other pane pass its id: `session text --target <pane-id>` (tree --json lists paneIds). For a pane's overlay use `session overlay text --pane left|right`. Nothing read."
-                : $"session text: unknown option --{key} (it takes --all, --lines and --target). Nothing read.";
+                : $"session text: unknown option --{key} (it takes --styles, --all, --lines and --target). Nothing read.";
             return false;
         }
         refusal = null;

@@ -76,6 +76,10 @@ public class CtlUsageTests
         Assert.Null(r3);
         Assert.True(CtlUsage.TryTextOptions(Array.Empty<string>(), out var r4));
         Assert.Null(r4);
+        Assert.True(CtlUsage.TryTextOptions(new[] { "styles", "lines", "target" }, out var r5));
+        Assert.Null(r5);
+        Assert.True(CtlUsage.TryTextOptions(new[] { "STYLES", "all" }, out var r6));
+        Assert.Null(r6);
     }
 
     /// <summary>The one that mattered: --pane is real on `session overlay`, so the refusal names
@@ -96,6 +100,7 @@ public class CtlUsageTests
         Assert.False(CtlUsage.TryTextOptions(new[] { "targt" }, out var refusal));
         Assert.NotNull(refusal);
         Assert.Contains("--targt", refusal);
+        Assert.Contains("--styles", refusal);
         Assert.Contains("Nothing read.", refusal);
     }
 

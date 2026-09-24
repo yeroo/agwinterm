@@ -683,6 +683,7 @@ public sealed class ControlServer : IDisposable
         }
         if (!TryOverlaySize(args, out int sizePercent, out string? sizeErr)) return Err(sizeErr!);
         var textArgs = OverlayTextArgs.Screen;
+        if (action == "text" && GetBool(args, "styles")) return Err(OverlayPanes.StylesRefusal);
         if (action == "text" && !TryTextArgs(args, out textArgs, out string? textErr)) return Err(textErr!);
         string ovl = host.SessionOverlay(target, action, GetString(args, "command"), sizePercent,
             GetBool(args, "wait"), GetBool(args, "block"), pane, textArgs);
@@ -893,11 +894,12 @@ public sealed class ControlServer : IDisposable
     /// <summary>Dump the target session's active-pane buffer as plain text — <see cref="SurfaceText.Dump"/>,
     /// the one reader <c>session overlay text</c> shares (P5): `lines` reaches back into scrollback,
     /// `all` takes the whole buffer, omitted keeps the old meaning exactly — the visible screen; the
-    /// pair is refused (<see cref="TryTextArgs"/>).</summary>
+    /// pair is refused (<see cref="TryTextArgs"/>). Optional <c>styles</c> returns attribute runs
+    /// and the cursor from the same snapshot instead of a plain string.</summary>
     private static string HandleText(ISession s, JsonElement args)
     {
         if (!TryTextArgs(args, out var text, out string? err)) return Err(err!);
-        return Ok(SurfaceText.Dump(s, text));
+        return GetBool(args, "styles") ? OkRaw(SurfaceText.DumpStyled(s, text)) : Ok(SurfaceText.Dump(s, text));
     }
 
     private static string HandleStatus(ISession s, JsonElement args)
