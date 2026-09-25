@@ -83,6 +83,30 @@ public class AgentHooksTests
         Assert.Null(AgentHooks.MergeCodexHooks("{ not valid json", CodexScript));
     }
 
+    private const string BindScript = @"C:\Users\x\AppData\Local\agwinterm\agwinterm-agent-bind.ps1";
+
+    [Fact]
+    public void BothAgentsGetTheSessionStartBindingOnceNamingTheirAgent()
+    {
+        string claude = AgentHooks.MergeClaudeSettings(AgentHooks.MergeClaudeSettings(null, Wrapper, BindScript), Wrapper, BindScript)!;
+        string codex = AgentHooks.MergeCodexHooks(AgentHooks.MergeCodexHooks(null, CodexScript, BindScript), CodexScript, BindScript)!;
+        var claudeStart = JsonNode.Parse(claude)!["hooks"]!["SessionStart"]!.AsArray();
+        var codexStart = JsonNode.Parse(codex)!["hooks"]!["SessionStart"]!.AsArray();
+        Assert.Single(claudeStart);   // idempotent across re-installs
+        Assert.Single(codexStart);
+        Assert.EndsWith($"\"{BindScript}\" claude", claudeStart[0]!["hooks"]![0]!["command"]!.GetValue<string>());
+        Assert.EndsWith($"\"{BindScript}\" codex", codexStart[0]!["hooks"]![0]!["command"]!.GetValue<string>());
+        // Status hooks are untouched by the extra pass.
+        Assert.Single(JsonNode.Parse(claude)!["hooks"]!["Stop"]!.AsArray());
+    }
+
+    [Fact]
+    public void WithoutABindScriptNoSessionStartIsAdded()
+    {
+        Assert.Null(JsonNode.Parse(AgentHooks.MergeClaudeSettings(null, Wrapper)!)!["hooks"]!["SessionStart"]);
+        Assert.Null(JsonNode.Parse(AgentHooks.MergeCodexHooks(null, CodexScript)!)!["hooks"]!["SessionStart"]);
+    }
+
     [Fact]
     public void WrapperScript_RoutesStatusToItsOwnPane()
     {

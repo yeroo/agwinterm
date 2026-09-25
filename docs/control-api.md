@@ -204,6 +204,23 @@ Replies `{action, pane, session}` instead of the word "pinned".
 - `tree --json` reads the pins back as `restoreCommands`, an object keyed by pane id that lists only
   pinned panes.
 
+## `session.bind` from a SessionStart hook
+
+`install hooks` makes Claude Code's and Codex's `SessionStart` hook send
+`{"cmd":"session.bind","target":"<pane>","args":{"agent":"claude|codex","resume":"<session id>","cwd":"<dir>","pid":<hook pid>}}`.
+The reply `binding` means the report was well formed and the pane exists. The rest happens after it:
+agwinterm walks the process tree up from `pid` to the agent, refuses a run nested under another agent
+(a `claude -p` or `codex exec` started from an agent's tool shell inherits the pane's id), keeps the
+agent's permission and sandbox flags, and stores the resume line for the pane's shell. The hook waits
+for the reply because the walk starts at its own process.
+
+- The outcome is a `bind` event in `events`: `bound: <the stored line>` or `ignored: <why>`, with the
+  processes the walk visited.
+- An unknown agent, a session id that is not 1-128 letters, digits, `-` or `_`, or a missing `pid` is
+  refused and binds nothing.
+- `session.bind` with `agent` alone keeps its old meaning: that string is the relaunch command, and
+  `none` clears it.
+
 ## `restore capture`
 
 `restore capture [--target ID]` fills the captured-command slot of every real pane (or of one)

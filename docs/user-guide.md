@@ -10,12 +10,20 @@
 - **Agent status** per session (idle / active / blocked / completed) as a colored dot and a title-bar
   bell, driven by your agent via hooks or the control API, with blink, auto-reset, and sounds. Run
   `agwintermctl install hooks` (or the palette entry) once to wire Claude Code / Codex up.
-- **Claude Code session binding & auto-resume**: the same installer adds a transparent `claude`
-  wrapper (active only inside agwinterm) that ties Claude's session id to the agwinterm pane. You just
-  type `claude` — a fresh pane starts a bound session, and a pane that already has a transcript
-  **resumes** it. On restart, agwinterm re-launches each bound pane and the conversation comes back.
-  Already had Claude running before installing this? Run `agwintermctl claude adopt` (or palette →
-  *Make Claude Sessions Resumable*) once to bind your existing conversations to their panes.
+- **Claude Code and Codex session binding & auto-resume**: the same installer adds a `SessionStart`
+  hook to both agents. Each time a session starts, resumes, is cleared or compacts, the hook tells
+  agwinterm the live session id and directory, and agwinterm stores the line that resumes it in the
+  pane's own shell: `cd '<dir>' && claude --resume <id>` in Git Bash, `Set-Location -LiteralPath
+  '<dir>'; codex resume <id>` in PowerShell, `cd /d` in cmd. The permission or sandbox mode it was
+  started with (`--dangerously-skip-permissions`, `--permission-mode`, Codex's `--sandbox`,
+  `--ask-for-approval`, `--profile`) is kept. On restart, even after a reboot, agwinterm types that line
+  into each bound pane and the conversation comes back. A `claude -p` or `codex exec` an agent runs
+  from its own tool shell does not rebind the pane. Codex runs a new hook only after you trust it
+  once in Codex's `/hooks`, and Codex fires it on a session's first turn. For PowerShell the installer
+  also adds a transparent `claude` wrapper (active only inside agwinterm) that starts a fresh pane's
+  session under the pane id. Already had Claude running before installing this? Run
+  `agwintermctl claude adopt` (or palette → *Make Claude Sessions Resumable*) once to bind your
+  existing conversations to their panes.
 - **Update Claude Code** (palette → *Update Claude Code*, or `agwintermctl claude update`): agwinterm
   notices when a new Claude Code ships (npm registry; `claude-update-check = false` to opt out), then,
   on your command, runs `claude update` in an overlay terminal and **restarts every running Claude
@@ -52,6 +60,17 @@
   marks with jump-to-prompt, taskbar progress (OSC 9;4).
 - Shells are launched with `TERM_PROGRAM=agwinterm` (plus the usual `AGWINTERM_*` variables), so prompt
   engines, tmux and scripts can detect the host terminal.
+- **Git Bash working directory**: PowerShell panes report their directory out of the box. A Git Bash
+  (or MSYS2) pane does it with a few lines in `~/.bashrc`, so the title shows the directory and the pane
+  restores in it after a restart (agwinterm 0.20.11 or later, earlier builds also raised a notification):
+
+  ```bash
+  # agwinterm: report the working directory at every prompt (OSC 9;9, the form ConPTY passes through)
+  if [ "$AGWINTERM" = 1 ]; then
+    __agw_cwd() { printf '\e]9;9;%s\a' "$(pwd -W)"; }
+    PROMPT_COMMAND="__agw_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+  fi
+  ```
 
 ## Accessible — screen readers are first-class
 
