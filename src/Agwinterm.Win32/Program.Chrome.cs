@@ -589,7 +589,7 @@ internal partial class Program
         if (label.Length > 0)
         {
             brush.Color = new Color4(1f, 1f, 1f, 0.92f);
-            rt.DrawText(label, _sidebarFont, new Rect(24f, _dragY - 9f, _sidebarW - 8f, _dragY + 11f), brush);
+            rt.DrawText(label, _sidebarFont, new Rect(24f, _dragY - 9f, _sidebarW - 32f, 20f), brush);
         }
     }
 
