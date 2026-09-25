@@ -47,6 +47,8 @@ internal partial class Program : ISessionHost, IWindowHost
     private int DipY(IntPtr lParam) => (int)MathF.Round(HiWord(lParam) / Scale);
     /// <summary>A device-pixel length (client rect, screen coords) in DIPs.</summary>
     private int ToDip(int devicePx) => (int)MathF.Round(devicePx / Scale);
+    /// <summary>A DIP length in device pixels, for what Win32 places and sizes itself (child windows, GDI fonts).</summary>
+    private int ToDevice(float dip) => (int)MathF.Round(dip * Scale);
     private const string ClassName = "AgwintermWin32";
 
     // Kept alive for the lifetime of the process so the GC never collects the thunk.
@@ -277,14 +279,17 @@ internal partial class Program : ISessionHost, IWindowHost
     private object? _editing;         // Ses or Workspace currently being renamed
     private static WndProc _editProc = null!; // kept alive; subclasses the EDIT to catch Enter/Esc
     private IntPtr _editOrigProc;
-    private static IntPtr _editFont;          // cached HFONT for the rename box (matches the sidebar)
+    private IntPtr _editFont;                 // the rename box's HFONT at this window's scale (matches the sidebar)
+    private static readonly Dictionary<int, IntPtr> _editFonts = new();   // by pixel height: windows on different monitors share by size
     private static IntPtr _editBrush;         // cached dark background brush (WM_CTLCOLOREDIT)
 
     private void EnsureEditGdi()
     {
-        // Segoe UI ~13px to match the sidebar row text; ClearType; dark bg like the sidebar.
-        if (_editFont == IntPtr.Zero)
-            _editFont = CreateFontW(-13, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
+        // Segoe UI ~13 DIP to match the sidebar row text; ClearType; dark bg like the sidebar.
+        int px = ToDevice(13);
+        lock (_editFonts)
+            if (!_editFonts.TryGetValue(px, out _editFont))
+                _editFonts[px] = _editFont = CreateFontW(-px, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
         if (_editBrush == IntPtr.Zero)
             _editBrush = CreateSolidBrush(RGB(41, 51, 64)); // == SbHighlight, so the box blends with the row
     }

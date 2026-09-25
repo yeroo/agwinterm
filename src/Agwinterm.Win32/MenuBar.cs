@@ -466,12 +466,13 @@ internal partial class Program
         if (_editHwnd != IntPtr.Zero) CommitRename();
         if (_titleTextRect.Width <= 0) { ShowToast("no title bar to rename in"); return; }
         EnsureEditGdi();
-        int ex = (int)_titleTextRect.X, ey = (int)_titleTextRect.Y + 6, ew = Math.Max(160, (int)_titleTextRect.Width), eh = (int)(TitleBarH - 12f);
+        int ex = ToDevice(_titleTextRect.X), ey = ToDevice(_titleTextRect.Y + 6), ew = ToDevice(Math.Max(160f, _titleTextRect.Width)),
+            eh = ToDevice(TitleBarH - 12f), margin = ToDevice(6);
         _editHwnd = CreateWindowExW(0, "EDIT", WinName, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
             ex, ey, ew, eh, _hwnd, (IntPtr)EDIT_ID, GetModuleHandleW(null), IntPtr.Zero);
         if (_editHwnd == IntPtr.Zero) return;
         SendMessageW(_editHwnd, WM_SETFONT, _editFont, (IntPtr)1);
-        SendMessageW(_editHwnd, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN), (IntPtr)(6 | (6 << 16)));
+        SendMessageW(_editHwnd, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN), (IntPtr)(margin | (margin << 16)));
         SendMessageW(_editHwnd, (uint)EM_SETSEL, IntPtr.Zero, (IntPtr)(-1));
         SetFocus(_editHwnd);
         _editProc = EditProc;
