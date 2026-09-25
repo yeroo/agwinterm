@@ -339,6 +339,13 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
             return;
         }
 
+        // A > = < prefix makes a different command: CSI > 4 ; 2 m is XTMODKEYS, not SGR 4;2.
+        if (prefix != '\0')
+        {
+            Host?.Unhandled("CSI", $"{prefix} {string.Join(';', parameters)} {final}");
+            return;
+        }
+
         switch (final)
         {
             case 'H': // CUP
@@ -365,14 +372,14 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
             case 'P': DeleteChars(P(0, 1)); break;   // DCH
             case 'S': for (int i = 0; i < P(0, 1); i++) ScrollRegionUp(); break;   // SU
             case 'T': for (int i = 0; i < P(0, 1); i++) ScrollRegionDown(); break; // SD
-            case 'q' when prefix == '\0': // DECSCUSR (CSI Ps SP q) — cursor shape; the SP intermediate is dropped
+            case 'q': // DECSCUSR (CSI Ps SP q) — cursor shape; the SP intermediate is dropped
                 {
                     int ps = parameters.Count > 0 ? parameters[0] : 0;
                     if (ps is >= 0 and <= 6) CursorShape = ps;   // out-of-range values are ignored
                     break;
                 }
             default:
-                Host?.Unhandled("CSI", $"{(prefix == '\0' ? "" : prefix + " ")}{string.Join(';', parameters)} {final}");
+                Host?.Unhandled("CSI", $"{string.Join(';', parameters)} {final}");
                 break;
         }
     }

@@ -31,6 +31,15 @@ public class SgrTests
     }
 
     [Fact]
+    public void XtModKeys_IsNotSgr()
+    {
+        var t = Feed("\x1b[>4;2mA\x1b[>4mB\x1b[>1JC");
+        Assert.Equal('A', t.Screen[0, 0].Rune);
+        for (int c = 0; c < 3; c++)
+            Assert.Equal(CellAttributes.None, t.Screen[0, c].Attributes);
+    }
+
+    [Fact]
     public void TrueColorForeground()
     {
         var t = Feed("\x1b[38;2;10;20;30mZ");
