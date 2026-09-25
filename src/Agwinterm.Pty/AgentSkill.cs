@@ -161,8 +161,8 @@ public static class AgentSkill
           history. Trailing whitespace (even styled) and trailing empty rows trim like plain text. On a known composer
           using faint suggestions, inspect runs in the cursor row where `col+width > cursor.col`: an all-faint suffix
           is consistent with a suggestion, a non-faint run with a draft. Verify the composer and text before the caret;
-          this is an app-specific heuristic, not proof. `--json` keeps the reply envelope; agliteterm does not yet support
-          `--styles`. `session overlay text --styles` is refused; use `session text --styles --target <overlay-id>`.
+          this is an app-specific heuristic, not proof. `--json` keeps the reply envelope; agliteterm answers it too, over
+          its own row selection. `session overlay text --styles` is refused; use `session text --styles --target <overlay-id>`.
         - `agwintermctl session copy [--target <id>]`            — return the session's current mouse text selection ("" if none);
           resolved like `session text`: `--target <pane id>` reads the shell under a pane overlay, no target or
           `--target active` reads the focused surface (the overlay while one is up), and `session overlay copy`
