@@ -354,13 +354,13 @@ internal partial class Program
         // where the row name is drawn, so nothing shifts when editing starts.
         // The single-line EDIT centres its text ~1px higher and its glyph sits ~1px right of the
         // margin vs DirectWrite; offsets tuned by pixel-measuring the box against an unedited row.
-        int leftMargin = isWs ? 23 : 25;
-        int ey = (int)ry0 + 4, eh = (int)(ry1 - ry0);
+        int leftMargin = ToDevice(isWs ? 23 : 25), rightMargin = ToDevice(8);
+        int ey = ToDevice(ry0 + 4), eh = ToDevice(ry1 - ry0);
         _editHwnd = CreateWindowExW(0, "EDIT", name, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            0, ey, (int)_sidebarW, eh, _hwnd, (IntPtr)EDIT_ID, GetModuleHandleW(null), IntPtr.Zero);
+            0, ey, ToDevice(_sidebarW), eh, _hwnd, (IntPtr)EDIT_ID, GetModuleHandleW(null), IntPtr.Zero);
         if (_editHwnd == IntPtr.Zero) return;
         SendMessageW(_editHwnd, WM_SETFONT, _editFont, (IntPtr)1);
-        SendMessageW(_editHwnd, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN), (IntPtr)(leftMargin | (8 << 16)));
+        SendMessageW(_editHwnd, EM_SETMARGINS, (IntPtr)(EC_LEFTMARGIN | EC_RIGHTMARGIN), (IntPtr)(leftMargin | (rightMargin << 16)));
         SendMessageW(_editHwnd, (uint)EM_SETSEL, IntPtr.Zero, (IntPtr)(-1)); // select all
         SetFocus(_editHwnd);
         _editProc = EditProc; // keep alive
