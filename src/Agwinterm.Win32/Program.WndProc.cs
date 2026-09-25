@@ -593,7 +593,7 @@ internal partial class Program
                     }
                     if (_selecting && ((long)wParam & MK_LBUTTON) != 0)
                     {
-                        int mmx = LoWord(lParam), mmy = HiWord(lParam);
+                        int mmx = DipX(lParam), mmy = DipY(lParam);
                         _selMouseX = mmx;
                         if (_selPane is { } sp && PaneBox(sp) is { } bx)
                         {
