@@ -199,6 +199,23 @@
       "note": "the visible buffer. A string even when the pane is empty."
     },
     {
+      "verb": "session.text",
+      "args": [
+        "session",
+        "text",
+        "--styles",
+        "--target",
+        "{alpha}"
+      ],
+      "result": "object",
+      "fields": [
+        "cols",
+        "rows",
+        "cursor"
+      ],
+      "note": "Styled surface text: grid columns, selected rows with attributed runs, and the cursor from the same snapshot."
+    },
+    {
       "verb": "surface.cursor",
       "args": [
         "surface",

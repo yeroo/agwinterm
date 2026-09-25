@@ -51,10 +51,12 @@ sharpest gap, the one where a QA setup step silently did nothing — closed in P
 "Mirrored: what P6 owed lite" below).
 
 ### Reading and driving a pane
-`session.text` with `args.styles: true` (`session text --styles`) is an agwinterm-only gap (#319):
-attribute runs with grid extents and a cursor from the same snapshot. Plain text remains shared.
-Add the styled response to `tests/conformance/control-api.json` when lite implements it; the
-shared contract is deliberately not extended ahead of the companion implementation.
+`session.text` with `args.styles: true` (`session text --styles`, #319) is shared: lite implemented
+it in [agliteterm#105](https://github.com/yeroo/agliteterm/pull/105), and the shared contract checks
+the `{cols,rows,cursor}` reply. Lite builds it from the rows its plain `session text` selects, so its
+bare form is the whole buffer, not the screen; it trims trailing ASCII spaces (its plain rule, not
+all Unicode whitespace); an all-blank buffer is `rows: []`. `session overlay text --styles` is refused
+in the same words on both.
 
 `session.focus` shipped in P4-lite; `session.write` is also implemented (display injection, not
 shell input). P9-lite [#52](https://github.com/yeroo/agliteterm/pull/52) implements `session.search`,
