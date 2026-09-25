@@ -207,6 +207,29 @@ public class ControlApiTests
     }
 
     [Fact]
+    public void SessionBind_ResumeReport_ReachesTheHostWithItsFacts()
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "session.bind", new { agent = "codex", resume = "01a0ce4b-7125", cwd = @"C:\src\x", pid = 4242 }, target: "s1");
+        Assert.True(Ok(r));
+        Assert.Equal(("codex", "01a0ce4b-7125", (string?)@"C:\src\x", 4242), host.LastBindResume);
+        Assert.Null(host.ActiveSess!.AgentResume);   // the host composes the relaunch, not the server
+    }
+
+    [Theory]
+    [InlineData("gemini", "abc", 1)]      // not an agent the host knows how to resume
+    [InlineData("claude", "a b", 1)]      // an id that is not safe to type into a shell
+    [InlineData("claude", "abc", 0)]      // no hook pid: nothing to tell a nested run apart with
+    public void SessionBind_MalformedResumeReport_BindsNothing(string agent, string id, int pid)
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "session.bind", new { agent, resume = id, pid }, target: "s1");
+        Assert.False(Ok(r));
+        Assert.Contains("Nothing bound.", r.GetProperty("error").GetString());
+        Assert.Null(host.LastBindResume);
+    }
+
+    [Fact]
     public void SessionBind_UnknownTarget_Fails()
     {
         var (server, _) = New();

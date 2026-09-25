@@ -524,6 +524,13 @@ public interface ISessionHost
     /// agent resumes its own session. <paramref name="agent"/> = "" or "none" clears the binding.
     /// Returns false if the target pane isn't found.</summary>
     bool SessionBind(string? target, string agent);
+    /// <summary>Bind the target pane to resume a live agent session (#316): an agent's SessionStart hook
+    /// reports the session id, its cwd and its own PID. The host walks the process tree up from that PID to
+    /// find the agent (refusing one nested under another agent), keeps the agent's mode flags and stores the
+    /// relaunch line for the pane's shell. The server has validated <paramref name="agent"/> and
+    /// <paramref name="sessionId"/>. Returns false if the target pane isn't found; the tree check and the
+    /// write happen after the reply, and their outcome is a <c>bind</c> event.</summary>
+    bool SessionBindResume(string? target, string agent, string sessionId, string? cwd, int hookPid);
     /// <summary>Pin a restore command on a pane, re-run every restart (agterm #271); <paramref name="command"/>
     /// null clears. The server has already refused an empty / "active" target and folded ""/"none" into
     /// null. Resolves <paramref name="target"/> the way every other content verb does (exact pane, exact
@@ -702,6 +709,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool Notify(string? target, string? title, string body) => false;
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;
+    public bool SessionBindResume(string? target, string agent, string sessionId, string? cwd, int hookPid) => false;
     public RestorePinTarget? SessionRestore(string target, string? command) => null;
     public RestoreCaptureResult RestoreCapture(string? target) =>
         string.IsNullOrEmpty(target) || target == "active"

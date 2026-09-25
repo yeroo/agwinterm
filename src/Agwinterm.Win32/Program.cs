@@ -313,6 +313,9 @@ internal partial class Program : ISessionHost, IWindowHost
         public required ISession S;
         public string? StartCwd;   // dir the shell was launched in (fallback cwd when OSC 7 is absent)
         public string? AgentResume; // resumable agent bound to this pane (e.g. "claude") — relaunched on restart
+        // Bumped by every bind request; a SessionStart binding resolved in the background lands only if
+        // no later bind arrived meanwhile, so startup-then-/clear cannot leave the older id bound (#316).
+        public int BindSeq;
         public string? RestoreCommand; // pinned restore command (agterm #271) — always re-run on restart
         // The captured foreground command — the restore slot (PaneState.Command, "" on disk = none), re-run
         // on restart when restore-commands is on. Written by `restore capture` and by the quit-time capture

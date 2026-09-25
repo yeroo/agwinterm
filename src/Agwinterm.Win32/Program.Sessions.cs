@@ -347,6 +347,29 @@ internal partial class Program
         finally { CloseHandle(snap); }
     }
 
+    /// <summary>The ancestry of <paramref name="pid"/>, the process itself first, from one Toolhelp snapshot
+    /// (~ms, no WMI): pid, parent and exe name, no command lines. Taken while a SessionStart hook still waits
+    /// for its reply, since the hook's own process is where the walk starts (#316). Stops at a missing
+    /// parent, a cycle or 64 levels; null when the snapshot fails.</summary>
+    private static List<Agwinterm.Pty.AgentResume.ProcRow>? SnapshotAncestry(int pid)
+    {
+        IntPtr snap = CreateToolhelp32Snapshot(0x2 /*TH32CS_SNAPPROCESS*/, 0);
+        if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return null;
+        var byPid = new Dictionary<int, (int Parent, string Name)>();
+        try
+        {
+            var e = new PROCESSENTRY32W { dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32W>() };
+            if (!Process32FirstW(snap, ref e)) return null;
+            do { byPid[(int)e.th32ProcessID] = ((int)e.th32ParentProcessID, e.szExeFile); } while (Process32NextW(snap, ref e));
+        }
+        finally { CloseHandle(snap); }
+        var chain = new List<Agwinterm.Pty.AgentResume.ProcRow>();
+        var seen = new HashSet<int>();
+        for (int p = pid; chain.Count < 64 && seen.Add(p) && byPid.TryGetValue(p, out var row); p = row.Parent)
+            chain.Add(new Agwinterm.Pty.AgentResume.ProcRow(p, row.Parent, row.Name, ""));
+        return chain;
+    }
+
     /// <summary>True if this process is running elevated (admin). Uses the token's actual elevation
     /// state (TokenElevation), NOT group membership — a non-elevated admin user is correctly false.</summary>
     private static bool IsElevated()

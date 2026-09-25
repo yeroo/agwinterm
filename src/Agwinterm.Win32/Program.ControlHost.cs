@@ -1239,7 +1239,55 @@ internal partial class Program
         var hit = FindPaneById(target!);
         if (hit is null) return false;
         string? val = SessionOperations.Binding(agent);
+        Interlocked.Increment(ref hit.Value.pane.BindSeq);   // supersedes a SessionStart binding still resolving
         PostVerb(() => { hit.Value.pane.AgentResume = val; SaveState(); });
+        return true;
+    }
+
+    // SessionStart binding (#316). The Toolhelp walk from the hook's PID runs here, before the reply,
+    // because the hook exits as soon as it is answered. The command lines (a CIM query, ~1 s) are read
+    // after it, off the pipe thread: the agent and the shell outlive the hook. The outcome, bound or
+    // ignored with the reason, is a `bind` event.
+    public bool SessionBindResume(string? target, string agent, string sessionId, string? cwd, int hookPid)
+    {
+        if (string.IsNullOrEmpty(target)) return false;
+        var hit = FindPaneById(target!);
+        if (hit is null) return false;
+        var pane = hit.Value.pane;
+        int seq = Interlocked.Increment(ref pane.BindSeq);
+        var chain = SnapshotAncestry(hookPid);
+        int? shellPid = pane.S.ChildProcessId;
+        var shell = Agwinterm.Pty.AgentResume.ClassifyShell(ResolveProfile(hit.Value.ses?.ProfileName)?.Command ?? "powershell.exe");
+        _ = Task.Run(() =>
+        {
+            string outcome;
+            try
+            {
+                if (chain is null || shellPid is not int sp) outcome = "ignored: the process tree could not be read";
+                else
+                {
+                    var lines = QueryCommandLines(chain.Select(r => r.Pid), timeoutMs: 15000);
+                    var procs = chain.ToDictionary(r => r.Pid, r => r with { CommandLine = lines.GetValueOrDefault(r.Pid, "") });
+                    string? cmdline = Agwinterm.Pty.AgentResume.FindAgentCommandLine(procs, hookPid, sp, agent, out string? why);
+                    if (cmdline is null)
+                        outcome = $"ignored: {why} (walked {string.Join(" <- ", chain.Select(r => $"{r.Name}:{r.Pid}"))})";
+                    else
+                    {
+                        string relaunch = Agwinterm.Pty.AgentResume.Compose(shell, agent, sessionId, cwd,
+                            Agwinterm.Pty.AgentResume.ResumeFlags(agent, cmdline));
+                        Post(() =>
+                        {
+                            if (Volatile.Read(ref pane.BindSeq) != seq) return;   // a later bind won
+                            pane.AgentResume = relaunch;
+                            SaveState();
+                        });
+                        outcome = "bound: " + relaunch;
+                    }
+                }
+            }
+            catch (Exception ex) { outcome = "ignored: " + ex.Message; }
+            EmitEvent("bind", pane.Id, outcome);
+        });
         return true;
     }
 

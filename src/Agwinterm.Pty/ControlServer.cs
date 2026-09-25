@@ -395,8 +395,7 @@ public sealed class ControlServer : IDisposable
                         ? Ok("notified") : Err("session not found");
                 case "session.flag":
                     return host.SessionFlag(target, GetString(args, "op") ?? "toggle") ? Ok("flag") : Err("session not found");
-                case "session.bind":
-                    return host.SessionBind(target, GetString(args, "agent") ?? "claude") ? Ok("bound") : Err("session not found");
+                case "session.bind": return HandleSessionBind(host, target, args);
                 case "session.restore": return HandleSessionRestore(host, target, args);
                 // OkRaw, not Ok: Events() already returns JSON. Ok() would serialize it AGAIN, so
                 // .result arrived as a STRING of JSON and a caller had to parse it a second time —
@@ -773,6 +772,27 @@ public sealed class ControlServer : IDisposable
         return reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
             ? Err(reply[ISessionHost.RefusePrefix.Length..])
             : OkRaw(reply);
+    }
+
+    /// <summary><c>session.bind</c>: <c>agent</c> alone is the relaunch command itself (the PowerShell
+    /// launcher's form: "claude", "none" clears). With <c>resume</c> it is a SessionStart report (#316):
+    /// <c>agent</c> must then be a known agent, <c>resume</c> a plain session id and <c>pid</c> the hook's
+    /// process, and the host composes the relaunch. A malformed report binds nothing.</summary>
+    private static string HandleSessionBind(ISessionHost host, string? target, JsonElement args)
+    {
+        string agent = GetString(args, "agent") ?? "claude";
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty("resume", out _))
+            return host.SessionBind(target, agent) ? Ok("bound") : Err("session not found");
+
+        string? id = GetString(args, "resume");
+        if (!AgentResume.IsKnownAgent(agent))
+            return Err($"session.bind resume: agent must be one of {string.Join(", ", AgentResume.Agents)}, not '{agent}'. Nothing bound.");
+        if (!AgentResume.IsValidSessionId(id))
+            return Err("session.bind resume: the session id must be 1-128 letters, digits, '-' or '_'. Nothing bound.");
+        int pid = args.TryGetProperty("pid", out var pv) && pv.ValueKind == JsonValueKind.Number && pv.TryGetInt32(out var p) ? p : 0;
+        if (pid <= 0)
+            return Err("session.bind resume: pid (the hook's process id) is required, it is how the pane's own agent is told from a nested one. Nothing bound.");
+        return host.SessionBindResume(target, agent, id!, GetString(args, "cwd"), pid) ? Ok("binding") : Err("session not found");
     }
 
     /// <summary>

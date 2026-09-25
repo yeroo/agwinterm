@@ -1432,28 +1432,8 @@ internal partial class Program
         var deny = LoadDenylist();
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe",
-                "-NoProfile -NonInteractive -Command \"Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='C';e={if($_.CreationDate){$_.CreationDate.Ticks}else{0}}} | ConvertTo-Json -Compress\"")
-            { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-            using var proc = System.Diagnostics.Process.Start(psi);
-            if (proc is null) return false;
-            // The read runs CONCURRENTLY with the bounded wait. Read-to-end first and the timeout is
-            // only consulted after the child has already closed stdout — a powershell wedged inside
-            // the CIM query keeps the handle open, so neither the 4 s nor the 15 s bound ever fired
-            // and the caller (a control-pipe thread, for restore.capture) hung with it (revmux r1).
-            // On expiry powershell is killed (the tree flag for any child it did spawn — the WMI
-            // provider host is the WMI service's child, not ours, and never held our pipe), which
-            // closes the last write handle on its stdout so the pending read completes with EOF, and
-            // the partial output is never parsed.
-            var read = proc.StandardOutput.ReadToEndAsync();
-            if (!proc.WaitForExit(timeoutMs))
-            {
-                try { proc.Kill(entireProcessTree: true); } catch { }
-                try { read.Wait(1000); } catch { }
-                return false;
-            }
-            string json = read.Wait(timeoutMs) ? read.Result : "";
-            if (string.IsNullOrWhiteSpace(json)) return false;
+            if (!TryRunPowerShell("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='C';e={if($_.CreationDate){$_.CreationDate.Ticks}else{0}}} | ConvertTo-Json -Compress",
+                    timeoutMs, out string json)) return false;
 
             using var doc = JsonDocument.Parse(json);
             var rows = doc.RootElement.ValueKind == JsonValueKind.Array
@@ -1477,6 +1457,63 @@ internal partial class Program
             return true;
         }
         catch { result.Clear(); return false; }
+    }
+
+    /// <summary>
+    /// Run one PowerShell command (no profile) and take its stdout, bounded by <paramref name="timeoutMs"/>.
+    /// False when powershell could not start, timed out (it is killed) or printed nothing.
+    /// </summary>
+    private static bool TryRunPowerShell(string command, int timeoutMs, out string stdout)
+    {
+        stdout = "";
+        var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe", "-NoProfile -NonInteractive -Command \"" + command + "\"")
+        { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
+        using var proc = System.Diagnostics.Process.Start(psi);
+        if (proc is null) return false;
+        // The read runs CONCURRENTLY with the bounded wait. Read-to-end first and the timeout is
+        // only consulted after the child has already closed stdout — a powershell wedged inside
+        // the CIM query keeps the handle open, so neither the 4 s nor the 15 s bound ever fired
+        // and the caller (a control-pipe thread, for restore.capture) hung with it (revmux r1).
+        // On expiry powershell is killed (the tree flag for any child it did spawn — the WMI
+        // provider host is the WMI service's child, not ours, and never held our pipe), which
+        // closes the last write handle on its stdout so the pending read completes with EOF, and
+        // the partial output is never parsed.
+        var read = proc.StandardOutput.ReadToEndAsync();
+        if (!proc.WaitForExit(timeoutMs))
+        {
+            try { proc.Kill(entireProcessTree: true); } catch { }
+            try { read.Wait(1000); } catch { }
+            return false;
+        }
+        stdout = read.Wait(timeoutMs) ? read.Result : "";
+        return !string.IsNullOrWhiteSpace(stdout);
+    }
+
+    /// <summary>The command lines of just <paramref name="pids"/> (a filtered CIM query, not the full
+    /// snapshot), for the SessionStart binding (#316). A pid that has exited, or a query that failed,
+    /// is simply absent from the map.</summary>
+    private static Dictionary<int, string> QueryCommandLines(IEnumerable<int> pids, int timeoutMs)
+    {
+        var result = new Dictionary<int, string>();
+        var ids = pids.Where(p => p > 0).Distinct().ToList();
+        if (ids.Count == 0) return result;
+        try
+        {
+            string filter = string.Join(" OR ", ids.Select(p => "ProcessId=" + p.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            if (!TryRunPowerShell($"Get-CimInstance Win32_Process -Filter '{filter}' | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+                    timeoutMs, out string json)) return result;
+            using var doc = JsonDocument.Parse(json);
+            var rows = doc.RootElement.ValueKind == JsonValueKind.Array
+                ? doc.RootElement.EnumerateArray().ToList()
+                : new List<JsonElement> { doc.RootElement };
+            foreach (var e in rows)
+                if (e.ValueKind == JsonValueKind.Object
+                    && e.TryGetProperty("ProcessId", out var pv) && pv.TryGetInt32(out int pid)
+                    && e.TryGetProperty("CommandLine", out var cv) && cv.ValueKind == JsonValueKind.String)
+                    result[pid] = cv.GetString() ?? "";
+        }
+        catch { result.Clear(); }
+        return result;
     }
 
     /// <summary>

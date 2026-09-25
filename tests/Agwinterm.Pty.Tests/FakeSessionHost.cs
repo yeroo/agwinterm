@@ -929,6 +929,8 @@ internal sealed class FakeSessionHost : ISessionHost
     public bool Notify(string? target, string? title, string body) { var s = FindSes(target); if (s is null) return false; s.Notifications++; return true; }
     public bool SessionFlag(string? target, string op) { if (op == "clear") { foreach (var s in Workspaces.SelectMany(w => w.Sessions)) s.Flagged = false; return true; } var x = FindSes(target); if (x is null) return false; x.Flagged = op switch { "on" => true, "off" => false, "toggle" => !x.Flagged, _ => x.Flagged }; return true; }
     public bool SessionBind(string? target, string agent) { var s = FindSes(target); /* the app: FindPaneById, a pane, so pane-capable */ if (s is null) return false; s.AgentResume = SessionOperations.Binding(agent); return true; }
+    public (string Agent, string SessionId, string? Cwd, int HookPid)? LastBindResume;
+    public bool SessionBindResume(string? target, string agent, string sessionId, string? cwd, int hookPid) { if (FindSes(target) is null) return false; LastBindResume = (agent, sessionId, cwd, hookPid); return true; }
     public string AdoptClaude() { int n = 0; foreach (var s in Workspaces.SelectMany(w => w.Sessions)) { s.AgentResume = "claude --resume x"; n++; } return $"adopted {n}"; }
     public string RestartClaudeYolo(string? target) { var s = FindSes(target); if (s is null) return "no pane"; s.AgentResume = "claude --resume x --dangerously-skip-permissions"; return "restarting Claude in YOLO mode (resumed)"; }
     public string UpdateClaude() => "updating Claude Code…";
