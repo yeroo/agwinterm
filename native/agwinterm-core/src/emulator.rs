@@ -1148,6 +1148,15 @@ impl Performer for Emulator {
             return;
         }
 
+        // A > = < prefix makes a different command: CSI > 4 ; 2 m is XTMODKEYS, not SGR 4;2.
+        if prefix != 0 {
+            self.push_action(HostAction::Unhandled {
+                kind: "CSI".into(),
+                detail: format!("{} {} {}", prefix as char, join_params(params), ch as char),
+            });
+            return;
+        }
+
         let rows = self.screen().rows() as i64;
         let cols = self.screen().cols() as i64;
         match ch {
@@ -1186,7 +1195,7 @@ impl Performer for Emulator {
                     self.scroll_region_down();
                 }
             }
-            b'q' if prefix == 0 => {
+            b'q' => {
                 // DECSCUSR (CSI Ps SP q) — cursor shape; the SP intermediate is dropped by the parser.
                 let ps = *params.first().unwrap_or(&0);
                 if (0..=6).contains(&ps) {
@@ -1194,14 +1203,9 @@ impl Performer for Emulator {
                 }
             }
             _ => {
-                let pfx = if prefix == 0 {
-                    String::new()
-                } else {
-                    format!("{} ", prefix as char)
-                };
                 self.push_action(HostAction::Unhandled {
                     kind: "CSI".into(),
-                    detail: format!("{pfx}{} {}", join_params(params), ch as char),
+                    detail: format!("{} {}", join_params(params), ch as char),
                 });
             }
         }
@@ -1651,6 +1655,16 @@ mod tests {
         let erased = t.emu.screen().get(0, 2);
         assert_eq!(erased.background, Color::from_index(1)); // BCE carries the pen bg
         assert_eq!(erased.rune, ' ' as i32);
+    }
+
+    #[test]
+    fn xtmodkeys_is_not_sgr() {
+        let mut t = Terminal::new(10, 2);
+        t.feed(b"\x1b[>4;2mA\x1b[>4mB\x1b[>1JC");
+        for col in 0..3 {
+            assert_eq!(t.emu.screen().get(0, col).attributes, attrs::NONE);
+        }
+        assert_eq!(t.emu.screen().get(0, 0).rune, 'A' as i32);
     }
 
     #[test]
