@@ -391,8 +391,17 @@ public sealed class ControlServer : IDisposable
                     }
                 case "session.overlay": return HandleSessionOverlay(host, target, args);   // the guards and their order: see the method
                 case "notify":
-                    return host.Notify(target, GetString(args, "title"), GetString(args, "body") ?? "")
-                        ? Ok("notified") : Err("session not found");
+                    {
+                        var category = NotificationCategory.Attention;
+                        if (args.ValueKind == JsonValueKind.Object && args.TryGetProperty("category", out var value))
+                        {
+                            if (value.ValueKind != JsonValueKind.String ||
+                                !NotificationCategories.TryParse(value.GetString(), out category))
+                                return Err("notify: category must be ok, normal or attention");
+                        }
+                        return host.Notify(target, GetString(args, "title"), GetString(args, "body") ?? "", category)
+                            ? Ok("notified") : Err("session not found");
+                    }
                 case "session.flag":
                     return host.SessionFlag(target, GetString(args, "op") ?? "toggle") ? Ok("flag") : Err("session not found");
                 case "session.bind": return HandleSessionBind(host, target, args);

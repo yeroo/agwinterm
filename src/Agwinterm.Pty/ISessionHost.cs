@@ -514,7 +514,7 @@ public interface ISessionHost
 
     /// <summary>Raise a desktop notification against a session (in-app banner + sidebar badge + OS tray balloon).
     /// Returns false if the target isn't found.</summary>
-    bool Notify(string? target, string? title, string body);
+    bool Notify(string? target, string? title, string body, NotificationCategory category);
 
     /// <summary>Flag/unflag a session (durable working-set flag): op = on|off|toggle|clear (clear unflags every session).
     /// Returns false if a per-session op targets a session that isn't found; "clear" always succeeds.</summary>
@@ -706,7 +706,7 @@ public sealed class SingleSessionHost : ISessionHost
         => pane is not null ? ISessionHost.RefusePrefix + OverlayPanes.NotVisibleNoPanes
          : action is "copy" or "text" ? ISessionHost.RefusePrefix + OverlayPanes.NoOverlay
          : "no overlay";
-    public bool Notify(string? target, string? title, string body) => false;
+    public bool Notify(string? target, string? title, string body, NotificationCategory category) => false;
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;
     public bool SessionBindResume(string? target, string agent, string sessionId, string? cwd, int hookPid) => false;

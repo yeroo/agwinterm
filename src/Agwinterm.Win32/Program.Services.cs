@@ -68,13 +68,17 @@ internal partial class Program
     }
 
     /// <summary>A pane raised a desktop notification. Runs on the UI thread (marshaled from the pump).</summary>
-    private void OnNotified(Pane p, string title, string body)
+    private void OnNotified(Pane p, string title, string body, NotificationCategory category = NotificationCategory.Attention)
     {
         var ses = OwningSes(p);
         // Count it against the session unless you're looking at that pane right now (app focused AND it's
         // the active surface). If the app is in the background, even the active pane accrues a badge — which
         // then clears on refocus (agterm #164).
-        if (!ReferenceEquals(p, ActiveSurface()) || !_windowActive) p.Unread++;
+        if (!ReferenceEquals(p, ActiveSurface()) || !_windowActive)
+        {
+            p.Unread++;
+            p.UnreadCategory = NotificationCategories.Highest(p.UnreadCategory, category);
+        }
         string label = string.IsNullOrEmpty(title) ? body : $"{title}: {body}";
         _toastText = label.Length == 0 ? "(notification)" : label;
         _toastTarget = ses;                       // clicking the banner jumps to the raising session
@@ -119,6 +123,14 @@ internal partial class Program
     /// <summary>Total unread notifications across a session's panes (for the sidebar badge).</summary>
     private static int UnreadOf(Ses s) { int n = 0; foreach (var p in s.Panes) n += p.Unread; return n; }
 
+    private static NotificationCategory UnreadCategoryOf(Ses s)
+    {
+        var category = NotificationCategory.Ok;
+        foreach (var p in s.Panes)
+            if (p.Unread > 0) category = NotificationCategories.Highest(category, p.UnreadCategory);
+        return category;
+    }
+
     /// <summary>Session status for display: the most attention-worthy status across ALL panes
     /// (Blocked &gt; Completed &gt; Active &gt; Idle) — a background pane's state must not be invisible.</summary>
     private static AgentStatus AggStatus(Ses s) => StatusAggregate.Winner(s.Panes.Select(p => p.S));
@@ -142,9 +154,14 @@ internal partial class Program
     // session-wide overlay, counted on the term and cleared here, not summed into UnreadOf), scratch, overlay.
     private static void ClearUnread(Ses s)
     {
-        foreach (var p in s.Panes) { p.Unread = 0; if (p.Overlay.Term is { } po) po.Unread = 0; }
-        if (s.Scratch is not null) s.Scratch.Unread = 0;
-        if (s.Overlay.Term is { } ov) ov.Unread = 0;
+        foreach (var p in s.Panes)
+        {
+            p.Unread = 0;
+            p.UnreadCategory = NotificationCategory.Ok;
+            if (p.Overlay.Term is { } po) { po.Unread = 0; po.UnreadCategory = NotificationCategory.Ok; }
+        }
+        if (s.Scratch is not null) { s.Scratch.Unread = 0; s.Scratch.UnreadCategory = NotificationCategory.Ok; }
+        if (s.Overlay.Term is { } ov) { ov.Unread = 0; ov.UnreadCategory = NotificationCategory.Ok; }
     }
 
     // ---- Taskbar progress (OSC 9;4, ConEmu/Windows Terminal convention) ----
@@ -933,7 +950,8 @@ internal partial class Program
         "scrollback-lines", "inactive-pane-dim", "unfocused-dim", "builtin-glyphs", "ligatures", "window-opacity", "sidebar-tint", "sidebar-font-size", "scroll-speed",
         "new-session-dir", "right-click-paste", "copy-on-select", "copy-on-ctrl-c", "word-delimiters", "desktop-notifications", "shell-integration",
         "restore-commands", "restore-buffer", "blocked-sound", "notification-sound", "omp-theme", "omp-integration", "prompt-engine", "starship-theme",
-        "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges", "workspace-add-button",
+        "new-session-dir-mode", "confirm-close-session", "compact-toolbar", "toolbar-mode", "notification-badges",
+        "notification-color-ok", "notification-color-normal", "notification-color-attention", "workspace-add-button",
         "show-scratch-button", "show-split-button", "show-dashboard-button", "show-quick-button", "show-menu-bar",
         "quick-terminal-size", "quick-terminal-hotkey",
         "attention-button", "status-color-active", "status-color-blocked", "status-color-completed",
@@ -1008,6 +1026,9 @@ internal partial class Program
         "compact-toolbar" => _config.CompactToolbar ? "true" : "false",
         "toolbar-mode" => ToolbarModeResolved,
         "notification-badges" => _config.NotificationBadges ? "true" : "false",
+        "notification-color-ok" => _config.NotificationColorOk,
+        "notification-color-normal" => _config.NotificationColorNormal,
+        "notification-color-attention" => _config.NotificationColorAttention,
         "workspace-add-button" => _config.WorkspaceAddButton ? "true" : "false",
         "show-scratch-button" => _config.ShowScratchButton ? "true" : "false",
         "show-split-button" => _config.ShowSplitButton ? "true" : "false",

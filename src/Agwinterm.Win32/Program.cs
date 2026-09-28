@@ -352,6 +352,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public int ScrollOffset;   // lines scrolled up from the live bottom (0 = live; clamped to HistoryCount)
         public long LastScrollGen; // emulator ScrollGeneration last seen on output (detects real scroll vs in-place repaint)
         public int Unread;         // unread desktop-notification count (OSC 9/777 / notify) since last visit
+        public NotificationCategory UnreadCategory; // highest priority among unread notifications
         public bool ReadOnly;      // block keyboard input to this pane (protect a running agent from stray keys)
         // Text selection (absolute line index: [0..HistoryCount) history, then the live grid rows).
         public bool HasSel;

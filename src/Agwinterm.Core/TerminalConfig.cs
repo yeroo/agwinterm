@@ -185,8 +185,13 @@ public sealed class TerminalConfig
     /// Stored raw so an unknown future value degrades to the default rather than failing the whole parse.</summary>
     public string? ToolbarMode { get; set; }
 
-    /// <summary>Draw the red unread-count pill on sidebar rows (the count still tracks when off). On by default.</summary>
+    /// <summary>Draw the unread-count pill on sidebar rows (the count still tracks when off). On by default.</summary>
     public bool NotificationBadges { get; set; } = true;
+
+    /// <summary>Sidebar unread-badge colors (#RRGGBB), by notification category.</summary>
+    public string NotificationColorOk { get; set; } = "#3DC759";
+    public string NotificationColorNormal { get; set; } = "#F2B833";
+    public string NotificationColorAttention { get; set; } = "#E64D3D";
 
     /// <summary>Show a "+" on each sidebar workspace row to add a session there (agterm #233/#252). On by default.</summary>
     public bool WorkspaceAddButton { get; set; } = true;
@@ -377,6 +382,10 @@ public sealed class TerminalConfig
 
         # Notifications: show the red unread-count pill on sidebar rows; show the title-bar attention bell.
         notification-badges = true
+        # Unread-badge colors (#RRGGBB): ok, normal, attention.
+        notification-color-ok = #3DC759
+        notification-color-normal = #F2B833
+        notification-color-attention = #E64D3D
 
         # Show a "+" on each sidebar workspace row to add a session in that workspace.
         workspace-add-button = true
@@ -480,6 +489,9 @@ public sealed class TerminalConfig
                 case "compact-toolbar": cfg.CompactToolbar = ParseBool(val, cfg.CompactToolbar); break;
                 case "toolbar-mode": { var m = val.Trim().ToLowerInvariant(); if (m is "normal" or "compact" or "hidden") cfg.ToolbarMode = m; break; }
                 case "notification-badges": cfg.NotificationBadges = ParseBool(val, cfg.NotificationBadges); break;
+                case "notification-color-ok": if (val.Length > 0) cfg.NotificationColorOk = val; break;
+                case "notification-color-normal": if (val.Length > 0) cfg.NotificationColorNormal = val; break;
+                case "notification-color-attention": if (val.Length > 0) cfg.NotificationColorAttention = val; break;
                 case "workspace-add-button": cfg.WorkspaceAddButton = ParseBool(val, cfg.WorkspaceAddButton); break;
                 case "show-scratch-button": cfg.ShowScratchButton = ParseBool(val, cfg.ShowScratchButton); break;
                 case "show-split-button": cfg.ShowSplitButton = ParseBool(val, cfg.ShowSplitButton); break;

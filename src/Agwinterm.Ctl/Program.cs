@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Agwinterm.Pty;
 
 // agwintermctl — drive agwinterm's control API from the shell (agterm's agtermctl analog).
 // Every verb and flag is in CtlUsage.Long, which `--help` prints. It used to be a 96-line comment
@@ -547,11 +548,17 @@ switch (area)
         cmd = "broadcast";
         cargs["op"] = sub.Length > 0 ? sub : "toggle";
         break;
-    case "notify": // agwintermctl notify <body...> [--title T] [--target ID]
+    case "notify": // agwintermctl notify <body...> [--title T] [--category ok|normal|attention] [--target ID]
         cmd = "notify";
         target = DefaultTarget();
         cargs["body"] = string.Join(' ', positionals.Skip(1));
         if (Opt("title") is { } ntitle) cargs["title"] = ntitle;
+        if (options.ContainsKey("category"))
+        {
+            if (bareLast.Contains("category") || !NotificationCategories.TryParse(Opt("category"), out _))
+            { Console.Error.WriteLine("notify: --category must be ok, normal or attention"); return 2; }
+            cargs["category"] = Opt("category");
+        }
         break;
     case "font":
         cmd = "font";

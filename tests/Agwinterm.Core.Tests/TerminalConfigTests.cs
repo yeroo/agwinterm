@@ -46,6 +46,23 @@ public class TerminalConfigTests
     }
 
     [Fact]
+    public void NotificationBadgeColors_HaveDefaultsAndParseOverrides()
+    {
+        var defaults = TerminalConfig.Parse("");
+        Assert.Equal("#3DC759", defaults.NotificationColorOk);
+        Assert.Equal("#F2B833", defaults.NotificationColorNormal);
+        Assert.Equal("#E64D3D", defaults.NotificationColorAttention);
+
+        var custom = TerminalConfig.Parse("notification-color-ok = #112233\nnotification-color-normal = #445566\nnotification-color-attention = #778899");
+        Assert.Equal("#112233", custom.NotificationColorOk);
+        Assert.Equal("#445566", custom.NotificationColorNormal);
+        Assert.Equal("#778899", custom.NotificationColorAttention);
+        Assert.Contains("notification-color-ok = #3DC759", TerminalConfig.DefaultText);
+        Assert.Contains("notification-color-normal = #F2B833", TerminalConfig.DefaultText);
+        Assert.Contains("notification-color-attention = #E64D3D", TerminalConfig.DefaultText);
+    }
+
+    [Fact]
     public void ClaudeUpdateCheck_ParsesAndIsDocumented()
     {
         Assert.True(TerminalConfig.Parse("").ClaudeUpdateCheck);   // default: awareness on, update stays manual

@@ -60,6 +60,8 @@ public static class CtlUsage
           agwintermctl session context --stdin [--target ID]      (text = stdin, one trailing newline dropped; an
               embedded newline is then refused — the context is one line)
           agwintermctl session seen [--target ID]        (clear the unseen-notification badge)
+          agwintermctl notify <body...> [--title TITLE] [--category ok|normal|attention] [--target ID]
+              (untyped notifications default to attention; badge priority: attention > normal > ok)
           agwintermctl sidebar state                      (read-back: "visible tree 220" = visibility, mode, width)
           agwintermctl sidebar width [N]                  (read, or set, the sidebar width in DIP; replies {width,visible[,applied]}
               with the width actually in effect; outside 120..600 is refused, not clamped; set while hidden = remembered)

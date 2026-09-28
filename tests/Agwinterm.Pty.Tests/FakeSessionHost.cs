@@ -27,6 +27,7 @@ internal sealed class FakeSessionHost : ISessionHost
         public HudSpec? Hud;
         public List<string?>? ForegroundShells;
         public int Notifications, PaneCount = 1, FocusedPane, OverlaySize;
+        public NotificationCategory LastNotificationCategory;
         public List<double> Ratios = new() { 1.0 };
         /// <summary>The split's orientation — what the app keeps in Ses.Axis: one of <see cref="SplitAxes"/>'
         /// words, vertical until a split says otherwise, kept across <c>off</c> (P4).</summary>
@@ -926,7 +927,7 @@ internal sealed class FakeSessionHost : ISessionHost
         slot.Exited = true; slot.ExitCode = code; slot.LastResult = $"exit {code}";
         if (!slot.Wait) s.ClosePaneOverlay(slot);
     }
-    public bool Notify(string? target, string? title, string body) { var s = FindSes(target); if (s is null) return false; s.Notifications++; return true; }
+    public bool Notify(string? target, string? title, string body, NotificationCategory category) { var s = FindSes(target); if (s is null) return false; s.Notifications++; s.LastNotificationCategory = category; return true; }
     public bool SessionFlag(string? target, string op) { if (op == "clear") { foreach (var s in Workspaces.SelectMany(w => w.Sessions)) s.Flagged = false; return true; } var x = FindSes(target); if (x is null) return false; x.Flagged = op switch { "on" => true, "off" => false, "toggle" => !x.Flagged, _ => x.Flagged }; return true; }
     public bool SessionBind(string? target, string agent) { var s = FindSes(target); /* the app: FindPaneById, a pane, so pane-capable */ if (s is null) return false; s.AgentResume = SessionOperations.Binding(agent); return true; }
     public (string Agent, string SessionId, string? Cwd, int HookPid)? LastBindResume;

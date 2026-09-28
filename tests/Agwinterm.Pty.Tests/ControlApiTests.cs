@@ -515,6 +515,38 @@ public class ControlApiTests
         Assert.Equal(0, host.ActiveSess.Notifications);
     }
 
+    [Fact]
+    public void Notify_CategoryIsOptionalAndDefaultsToAttention()
+    {
+        var (server, host) = New();
+        Assert.True(Ok(Dispatch(server, "notify", new { body = "legacy" })));
+        Assert.Equal(NotificationCategory.Attention, host.ActiveSess!.LastNotificationCategory);
+        Assert.True(Ok(Dispatch(server, "notify", new { body = "done", category = "ok" })));
+        Assert.Equal(NotificationCategory.Ok, host.ActiveSess.LastNotificationCategory);
+        Assert.True(Ok(Dispatch(server, "notify", new { body = "update", category = "normal" })));
+        Assert.Equal(NotificationCategory.Normal, host.ActiveSess.LastNotificationCategory);
+    }
+
+    [Theory]
+    [InlineData("OK")]
+    [InlineData("warning")]
+    [InlineData("")]
+    public void Notify_InvalidCategoryIsRefusedWithoutDelivery(string category)
+    {
+        var (server, host) = New();
+        Assert.False(Ok(Dispatch(server, "notify", new { body = "bad", category })));
+        Assert.Equal(0, host.ActiveSess!.Notifications);
+    }
+
+    [Fact]
+    public void Notify_NonStringCategoryIsRefusedWithoutDelivery()
+    {
+        var (server, host) = New();
+        Assert.False(Ok(Dispatch(server, "notify", new { body = "bad", category = 1 })));
+        Assert.False(Ok(Dispatch(server, "notify", new { body = "bad", category = (string?)null })));
+        Assert.Equal(0, host.ActiveSess!.Notifications);
+    }
+
     // ---- error handling ----
 
     [Fact]

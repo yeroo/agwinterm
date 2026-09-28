@@ -159,6 +159,11 @@ internal partial class Program
         Sec(2, "Notifications");
         Tog(2, "desktop-notifications", "Desktop notifications (OS tray)");
         Tog(2, "notification-badges", "Unread badges on sidebar rows");
+        Sec(2, "Badge colors");
+        Col(2, "notification-color-ok", "OK");
+        Col(2, "notification-color-normal", "Normal");
+        Col(2, "notification-color-attention", "Attention");
+        Btn(2, "Reset badge colors", ResetNotificationColors);
         Drop(2, "notification-flash", "Flash taskbar when in background", new[] { "None", "Once", "Until focused" }, new[] { "none", "once", "until-focused" });
         Tog(2, "attention-button", "Title-bar attention indicator");
 
@@ -893,6 +898,14 @@ internal partial class Program
         ConfigSetInternal("status-color-blocked", "#F0A028");
         ConfigSetInternal("status-color-completed", "#3CC85A");
         ConfigSetInternal("blocked-sound", "");
+        RequestRedraw();
+    }
+
+    private void ResetNotificationColors()
+    {
+        ConfigSetInternal("notification-color-ok", "#3DC759");
+        ConfigSetInternal("notification-color-normal", "#F2B833");
+        ConfigSetInternal("notification-color-attention", "#E64D3D");
         RequestRedraw();
     }
 }

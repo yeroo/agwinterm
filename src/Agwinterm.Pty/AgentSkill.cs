@@ -343,9 +343,11 @@ public static class AgentSkill
           answer `ok:true` with the failure as the result text; branch on `ok`.
 
         ## Notify the user (desktop notification)
-        - `agwintermctl notify "build finished" [--title "npm"] [--target <id>]`
+        - `agwintermctl notify "build finished" [--title "npm"] [--category ok|normal|attention] [--target <id>]`
           — raise a notification against a session: an in-app banner (click it to jump to that session),
-          a red count badge on the session's sidebar row (cleared when you next select it), and an OS
+          a count badge on the session's sidebar row (green for ok, yellow for normal, red for attention
+          or an omitted category; mixed unread messages show the highest priority), cleared when you next
+          select it, and an OS
           tray balloon (unless `desktop-notifications = false` in the config). Great for signaling that a
           long task finished or that you need attention while the user is looking at another session.
           You can also emit it straight from the shell with an OSC sequence: `printf '\e]9;%s\a' "message"`

@@ -1214,11 +1214,11 @@ internal partial class Program
         catch (Exception e) { return ISessionHost.RefusePrefix + OverlayPanes.ReadFailedRefusal(e.Message); }
     }
 
-    public bool Notify(string? target, string? title, string body)
+    public bool Notify(string? target, string? title, string body, NotificationCategory category)
     {
         var ses = FindSesForTarget(target);
         if (ses is null) return false;
-        PostVerb(() => OnNotified(ses.ActivePane, title ?? "", body));
+        PostVerb(() => OnNotified(ses.ActivePane, title ?? "", body, category));
         return true;
     }
 
