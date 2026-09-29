@@ -12,6 +12,10 @@ Builds **per-user** Windows installers — end users need **no** .NET runtime in
 Each setup ships its own copy of the shared `agwinterm-ptyhost.exe` + `agwinterm_core.dll`, so
 either installs (and uninstalls) cleanly without the other.
 
+The agwinterm setup also carries Microsoft's ConPTY, `conpty.dll` + `x64\OpenConsole.exe` from the
+`Microsoft.Windows.Console.ConPTY` NuGet package (MIT), which `dotnet publish` puts in the stage. Both the app
+and `agwinterm-ptyhost.exe` load it from their own directory, and fall back to the inbox conhost without it.
+
 ## Build
 
 ```powershell

@@ -5,11 +5,16 @@ use std::ffi::c_void;
 use std::fs::File;
 use std::io::Write;
 use std::os::windows::io::FromRawHandle;
+use std::path::Path;
 use std::ptr::{null, null_mut};
+use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, S_OK, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Console::{
     COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
+};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
@@ -18,8 +23,107 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_INFORMATION, STARTUPINFOEXW, STARTUPINFOW, UpdateProcThreadAttribute,
     WaitForSingleObject,
 };
+use windows_sys::core::HRESULT;
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
+
+type CreateFn = unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> HRESULT;
+type ResizeFn = unsafe extern "system" fn(HPCON, COORD) -> HRESULT;
+type CloseFn = unsafe extern "system" fn(HPCON);
+type ProcFn = unsafe extern "system" fn() -> isize;
+
+/// The pseudoconsole functions every session uses, fixed once per process by [`select`].
+struct Api {
+    create: CreateFn,
+    resize: ResizeFn,
+    close: CloseFn,
+    bundled: bool,
+    /// What [`select`] reports: which ConPTY this is and, for the inbox one, why.
+    description: String,
+}
+
+static API: OnceLock<Api> = OnceLock::new();
+
+fn inbox(why: &str) -> Api {
+    Api {
+        create: CreatePseudoConsole,
+        resize: ResizePseudoConsole,
+        close: ClosePseudoConsole,
+        bundled: false,
+        description: format!("inbox conhost ({why})"),
+    }
+}
+
+/// The ConPTY from Microsoft.Windows.Console.ConPTY shipped beside this exe. Unlike the inbox
+/// conhost it forwards color, device-attribute and cursor queries to the terminal (#339).
+/// conpty.dll starts the OpenConsole.exe next to it (or in x64\) and silently falls back to the
+/// inbox conhost when there is none, so its absence is checked here, where it can be reported.
+fn bundled(dir: &Path) -> Result<Api, String> {
+    let dll = dir.join("conpty.dll");
+    if !dll.exists() {
+        return Err(format!("no {}", dll.display()));
+    }
+    if !dir.join("OpenConsole.exe").exists() && !dir.join("x64").join("OpenConsole.exe").exists() {
+        return Err(format!("no OpenConsole.exe beside {}", dll.display()));
+    }
+    let wide_dll = wide(&dll.to_string_lossy());
+    unsafe {
+        let module = LoadLibraryExW(wide_dll.as_ptr(), null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH);
+        if module.is_null() {
+            return Err(format!(
+                "{} did not load: {}",
+                dll.display(),
+                std::io::Error::last_os_error()
+            ));
+        }
+        let (Some(create), Some(resize), Some(close)) = (
+            GetProcAddress(module, c"CreatePseudoConsole".as_ptr().cast()),
+            GetProcAddress(module, c"ResizePseudoConsole".as_ptr().cast()),
+            GetProcAddress(module, c"ClosePseudoConsole".as_ptr().cast()),
+        ) else {
+            return Err(format!("{} lacks the pseudoconsole exports", dll.display()));
+        };
+        Ok(Api {
+            create: std::mem::transmute::<ProcFn, CreateFn>(create),
+            resize: std::mem::transmute::<ProcFn, ResizeFn>(resize),
+            close: std::mem::transmute::<ProcFn, CloseFn>(close),
+            bundled: true,
+            description: format!("{} (OpenConsole)", dll.display()),
+        })
+    }
+}
+
+/// Choose the ConPTY for the life of this process: the bundled one unless `use_bundled` is false
+/// (`conpty = inbox`) or it is missing, then the inbox conhost. Returns what was chosen. Later
+/// calls keep the first choice.
+pub fn select(use_bundled: bool) -> &'static str {
+    &API.get_or_init(|| {
+        if !use_bundled {
+            return inbox("conpty = inbox");
+        }
+        let dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        match dir
+            .ok_or_else(|| "the exe directory is unknown".to_string())
+            .and_then(|d| bundled(&d))
+        {
+            Ok(api) => api,
+            Err(why) => inbox(&why),
+        }
+    })
+    .description
+}
+
+/// True when sessions run on the shipped ConPTY, which passes output through and so does not repaint
+/// the viewport on a resize: a reattaching client gets the screen from this host instead.
+pub fn is_bundled() -> bool {
+    api().bundled
+}
+
+fn api() -> &'static Api {
+    API.get_or_init(|| inbox("no selection was made"))
+}
 
 pub struct ConPty {
     hpc: HPCON,
@@ -109,7 +213,7 @@ impl ConPty {
 
             let mut hpc: HPCON = 0;
             let size = COORD { X: cols, Y: rows };
-            let hr = CreatePseudoConsole(size, in_read, out_write, 0, &mut hpc);
+            let hr = (api().create)(size, in_read, out_write, 0, &mut hpc);
             if hr != S_OK {
                 return Err(format!("CreatePseudoConsole failed: 0x{hr:08x}"));
             }
@@ -123,7 +227,7 @@ impl ConPty {
             let mut attr_buf = vec![0u8; attr_size];
             let attr_list = attr_buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
             if InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_size) == 0 {
-                ClosePseudoConsole(hpc);
+                (api().close)(hpc);
                 return Err("InitializeProcThreadAttributeList failed".into());
             }
             if UpdateProcThreadAttribute(
@@ -137,7 +241,7 @@ impl ConPty {
             ) == 0
             {
                 DeleteProcThreadAttributeList(attr_list);
-                ClosePseudoConsole(hpc);
+                (api().close)(hpc);
                 return Err("UpdateProcThreadAttribute failed".into());
             }
 
@@ -176,7 +280,7 @@ impl ConPty {
             DeleteProcThreadAttributeList(attr_list);
             if ok == 0 {
                 let err = std::io::Error::last_os_error();
-                ClosePseudoConsole(hpc);
+                (api().close)(hpc);
                 CloseHandle(in_write);
                 CloseHandle(out_read);
                 return Err(format!(
@@ -206,7 +310,7 @@ impl ConPty {
 
     pub fn resize(&mut self, cols: i16, rows: i16) {
         if cols > 0 && rows > 0 {
-            unsafe { ResizePseudoConsole(self.hpc, COORD { X: cols, Y: rows }) };
+            unsafe { (api().resize)(self.hpc, COORD { X: cols, Y: rows }) };
             self.cols = cols;
             self.rows = rows;
         }
@@ -227,7 +331,7 @@ impl ConPty {
                 }
             }
             if self.hpc != 0 {
-                ClosePseudoConsole(self.hpc);
+                (api().close)(self.hpc);
                 self.hpc = 0;
             }
             true
@@ -241,7 +345,7 @@ impl Drop for ConPty {
             // Close the pseudoconsole FIRST: without it the output pipe never EOFs
             // (same lesson as TerminalSession.Dispose).
             if self.hpc != 0 {
-                ClosePseudoConsole(self.hpc);
+                (api().close)(self.hpc);
             }
             CloseHandle(self.child);
         }

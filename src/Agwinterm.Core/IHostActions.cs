@@ -27,6 +27,11 @@ public interface IHostActions
     /// (e.g. the kitty keyboard-protocol flags query reply).</summary>
     void Respond(string reply);
 
+    /// <summary>The theme's default foreground and background, which OSC 10 and OSC 11 queries
+    /// report (an app-set OSC 11 background wins over the theme's). Null when the host does not know
+    /// the theme: OSC 10 then gets no reply and OSC 11 only an app-set background, never a made-up color.</summary>
+    (Color Foreground, Color Background)? DefaultColors { get; }
+
     /// <summary>The program rang the bell (BEL, 0x07). The host decides what that means —
     /// an audible beep, a visual flash, an attention cue, or nothing — per user config.</summary>
     void Bell();

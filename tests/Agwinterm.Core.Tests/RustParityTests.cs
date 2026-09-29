@@ -199,6 +199,7 @@ public class RustParityTests
         public void Print(char ch) => Push($"P:{(int)ch:X4}");
         public void Execute(byte control) => Push($"E:{control:X2}");
         public void EscDispatch(char final) => Push($"ESC:{(int)final:X2}");
+        public void EscDispatch(char intermediate, char final) => Push($"ESCI:{(int)intermediate:X2}:{(int)final:X2}");
         public void CsiDispatch(char final, IReadOnlyList<int> parameters, char prefix)
             => Push($"CSI:{(int)final:X2}:{(int)prefix:X2}:{string.Join(",", parameters)}");
         public void OscDispatch(int command, string text) => Push($"OSC:{command}:{text}");
@@ -261,6 +262,7 @@ public class RustParityTests
             "\x1b[;;m\x1b[;5;m",                 // empty params
             "\x1b[<64;10;20M\x1b[>0c\x1b[=1n",   // every private prefix
             "\x1b[1 q\x1b[4 t",                  // intermediates (space) then final
+            "\x1b(B\x1b)0\x0eqx\x0f\x1b(0lqk\x1b#8\x1b (B",   // ESC intermediates: SCS, DECALN, a second intermediate
             "\x1b[1:2:3m",                       // colon → CsiIgnore path
             "\x1b[12\x1b[3m",                    // ESC restarts mid-CSI
             "\x1b]0;interrupted\x1b[31m",        // ESC + non-backslash after OSC = reprocess

@@ -4,6 +4,7 @@ internal enum ParserState
 {
     Ground,
     Escape,
+    EscIntermediate,
     CsiEntry,
     CsiParam,
     CsiIntermediate,

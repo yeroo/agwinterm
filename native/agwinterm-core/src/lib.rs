@@ -27,7 +27,7 @@ use screen::ScreenBuffer;
 /// Bumped whenever the exported C surface changes shape. The C# loader
 /// refuses a mismatch loudly (same hard-handshake philosophy as the
 /// pty-host protocol).
-pub const ABI_VERSION: u32 = 18;
+pub const ABI_VERSION: u32 = 19;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn agwcore_abi_version() -> u32 {
@@ -259,6 +259,7 @@ pub unsafe extern "C" fn agwcore_screen_resize(p: *mut ScreenBuffer, cols: u32, 
 //   P:XXXX          Print, 4-hex UTF-16 code unit
 //   E:XX            Execute, 2-hex control byte
 //   ESC:XX          EscDispatch, 2-hex final
+//   ESCI:II:XX      EscDispatch with an intermediate, 2-hex intermediate and final
 //   CSI:XX:YY:a,b   CsiDispatch, 2-hex final, 2-hex prefix (00 = none), params
 //   OSC:n:text      OscDispatch
 //   APC:text        ApcDispatch (byte-as-char payload)
@@ -285,6 +286,9 @@ impl vtparser::Performer for RecordingPerformer {
     }
     fn esc_dispatch(&mut self, ch: u8) {
         self.push(&format!("ESC:{ch:02X}"));
+    }
+    fn esc_dispatch_intermediate(&mut self, intermediate: u8, ch: u8) {
+        self.push(&format!("ESCI:{intermediate:02X}:{ch:02X}"));
     }
     fn csi_dispatch(&mut self, ch: u8, params: &[i32], prefix: u8) {
         let ps: Vec<String> = params.iter().map(|p| p.to_string()).collect();
@@ -697,6 +701,33 @@ pub unsafe extern "C" fn agwcore_emu_set_scrollback(p: *mut Terminal, max: u32) 
     match unsafe { p.as_mut() } {
         Some(t) => {
             t.emu.set_scrollback_max(max as usize);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Set the theme's default foreground and background (0xRRGGBB), which OSC 10 and OSC 11
+/// queries report. Until an embedder calls this, OSC 10 gets no reply and OSC 11 only an app-set
+/// background: an unknown theme gets no answer rather than a made-up one.
+///
+/// # Safety
+/// `p` must be a live `Terminal` from `agwcore_emu_new` that has not been freed, and no other
+/// thread may be inside this emulator for the duration of the call. A null pointer returns false.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn agwcore_emu_set_default_colors(
+    p: *mut Terminal,
+    fg: u32,
+    bg: u32,
+) -> bool {
+    let rgb = |v: u32| Color {
+        r: (v >> 16) as u8,
+        g: (v >> 8) as u8,
+        b: v as u8,
+    };
+    match unsafe { p.as_mut() } {
+        Some(t) => {
+            t.emu.set_default_colors(rgb(fg), rgb(bg));
             true
         }
         None => false,

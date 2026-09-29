@@ -13,6 +13,7 @@ public class VtParserTests
         public void CsiDispatch(char final, IReadOnlyList<int> p, char prefix) =>
             Events.Add($"csi:{(prefix != '\0' ? prefix.ToString() : "")}{final}:{string.Join(',', p)}");
         public void EscDispatch(char final) => Events.Add($"esc:{final}");
+        public void EscDispatch(char intermediate, char final) => Events.Add($"esc:{intermediate}{final}");
         public void OscDispatch(int command, string text) => Events.Add($"osc:{command}:{text}");
         public void ApcDispatch(string data) => Events.Add($"apc:{data}");
         public void DcsDispatch(byte[] data) => Events.Add($"dcs:{data.Length}");

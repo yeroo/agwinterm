@@ -240,7 +240,30 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
             return;
         }
         _pendingHighSurrogate = '\0';
-        PrintScalar(ch);
+        bool lineDrawing = _shiftedOut ? _g1LineDrawing : _g0LineDrawing;
+        PrintScalar(lineDrawing && ch is >= '\x5f' and <= '\x7e' ? DecLineDrawing[ch - 0x5f] : ch);
+    }
+
+    // Character sets: G0 and G1 are ASCII or DEC line drawing (ESC ( 0 / ESC ) 0), and SO/SI pick which
+    // one prints. ncurses draws boxes this way; the inbox conhost translated it, a bundled ConPTY passes
+    // it through (#339).
+    private bool _g0LineDrawing, _g1LineDrawing, _shiftedOut;
+
+    /// <summary>The glyphs DEC Special Graphics draws for 0x5F-0x7E, as xterm maps them.</summary>
+    private const string DecLineDrawing = " ◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·";
+
+    public void EscDispatch(char intermediate, char final)
+    {
+        switch (intermediate, final)
+        {
+            // SCS: DEC line drawing, or any other set as ASCII (the national sets differ in a few
+            // punctuation glyphs only).
+            case ('(', '0'): _g0LineDrawing = true; break;
+            case (')', '0'): _g1LineDrawing = true; break;
+            case ('(', _): _g0LineDrawing = false; break;
+            case (')', _): _g1LineDrawing = false; break;
+            default: Host?.Unhandled("ESC", $"{intermediate}{final}"); break;
+        }
     }
 
     private void PrintScalar(int cp)
@@ -278,6 +301,8 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 CursorCol = Math.Min(Screen.Cols - 1, ((CursorCol / 8) + 1) * 8);
                 break;
             case 7: Host?.Bell(); break;                         // BEL — ring the bell (host decides how)
+            case 0x0e: _shiftedOut = true; break;                // SO: print from G1
+            case 0x0f: _shiftedOut = false; break;               // SI: back to G0
             case 0: break; // NUL — historical padding, deliberately ignored (would flood the tap)
             default: Host?.Unhandled("C0", $"0x{control:X2}"); break;
         }
@@ -334,8 +359,19 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
                 // DECRQM — 1 means set, 2 means reset. Both modes are supported in either state.
                 Host?.Respond($"\x1b[?{mode};{(set ? 1 : 2)}$y");
             }
+            else if (final == 'n' && parameters.Count > 0 && parameters[0] == 6)
+            {
+                var (row, col) = CursorReport();
+                Host?.Respond($"\x1b[?{row};{col};1R");   // DECXCPR
+            }
             else
                 Host?.Unhandled("CSI", $"? {string.Join(';', parameters)} {final}"); // e.g. DECRQM ?…$p
+            return;
+        }
+
+        if (prefix == '>' && final == 'c' && (parameters.Count == 0 || parameters[0] == 0))
+        {
+            Host?.Respond(Da2Reply);
             return;
         }
 
@@ -363,6 +399,14 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
             case 'K': EraseLine(parameters.Count > 0 ? parameters[0] : 0); break;
             case 'X': EraseChars(P(0, 1)); break; // ECH: blank N cells from cursor (cursor unmoved)
             case 'm': ApplySgr(parameters); break;
+            case 'c' when parameters.Count == 0 || parameters[0] == 0: Host?.Respond(Da1Reply); break;
+            case 'n' when parameters.Count > 0 && parameters[0] == 5: Host?.Respond("\x1b[0n"); break;   // DSR: OK
+            case 'n' when parameters.Count > 0 && parameters[0] == 6:                                    // CPR
+                {
+                    var (row, col) = CursorReport();
+                    Host?.Respond($"\x1b[{row};{col}R");
+                    break;
+                }
             case 'r': // DECSTBM scroll region
                 SetScrollRegion(P(0, 1) - 1, parameters.Count > 1 && parameters[1] != 0 ? parameters[1] - 1 : Screen.Rows - 1);
                 break;
@@ -446,12 +490,20 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         _placements.Clear(); // drop the alt screen's images (e.g. when docxy exits)
     }
 
-    private void SaveCursor() { _savedRow = CursorRow; _savedCol = CursorCol; }
+    // DECSC keeps G0, G1 and the shift with the cursor.
+    private (bool G0, bool G1, bool Shifted) _savedCharsets;
+
+    private void SaveCursor()
+    {
+        _savedRow = CursorRow; _savedCol = CursorCol;
+        _savedCharsets = (_g0LineDrawing, _g1LineDrawing, _shiftedOut);
+    }
 
     private void RestoreCursor()
     {
         CursorRow = Math.Clamp(_savedRow, 0, Screen.Rows - 1);
         CursorCol = Math.Clamp(_savedCol, 0, Screen.Cols - 1);
+        (_g0LineDrawing, _g1LineDrawing, _shiftedOut) = _savedCharsets;
     }
 
     private readonly Dictionary<int, KittyImage> _images = new();
@@ -649,8 +701,15 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
             case 7:
                 Cwd = text;
                 break;
+            case 10 when text.Trim() == "?": // OSC 10 — query the default foreground color
+                if (Host is { DefaultColors: { } fgTheme } fgHost) fgHost.Respond("\x1b]10;" + OscColorReply(Rgb(fgTheme.Foreground)) + "\x1b\\");
+                break;
             case 11: // OSC 11 — set/query the terminal background color (per-pane dynamic bg, agterm #240)
-                if (text.Trim() == "?") Host?.Respond("\x1b]11;" + OscColorReply(DynamicBg) + "\x1b\\");
+                if (text.Trim() == "?")
+                {
+                    uint? bg = DynamicBg != 0 ? DynamicBg : Host?.DefaultColors is { } bgTheme ? Rgb(bgTheme.Background) : null;
+                    if (bg is { } known) Host?.Respond("\x1b]11;" + OscColorReply(known) + "\x1b\\");
+                }
                 else if (TryParseOscColor(text, out uint rgb11)) DynamicBg = 0xFF000000u | rgb11;
                 break;
             case 111: DynamicBg = 0; break; // reset background to the theme default
@@ -738,7 +797,18 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         return false;
     }
 
-    /// <summary>Format a stored dynamic bg (0xFF_RRGGBB) as an OSC rgb: reply for the query path.</summary>
+    /// <summary>DA1: a VT220-class terminal with sixel graphics (4) and ANSI color (22).</summary>
+    public const string Da1Reply = "\x1b[?62;4;22c";
+    /// <summary>DA2: the reply conhost gave before a shipped ConPTY forwarded the query here.</summary>
+    public const string Da2Reply = "\x1b[>0;10;1c";
+
+    /// <summary>The 1-based cursor position a CPR reports. A pending wrap leaves the column one past
+    /// the last cell, and the report names the last cell, as xterm does.</summary>
+    private (int Row, int Col) CursorReport() => (CursorRow + 1, Math.Min(CursorCol, Screen.Cols - 1) + 1);
+
+    private static uint Rgb(Color c) => (uint)(c.R << 16 | c.G << 8 | c.B);
+
+    /// <summary>Format a color (0xRRGGBB, or a stored dynamic bg 0xFF_RRGGBB) as an OSC rgb: reply for the query path.</summary>
     private static string OscColorReply(uint bg)
     {
         int r = (int)(bg >> 16) & 0xFF, g = (int)(bg >> 8) & 0xFF, b = (int)bg & 0xFF;
@@ -976,6 +1046,90 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
         return lines;
     }
 
+    /// <summary>The visible screen as VT that redraws it on a fresh emulator: every row with its colors
+    /// and attributes, then the cursor. A pty-host sends it to a reattaching client, because a bundled
+    /// ConPTY passes output through and so does not repaint the viewport on a resize the way the inbox
+    /// conhost does (#339). Trailing default blanks are left out; the pen ends reset. Same output as
+    /// the Rust core's <c>dump_screen</c>.</summary>
+    public string DumpScreen()
+    {
+        // The cells hold the glyphs already drawn, so they are replayed as ASCII (G0 and G1 ASCII, SI);
+        // the app's character sets are restored at the end, for its next output.
+        var sb = new System.Text.StringBuilder("\x1b(B\x1b)B\x0f\x1b[0m\x1b[H\x1b[2J");
+        for (int r = 0; r < Screen.Rows; r++)
+        {
+            int end = Screen.Cols;
+            while (end > 0 && IsDefaultBlank(Screen[r, end - 1])) end--;
+            if (end == 0) continue;
+            sb.Append("\x1b[").Append(r + 1).Append(";1H");
+            string pen = "0";
+            for (int c = 0; c < end; c++)
+            {
+                Cell cell = Screen[r, c];
+                if (cell.Width == 0) continue;
+                string sgr = SgrOf(cell);
+                if (sgr != pen) { sb.Append("\x1b[").Append(sgr).Append('m'); pen = sgr; }
+                sb.Append(cell.Rune is 0 ? " " : char.ConvertFromUtf32(cell.Rune));
+            }
+            if (pen != "0") sb.Append("\x1b[0m");
+        }
+        // DECSTBM homes the cursor, so the margins go before the cursor is placed.
+        if (ScrollTop != 0 || ScrollBottom != Screen.Rows - 1)
+            sb.Append("\x1b[").Append(ScrollTop + 1).Append(';').Append(ScrollBottom + 1).Append('r');
+        int last = -1;
+        if (CursorCol >= Screen.Cols)
+            for (int c = Screen.Cols - 1; c >= 0 && last < 0; c--)
+                if (Screen[CursorRow, c].Width != 0) last = c;
+        if (last >= 0)
+        {
+            // A pending wrap: reprint the row's last glyph, which leaves the cursor past the edge again.
+            Cell cell = Screen[CursorRow, last];
+            sb.Append("\x1b[").Append(CursorRow + 1).Append(';').Append(last + 1).Append("H\x1b[").Append(SgrOf(cell)).Append('m')
+              .Append(cell.Rune is 0 ? " " : char.ConvertFromUtf32(cell.Rune));
+        }
+        else
+        {
+            var (row, col) = CursorReport();
+            sb.Append("\x1b[").Append(row).Append(';').Append(col).Append('H');
+        }
+        // The pen the app left set, for its next output that sets none.
+        var appPen = new Cell(' ', _fg, _bg, _attrs, 1, _fgSpec, _bgSpec);
+        sb.Append("\x1b[").Append(SgrOf(appPen)).Append('m');
+        if (_g0LineDrawing) sb.Append("\x1b(0");
+        if (_g1LineDrawing) sb.Append("\x1b)0");
+        if (_shiftedOut) sb.Append('\x0e');
+        return sb.ToString();
+    }
+
+    /// <summary>G0, G1 and the shift as explicit VT: each set designated as line drawing or ASCII, then SO or SI.</summary>
+    private static string CharsetsSeq((bool G0, bool G1, bool Shifted) sets) =>
+        $"\u001b({(sets.G0 ? '0' : 'B')}\u001b){(sets.G1 ? '0' : 'B')}{(sets.Shifted ? '\u000e' : '\u000f')}";
+
+    private static bool IsDefaultBlank(Cell cell) =>
+        (cell.Rune is ' ' or 0) && cell.Attributes == CellAttributes.None
+        && cell.FgSpec.Kind == ColorSpecKind.Default && cell.BgSpec.Kind == ColorSpecKind.Default;
+
+    /// <summary>The SGR parameters that set a cell's pen from a reset one ("0" plus attributes and colors).</summary>
+    private static string SgrOf(Cell cell)
+    {
+        var sb = new System.Text.StringBuilder("0");
+        foreach (var (bit, code) in new[] { (CellAttributes.Bold, 1), (CellAttributes.Dim, 2), (CellAttributes.Italic, 3),
+                     (CellAttributes.Underline, 4), (CellAttributes.Inverse, 7), (CellAttributes.Strikethrough, 9) })
+            if (cell.Attributes.HasFlag(bit)) sb.Append(';').Append(code);
+        foreach (var (spec, basic, bright, extended) in new[] { (cell.FgSpec, 30, 90, 38), (cell.BgSpec, 40, 100, 48) })
+        {
+            if (spec.Kind == ColorSpecKind.Indexed)
+            {
+                if (spec.Index < 8) sb.Append(';').Append(basic + spec.Index);
+                else if (spec.Index < 16) sb.Append(';').Append(bright + spec.Index - 8);
+                else sb.Append(';').Append(extended).Append(";5;").Append(spec.Index);
+            }
+            else if (spec.Kind == ColorSpecKind.Rgb)
+                sb.Append(';').Append(extended).Append(";2;").Append(spec.Rgb.R).Append(';').Append(spec.Rgb.G).Append(';').Append(spec.Rgb.B);
+        }
+        return sb.ToString();
+    }
+
     /// <summary>Serialize the terminal's MODE state (not content) as VT sequences that reproduce it
     /// when fed to a fresh emulator — the pty-host reattach handshake. Content is carried separately
     /// (scrollback seed + a ConPTY repaint); modes must travel explicitly or a reattached view
@@ -984,7 +1138,14 @@ public sealed class TerminalEmulator : IParserPerformer, ITerminalCore
     public string DumpModes()
     {
         var sb = new System.Text.StringBuilder();
-        if (IsAltScreen) sb.Append("\x1b[?1049h");
+        var current = (_g0LineDrawing, _g1LineDrawing, _shiftedOut);
+        if (IsAltScreen)
+        {
+            // Entering 1049 saves the character sets, so the replica must enter it with the sets the app
+            // had before it did, and only then take the alt screen's own.
+            sb.Append(CharsetsSeq(_savedCharsets)).Append("\x1b[?1049h").Append(CharsetsSeq(current));
+        }
+        else if (current != (false, false, false)) sb.Append(CharsetsSeq(current));
         if (!CursorVisible) sb.Append("\x1b[?25l");
         if (_mouseClick) sb.Append("\x1b[?1000h");
         if (_mouseDrag) sb.Append("\x1b[?1002h");

@@ -79,7 +79,8 @@ public class RustEmulatorCoreTests
             "\x1b[1;31mhello 🚀 中文\x1b[0m\r\n",
             "line2\r\nline3\r\nline4\r\nline5\r\nline6\r\nline7\r\nline8\r\nline9\r\nline10\r\nline11\r\nline12\r\n",
             "\x1b]0;adapter test\x07\x1b]7;file://x/y\x07",
-            "\x1b[?25l\x1b[?2004h\x1b[?1006h\x1b[>3u");
+            "\x1b[?25l\x1b[?2004h\x1b[?1006h\x1b[>3u",
+            "\x1b(Bplain\x1b(0lqqk\x1b(B\r\n\x1b)0\x0ex\x0fx");
     }
 
     [Fact]
@@ -148,6 +149,7 @@ public class RustEmulatorCoreTests
         public void Respond(string reply) => Log.Add($"Respond|{reply}");
         public void Unhandled(string kind, string detail) => Log.Add($"Unhandled|{kind}|{detail}");
         public void Bell() => Log.Add("Bell");
+        public (Color Foreground, Color Background)? DefaultColors { get; set; } = (Color.DefaultForeground, Color.DefaultBackground);
     }
 
     [Fact]
@@ -183,6 +185,44 @@ public class RustEmulatorCoreTests
         Assert.Contains("Clipboard|hi", rsHost.Log);
         Assert.Contains("Respond|\x1b[?0u", rsHost.Log);
         Assert.Contains("Progress|1|42", rsHost.Log);
+    }
+
+    [Fact]
+    public void Adapter_QueryReplies_MatchManagedCore()
+    {
+        if (!Available) return;
+        // The queries a shipped ConPTY forwards instead of answering (#339), with the host's theme
+        // colors reaching the Rust core through the adapter.
+        string script = "\x1b]10;?\x1b\\\x1b]11;?\x07\x1b[c\x1b[>c\x1b[5n\x1b[3;4H\x1b[6n\x1b[?6n";
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes(script);
+        var theme = (new Color(0xcc, 0xcc, 0xcc), new Color(0x12, 0x34, 0x56));
+
+        var mgHost = new RecordingHost { DefaultColors = theme };
+        var rsHost = new RecordingHost { DefaultColors = theme };
+        var cs = new TerminalEmulator(40, 10) { Host = mgHost };
+        using var rust = new RustTerminalCore(40, 10) { Host = rsHost };
+        cs.Feed(bytes);
+        rust.Feed(bytes);
+
+        Assert.Equal(mgHost.Log, rsHost.Log);
+        Assert.Contains("Respond|\x1b]11;rgb:1212/3434/5656\x1b\\", rsHost.Log);
+        Assert.Contains("Respond|\x1b[3;4R", rsHost.Log);
+    }
+
+    [Fact]
+    public void Adapter_ColorQueriesWithoutATheme_MatchManagedCore()
+    {
+        if (!Available) return;
+        // A host that does not know the theme: no OSC 10 reply, OSC 11 only after the app set it.
+        byte[] bytes = System.Text.Encoding.ASCII.GetBytes("\x1b]10;?\x07\x1b]11;?\x07\x1b]11;#ff8000\x07\x1b]11;?\x07");
+        var mgHost = new RecordingHost { DefaultColors = null };
+        var rsHost = new RecordingHost { DefaultColors = null };
+        var cs = new TerminalEmulator(40, 10) { Host = mgHost };
+        using var rust = new RustTerminalCore(40, 10) { Host = rsHost };
+        cs.Feed(bytes);
+        rust.Feed(bytes);
+        Assert.Equal(mgHost.Log, rsHost.Log);
+        Assert.Equal(new[] { "Respond|\x1b]11;rgb:ffff/8080/0000\x1b\\" }, rsHost.Log);
     }
 
     [Fact]

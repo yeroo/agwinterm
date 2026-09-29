@@ -15,6 +15,7 @@ public sealed class ServerSessionBackend : ISessionBackend, IDisposable
     private readonly string _appId;
     private readonly string? _exePath;
     private readonly string _spawnArgs;
+    internal string SpawnArgs => _spawnArgs;
     private readonly string _name;
     private readonly object _lock = new();
     private PtyHostClient? _client;
@@ -208,11 +209,13 @@ public sealed class ServerSession : ISession
                 }
                 try
                 {
-                    client.Create(_id, Cols, Rows, app, commandLine, cwd, extraEnv,
+                    int cols = Cols, rows = Rows;
+                    client.Create(_id, cols, rows, app, commandLine, cwd, extraEnv,
                         verbatim: verbatimCommandLine, deElevate: deElevate, freshEnv: freshEnv, creationTicket: _creationTicket);
                     if (_startFence.Created() || _startFence.KillRequested) KillHosted(); // retry exact cancellation if close raced a reply
                     if (_startFence.IsClosed) return;
-                    PublishAttachment(client.Attach(_id, creationTicket: _creationTicket));
+                    if (PublishAttachment(client.Attach(_id, creationTicket: _creationTicket)) && (Cols != cols || Rows != rows))
+                        Resize(Cols, Rows);
                 }
                 catch
                 {

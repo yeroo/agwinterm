@@ -152,6 +152,23 @@ public class ServerSessionTests : IDisposable
     }
 
     [Fact]
+    public async Task Resize_DuringStart_ReachesTheHost()
+    {
+        using var creating = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        _server.BeforeCreationPublication = _ => { creating.Set(); release.Wait(15000); };
+        using var s = _backend.Create(Guid.NewGuid().ToString(), 80, 24);
+        var start = s.StartAsync("cmd.exe", new[] { "/q" }, verbatimCommandLine: true);
+        Assert.True(creating.Wait(15000), "the host never reached the creation barrier");
+        s.Resize(132, 40);   // the pane's first layout lands while the host is still creating
+        release.Set();
+        await start;
+        using var probe = PtyHostClient.Connect(_appId);
+        Assert.True(WaitFor(() => probe.List() is [{ Cols: 132, Rows: 40 }]),
+            "a resize made while the session was starting never reached the host");
+    }
+
+    [Fact]
     public async Task Dispose_KillsTheHostedSession_Phase2bSemantics()
     {
         var s = _backend.Create(Guid.NewGuid().ToString(), 80, 24);
@@ -330,7 +347,7 @@ public class ServerSessionTests : IDisposable
     }
 
     /// <summary>The de-elevate spawn (its own branch, its own catch) must keep the same host
-    /// contract (#227 r4): a failed DeElevatedPty.Spawn — the missing cwd fails CreateProcessAsUserW
+    /// contract (#227 r4): a failed ConPtyConnection.Spawn (de-elevated) — the missing cwd fails CreateProcessAsUserW
     /// whether or not this test process is elevated — is the create's error, not an ok.</summary>
     [Fact]
     public async Task StartFailure_DeElevatedIntoAMissingCwd_ReachesTheClientAsTheReason()
@@ -344,7 +361,7 @@ public class ServerSessionTests : IDisposable
         Assert.Equal(1, s.ExitCode);
         string grid = GridText(s);
         Assert.Contains("failed to start", grid);
-        // Only DeElevatedPty.Fail stamps this prefix: proves the flag reached the host's de-elevate branch
+        // Only a de-elevated ConPtyConnection.Spawn stamps this prefix: proves the flag reached the host's de-elevate branch
         // (the ordinary spawn fails a missing cwd too, with a different message).
         Assert.Contains("de-elevation", grid);
         await Task.Delay(300);

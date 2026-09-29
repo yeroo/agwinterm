@@ -138,6 +138,48 @@ public class PtyHostTests : IDisposable
         Assert.Contains("protocol mismatch", empty.Error);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Reattach_ShowsTheScreenPrintedWhileDetached(bool bundled)
+    {
+        // The inbox conhost repaints on the resize jiggle; on the bundled ConPTY the host sends its own
+        // emulator's screen instead, since that ConPTY does not repaint (#339).
+        string appId = "agwinterm-test-" + Guid.NewGuid().ToString("N")[..8];
+        using var server = new PtyHostServer(appId, ConPtyApi.Resolve(bundled, ConPtyConnectionTests.BundledDir));
+        using var client = PtyHostClient.Connect(appId);
+        string id = client.Create(Guid.NewGuid().ToString(), 100, 24, "powershell.exe", ConPtyConnectionTests.BottomRowProbeArgs, verbatim: false);
+        Thread.Sleep(5000);
+        // Twice: a reattach must not cost the screen anything the next one would miss (the bottom row).
+        for (int i = 0; i < 2; i++)
+        {
+            using var att = client.Attach(id, repaint: true);
+            Assert.Contains(ConPtyConnectionTests.BottomRowMarker, ReadUntil(att.Data, s => s.Contains(ConPtyConnectionTests.BottomRowMarker), 10000));
+        }
+        client.Kill(id);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void DetachedSession_OnTheBundledConpty_HasItsQueriesAnswered(bool withTheme)
+    {
+        // The bundled ConPTY forwards the child's queries; with no client attached, the host answers them
+        // (#339): the DSR always, the color with the theme from the pane's environment, else not at all.
+        string appId = "agwinterm-test-" + Guid.NewGuid().ToString("N")[..8];
+        using var server = new PtyHostServer(appId, ConPtyApi.Resolve(bundled: true, ConPtyConnectionTests.BundledDir));
+        using var client = PtyHostClient.Connect(appId);
+        string outFile = Path.Combine(Path.GetTempPath(), appId + "-dsr.txt");
+        try
+        {
+            string id = client.Create(Guid.NewGuid().ToString(), 100, 24, "powershell.exe", ConPtyConnectionTests.DsrProbeArgs(outFile),
+                env: ConPtyConnectionTests.ThemeEnv(withTheme), verbatim: false);
+            Assert.Equal(ConPtyConnectionTests.ExpectedDsrProbe(withTheme), ConPtyConnectionTests.ReadDsrProbe(outFile));
+            client.Kill(id);
+        }
+        finally { File.Delete(outFile); }
+    }
+
     [Fact]
     public void CreateAttachTypeReadKill_RoundTrips()
     {

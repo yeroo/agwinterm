@@ -130,6 +130,11 @@ internal partial class Program
             // scripts) can detect that they're running inside agwinterm. (agterm #203.)
             ["TERM_PROGRAM"] = "agwinterm",
             ["TERM_PROGRAM_VERSION"] = _termProgramVersion,
+            // 24-bit color. Without it (and without TERM, which Windows shells leave unset) apps that
+            // size their palette from the environment, Codex among them, fall back to 16 colors (#339).
+            ["COLORTERM"] = "truecolor",
+            // The theme a pty-host answers OSC 10/11 with while no UI is attached (#339).
+            [ThemeColors.EnvVar] = ThemeColors.Format(_theme.DefaultForeground, _theme.DefaultBackground),
         };
         if (extraEnv is not null) foreach (var kv in extraEnv) env[kv.Key] = kv.Value; // custom-command $AGW_* context
         if (handoff is { } h)
@@ -278,6 +283,7 @@ internal partial class Program
             // Refusing its reply must not abort the output pump and lose the remaining output.
             SessionInput.TryWrite(_s, Encoding.UTF8.GetBytes(reply));
         }
+        public (Color Foreground, Color Background)? DefaultColors => (_theme.DefaultForeground, _theme.DefaultBackground);
         public void Bell() => _app.Post(() => _app.RingBell(_pane));                                     // BEL -> beep/flash per config
         public void Unhandled(string kind, string detail) => VtLog.Write(_pane.Id, kind, detail);       // AGWINTERM_VT_LOG tap
     }

@@ -522,6 +522,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private static string? _argDir;
     private static bool _argMaximized, _argFullscreen;
     private static bool _argPtyHost;   // run as the headless pty-host (#105) instead of a window
+    private static string? _argConpty;   // the pty-host role's conpty key, passed by the UI (#339)
     private static string? _argDefaultSessionHost;   // first-run seed for session-host (installer hook)
 
     private static void ParseLaunchArgs(string[] args)
@@ -537,6 +538,7 @@ internal partial class Program : ISessionHost, IWindowHost
                 case "--no-restore": _argNoRestore = true; break;
                 case "--pipe" when i + 1 < args.Length: _argPipe = args[++i]; break;
                 case "--pty-host": _argPtyHost = true; break;
+                case "--conpty" when i + 1 < args.Length: _argConpty = args[++i]; break;
                 case "--default-session-host" when i + 1 < args.Length: _argDefaultSessionHost = args[++i]; break;
                 case "--app-id" when i + 1 < args.Length: ++i; break; // consumed by ResolveAppId (namespaces data dir + pipe)
                                                                       // unknown args are ignored (forward compatibility)
@@ -558,6 +560,7 @@ internal partial class Program : ISessionHost, IWindowHost
         // below (config, D2D, window class, control server) applies to this process.
         if (_argPtyHost)
         {
+            ConPtyApi.Select(_argConpty == "bundled");   // no flag = inbox, as for the Rust host
             using var ptyHost = new Agwinterm.Pty.PtyHostServer(_argPipe ?? _appId);
             ptyHost.Completion.Wait();
             return;
@@ -565,7 +568,8 @@ internal partial class Program : ISessionHost, IWindowHost
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         // Process-global setup (config/themes/keymap + window class + shared D2D/DWrite objects).
         _config = LoadOrCreateConfig();
-        _sessionBackend = SessionBackends.Resolve(_config.SessionHost, _argPipe ?? _appId, AppExePath);
+        ConPtyApi.Select(_config.Conpty != "inbox");
+        _sessionBackend = SessionBackends.Resolve(_config.SessionHost, _argPipe ?? _appId, AppExePath, _config.Conpty);
         ResolveEmulatorCore();
         _allThemes = LoadThemes();
         _theme = FindTheme(_config.Theme);

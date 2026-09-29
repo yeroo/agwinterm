@@ -165,15 +165,21 @@ struct HostState {
 
 fn main() {
     let mut pipe = None;
+    // No flag = inbox: a UI that predates the flag also predates the query replies (#339).
+    let mut bundled_conpty = false;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--pipe" && i + 1 < args.len() {
             pipe = Some(args[i + 1].clone());
             i += 1;
+        } else if args[i] == "--conpty" && i + 1 < args.len() {
+            bundled_conpty = args[i + 1] == "bundled";
+            i += 1;
         }
         i += 1;
     }
+    eprintln!("conpty: {}", conpty::select(bundled_conpty));
     let app_id = pipe.unwrap_or_else(|| "agwinterm".to_string());
     let host = Arc::new(Host {
         app_id: app_id.clone(),
@@ -616,10 +622,18 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
         .take()
         .expect("new ConPTY owns its output reader");
 
+    let mut term = Terminal::new(cols as usize, rows as usize);
+    if let Some((fg, bg)) = c
+        .env
+        .get("AGWINTERM_THEME_COLORS")
+        .and_then(|v| theme_colors(v))
+    {
+        term.emu.set_default_colors(fg, bg);
+    }
     let hosted = Arc::new(Hosted {
         id: c.id.clone(),
         creation_ticket: ticket.clone(),
-        term: Mutex::new(Terminal::new(cols as usize, rows as usize)),
+        term: Mutex::new(term),
         pty: Mutex::new(pty),
         data: Mutex::new(None),
         resize: Mutex::new(()),
@@ -643,14 +657,29 @@ fn handle_create(host: &Arc<Host>, c: proto::Create) -> Reply {
                     break;
                 }
                 hosted.pump_in_flight.store(true, Ordering::SeqCst);
-                hosted.term.lock().unwrap().feed(&buf[..n]);
+                // The emulator lock is held until the chunk is forwarded, so an attach that snapshots
+                // the screen under both locks gets each chunk once: in the snapshot or in the stream.
+                let mut term = hosted.term.lock().unwrap();
+                term.feed(&buf[..n]);
+                let replies = query_replies(&mut term);
                 let mut data = hosted.data.lock().unwrap();
                 if let Some(d) = data.as_ref()
                     && !d.write_all(&buf[..n])
                 {
                     *data = None; // client vanished mid-write -> plain detach
                 }
+                // Whoever got this chunk answers its queries: the attached client's emulator, or,
+                // with nobody attached, this host's own. A bundled ConPTY forwards them instead of
+                // answering (#339), and a child waiting on one would stall until the next attach.
+                let answer_here = data.is_none();
                 drop(data);
+                drop(term);
+                if answer_here && !replies.is_empty() {
+                    let pty = hosted.pty.lock().unwrap();
+                    for reply in &replies {
+                        pty.write_input(reply.as_bytes());
+                    }
+                }
                 // After the feed and the forward: "settled" means the emulator and the client both have it.
                 hosted.pump_bytes.fetch_add(n as u64, Ordering::SeqCst);
                 hosted.pump_in_flight.store(false, Ordering::SeqCst);
@@ -738,9 +767,14 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
         let Ok(stream) = server.accept() else { return };
         let stream = Arc::new(stream);
         {
+            // Same lock order as the output pump (term, then data).
+            let term = h2.term.lock().unwrap();
             let mut data = h2.data.lock().unwrap();
             if let Some(old) = data.take() {
                 old.cancel_io(); // supersede: old client EOFs
+            }
+            if repaint && conpty::is_bundled() {
+                stream.write_all(term.emu.dump_screen().as_bytes());
             }
             *data = Some(stream.clone());
         }
@@ -748,7 +782,9 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
             *h2.data.lock().unwrap() = None; // exited while attaching → immediate EOF
             return;
         }
-        if repaint {
+        // The jiggle makes the inbox conhost repaint. The bundled ConPTY repaints nothing, the snapshot
+        // above did that, and shrinking the host emulator by a row would lose its bottom row.
+        if repaint && !conpty::is_bundled() {
             resize::transaction(&h2.resize, || {
                 let (c, r) = h2.pty.lock().unwrap().size();
                 h2.term
@@ -793,6 +829,37 @@ fn handle_attach(host: &Arc<Host>, a: proto::Attach) -> Reply {
         scrollback_blob, // attributed history (full colour on reattach), byte-identical to the C# host
         creation_ticket: hosted.creation_ticket.clone(),
     })))
+}
+
+/// Drain the host emulator's actions, keeping the query replies. Draining on every feed also keeps
+/// the queue from filling while no client ever reads it.
+fn query_replies(term: &mut Terminal) -> Vec<String> {
+    term.emu
+        .take_host_actions()
+        .into_iter()
+        .filter_map(|a| match a {
+            agwinterm_core::emulator::HostAction::Respond { reply } => Some(reply),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The pane theme from AGWINTERM_THEME_COLORS (`rrggbb;rrggbb`, foreground;background), which the UI
+/// puts in the pane's environment so this host can answer OSC 10/11 while no client is attached
+/// (#339). Without it the emulator answers no color query it would have to make up.
+fn theme_colors(value: &str) -> Option<(agwinterm_core::cell::Color, agwinterm_core::cell::Color)> {
+    let hex = |s: &str| {
+        (s.len() == 6)
+            .then(|| u32::from_str_radix(s, 16).ok())
+            .flatten()
+            .map(|v| agwinterm_core::cell::Color {
+                r: (v >> 16) as u8,
+                g: (v >> 8) as u8,
+                b: v as u8,
+            })
+    };
+    let (fg, bg) = value.split_once(';')?;
+    Some((hex(fg)?, hex(bg)?))
 }
 
 /// Serialize the emulator's HISTORY as a persist.PBuffer blob, BYTE-IDENTICAL to the C#

@@ -142,7 +142,7 @@ Coming from `agwinterm-lite`? Nothing to do: 0.17.4's updater points at the agli
 agwinterm exists because of **[umputun](https://github.com/umputun)** and **[agterm](https://github.com/umputun/agterm)**. agterm's design — a terminal that treats AI coding agents as first-class citizens, with per-session status, workspace navigation, a detached quick terminal, a native picker, and a language-agnostic control socket — is the blueprint this project follows. agwinterm is a tribute and a port of the ideas and UX, not of the code. Thank you, umputun. 💜
 
 - **[Ghostty](https://ghostty.org)** and **[iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes)**: the bundled color themes are the community ghostty/iTerm2 set.
-- **[Vortice.Windows](https://github.com/amerkoleci/Vortice.Windows)** (Direct2D/DirectWrite), **[Porta.Pty](https://www.nuget.org/packages/Porta.Pty)** (ConPTY), and **[microsoft/terminal](https://github.com/microsoft/terminal)**'s OpenConsole for the default-terminal handoff.
+- **[Vortice.Windows](https://github.com/amerkoleci/Vortice.Windows)** (Direct2D/DirectWrite), **[Porta.Pty](https://www.nuget.org/packages/Porta.Pty)** (ConPTY), and **[microsoft/terminal](https://github.com/microsoft/terminal)**'s OpenConsole for the default-terminal handoff and, from [Microsoft.Windows.Console.ConPTY](https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY) (MIT), as the ConPTY that sessions run on.
 - Bundled fonts, with versions and licenses, are listed in [THIRD_PARTY_FONTS.md](THIRD_PARTY_FONTS.md).
 
 ## License

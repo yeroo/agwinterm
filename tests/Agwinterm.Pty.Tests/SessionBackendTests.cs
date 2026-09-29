@@ -38,6 +38,15 @@ public class SessionBackendTests
     }
 
     [Fact]
+    public void Resolve_PassesTheConptyKeyToThePtyHosts()
+    {
+        // A pty-host picks its ConPTY once, when it starts (#339), and without the flag keeps the inbox one.
+        Assert.Equal("--pipe \"x-rust\" --conpty bundled", ((ServerSessionBackend)SessionBackends.Resolve("server-rust", "x", null, "bundled")).SpawnArgs);
+        Assert.Equal("--pipe \"x-rust\" --conpty inbox", ((ServerSessionBackend)SessionBackends.Resolve("server-rust", "x", null, "inbox")).SpawnArgs);
+        Assert.Equal("--pty-host --pipe \"x\" --conpty bundled", ((ServerSessionBackend)SessionBackends.Resolve("server", "x", null, "bundled")).SpawnArgs);
+    }
+
+    [Fact]
     public void ServerBackend_WithNoHostAndNoExe_FailsAtCreate()
     {
         // Failure surfaces at Create — the one place the UI can catch it and fall back in-process.

@@ -17,4 +17,5 @@ public sealed class RecordingHost : IHostActions
     public void Respond(string reply) => Responses.Add(reply);
     public void Unhandled(string kind, string detail) => Unhandleds.Add((kind, detail));
     public void Bell() => Bells++;
+    public (Color Foreground, Color Background)? DefaultColors { get; set; } = (Color.DefaultForeground, Color.DefaultBackground);
 }

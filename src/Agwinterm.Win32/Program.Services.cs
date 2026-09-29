@@ -1131,13 +1131,21 @@ internal partial class Program
         {
             // Live switch (#105 2d): NEW sessions use the chosen backend immediately; existing panes
             // keep the one they were born with (both kinds coexist fine) and converge on restart.
-            _sessionBackend = SessionBackends.Resolve(_config.SessionHost, _argPipe ?? _appId, AppExePath);
+            _sessionBackend = SessionBackends.Resolve(_config.SessionHost, _argPipe ?? _appId, AppExePath, _config.Conpty);
             Note(_config.SessionHost switch
             {
                 "server" => "server mode ON (experimental) — new sessions survive UI restarts; restart agwinterm to move existing ones",
                 "server-rust" => "Rust server mode ON (experimental) — new sessions live in the Rust pty-host; restart agwinterm to move existing ones",
                 _ => "in-process mode — new sessions run in the window process; restart agwinterm to convert existing ones",
             });
+        }
+        if (Has("conpty"))
+        {
+            // New in-process sessions use the chosen ConPTY now. A running pty-host keeps the one it
+            // started with; the next one it starts gets the new key.
+            var api = ConPtyApi.Select(_config.Conpty != "inbox");
+            _sessionBackend = SessionBackends.Resolve(_config.SessionHost, _argPipe ?? _appId, AppExePath, _config.Conpty);
+            Note($"conpty — new sessions use {api.Description}; a running pty-host keeps its own until it restarts");
         }
         if (Has("emulator-core"))
         {

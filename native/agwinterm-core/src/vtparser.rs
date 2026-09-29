@@ -21,6 +21,9 @@ pub trait Performer {
     fn print(&mut self, ch: u16);
     fn execute(&mut self, byte: u8);
     fn esc_dispatch(&mut self, ch: u8);
+    /// ESC with an intermediate byte (0x20-0x2F) before the final: `ESC ( 0` designates the DEC
+    /// line-drawing set into G0, `ESC ( B` puts ASCII back.
+    fn esc_dispatch_intermediate(&mut self, intermediate: u8, ch: u8);
     fn csi_dispatch(&mut self, ch: u8, params: &[i32], prefix: u8);
     fn osc_dispatch(&mut self, command: i32, text: &str);
     fn apc_dispatch(&mut self, text: &str);
@@ -31,6 +34,7 @@ pub trait Performer {
 enum State {
     Ground,
     Escape,
+    EscIntermediate,
     CsiEntry,
     CsiParam,
     CsiIntermediate,
@@ -49,6 +53,7 @@ pub struct VtParser {
     current: i32,
     has_current: bool,
     csi_prefix: u8, // private-mode marker: < = > ? or 0
+    esc_intermediate: u8,
 
     utf8_remaining: u32,
     utf8_accum: i32,
@@ -75,6 +80,7 @@ impl VtParser {
             current: 0,
             has_current: false,
             csi_prefix: 0,
+            esc_intermediate: 0,
             utf8_remaining: 0,
             utf8_accum: 0,
             osc: Vec::new(),
@@ -137,6 +143,9 @@ impl VtParser {
                 } else if (0x30..=0x7e).contains(&b) {
                     p.esc_dispatch(b);
                     self.state = State::Ground;
+                } else if (0x20..=0x2f).contains(&b) {
+                    self.esc_intermediate = b;
+                    self.state = State::EscIntermediate;
                 } else if is_control(b) {
                     p.execute(b);
                 }
@@ -144,6 +153,17 @@ impl VtParser {
                 else {
                     self.state = State::Ground;
                 }
+            }
+
+            State::EscIntermediate => {
+                if (0x30..=0x7e).contains(&b) {
+                    p.esc_dispatch_intermediate(self.esc_intermediate, b);
+                    self.state = State::Ground;
+                } else if is_control(b) {
+                    p.execute(b);
+                } else if !(0x20..=0x2f).contains(&b) {
+                    self.state = State::Ground;
+                } // a further intermediate: keep the first
             }
 
             State::OscString => {
@@ -420,6 +440,10 @@ mod tests {
         }
         fn esc_dispatch(&mut self, ch: u8) {
             self.0.push(format!("ESC:{}", ch as char));
+        }
+        fn esc_dispatch_intermediate(&mut self, intermediate: u8, ch: u8) {
+            self.0
+                .push(format!("ESC:{}{}", intermediate as char, ch as char));
         }
         fn csi_dispatch(&mut self, ch: u8, params: &[i32], prefix: u8) {
             let ps: Vec<String> = params.iter().map(|p| p.to_string()).collect();

@@ -17,7 +17,7 @@
 //!  - Invalid DECSTBM resets to full screen; any DECSTBM homes the cursor.
 //!  - Zero-width codepoints are dropped (v1 semantics).
 
-use crate::cell::{Cell, Color, ColorSpec, attrs};
+use crate::cell::{Cell, Color, ColorSpec, ColorSpecKind, attrs};
 use crate::screen::ScreenBuffer;
 use crate::sixel;
 use crate::vtparser::{Performer, VtParser};
@@ -26,6 +26,10 @@ use std::collections::{BTreeMap, HashMap};
 
 const TRIM_SLACK: usize = 512;
 const MAX_KITTY_ENCODED_CHARS: usize = 8_000_000;
+/// DA1: a VT220-class terminal with sixel graphics (4) and ANSI color (22).
+pub const DA1_REPLY: &str = "\u{1b}[?62;4;22c";
+/// DA2: the reply conhost gave before a shipped ConPTY forwarded the query here.
+pub const DA2_REPLY: &str = "\u{1b}[>0;10;1c";
 
 /// Mirror of C# KittyImage (format kept as the raw transmitted int — the C# enum
 /// cast stores arbitrary values unchanged).
@@ -126,6 +130,7 @@ pub struct Emulator {
     pub cursor_visible: bool,
     saved_row: usize,
     saved_col: usize,
+    saved_charsets: (bool, bool, bool), // DECSC keeps G0, G1 and the shift with the cursor
 
     mouse_click: bool,
     mouse_drag: bool,
@@ -137,7 +142,18 @@ pub struct Emulator {
     pub synchronized_output: bool,
     pub win32_input_mode: bool,
     pub dynamic_bg: u32,
+    // The host theme's default colors, what OSC 10/11 queries report (an app-set dynamic_bg wins).
+    // None until the embedder says: an unknown theme gets no answer rather than a made-up one.
+    default_fg: Option<Color>,
+    default_bg: Option<Color>,
     pub cursor_shape: i32,
+
+    // Character sets: G0 and G1 are ASCII or DEC line drawing (ESC ( 0 / ESC ) 0), and SO/SI pick
+    // which one prints. ncurses draws boxes this way; the inbox conhost translated it, a bundled
+    // ConPTY passes it through (#339).
+    g0_line_drawing: bool,
+    g1_line_drawing: bool,
+    shifted_out: bool,
 
     scroll_top: usize,
     scroll_bottom: usize,
@@ -198,6 +214,7 @@ impl Emulator {
             cursor_visible: true,
             saved_row: 0,
             saved_col: 0,
+            saved_charsets: (false, false, false),
             mouse_click: false,
             mouse_drag: false,
             mouse_motion: false,
@@ -208,7 +225,12 @@ impl Emulator {
             synchronized_output: false,
             win32_input_mode: false,
             dynamic_bg: 0,
+            default_fg: None,
+            default_bg: None,
             cursor_shape: 0,
+            g0_line_drawing: false,
+            g1_line_drawing: false,
+            shifted_out: false,
             scroll_top: 0,
             scroll_bottom: rows - 1,
             history: Vec::new(),
@@ -249,6 +271,29 @@ impl Emulator {
         if self.host_actions.len() < 4096 {
             self.host_actions.push(a);
         }
+    }
+
+    /// The 1-based cursor position a CPR reports. A pending wrap leaves the column one past the
+    /// last cell, and the report names the last cell, as xterm does.
+    fn cursor_report(&self) -> (usize, usize) {
+        let cols = self.screen().cols();
+        (
+            self.cursor_row + 1,
+            self.cursor_col.min(cols.saturating_sub(1)) + 1,
+        )
+    }
+
+    fn respond_color(&mut self, osc: i32, c: Color) {
+        let Color { r, g, b } = c;
+        let reply =
+            format!("\u{1b}]{osc};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\u{1b}\\");
+        self.push_action(HostAction::Respond { reply });
+    }
+
+    /// The theme's default colors, what OSC 10 and OSC 11 queries report.
+    pub fn set_default_colors(&mut self, fg: Color, bg: Color) {
+        self.default_fg = Some(fg);
+        self.default_bg = Some(bg);
     }
 
     pub fn images(&self) -> &BTreeMap<i32, KittyImage> {
@@ -752,11 +797,13 @@ impl Emulator {
     fn save_cursor(&mut self) {
         self.saved_row = self.cursor_row;
         self.saved_col = self.cursor_col;
+        self.saved_charsets = (self.g0_line_drawing, self.g1_line_drawing, self.shifted_out);
     }
 
     fn restore_cursor(&mut self) {
         self.cursor_row = self.saved_row.min(self.screen().rows() - 1);
         self.cursor_col = self.saved_col.min(self.screen().cols() - 1);
+        (self.g0_line_drawing, self.g1_line_drawing, self.shifted_out) = self.saved_charsets;
     }
 
     // ---- SGR ----
@@ -956,10 +1003,111 @@ impl Emulator {
 
     // ---- mode dump / scrollback seed (integration surface, matches C#) ----
 
+    /// The visible screen as VT that redraws it on a fresh emulator: every row with its colors and
+    /// attributes, then the cursor. A pty-host sends it to a reattaching client, because a bundled
+    /// ConPTY passes output through and so does not repaint the viewport on a resize the way the
+    /// inbox conhost does (#339). Trailing default blanks are left out; the pen ends reset.
+    pub fn dump_screen(&self) -> String {
+        let screen = self.screen();
+        let (rows, cols) = (screen.rows(), screen.cols());
+        // The cells hold the glyphs already drawn, so they are replayed as ASCII (G0 and G1 ASCII, SI);
+        // the app's character sets are restored at the end, for its next output.
+        let mut s = String::from("\u{1b}(B\u{1b})B\u{f}\u{1b}[0m\u{1b}[H\u{1b}[2J");
+        for r in 0..rows {
+            let end = (0..cols)
+                .rev()
+                .find(|&c| !is_default_blank(&screen.get(r, c)))
+                .map_or(0, |c| c + 1);
+            if end == 0 {
+                continue;
+            }
+            s.push_str(&format!("\u{1b}[{};1H", r + 1));
+            let mut pen = String::from("0");
+            for c in 0..end {
+                let cell = screen.get(r, c);
+                if cell.width == 0 {
+                    continue;
+                }
+                let sgr = sgr_of(&cell);
+                if sgr != pen {
+                    s.push_str(&format!("\u{1b}[{sgr}m"));
+                    pen = sgr;
+                }
+                s.push(
+                    char::from_u32(cell.rune as u32)
+                        .filter(|&ch| ch != '\0')
+                        .unwrap_or(' '),
+                );
+            }
+            if pen != "0" {
+                s.push_str("\u{1b}[0m");
+            }
+        }
+        // DECSTBM homes the cursor, so the margins go before the cursor is placed.
+        if self.scroll_top != 0 || self.scroll_bottom != rows - 1 {
+            s.push_str(&format!(
+                "\u{1b}[{};{}r",
+                self.scroll_top + 1,
+                self.scroll_bottom + 1
+            ));
+        }
+        let row = self.cursor_row;
+        match (0..cols.min(self.cursor_col))
+            .rev()
+            .find(|&c| screen.get(row, c).width != 0)
+            .filter(|_| self.cursor_col >= cols)
+        {
+            // A pending wrap: reprint the row's last glyph, which leaves the cursor past the edge again.
+            Some(last) => {
+                let cell = screen.get(row, last);
+                s.push_str(&format!(
+                    "\u{1b}[{};{}H\u{1b}[{}m",
+                    row + 1,
+                    last + 1,
+                    sgr_of(&cell)
+                ));
+                s.push(
+                    char::from_u32(cell.rune as u32)
+                        .filter(|&ch| ch != '\0')
+                        .unwrap_or(' '),
+                );
+            }
+            None => {
+                let (r, c) = self.cursor_report();
+                s.push_str(&format!("\u{1b}[{r};{c}H"));
+            }
+        }
+        // The pen the app left set, for its next output that sets none.
+        let pen = Cell {
+            attributes: self.attrs,
+            fg_spec: self.fg_spec,
+            bg_spec: self.bg_spec,
+            ..Cell::EMPTY
+        };
+        s.push_str(&format!("\u{1b}[{}m", sgr_of(&pen)));
+        if self.g0_line_drawing {
+            s.push_str("\u{1b}(0");
+        }
+        if self.g1_line_drawing {
+            s.push_str("\u{1b})0");
+        }
+        if self.shifted_out {
+            s.push('\u{e}');
+        }
+        s
+    }
+
     pub fn dump_modes(&self) -> String {
         let mut s = String::new();
+        let current = (self.g0_line_drawing, self.g1_line_drawing, self.shifted_out);
         if self.on_alt {
+            // Entering 1049 saves the character sets, so the replica must enter it with the sets the
+            // app had before it did, and only then take the alt screen's own.
+            s.push_str(&charsets_seq(self.saved_charsets));
             s.push_str("\u{1b}[?1049h");
+            s.push_str(&charsets_seq(current));
+        } else if current != (false, false, false) {
+            s.push_str(&charsets_seq(current));
         }
         if !self.cursor_visible {
             s.push_str("\u{1b}[?25l");
@@ -1070,7 +1218,15 @@ impl Performer for Emulator {
             return;
         }
         self.pending_high_surrogate = 0;
-        self.print_scalar(ch as i32);
+        let line_drawing = if self.shifted_out {
+            self.g1_line_drawing
+        } else {
+            self.g0_line_drawing
+        };
+        match dec_line_drawing(ch).filter(|_| line_drawing) {
+            Some(glyph) => self.print_scalar(glyph as i32),
+            None => self.print_scalar(ch as i32),
+        }
     }
 
     fn execute(&mut self, control: u8) {
@@ -1087,6 +1243,8 @@ impl Performer for Emulator {
                 self.cursor_col = (cols - 1).min((self.cursor_col / 8 + 1) * 8);
             }
             7 => self.push_action(HostAction::Bell), // BEL — ring the bell (host decides how)
+            0x0e => self.shifted_out = true,         // SO: print from G1
+            0x0f => self.shifted_out = false,        // SI: back to G0
             0 => {} // NUL — historical padding, deliberately ignored (would flood the tap)
             _ => self.push_action(HostAction::Unhandled {
                 kind: "C0".into(),
@@ -1108,6 +1266,21 @@ impl Performer for Emulator {
             _ => self.push_action(HostAction::Unhandled {
                 kind: "ESC".into(),
                 detail: (ch as char).to_string(),
+            }),
+        }
+    }
+
+    fn esc_dispatch_intermediate(&mut self, intermediate: u8, ch: u8) {
+        match (intermediate, ch) {
+            // SCS: DEC line drawing, or any other set as ASCII (the national sets differ in a few
+            // punctuation glyphs only).
+            (b'(', b'0') => self.g0_line_drawing = true,
+            (b')', b'0') => self.g1_line_drawing = true,
+            (b'(', _) => self.g0_line_drawing = false,
+            (b')', _) => self.g1_line_drawing = false,
+            _ => self.push_action(HostAction::Unhandled {
+                kind: "ESC".into(),
+                detail: format!("{}{}", intermediate as char, ch as char),
             }),
         }
     }
@@ -1139,12 +1312,24 @@ impl Performer for Emulator {
                 self.push_action(HostAction::Respond {
                     reply: format!("\u{1b}[?{mode};{}$y", if set { 1 } else { 2 }),
                 });
+            } else if ch == b'n' && params.first() == Some(&6) {
+                let (row, col) = self.cursor_report();
+                self.push_action(HostAction::Respond {
+                    reply: format!("\u{1b}[?{row};{col};1R"),
+                });
             } else {
                 self.push_action(HostAction::Unhandled {
                     kind: "CSI".into(),
                     detail: format!("? {} {}", join_params(params), ch as char),
                 });
             }
+            return;
+        }
+
+        if prefix == b'>' && ch == b'c' && params.first().is_none_or(|&p| p == 0) {
+            self.push_action(HostAction::Respond {
+                reply: DA2_REPLY.into(),
+            });
             return;
         }
 
@@ -1174,6 +1359,22 @@ impl Performer for Emulator {
             b'K' => self.erase_line(*params.first().unwrap_or(&0)),
             b'X' => self.erase_chars(p(0, 1)),
             b'm' => self.apply_sgr(params),
+            b'c' if params.first().is_none_or(|&p| p == 0) => {
+                self.push_action(HostAction::Respond {
+                    reply: DA1_REPLY.into(),
+                });
+            }
+            b'n' if params.first() == Some(&5) => {
+                self.push_action(HostAction::Respond {
+                    reply: "\u{1b}[0n".into(),
+                });
+            }
+            b'n' if params.first() == Some(&6) => {
+                let (row, col) = self.cursor_report();
+                self.push_action(HostAction::Respond {
+                    reply: format!("\u{1b}[{row};{col}R"),
+                });
+            }
             b'r' => {
                 let bottom = match params.get(1) {
                     Some(&v) if v != 0 => v as i64 - 1,
@@ -1222,18 +1423,26 @@ impl Performer for Emulator {
             // payloads (notify / 9;4 progress) fall through to the host-actions arm below.
             9 if text.starts_with("9;") => self.cwd = text[2..].trim_matches('"').to_string(),
             133 => self.ftcs_dispatch(&text),
+            10 if text.trim() == "?" => {
+                if let Some(fg) = self.default_fg {
+                    self.respond_color(10, fg);
+                }
+            }
             11 => {
                 // OSC 11 — set/query the terminal background color (per-pane dynamic bg, agterm #240).
                 if text.trim() == "?" {
-                    let (r, g, b) = (
-                        (self.dynamic_bg >> 16) & 0xFF,
-                        (self.dynamic_bg >> 8) & 0xFF,
-                        self.dynamic_bg & 0xFF,
-                    );
-                    let reply = format!(
-                        "\u{1b}]11;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\u{1b}\\"
-                    );
-                    self.push_action(HostAction::Respond { reply });
+                    let bg = if self.dynamic_bg != 0 {
+                        Some(Color {
+                            r: (self.dynamic_bg >> 16) as u8,
+                            g: (self.dynamic_bg >> 8) as u8,
+                            b: self.dynamic_bg as u8,
+                        })
+                    } else {
+                        self.default_bg
+                    };
+                    if let Some(bg) = bg {
+                        self.respond_color(11, bg);
+                    }
                 } else if let Some(rgb) = parse_osc_color(&text) {
                     self.dynamic_bg = 0xFF00_0000 | rgb;
                 }
@@ -1426,6 +1635,70 @@ fn parse_osc_color(s: &str) -> Option<u32> {
 }
 
 /// Semicolon-join CSI parameters for the Unhandled debug tap (mirrors C#'s `string.Join(';', …)`).
+/// The glyph DEC Special Graphics draws for `ch` (0x5F-0x7E), as xterm maps it; None outside that range.
+fn dec_line_drawing(ch: u16) -> Option<char> {
+    const GLYPHS: [char; 32] = [
+        ' ', '◆', '▒', '␉', '␌', '␍', '␊', '°', '±', '␤', '␋', '┘', '┐', '┌', '└', '┼', '⎺', '⎻',
+        '─', '⎼', '⎽', '├', '┤', '┴', '┬', '│', '≤', '≥', 'π', '≠', '£', '·',
+    ];
+    (0x5f..=0x7e)
+        .contains(&ch)
+        .then(|| GLYPHS[(ch - 0x5f) as usize])
+}
+
+/// G0, G1 and the shift as explicit VT: each set designated as line drawing or ASCII, then SO or SI.
+fn charsets_seq((g0, g1, shifted): (bool, bool, bool)) -> String {
+    format!(
+        "\u{1b}({}\u{1b}){}{}",
+        if g0 { '0' } else { 'B' },
+        if g1 { '0' } else { 'B' },
+        if shifted { '\u{e}' } else { '\u{f}' }
+    )
+}
+
+fn is_default_blank(cell: &Cell) -> bool {
+    (cell.rune == ' ' as i32 || cell.rune == 0)
+        && cell.attributes == attrs::NONE
+        && cell.fg_spec == ColorSpec::DEFAULT
+        && cell.bg_spec == ColorSpec::DEFAULT
+}
+
+/// The SGR parameters that set a cell's pen from a reset one ("0" plus attributes and colors).
+fn sgr_of(cell: &Cell) -> String {
+    let mut s = String::from("0");
+    for (bit, code) in [
+        (attrs::BOLD, "1"),
+        (attrs::DIM, "2"),
+        (attrs::ITALIC, "3"),
+        (attrs::UNDERLINE, "4"),
+        (attrs::INVERSE, "7"),
+        (attrs::STRIKETHROUGH, "9"),
+    ] {
+        if cell.attributes & bit != 0 {
+            s.push(';');
+            s.push_str(code);
+        }
+    }
+    for (spec, base, bright, extended) in [(cell.fg_spec, 30, 90, 38), (cell.bg_spec, 40, 100, 48)]
+    {
+        match spec.kind {
+            ColorSpecKind::Default => {}
+            ColorSpecKind::Indexed if spec.index < 8 => {
+                s.push_str(&format!(";{}", base + spec.index as u32))
+            }
+            ColorSpecKind::Indexed if spec.index < 16 => {
+                s.push_str(&format!(";{}", bright + spec.index as u32 - 8))
+            }
+            ColorSpecKind::Indexed => s.push_str(&format!(";{extended};5;{}", spec.index)),
+            ColorSpecKind::Rgb => s.push_str(&format!(
+                ";{extended};2;{};{};{}",
+                spec.rgb.r, spec.rgb.g, spec.rgb.b
+            )),
+        }
+    }
+    s
+}
+
 fn join_params(params: &[i32]) -> String {
     params
         .iter()
@@ -1658,6 +1931,72 @@ mod tests {
     }
 
     #[test]
+    fn charset_designation_prints_nothing_and_draws_dec_lines() {
+        // ncurses: sgr0 is ESC ( B ESC [ m, and boxes are ESC ( 0 lqk ... ESC ( B, or ESC ) 0 with SO/SI.
+        let mut t = Terminal::new(10, 2);
+        t.feed(b"\x1b(Ba\x1b(0lqkx\x1b(Bq\r\n\x1b)0\x0eqx\x0fq");
+        let row = |t: &Terminal, r: usize| -> String {
+            (0..6)
+                .map(|c| char::from_u32(t.emu.screen().get(r, c).rune as u32).unwrap())
+                .collect()
+        };
+        assert_eq!(row(&t, 0), "a┌─┐│q");
+        assert_eq!(&row(&t, 1)[..], "─│q   ");
+        // The reattach modes carry the sets: G1 is still line drawing, G0 and the shift are back.
+        let modes = t.emu.dump_modes();
+        assert!(modes.contains("\x1b)0") && !modes.contains("\x1b(0") && !modes.contains('\u{e}'));
+    }
+
+    #[test]
+    fn reattach_replay_keeps_glyphs_drawn_before_a_charset_change() {
+        // A pty-host sends the modes, then the screen. An ASCII q already on screen must stay a q
+        // though G0 is now line drawing, and the app's next q must draw a line on both sides.
+        let mut t = Terminal::new(8, 2);
+        t.feed(b"q\x1b)0\x0e\x1b(0");
+        let mut replay = Terminal::new(8, 2);
+        replay.feed(t.emu.dump_modes().as_bytes());
+        replay.feed(t.emu.dump_screen().as_bytes());
+        t.feed(b"q\x0fq");
+        replay.feed(b"q\x0fq");
+        for c in 0..3 {
+            assert_eq!(
+                replay.emu.screen().get(0, c),
+                t.emu.screen().get(0, c),
+                "cell 0,{c}"
+            );
+        }
+        assert_eq!(t.emu.screen().get(0, 0).rune, 'q' as i32);
+        assert_eq!(t.emu.screen().get(0, 1).rune, '─' as i32);
+    }
+
+    #[test]
+    fn reattach_on_the_alt_screen_restores_the_pre_alt_character_sets() {
+        // ASCII before 1049 and DEC inside it, then the reverse: after the replica takes the modes and
+        // the screen, leaving the alt screen must bring back what the source had before entering it.
+        for (source, expected) in [
+            (&b"\x1b[?1049h\x1b(0"[..], 'q' as i32),
+            (&b"\x1b(0\x1b[?1049h\x1b(B"[..], '\u{2500}' as i32),
+        ] {
+            let mut t = Terminal::new(8, 2);
+            t.feed(source);
+            let mut replay = Terminal::new(8, 2);
+            replay.feed(t.emu.dump_modes().as_bytes());
+            replay.feed(t.emu.dump_screen().as_bytes());
+            t.feed(b"\x1b[?1049l\r\nq");
+            replay.feed(b"\x1b[?1049l\r\nq");
+            assert_eq!(t.emu.screen().get(1, 0).rune, expected);
+            assert_eq!(replay.emu.screen().get(1, 0), t.emu.screen().get(1, 0));
+        }
+    }
+
+    #[test]
+    fn decsc_decrc_save_and_restore_the_character_sets() {
+        let mut t = Terminal::new(8, 2);
+        t.feed(b"\x1b(0\x1b7\x1b(B\x0e\x1b8q");
+        assert_eq!(t.emu.screen().get(0, 0).rune, '─' as i32);
+    }
+
+    #[test]
     fn xtmodkeys_is_not_sgr() {
         let mut t = Terminal::new(10, 2);
         t.feed(b"\x1b[>4;2mA\x1b[>4mB\x1b[>1JC");
@@ -1665,6 +2004,136 @@ mod tests {
             assert_eq!(t.emu.screen().get(0, col).attributes, attrs::NONE);
         }
         assert_eq!(t.emu.screen().get(0, 0).rune, 'A' as i32);
+    }
+
+    #[test]
+    fn dump_screen_redraws_the_screen_on_a_fresh_emulator() {
+        let mut t = Terminal::new(12, 4);
+        t.feed(
+            "\x1b[1;31mred\x1b[0m \x1b[4;38;5;200mpink\x1b[0m\r\n\x1b[44m  bg  \x1b[0m\r\n\
+             \x1b[3;38;2;1;2;3m\u{4e2d}x\x1b[0m\x1b[2;9H"
+                .as_bytes(),
+        );
+        let mut replay = Terminal::new(12, 4);
+        replay.feed(b"garbage that must be cleared");
+        replay.feed(t.emu.dump_screen().as_bytes());
+        for r in 0..4 {
+            for c in 0..12 {
+                assert_eq!(
+                    replay.emu.screen().get(r, c),
+                    t.emu.screen().get(r, c),
+                    "cell {r},{c}"
+                );
+            }
+        }
+        assert_eq!(
+            (replay.emu.cursor_row, replay.emu.cursor_col),
+            (t.emu.cursor_row, t.emu.cursor_col)
+        );
+    }
+
+    #[test]
+    fn dump_screen_keeps_the_pen_the_pending_wrap_and_the_margins() {
+        // A full-width row leaves the cursor past the edge with a red pen, inside a scroll region:
+        // output after the replay must land where, and look how, it does on the source.
+        let mut t = Terminal::new(6, 5);
+        t.feed(b"\x1b[2;4r\x1b[4;1H\x1b[1;31mabcdef");
+        let mut replay = Terminal::new(6, 5);
+        replay.feed(t.emu.dump_screen().as_bytes());
+        for feed in [&b"gh"[..], b"\r\n\n\nij\x1b[42m k"] {
+            t.feed(feed);
+            replay.feed(feed);
+            for r in 0..5 {
+                for c in 0..6 {
+                    assert_eq!(
+                        replay.emu.screen().get(r, c),
+                        t.emu.screen().get(r, c),
+                        "cell {r},{c}"
+                    );
+                }
+            }
+            assert_eq!(
+                (replay.emu.cursor_row, replay.emu.cursor_col),
+                (t.emu.cursor_row, t.emu.cursor_col)
+            );
+        }
+        assert_eq!(
+            (replay.emu.scroll_top(), replay.emu.scroll_bottom()),
+            (1, 3)
+        );
+    }
+
+    fn replies(t: &mut Terminal) -> Vec<String> {
+        t.emu
+            .take_host_actions()
+            .into_iter()
+            .filter_map(|a| match a {
+                HostAction::Respond { reply } => Some(reply),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn osc_color_queries_without_a_theme_answer_only_an_app_set_background() {
+        let mut t = Terminal::new(10, 2);
+        t.feed(b"\x1b]10;?\x1b\\\x1b]11;?\x07");
+        assert!(replies(&mut t).is_empty());
+        t.feed(b"\x1b]11;#ff8000\x07\x1b]11;?\x07\x1b]10;?\x07");
+        assert_eq!(replies(&mut t), ["\x1b]11;rgb:ffff/8080/0000\x1b\\"]);
+    }
+
+    #[test]
+    fn osc_color_queries_report_the_theme_until_an_app_sets_the_background() {
+        let mut t = Terminal::new(10, 2);
+        t.emu.set_default_colors(
+            Color {
+                r: 0xcc,
+                g: 0xcc,
+                b: 0xcc,
+            },
+            Color {
+                r: 0x12,
+                g: 0x34,
+                b: 0x56,
+            },
+        );
+        t.feed(b"\x1b]10;?\x1b\\\x1b]11;?\x07");
+        assert_eq!(
+            replies(&mut t),
+            [
+                "\x1b]10;rgb:cccc/cccc/cccc\x1b\\",
+                "\x1b]11;rgb:1212/3434/5656\x1b\\"
+            ]
+        );
+        t.feed(b"\x1b]11;#ff8000\x07\x1b]11;?\x07\x1b]111\x07\x1b]11;?\x07");
+        assert_eq!(
+            replies(&mut t),
+            [
+                "\x1b]11;rgb:ffff/8080/0000\x1b\\",
+                "\x1b]11;rgb:1212/3434/5656\x1b\\"
+            ]
+        );
+    }
+
+    #[test]
+    fn device_attribute_status_and_cursor_queries_are_answered() {
+        let mut t = Terminal::new(10, 5);
+        t.feed(b"\x1b[c\x1b[0c\x1b[>c\x1b[5n\x1b[3;4H\x1b[6n\x1b[?6n");
+        assert_eq!(
+            replies(&mut t),
+            [
+                DA1_REPLY,
+                DA1_REPLY,
+                DA2_REPLY,
+                "\x1b[0n",
+                "\x1b[3;4R",
+                "\x1b[?3;4;1R"
+            ]
+        );
+        // A pending wrap after the last column reports the last column.
+        t.feed(b"\x1b[1;1H0123456789\x1b[6n");
+        assert_eq!(replies(&mut t), ["\x1b[1;10R"]);
     }
 
     #[test]

@@ -107,6 +107,7 @@ public class KittyGraphicsTests
         public void Execute(byte control) { }
         public void CsiDispatch(char final, IReadOnlyList<int> parameters, char prefix) { }
         public void EscDispatch(char final) { }
+        public void EscDispatch(char intermediate, char final) { }
         public void OscDispatch(int command, string text) { }
         public void ApcDispatch(string data) => LastApc = data;
         public void DcsDispatch(byte[] data) { }

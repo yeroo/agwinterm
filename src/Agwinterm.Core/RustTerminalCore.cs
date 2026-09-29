@@ -70,7 +70,18 @@ public sealed class RustTerminalCore : ITerminalCore, IDisposable
 
     // ---- content ----
     public ScreenBuffer Screen => _mirror;
-    public void Feed(ReadOnlySpan<byte> bytes) { _rust.Feed(bytes); Sync(); }
+    public void Feed(ReadOnlySpan<byte> bytes) { SyncDefaultColors(); _rust.Feed(bytes); Sync(); }
+
+    // The core answers OSC 10/11 itself, so it needs the host's theme colors before the bytes that ask.
+    private (Color Foreground, Color Background)? _defaultColors;
+    private void SyncDefaultColors()
+    {
+        if (Host is not { } host) return;
+        var colors = host.DefaultColors;
+        if (_defaultColors == colors) return;
+        _defaultColors = colors;
+        if (colors is { } theme) _rust.SetDefaultColors(theme.Foreground, theme.Background);
+    }
     public void Resize(int cols, int rows) { _rust.Resize(cols, rows); Sync(); }
 
     // ---- cursor / screens ----

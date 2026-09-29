@@ -11,6 +11,7 @@ public sealed class VtParser(IParserPerformer performer)
     private int _current;
     private bool _hasCurrent;
     private char _csiPrefix; // private-mode marker: < = > ? or '\0'
+    private char _escIntermediate;
 
     // UTF-8 accumulator (used only in Ground state).
     private int _utf8Remaining;
@@ -51,8 +52,15 @@ public sealed class VtParser(IParserPerformer performer)
                 else if (b == (byte)'_') { _state = ParserState.ApcString; _apc.Clear(); _apcDiscarding = false; }
                 else if (b == (byte)'P') { _state = ParserState.DcsString; _dcs.Clear(); }   // DCS (sixel etc.)
                 else if (b is >= 0x30 and <= 0x7e) { performer.EscDispatch((char)b); _state = ParserState.Ground; }
+                else if (b is >= 0x20 and <= 0x2f) { _escIntermediate = (char)b; _state = ParserState.EscIntermediate; }
                 else if (IsControl(b)) performer.Execute(b);
                 else _state = ParserState.Ground;
+                break;
+
+            case ParserState.EscIntermediate:
+                if (b is >= 0x30 and <= 0x7e) { performer.EscDispatch(_escIntermediate, (char)b); _state = ParserState.Ground; }
+                else if (IsControl(b)) performer.Execute(b);
+                else if (b is not (>= 0x20 and <= 0x2f)) _state = ParserState.Ground;   // a further intermediate: keep the first
                 break;
 
             case ParserState.OscString:

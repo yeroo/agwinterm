@@ -34,16 +34,19 @@ public static class SessionBackends
     ///    (<c>&lt;appId&gt;-rust</c>) so it never collides with a C# host on the same instance.
     ///  - anything else: in-process.
     /// A missing Rust binary falls through to a null exe, so Create throws and the UI falls back to
-    /// in-process (same graceful path as an unreachable C# host).</summary>
-    public static ISessionBackend Resolve(string? configured, string appId, string? exePath)
+    /// in-process (same graceful path as an unreachable C# host). <paramref name="conpty"/> is the
+    /// <c>conpty</c> key, which a pty-host reads when it starts (#339).</summary>
+    public static ISessionBackend Resolve(string? configured, string appId, string? exePath, string? conpty = null)
     {
+        // Always explicit: a pty-host started without the flag keeps the inbox conhost.
+        string conptyArg = conpty is null ? "" : conpty == "inbox" ? " --conpty inbox" : " --conpty bundled";
         if (string.Equals(configured, "server", StringComparison.OrdinalIgnoreCase))
-            return new ServerSessionBackend(appId, exePath);
+            return new ServerSessionBackend(appId, exePath, $"--pty-host --pipe \"{appId}\"{conptyArg}");
         if (string.Equals(configured, "server-rust", StringComparison.OrdinalIgnoreCase))
         {
             string rustAppId = appId + "-rust";
             string? rustHost = FindRustHost(exePath);
-            return new ServerSessionBackend(rustAppId, rustHost, $"--pipe \"{rustAppId}\"", name: "server-rust");
+            return new ServerSessionBackend(rustAppId, rustHost, $"--pipe \"{rustAppId}\"{conptyArg}", name: "server-rust");
         }
         return InProcessSessionBackend.Instance;
     }

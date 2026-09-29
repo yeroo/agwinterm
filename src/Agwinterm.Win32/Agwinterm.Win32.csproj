@@ -8,12 +8,18 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- The ConPTY package picks its OpenConsole.exe by $(PlatformTarget), which is still empty when its
+         props run; this x64-only app needs x64\OpenConsole.exe beside conpty.dll. -->
+    <ConptyRequiresx64Host>true</ConptyRequiresx64Host>
     <ApplicationIcon>assets\agwinterm.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Vortice.Direct2D1" Version="3.8.3" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.9" />
+    <!-- Microsoft's ConPTY (conpty.dll + x64\OpenConsole.exe beside the exe): unlike the inbox conhost it
+         forwards an app's color, device-attribute and cursor queries to agwinterm (#339). -->
+    <PackageReference Include="Microsoft.Windows.Console.ConPTY" Version="1.24.260710001" />
     <ProjectReference Include="../Agwinterm.Core/Agwinterm.Core.csproj" />
     <ProjectReference Include="../Agwinterm.Pty/Agwinterm.Pty.csproj" />
   </ItemGroup>

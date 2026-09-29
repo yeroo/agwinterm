@@ -58,8 +58,14 @@
   (toggleable), builtin box-drawing glyphs, buffer restore, block selection and keyboard mark mode,
   read-only panes, elevated and de-elevated sessions side by side (⚡ marker), FTCS/OSC-133 prompt
   marks with jump-to-prompt, taskbar progress (OSC 9;4).
+- **Microsoft's ConPTY**: sessions run on the `conpty.dll` + `OpenConsole.exe` that ship with agwinterm (the
+  ConPTY Windows Terminal uses), not the conhost built into Windows. It hands an app's output to agwinterm
+  unchanged and passes its queries through, so agwinterm answers them itself: the theme colors (OSC 10/11,
+  which Codex uses to shade your messages), device attributes and the cursor position. `conpty = inbox` in
+  `agwinterm.conf` goes back to the built-in conhost. The portable exe carries neither file and always uses it.
 - Shells are launched with `TERM_PROGRAM=agwinterm` (plus the usual `AGWINTERM_*` variables), so prompt
-  engines, tmux and scripts can detect the host terminal.
+  engines, tmux and scripts can detect the host terminal, and with `COLORTERM=truecolor`, so apps that size
+  their palette from the environment use 24-bit color.
 - **Git Bash working directory**: PowerShell panes report their directory out of the box. A Git Bash
   (or MSYS2) pane does it with a few lines in `~/.bashrc`, so the title shows the directory and the pane
   restores in it after a restart (agwinterm 0.20.11 or later, earlier builds also raised a notification):

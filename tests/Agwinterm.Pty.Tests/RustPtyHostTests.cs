@@ -25,9 +25,9 @@ public class RustPtyHostTests : IDisposable
         return File.Exists(exe) ? exe : null;
     }
 
-    private PtyHostClient Start()
+    private PtyHostClient Start(string? exe = null, string extraArgs = "")
     {
-        _host = Process.Start(new ProcessStartInfo(ExePath!, $"--pipe {_appId}") { UseShellExecute = false, CreateNoWindow = true });
+        _host = Process.Start(new ProcessStartInfo(exe ?? ExePath!, $"--pipe {_appId}{extraArgs}") { UseShellExecute = false, CreateNoWindow = true });
         for (int i = 0; i < 50 && !PtyHostClient.IsRunning(_appId); i++) Thread.Sleep(100);
         return PtyHostClient.Connect(_appId);   // hello handshake — protocol version must match
     }
@@ -104,6 +104,93 @@ public class RustPtyHostTests : IDisposable
             if (pending is { IsCompleted: false }) { cts.Cancel(); try { pending.Wait(5000); } catch (AggregateException) { } }
         }
         return all.ToString();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Osc11Query_ReachesTheClient_OnlyOnTheBundledConpty(bool bundled)
+    {
+        if (ExePath is null) return;
+        string exe = BundledHostCopy();
+        try
+        {
+            // No flag keeps the inbox conhost: a UI that predates the flag predates the replies too.
+            using var client = Start(exe, bundled ? " --conpty bundled" : "");
+            string id = client.Create(Guid.NewGuid().ToString(), 100, 24, "powershell.exe",
+                new[] { "-NoProfile", "-Command", "[Console]::Write([char]27 + ']11;?' + [char]7); Write-Host done-probing" }, verbatim: false);
+            using var att = client.Attach(id);
+            string output = ReadUntil(att.Data, "done-probing", 20000);
+            Assert.Contains("done-probing", output);
+            Assert.Equal(bundled, output.Contains("\x1b]11;?"));
+            client.Kill(id);
+        }
+        finally { DeleteHostCopy(exe); }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Reattach_ShowsTheScreenPrintedWhileDetached(bool bundled)
+    {
+        if (ExePath is null) return;
+        string exe = BundledHostCopy();
+        try
+        {
+            // The inbox conhost repaints on the resize jiggle; on the bundled ConPTY the host sends its
+            // own emulator's screen instead, since that ConPTY does not repaint (#339).
+            using var client = Start(exe, bundled ? " --conpty bundled" : " --conpty inbox");
+            string id = client.Create(Guid.NewGuid().ToString(), 100, 24, "powershell.exe", ConPtyConnectionTests.BottomRowProbeArgs, verbatim: false);
+            Thread.Sleep(5000);
+            // Twice: a reattach must not cost the screen anything the next one would miss (the bottom row).
+            for (int i = 0; i < 2; i++)
+            {
+                using var att = client.Attach(id, repaint: true);
+                Assert.Contains(ConPtyConnectionTests.BottomRowMarker, ReadUntil(att.Data, ConPtyConnectionTests.BottomRowMarker, 10000));
+            }
+            client.Kill(id);
+        }
+        finally { DeleteHostCopy(exe); }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void DetachedSession_OnTheBundledConpty_HasItsQueriesAnswered(bool withTheme)
+    {
+        if (ExePath is null) return;
+        string exe = BundledHostCopy();
+        try
+        {
+            // The bundled ConPTY forwards the child's queries; with no client attached, the host answers them:
+            // the DSR always, the color with the theme from the pane's environment, else not at all.
+            using var client = Start(exe, " --conpty bundled");
+            string outFile = Path.Combine(Path.GetDirectoryName(exe)!, "dsr.txt");
+            string id = client.Create(Guid.NewGuid().ToString(), 100, 24, "powershell.exe", ConPtyConnectionTests.DsrProbeArgs(outFile),
+                env: ConPtyConnectionTests.ThemeEnv(withTheme), verbatim: false);
+            Assert.Equal(ConPtyConnectionTests.ExpectedDsrProbe(withTheme), ConPtyConnectionTests.ReadDsrProbe(outFile));
+            client.Kill(id);
+        }
+        finally { DeleteHostCopy(exe); }
+    }
+
+    /// <summary>A copy of the host exe with the shipped ConPTY beside it (conpty.dll, x64/OpenConsole.exe),
+    /// which is where the host looks for it (#339).</summary>
+    private static string BundledHostCopy()
+    {
+        string dir = Directory.CreateTempSubdirectory("agw-rusthost-conpty-").FullName;
+        string exe = Path.Combine(dir, "agwinterm-ptyhost.exe");
+        File.Copy(ExePath!, exe);
+        File.Copy(Path.Combine(ConPtyConnectionTests.BundledDir, "conpty.dll"), Path.Combine(dir, "conpty.dll"));
+        Directory.CreateDirectory(Path.Combine(dir, "x64"));
+        File.Copy(Path.Combine(ConPtyConnectionTests.BundledDir, "x64", "OpenConsole.exe"), Path.Combine(dir, "x64", "OpenConsole.exe"));
+        return exe;
+    }
+
+    private void DeleteHostCopy(string exe)
+    {
+        Dispose();   // the host holds its exe open
+        try { Directory.Delete(Path.GetDirectoryName(exe)!, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
     [Fact]

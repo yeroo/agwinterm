@@ -91,6 +91,12 @@ public sealed class TerminalConfig
     /// survive UI updates/crashes; server-rust falls back to in-process if the binary is missing.</summary>
     public string SessionHost { get; set; } = "in-process";
 
+    /// <summary>Which ConPTY sessions run on: "bundled" (default, #339 — the conpty.dll +
+    /// OpenConsole.exe shipped beside the exe, which forwards an app's color, device-attribute and
+    /// cursor queries to the terminal and its output unchanged) or "inbox" (the conhost built into
+    /// Windows). Missing bundled files fall back to inbox.</summary>
+    public string Conpty { get; set; } = "bundled";
+
     /// <summary>Which terminal core new sessions run on: "managed" (default — the C#
     /// TerminalEmulator) or "rust" (EXPERIMENTAL — the oracle-validated agwinterm-core crate
     /// behind the ITerminalCore seam; falls back to managed with a toast when the native dll
@@ -292,6 +298,14 @@ public sealed class TerminalConfig
         # restart agwinterm to migrate existing ones.
         session-host = in-process
 
+        # Which ConPTY sessions run on. "bundled" (default): the conpty.dll + OpenConsole.exe that
+        # ship with agwinterm (Microsoft's, the ones Windows Terminal uses). It passes an app's
+        # color, device and cursor queries through to agwinterm (Codex reads the theme colors this
+        # way) and its output unchanged. "inbox": the conhost built into Windows, which answers
+        # those queries itself. Missing files fall back to inbox. Applies to NEW sessions; the
+        # server-rust pty-host reads it when agwinterm starts it.
+        conpty = bundled
+
         # Build each new tab's environment FRESH from the registry (what a brand-new process tree
         # would get): software installed while agwinterm is running - a JDK, a new PATH entry - is
         # visible in the next tab, no restart needed. Off = tabs inherit the environment agwinterm
@@ -456,6 +470,9 @@ public sealed class TerminalConfig
                 case "update-check": cfg.UpdateCheck = ParseBool(val, cfg.UpdateCheck); break;
                 case "session-host":
                     if (val is "in-process" or "server" or "server-rust") cfg.SessionHost = val;
+                    break;
+                case "conpty":
+                    if (val is "bundled" or "inbox") cfg.Conpty = val;
                     break;
                 case "fresh-env": cfg.FreshEnv = ParseBool(val, cfg.FreshEnv); break;
                 case "emulator-core":

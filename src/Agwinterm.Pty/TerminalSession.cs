@@ -99,6 +99,31 @@ public sealed class TerminalSession : ISession
         Emulator = CoreFactory?.Invoke(cols, rows) ?? new TerminalEmulator(cols, rows);
     }
 
+    /// <summary>The ConPTY this session is created on; null = <see cref="ConPtyApi.Current"/>.</summary>
+    public ConPtyApi? Conpty { get; init; }
+
+    /// <summary>True once the session runs on the shipped ConPTY, which passes output through and so
+    /// does not repaint the viewport on a resize.</summary>
+    public bool OnBundledConpty { get; private set; }
+
+    /// <summary>Porta.Pty binds CreatePseudoConsole to kernel32, so a session on the shipped ConPTY
+    /// (<see cref="ConPtyApi"/>, #339) is created by <see cref="ConPtyConnection"/> instead. The inbox
+    /// path stays on Porta.Pty.</summary>
+    private Task<IPtyConnection> SpawnAsync(PtyOptions options, CancellationToken ct)
+    {
+        var api = Conpty ?? ConPtyApi.Current;
+        if (!api.Bundled) return PtyProvider.SpawnAsync(options, ct);
+        OnBundledConpty = true;
+        IPtyConnection conn = ConPtyConnection.Spawn(api, CommandLineOf(options.App, options.CommandLine, options.VerbatimCommandLine),
+            options.Cwd, options.Environment, options.Cols, options.Rows, deElevate: false);
+        return Task.FromResult(conn);
+    }
+
+    private static string CommandLineOf(string app, string[]? commandLine, bool verbatim) =>
+        commandLine is { Length: > 0 }
+            ? QuoteArg(app) + " " + (verbatim ? string.Join(' ', commandLine) : string.Join(' ', Array.ConvertAll(commandLine, QuoteArg)))
+            : QuoteArg(app);
+
     /// <summary>Spawn <paramref name="app"/> and pump its output until it exits. Returns the exit code.</summary>
     /// <remarks>
     /// ConPTY's output pipe is NOT closed when the child exits (conhost keeps it open), so a
@@ -119,7 +144,7 @@ public sealed class TerminalSession : ISession
             VerbatimCommandLine = verbatimCommandLine,
         };
 
-        _connection = await PtyProvider.SpawnAsync(options, ct).ConfigureAwait(false);
+        _connection = await SpawnAsync(options, ct).ConfigureAwait(false);
 
         using var readerCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task readerTask = PumpAsync(_connection.ReaderStream, readerCts.Token);
@@ -194,14 +219,35 @@ public sealed class TerminalSession : ISession
         IReadOnlyDictionary<string, string>? extraEnv, string? cwd, bool deElevate,
         bool freshEnv, CancellationToken ct, bool paintFailure)
     {
+        Dictionary<string, string>? env = null;
+        if (extraEnv is not null || freshEnv)
+        {
+            // Base environment: rebuilt fresh from the registry (so software installed while this
+            // process runs — a JDK, a PATH entry — is visible in the child without a restart;
+            // matters double for the long-lived pty-host). Fallback, and the freshEnv=false path:
+            // copy this process's inherited env, the pre-fresh-env behavior. Then our additions.
+            env = freshEnv ? FreshEnvironment.TryBuild() : null;
+            if (env is null)
+            {
+                env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
+                    env[(string)e.Key] = e.Value as string ?? "";
+            }
+            if (extraEnv is not null) foreach (var kv in extraEnv) env[kv.Key] = kv.Value;
+        }
+
         if (deElevate)
         {
             // Manual pseudoconsole with the interactive user's token (Porta.Pty can't drop integrity).
-            string cmd = commandLine is { Length: > 0 }
-                ? QuoteArg(app) + " " + (verbatimCommandLine ? string.Join(' ', commandLine) : string.Join(' ', Array.ConvertAll(commandLine, QuoteArg)))
-                : QuoteArg(app);
+            string cmd = CommandLineOf(app, commandLine, verbatimCommandLine);
             IPtyConnection dc;
-            try { dc = DeElevatedPty.Spawn(cmd, string.IsNullOrEmpty(cwd) ? Environment.CurrentDirectory : cwd, Cols, Rows); }
+            try
+            {
+                var api = Conpty ?? ConPtyApi.Current;
+                dc = ConPtyConnection.Spawn(api, cmd, string.IsNullOrEmpty(cwd) ? Environment.CurrentDirectory : cwd,
+                    env, Cols, Rows, deElevate: true);
+                OnBundledConpty = api.Bundled;
+            }
             catch (Exception ex) when (paintFailure)
             {
                 // Surface the failure in the pane instead of leaving it dead (or crashing on the unobserved task).
@@ -237,25 +283,10 @@ public sealed class TerminalSession : ISession
             VerbatimCommandLine = verbatimCommandLine,
         };
 
-        if (extraEnv is not null || freshEnv)
-        {
-            // Base environment: rebuilt fresh from the registry (so software installed while this
-            // process runs — a JDK, a PATH entry — is visible in the child without a restart;
-            // matters double for the long-lived pty-host). Fallback, and the freshEnv=false path:
-            // copy this process's inherited env, the pre-fresh-env behavior. Then our additions.
-            var env = freshEnv ? FreshEnvironment.TryBuild() : null;
-            if (env is null)
-            {
-                env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
-                    env[(string)e.Key] = e.Value as string ?? "";
-            }
-            if (extraEnv is not null) foreach (var kv in extraEnv) env[kv.Key] = kv.Value;
-            options.Environment = env;
-        }
+        if (env is not null) options.Environment = env;
 
         IPtyConnection conn;
-        try { conn = await PtyProvider.SpawnAsync(options, ct).ConfigureAwait(false); }
+        try { conn = await SpawnAsync(options, ct).ConfigureAwait(false); }
         catch (Exception ex) when (paintFailure && ex is not OperationCanceledException)
         {
             // Same shape as the de-elevate branch above and ServerSession.StartAsync: a spawn that
@@ -361,8 +392,13 @@ public sealed class TerminalSession : ISession
                 Volatile.Write(ref _pumpInFlight, 1);
                 if (DumpPath is not null)
                     lock (_sync) System.IO.File.AppendAllBytes(DumpPath, buffer.AsSpan(0, n).ToArray());
-                lock (_sync) Emulator.Feed(buffer.AsSpan(0, n));
-                if (RawOutput is { } tap) tap(buffer[..n]);
+                // The tap runs under the same lock as the feed, so a reattach that snapshots the
+                // screen under it gets each chunk once: in the snapshot or through the tap.
+                lock (_sync)
+                {
+                    Emulator.Feed(buffer.AsSpan(0, n));
+                    if (RawOutput is { } tap) tap(buffer[..n]);
+                }
                 Interlocked.Add(ref _pumpBytes, n);   // after the feed and the tap: "settled" means both have it
                 Volatile.Write(ref _pumpInFlight, 0);
                 OutputReceived?.Invoke();

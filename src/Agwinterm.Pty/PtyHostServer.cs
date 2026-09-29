@@ -30,6 +30,7 @@ public sealed class PtyHostServer : IDisposable
     public static string ControlPipeName(string appId) => appId + "-ptyhost";
 
     private readonly string _appId;
+    private readonly ConPtyApi? _conpty;
     private readonly CancellationTokenSource _cts = new();
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly CreationTickets<Hosted> _creations = new();
@@ -45,6 +46,26 @@ public sealed class PtyHostServer : IDisposable
         public readonly object DataLock = new();                 // guards Data + writes to it
         public readonly PtyResizeTransaction Resize = new();     // real resize and the complete repaint jiggle
         public DataChannel? Data;                                // the currently-attached client
+        public readonly QueryReplies Replies = new();            // this host's answers, sent only while detached
+    }
+
+    /// <summary>The host emulator's side of the host-action seam: it keeps the query replies and nothing
+    /// else. A bundled ConPTY forwards a child's queries instead of answering them (#339), so while no
+    /// client is attached this host answers them, or the child would stall until the next attach.
+    /// Filled by the feed, taken by the raw-output handler of the same chunk, both on the pump thread.
+    /// The theme is the one the UI put in the pane's environment (<see cref="ThemeColors"/>); without it
+    /// the emulator answers no color query it would have to make up.</summary>
+    private sealed class QueryReplies : IHostActions
+    {
+        private List<string> _pending = new();
+        public List<string> Take() { var taken = _pending; _pending = new(); return taken; }
+        public void Respond(string reply) => _pending.Add(reply);
+        public (Color Foreground, Color Background)? DefaultColors { get; set; }
+        public void Notify(string title, string body) { }
+        public void Progress(int state, int value) { }
+        public void ClipboardWrite(string text) { }
+        public void Bell() { }
+        public void Unhandled(string kind, string detail) { }
     }
 
     /// <summary>A data pipe plus its read-cancellation source. Ownership rule (issue #118): the
@@ -57,9 +78,11 @@ public sealed class PtyHostServer : IDisposable
         public readonly CancellationTokenSource Cancel = new();
     }
 
-    public PtyHostServer(string appId)
+    /// <param name="conpty">The ConPTY sessions are created on; null = <see cref="ConPtyApi.Current"/>.</param>
+    public PtyHostServer(string appId, ConPtyApi? conpty = null)
     {
         _appId = appId;
+        _conpty = conpty;
         _ = RetryPendingCleanupAsync();
         _ = AcceptLoopAsync(_cts.Token);
     }
@@ -181,18 +204,25 @@ public sealed class PtyHostServer : IDisposable
         Hosted? hosted = null;
         try
         {
-            session = new TerminalSession(cols, rows);
+            session = new TerminalSession(cols, rows) { Conpty = _conpty };
             hosted = new Hosted { Id = id, S = session, Creation = creation };
+            hosted.Replies.DefaultColors = ThemeColors.Parse(env?.GetValueOrDefault(ThemeColors.EnvVar));
+            session.Emulator.Host = hosted.Replies;
             // Forward raw output to whichever client is attached; child exit closes the data pipe (EOF
-            // is the client's exit signal — the code is in `list`).
+            // is the client's exit signal — the code is in `list`). Whoever got the chunk answers its
+            // queries: the client's emulator, or with nobody attached, this host's.
             session.RawOutput += chunk =>
             {
+                var replies = hosted.Replies.Take();
                 lock (hosted.DataLock)
                 {
                     var d = hosted.Data;
-                    if (d is null) return;
-                    try { d.Pipe.Write(chunk); d.Pipe.Flush(); }
-                    catch { CloseDataLocked(hosted); }   // client vanished mid-write → plain detach
+                    if (d is not null)
+                    {
+                        try { d.Pipe.Write(chunk); d.Pipe.Flush(); return; }
+                        catch { CloseDataLocked(hosted); }   // client vanished mid-write → plain detach
+                    }
+                    foreach (var reply in replies) SessionInput.TryWrite(session, System.Text.Encoding.UTF8.GetBytes(reply));
                 }
             };
             session.Exited += _ => CloseData(hosted);
@@ -342,7 +372,17 @@ public sealed class PtyHostServer : IDisposable
             }
             catch { data.Dispose(); return; }              // client never came (no reads yet) — safe to close here
             var ch = new DataChannel { Pipe = data };
-            lock (hosted.DataLock) { CloseDataLocked(hosted); hosted.Data = ch; }
+            // Same lock order as the session pump's feed-then-forward (SyncRoot, then DataLock). A bundled
+            // ConPTY does not repaint the viewport on the jiggle below, so the client gets the screen
+            // from this host's emulator first (#339).
+            lock (hosted.S.SyncRoot)
+                lock (hosted.DataLock)
+                {
+                    CloseDataLocked(hosted);
+                    if (repaint && hosted.S.OnBundledConpty && hosted.S.Emulator is TerminalEmulator screen)
+                        try { ch.Pipe.Write(System.Text.Encoding.UTF8.GetBytes(screen.DumpScreen())); ch.Pipe.Flush(); } catch { }
+                    hosted.Data = ch;
+                }
             if (hosted.S.HasExited)
             {
                 // Exited while attaching → the client's EOF signal. No read is pending yet, so
@@ -355,7 +395,9 @@ public sealed class PtyHostServer : IDisposable
                 }
                 return;
             }
-            if (repaint) hosted.Resize.Run(() => JiggleRepaint(hosted.S));
+            // The jiggle makes the inbox conhost repaint. The bundled ConPTY repaints nothing, the snapshot
+            // above did that, and shrinking the host emulator by a row would lose its bottom row.
+            if (repaint && !hosted.S.OnBundledConpty) hosted.Resize.Run(() => JiggleRepaint(hosted.S));
             await PumpInputAsync(hosted, ch).ConfigureAwait(false);
         });
 
