@@ -14,7 +14,9 @@
   hook to both agents. Each time a session starts, resumes, is cleared or compacts, the hook tells
   agwinterm the live session id and directory, and agwinterm stores the line that resumes it in the
   pane's own shell: `cd '<dir>' && claude --resume <id>` in Git Bash, `Set-Location -LiteralPath
-  '<dir>'; codex resume <id>` in PowerShell, `cd /d` in cmd. The permission or sandbox mode it was
+  '<dir>'; codex resume <id>` in PowerShell, `cd /d` in cmd (a directory whose name that shell's quotes
+  cannot hold, such as one with `%` or `"` in cmd, is left out and only the resume is stored). The
+  permission or sandbox mode it was
   started with (`--dangerously-skip-permissions`, `--permission-mode`, Codex's `--sandbox`,
   `--ask-for-approval`, `--profile`) is kept. On restart, even after a reboot, agwinterm types that line
   into each bound pane and the conversation comes back. A `claude -p` or `codex exec` an agent runs

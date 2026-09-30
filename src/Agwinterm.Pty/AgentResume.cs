@@ -133,19 +133,43 @@ public static class AgentResume
     /// The line typed into a restored pane to resume the session: change to its directory in the pane's own
     /// shell syntax, then resume by id with <paramref name="flags"/>. PowerShell 5.1 has no <c>&amp;&amp;</c>, so it
     /// gets <c>;</c>. An empty cwd, or a shell whose syntax is unknown, gets the resume alone.
+    ///
+    /// <para>The directory is the agent's, so its name is not ours to trust: the line is typed into a shell.
+    /// One with a control character is left out (a newline would end the line and start another). In
+    /// PowerShell every single-quote character is doubled, see <see cref="PowerShellQuoted"/>. cmd has no
+    /// escape inside its double quotes for <c>"</c> or for <c>%</c>, which an interactive cmd still expands
+    /// there (<c>C:\work\%OS%</c> would be typed as another directory), so such a directory is left out.</para>
     /// </summary>
     public static string Compose(ShellKind shell, string agent, string sessionId, string? cwd, IReadOnlyList<string> flags)
     {
         var run = new StringBuilder(agent == "codex" ? "codex resume " : "claude --resume ").Append(sessionId);
         foreach (string f in flags) run.Append(' ').Append(f);
-        if (string.IsNullOrWhiteSpace(cwd)) return run.ToString();
+        if (string.IsNullOrWhiteSpace(cwd) || cwd.Any(char.IsControl)) return run.ToString();
         return shell switch
         {
-            ShellKind.PowerShell => $"Set-Location -LiteralPath '{cwd.Replace("'", "''")}'; {run}",
+            ShellKind.PowerShell => $"Set-Location -LiteralPath '{PowerShellQuoted(cwd)}'; {run}",
             ShellKind.Bash => $"cd '{cwd.Replace("'", "'\\''")}' && {run}",
-            ShellKind.Cmd when !cwd.Contains('"') => $"cd /d \"{cwd}\" && {run}",
+            ShellKind.Cmd when !cwd.Contains('"') && !cwd.Contains('%') => $"cd /d \"{cwd}\" && {run}",
             _ => run.ToString(),
         };
+    }
+
+    /// <summary>
+    /// <paramref name="value"/> as the inside of a PowerShell single-quoted string. PowerShell ends such a
+    /// string at any of five characters, not only the ASCII apostrophe: U+0027, U+2018, U+2019, U+201A and
+    /// U+201B (its own <c>CodeGeneration.EscapeSingleQuotedStringContent</c> doubles all five). Doubling only
+    /// the apostrophe let a directory named <c>x\u2019; Start-Process calc; \u2019</c> close the string and
+    /// run the rest when the line was typed on restore.
+    /// </summary>
+    public static string PowerShellQuoted(string value)
+    {
+        var quoted = new StringBuilder(value.Length + 8);
+        foreach (char c in value)
+        {
+            quoted.Append(c);
+            if (c is '\'' or '\u2018' or '\u2019' or '\u201A' or '\u201B') quoted.Append(c);
+        }
+        return quoted.ToString();
     }
 
     /// <summary>Split a Windows command line the way CommandLineToArgvW does: whitespace separates arguments

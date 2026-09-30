@@ -162,6 +162,37 @@ public class AgentResumeTests
     }
 
     [Theory]
+    [InlineData("\u2018")]
+    [InlineData("\u2019")]
+    [InlineData("\u201A")]
+    [InlineData("\u201B")]
+    public void PowerShellDoublesEveryCharacterThatEndsASingleQuotedString(string quote)
+    {
+        string cwd = $@"C:\src\x{quote}; Start-Process calc; {quote}";
+        Assert.Equal($@"Set-Location -LiteralPath 'C:\src\x{quote}{quote}; Start-Process calc; {quote}{quote}'; claude --resume abc",
+            Compose(ShellKind.PowerShell, "claude", "abc", cwd, []));
+        // bash ends a single-quoted string only at the apostrophe
+        Assert.Equal($"cd '{cwd}' && claude --resume abc", Compose(ShellKind.Bash, "claude", "abc", cwd, []));
+    }
+
+    [Fact]
+    public void PowerShellQuotedLeavesOtherCharactersAlone()
+        => Assert.Equal("a''b\u201C$x`;c", PowerShellQuoted("a'b\u201C$x`;c"));
+
+    [Theory]
+    [InlineData("C:\\a\"b")]
+    [InlineData(@"C:\work\%OS%")]
+    public void CmdLeavesOutADirectoryItsQuotesCannotHold(string cwd)
+        => Assert.Equal("codex resume 01a0", Compose(ShellKind.Cmd, "codex", "01a0", cwd, []));
+
+    [Theory]
+    [InlineData(ShellKind.PowerShell)]
+    [InlineData(ShellKind.Bash)]
+    [InlineData(ShellKind.Cmd)]
+    public void ADirectoryWithAControlCharacterIsNeverTyped(ShellKind shell)
+        => Assert.Equal("claude --resume abc", Compose(shell, "claude", "abc", "C:\\src\nStart-Process calc", []));
+
+    [Theory]
     [InlineData(@"C:\Program Files\Git\bin\bash.exe", ShellKind.Bash)]
     [InlineData("powershell.exe", ShellKind.PowerShell)]
     [InlineData(@"C:\Program Files\PowerShell\7\pwsh.exe", ShellKind.PowerShell)]
