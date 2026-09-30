@@ -60,11 +60,13 @@
   (toggleable), builtin box-drawing glyphs, buffer restore, block selection and keyboard mark mode,
   read-only panes, elevated and de-elevated sessions side by side (⚡ marker), FTCS/OSC-133 prompt
   marks with jump-to-prompt, taskbar progress (OSC 9;4).
-- **Microsoft's ConPTY**: sessions run on the `conpty.dll` + `OpenConsole.exe` that ship with agwinterm (the
-  ConPTY Windows Terminal uses), not the conhost built into Windows. It hands an app's output to agwinterm
-  unchanged and passes its queries through, so agwinterm answers them itself: the theme colors (OSC 10/11,
-  which Codex uses to shade your messages), device attributes and the cursor position. `conpty = inbox` in
-  `agwinterm.conf` goes back to the built-in conhost. The portable exe carries neither file and always uses it.
+- **Microsoft's ConPTY (opt-in)**: with `conpty = bundled` in `agwinterm.conf`, sessions run on the
+  `conpty.dll` + `OpenConsole.exe` that ship with agwinterm (the ConPTY Windows Terminal uses), not the conhost
+  built into Windows. It hands an app's output to agwinterm unchanged and passes its queries through, so
+  agwinterm answers them itself: the theme colors (OSC 10/11, which Codex uses to shade your messages), device
+  attributes and the cursor position. It is not the default because it does not repaint after a resize: a pane
+  that changes width shows clipped lines and misplaced text until the app redraws. The default, `conpty =
+  inbox`, is the built-in conhost. The portable exe carries neither file and always uses it.
 - Shells are launched with `TERM_PROGRAM=agwinterm` (plus the usual `AGWINTERM_*` variables), so prompt
   engines, tmux and scripts can detect the host terminal, and with `COLORTERM=truecolor`, so apps that size
   their palette from the environment use 24-bit color.

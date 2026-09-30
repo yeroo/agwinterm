@@ -91,11 +91,16 @@ public sealed class TerminalConfig
     /// survive UI updates/crashes; server-rust falls back to in-process if the binary is missing.</summary>
     public string SessionHost { get; set; } = "in-process";
 
-    /// <summary>Which ConPTY sessions run on: "bundled" (default, #339 — the conpty.dll +
-    /// OpenConsole.exe shipped beside the exe, which forwards an app's color, device-attribute and
-    /// cursor queries to the terminal and its output unchanged) or "inbox" (the conhost built into
-    /// Windows). Missing bundled files fall back to inbox.</summary>
-    public string Conpty { get; set; } = "bundled";
+    /// <summary>Which ConPTY sessions run on: "inbox" (default, the conhost built into Windows) or
+    /// "bundled" (#339 — the conpty.dll + OpenConsole.exe shipped beside the exe, which forwards an
+    /// app's color, device-attribute and cursor queries to the terminal and its output unchanged).
+    /// Missing bundled files fall back to inbox.
+    ///
+    /// <para>Bundled is opt-in: it does not repaint the viewport after a resize, expecting the terminal
+    /// to re-wrap its buffer the way conhost re-wraps its own, and neither emulator reflows (Resize
+    /// keeps the top-left). A pane that changes width then shows clipped lines, and the next output
+    /// lands at the wrong column. 0.20.12 shipped it as the default.</para></summary>
+    public string Conpty { get; set; } = "inbox";
 
     /// <summary>Which terminal core new sessions run on: "managed" (default — the C#
     /// TerminalEmulator) or "rust" (EXPERIMENTAL — the oracle-validated agwinterm-core crate
@@ -298,13 +303,15 @@ public sealed class TerminalConfig
         # restart agwinterm to migrate existing ones.
         session-host = in-process
 
-        # Which ConPTY sessions run on. "bundled" (default): the conpty.dll + OpenConsole.exe that
-        # ship with agwinterm (Microsoft's, the ones Windows Terminal uses). It passes an app's
-        # color, device and cursor queries through to agwinterm (Codex reads the theme colors this
-        # way) and its output unchanged. "inbox": the conhost built into Windows, which answers
-        # those queries itself. Missing files fall back to inbox. Applies to NEW sessions; the
-        # server-rust pty-host reads it when agwinterm starts it.
-        conpty = bundled
+        # Which ConPTY sessions run on. "inbox" (default): the conhost built into Windows, which
+        # answers an app's device and cursor queries itself and drops its color queries.
+        # "bundled": the conpty.dll + OpenConsole.exe that ship with agwinterm (Microsoft's, the
+        # ones Windows Terminal uses). It passes an app's color, device and cursor queries through
+        # to agwinterm (Codex reads the theme colors this way) and its output unchanged - but it
+        # does not repaint after a resize, so a pane that changes width shows clipped lines and
+        # misplaced text until the app redraws. Missing files fall back to inbox. Applies to NEW
+        # sessions; the server-rust pty-host reads it when agwinterm starts it.
+        conpty = inbox
 
         # Build each new tab's environment FRESH from the registry (what a brand-new process tree
         # would get): software installed while agwinterm is running - a JDK, a new PATH entry - is
