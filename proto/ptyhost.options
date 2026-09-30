@@ -35,6 +35,8 @@ agwinterm.ptyhost.ListReply.sessions   max_count:64
 # used to be able to stop lite from launching at all.
 agwinterm.ptyhost.SessionInfo.id       max_size:128
 agwinterm.ptyhost.SessionInfo.creation_ticket max_size:33
-agwinterm.ptyhost.Create.env           max_count:8
+# agliteterm sets 9 (the AGWINTERM_* identity, TERM_PROGRAM, the theme pair, COLORTERM); one spare.
+# nanopb refuses to encode a count past this, so raise it BEFORE lite adds an entry.
+agwinterm.ptyhost.Create.env           max_count:10
 agwinterm.ptyhost.Create.EnvEntry.key    max_size:64
 agwinterm.ptyhost.Create.EnvEntry.value  max_size:192
