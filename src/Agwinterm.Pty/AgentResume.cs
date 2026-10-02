@@ -5,7 +5,7 @@ namespace Agwinterm.Pty;
 
 /// <summary>
 /// The pure half of the SessionStart resume binding (#316). An agent's SessionStart hook reports the live
-/// session id, its cwd and its own PID; the host takes one process snapshot and asks this class three things:
+/// session id, its cwd (Devin's project directory, as Devin reports none) and its own PID; the host takes one process snapshot and asks this class three things:
 /// which process is the agent that fired the hook (and is it the pane's own, not one nested under another
 /// agent), which of its flags must survive a relaunch, and what to type into the pane's shell to resume it.
 ///
@@ -21,12 +21,12 @@ public static class AgentResume
 
     public enum ShellKind { PowerShell, Bash, Cmd, Other }
 
-    public static readonly string[] Agents = { "claude", "codex" };
+    public static readonly string[] Agents = { "claude", "codex", "devin" };
 
     private static readonly Regex SessionIdRe = new("^[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant);
     private static readonly Regex FlagValueRe = new("^[A-Za-z0-9_.:-]{1,64}$", RegexOptions.CultureInvariant);
 
-    /// <summary>A session id both CLIs accept and that is safe to type unquoted into any shell.</summary>
+    /// <summary>A session id every CLI accepts and that is safe to type unquoted into any shell.</summary>
     public static bool IsValidSessionId(string? id) => id is not null && SessionIdRe.IsMatch(id);
 
     public static bool IsKnownAgent(string? agent) => agent is not null && Array.IndexOf(Agents, agent) >= 0;
@@ -52,6 +52,7 @@ public static class AgentResume
         string name = p.Name.ToLowerInvariant();
         if (name == "claude.exe") return "claude";
         if (name == "codex.exe") return "codex";
+        if (name == "devin.exe") return "devin";
         if (name == "node.exe")
         {
             string cmd = p.CommandLine.Replace('\\', '/');
@@ -67,7 +68,9 @@ public static class AgentResume
     /// launcher over the native binary counts as one agent). Null, with the reason in <paramref name="why"/>,
     /// when no such agent is found before the walk ends, or when another agent sits above it (a nested
     /// <c>claude -p</c> or <c>codex exec</c> run from an agent's tool shell, which inherits the pane's
-    /// AGWINTERM_SESSION_ID).
+    /// AGWINTERM_SESSION_ID). Also null for a <c>devin -p</c>: Devin's SessionStart does not tell a print run
+    /// from the TUI, so its command line has to, and a Devin whose command line could not be read is refused
+    /// for the same reason.
     ///
     /// <para>The walk ends at the shell, or where a parent is no longer in the snapshot. The second is
     /// normal in Git Bash: MSYS implements exec by starting a new Windows process and letting the old one go,
@@ -97,8 +100,20 @@ public static class AgentResume
             if (row.ParentPid == row.Pid) break;
             pid = row.ParentPid;
         }
+        if (outer is not null && agent == "devin" && string.IsNullOrWhiteSpace(outer.CommandLine))
+        { why = "devin's command line could not be read, so a devin -p run cannot be ruled out"; return null; }
+        if (outer is not null && agent == "devin" && IsDevinPrint(outer.CommandLine))
+        { why = "headless: a devin -p run, not the pane's session"; return null; }
         why = outer is null ? $"no {agent} process above the hook" : null;
         return outer?.CommandLine;
+    }
+
+    private static bool IsDevinPrint(string commandLine)
+    {
+        var args = SplitCommandLine(commandLine);
+        for (int i = 1; i < args.Count && args[i] != "--"; i++)
+            if (args[i] is "-p" or "--print" || args[i].StartsWith("--print=", StringComparison.Ordinal)) return true;
+        return false;
     }
 
     /// <summary>The flags of the running agent that a resume must repeat: the permission and sandbox mode, so
@@ -106,9 +121,12 @@ public static class AgentResume
     /// quoted, which keeps the relaunch line free of anything a shell could interpret.</summary>
     public static IReadOnlyList<string> ResumeFlags(string agent, string commandLine)
     {
-        var bare = agent == "codex"
-            ? new[] { "--dangerously-bypass-approvals-and-sandbox" }
-            : new[] { "--dangerously-skip-permissions" };
+        var bare = agent switch
+        {
+            "codex" => new[] { "--dangerously-bypass-approvals-and-sandbox" },
+            "devin" => new[] { "--sandbox" },
+            _ => new[] { "--dangerously-skip-permissions" },
+        };
         var valued = agent == "codex"
             ? new[] { "-s", "--sandbox", "-a", "--ask-for-approval", "-p", "--profile" }
             : new[] { "--permission-mode" };
@@ -142,7 +160,7 @@ public static class AgentResume
     /// </summary>
     public static string Compose(ShellKind shell, string agent, string sessionId, string? cwd, IReadOnlyList<string> flags)
     {
-        var run = new StringBuilder(agent == "codex" ? "codex resume " : "claude --resume ").Append(sessionId);
+        var run = new StringBuilder(agent switch { "codex" => "codex resume ", "devin" => "devin --resume ", _ => "claude --resume " }).Append(sessionId);
         foreach (string f in flags) run.Append(' ').Append(f);
         if (string.IsNullOrWhiteSpace(cwd) || cwd.Any(char.IsControl)) return run.ToString();
         return shell switch

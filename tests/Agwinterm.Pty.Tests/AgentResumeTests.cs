@@ -6,7 +6,8 @@ namespace Agwinterm.Pty.Tests;
 /// <summary>
 /// The pure half of the SessionStart resume binding (#316): telling the pane's own agent from a nested one
 /// by the process tree, the flags a relaunch keeps, and the line typed into each kind of shell. The trees
-/// are the shapes observed on Windows with Git Bash, Claude Code 2.1 (native) and Codex 0.156 (npm).
+/// are the shapes observed on Windows with Git Bash, Claude Code 2.1 (native), Codex 0.156 (npm) and Devin
+/// CLI 3000.11 (native).
 /// </summary>
 public class AgentResumeTests
 {
@@ -14,6 +15,7 @@ public class AgentResumeTests
     private const string ClaudeExe = @"C:\Users\u\.local\bin\claude.exe";
     private const string CodexJs = @"""C:\Program Files\nodejs\node.exe"" C:\Users\u\AppData\Roaming\npm/node_modules/@openai/codex/bin/codex.js";
     private const string CodexExe = @"C:\Users\u\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe";
+    private const string DevinExe = @"C:\Users\u\AppData\Local\devin\cli\bin\devin.exe";
 
     /// <summary>A chain child first: each row's parent is the next row, the last row's parent is the shell.</summary>
     private static Dictionary<int, ProcRow> Chain(params (string Name, string Cmd)[] childFirst)
@@ -80,6 +82,64 @@ public class AgentResumeTests
     }
 
     [Fact]
+    public void DevinIsFoundAboveItsAcpWorker()
+    {
+        // Observed: Devin runs its hooks through Git Bash from an `acp` worker it starts under itself.
+        var procs = Chain(
+            ("powershell.exe", "powershell -NoProfile -File bind.ps1 devin"),
+            ("bash.exe", "bash.exe -c \"powershell ...\""),
+            ("devin.exe", $"\"{DevinExe}\" acp"),
+            ("devin.exe", DevinExe + " --permission-mode dangerous"));
+        Assert.Equal(DevinExe + " --permission-mode dangerous", FindAgentCommandLine(procs, 1, Shell, "devin", out var why));
+        Assert.Null(why);
+    }
+
+    [Theory]
+    [InlineData(" -p \"fix it\"")]
+    [InlineData(" --print")]
+    [InlineData(" --print=hi")]
+    public void ADevinPrintRunInThePaneBindsNothing(string args)
+    {
+        var procs = Chain(
+            ("powershell.exe", "powershell -NoProfile -File bind.ps1 devin"),
+            ("bash.exe", "bash.exe -c \"powershell ...\""),
+            ("devin.exe", $"\"{DevinExe}\" acp"),
+            ("devin.exe", DevinExe + args));
+        Assert.Null(FindAgentCommandLine(procs, 1, Shell, "devin", out var why));
+        Assert.StartsWith("headless", why);
+    }
+
+    [Fact]
+    public void ADevinWhoseCommandLineIsUnreadableBindsNothing()
+    {
+        var procs = Chain(("powershell.exe", "p"), ("devin.exe", ""));
+        Assert.Null(FindAgentCommandLine(procs, 1, Shell, "devin", out var why));
+        Assert.Contains("could not be read", why);
+    }
+
+    [Fact]
+    public void ADevinPromptThatMentionsPrintIsStillTheTui()
+    {
+        var procs = Chain(("powershell.exe", "p"), ("devin.exe", DevinExe + " -- explain -p"));
+        Assert.Equal(DevinExe + " -- explain -p", FindAgentCommandLine(procs, 1, Shell, "devin", out _));
+    }
+
+    [Fact]
+    public void ADevinPrintRunFromAnotherDevinIsNested()
+    {
+        var procs = Chain(
+            ("powershell.exe", "powershell -NoProfile -File bind.ps1 devin"),
+            ("bash.exe", "bash.exe -c \"powershell ...\""),
+            ("devin.exe", $"\"{DevinExe}\" acp"),
+            ("devin.exe", DevinExe + " -p hi"),
+            ("bash.exe", "bash -c \"devin -p hi\""),
+            ("devin.exe", $"\"{DevinExe}\" acp"),
+            ("devin.exe", DevinExe));
+        Assert.Null(FindAgentCommandLine(procs, 1, Shell, "devin", out var why));
+        Assert.StartsWith("nested", why);
+    }
+
+    [Fact]
     public void CodexFromGitBashIsFoundBelowTheMsysExecBreak()
     {
         // Observed: bash runs the npm `codex` shim, MSYS exec leaves sh.exe with a parent that has already
@@ -125,6 +185,7 @@ public class AgentResumeTests
     {
         Assert.Equal("claude", AgentOf(new ProcRow(1, 2, "Claude.exe", "")));
         Assert.Equal("codex", AgentOf(new ProcRow(1, 2, "node.exe", CodexJs)));
+        Assert.Equal("devin", AgentOf(new ProcRow(1, 2, "devin.exe", DevinExe)));
         Assert.Equal("claude", AgentOf(new ProcRow(1, 2, "node.exe", @"node C:\npm\node_modules\@anthropic-ai\claude-code\cli.js")));
         Assert.Null(AgentOf(new ProcRow(1, 2, "node.exe", "node server.js")));
         Assert.Null(AgentOf(new ProcRow(1, 2, "bash.exe", "bash -c claude")));
@@ -147,6 +208,13 @@ public class AgentResumeTests
     public void CodexKeepsItsSandboxAndApprovalMode(string args, string expected)
         => Assert.Equal(expected, string.Join(' ', ResumeFlags("codex", CodexJs + args)));
 
+    [Theory]
+    [InlineData(" --permission-mode dangerous --model opus", "--permission-mode dangerous")]
+    [InlineData(" -r holy-antler --permission-mode=accept-edits --sandbox", "--permission-mode accept-edits --sandbox")]
+    [InlineData(" --config C:\\cfg.json", "")]
+    public void DevinKeepsItsPermissionModeAndSandbox(string args, string expected)
+        => Assert.Equal(expected, string.Join(' ', ResumeFlags("devin", DevinExe + args)));
+
     [Fact]
     public void ComposeUsesEachShellsOwnSyntax()
     {
@@ -159,6 +227,8 @@ public class AgentResumeTests
             Compose(ShellKind.Cmd, "codex", "01a0", @"C:\src", new[] { "-s", "workspace-write" }));
         Assert.Equal("codex resume 01a0", Compose(ShellKind.Other, "codex", "01a0", @"C:\src", []));
         Assert.Equal("claude --resume abc", Compose(ShellKind.Bash, "claude", "abc", "", []));
+        Assert.Equal("devin --resume holy-antler --permission-mode dangerous",
+            Compose(ShellKind.PowerShell, "devin", "holy-antler", null, new[] { "--permission-mode", "dangerous" }));
     }
 
     [Theory]
@@ -204,6 +274,7 @@ public class AgentResumeTests
     [Theory]
     [InlineData("01a0ce4b-7125-7dd1-b5a1-a99d8f14402c", true)]
     [InlineData("thr_123", true)]
+    [InlineData("holy-antler", true)]
     [InlineData("", false)]
     [InlineData("a b", false)]
     [InlineData("x;rm", false)]

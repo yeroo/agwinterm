@@ -224,11 +224,13 @@ Replies `{action, pane, session}` instead of the word "pinned".
 
 ## `session.bind` from a SessionStart hook
 
-`install hooks` makes Claude Code's and Codex's `SessionStart` hook send
-`{"cmd":"session.bind","target":"<pane>","args":{"agent":"claude|codex","resume":"<session id>","cwd":"<dir>","pid":<hook pid>}}`.
+`install hooks` makes the `SessionStart` hook of Claude Code, Codex and Devin send
+`{"cmd":"session.bind","target":"<pane>","args":{"agent":"claude|codex|devin","resume":"<session id>","cwd":"<dir>","pid":<hook pid>}}`.
+Devin's event has no `cwd`, so its hook sends `DEVIN_PROJECT_DIR`, the project root Devin runs in.
 The reply `binding` means the report was well formed and the pane exists. The rest happens after it:
 agwinterm walks the process tree up from `pid` to the agent, refuses a run nested under another agent
-(a `claude -p` or `codex exec` started from an agent's tool shell inherits the pane's id), keeps the
+(a `claude -p`, `codex exec` or `devin -p` started from an agent's tool shell inherits the pane's id),
+refuses a `devin -p` run in the pane itself (and a Devin whose command line cannot be read), keeps the
 agent's permission and sandbox flags, and stores the resume line for the pane's shell. The hook waits
 for the reply because the walk starts at its own process.
 

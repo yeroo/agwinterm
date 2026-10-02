@@ -54,7 +54,7 @@ public static class AgentSkill
 
         Better: run `agwintermctl install hooks` once. It wires Claude Code, Codex and Devin hooks so your
         status updates automatically (active while working, blocked on permission prompts, completed on stop);
-        trust the Codex hooks once with /hooks. It also adds a SessionStart hook to Claude and Codex so the pane
+        trust the Codex hooks once with /hooks. It also adds a SessionStart hook to Claude, Codex and Devin so the pane
         resumes your exact session after a restart or reboot, in any shell;
         and installs a generic PowerShell-profile bridge that marks any command matching `$env:AGWINTERM_AGENT_RE`
         active/completed.

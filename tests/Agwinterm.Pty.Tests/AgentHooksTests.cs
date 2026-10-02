@@ -149,16 +149,20 @@ public class AgentHooksTests
     private const string BindScript = @"C:\Users\x\AppData\Local\agwinterm\agwinterm-agent-bind.ps1";
 
     [Fact]
-    public void BothAgentsGetTheSessionStartBindingOnceNamingTheirAgent()
+    public void EveryAgentGetsTheSessionStartBindingOnceNamingItself()
     {
         string claude = AgentHooks.MergeClaudeSettings(AgentHooks.MergeClaudeSettings(null, Wrapper, BindScript), Wrapper, BindScript)!;
         string codex = AgentHooks.MergeCodexHooks(AgentHooks.MergeCodexHooks(null, CodexScript, BindScript), CodexScript, BindScript)!;
+        string devin = AgentHooks.MergeDevinConfig(AgentHooks.MergeDevinConfig("{ // jsonc\n}", Wrapper, BindScript), Wrapper, BindScript)!;
         var claudeStart = JsonNode.Parse(claude)!["hooks"]!["SessionStart"]!.AsArray();
         var codexStart = JsonNode.Parse(codex)!["hooks"]!["SessionStart"]!.AsArray();
+        var devinStart = JsonNode.Parse(devin)!["hooks"]!["SessionStart"]!.AsArray();
         Assert.Single(claudeStart);   // idempotent across re-installs
         Assert.Single(codexStart);
+        Assert.Single(devinStart);
         Assert.EndsWith($"\"{BindScript}\" claude", claudeStart[0]!["hooks"]![0]!["command"]!.GetValue<string>());
         Assert.EndsWith($"\"{BindScript}\" codex", codexStart[0]!["hooks"]![0]!["command"]!.GetValue<string>());
+        Assert.EndsWith($"\"{BindScript}\" devin", devinStart[0]!["hooks"]![0]!["command"]!.GetValue<string>());
         // Status hooks are untouched by the extra pass.
         Assert.Single(JsonNode.Parse(claude)!["hooks"]!["Stop"]!.AsArray());
     }
@@ -168,6 +172,7 @@ public class AgentHooksTests
     {
         Assert.Null(JsonNode.Parse(AgentHooks.MergeClaudeSettings(null, Wrapper)!)!["hooks"]!["SessionStart"]);
         Assert.Null(JsonNode.Parse(AgentHooks.MergeCodexHooks(null, CodexScript)!)!["hooks"]!["SessionStart"]);
+        Assert.Null(JsonNode.Parse(AgentHooks.MergeDevinConfig(null, Wrapper)!)!["hooks"]!["SessionStart"]);
     }
 
     [Fact]

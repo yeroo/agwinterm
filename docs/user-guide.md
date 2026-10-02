@@ -13,17 +13,19 @@
   When an existing Devin JSONC config needs changes, the installer keeps its exact original in a
   numbered `.agwinterm.bak` sibling, then rewrites the active config as JSON without comments or
   formatting.
-- **Claude Code and Codex session binding & auto-resume**: the same installer adds a `SessionStart`
-  hook to both agents. Each time a session starts, resumes, is cleared or compacts, the hook tells
-  agwinterm the live session id and directory, and agwinterm stores the line that resumes it in the
-  pane's own shell: `cd '<dir>' && claude --resume <id>` in Git Bash, `Set-Location -LiteralPath
+- **Claude Code, Codex and Devin session binding & auto-resume**: the same installer adds a
+  `SessionStart` hook to each agent. Each time a session starts, resumes, is cleared or compacts, the
+  hook tells agwinterm the live session id and directory, and agwinterm stores the line that resumes it
+  in the pane's own shell: `cd '<dir>' && claude --resume <id>` in Git Bash, `Set-Location -LiteralPath
   '<dir>'; codex resume <id>` in PowerShell, `cd /d` in cmd (a directory whose name that shell's quotes
-  cannot hold, such as one with `%` or `"` in cmd, is left out and only the resume is stored). The
-  permission or sandbox mode it was
-  started with (`--dangerously-skip-permissions`, `--permission-mode`, Codex's `--sandbox`,
-  `--ask-for-approval`, `--profile`) is kept. On restart, even after a reboot, agwinterm types that line
-  into each bound pane and the conversation comes back. A `claude -p` or `codex exec` an agent runs
-  from its own tool shell does not rebind the pane. Codex runs a new hook only after you trust it
+  cannot hold, such as one with `%` or `"` in cmd, is left out and only the resume is stored). Devin
+  does not report its directory, so its line changes to Devin's project directory (`DEVIN_PROJECT_DIR`,
+  the repository root). The permission or sandbox mode it was started with
+  (`--dangerously-skip-permissions`, `--permission-mode`, Codex's `--sandbox`, `--ask-for-approval`,
+  `--profile`, Devin's `--permission-mode`, `--sandbox`) is kept. On restart, even after a reboot,
+  agwinterm types that line into each bound pane and the conversation comes back. A `claude -p`,
+  `codex exec` or `devin -p` an agent runs from its own tool shell does not rebind the pane, nor does a
+  `devin -p` run in the pane itself. Codex runs a new hook only after you trust it
   once in Codex's `/hooks`, and Codex fires it on a session's first turn. For PowerShell the installer
   also adds a transparent `claude` wrapper (active only inside agwinterm) that starts a fresh pane's
   session under the pane id. Already had Claude running before installing this? Run

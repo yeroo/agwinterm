@@ -73,7 +73,7 @@ public class AgentBindScriptTests : IDisposable
         };
         foreach (string a in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", _script, agent }) start.ArgumentList.Add(a);
         start.Environment["AGWINTERM_PIPE"] = pipeName;
-        foreach (var k in new[] { "AGWINTERM_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ATTENDED" }) start.Environment.Remove(k);
+        foreach (var k in new[] { "AGWINTERM_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ATTENDED", "DEVIN_PROJECT_DIR" }) start.Environment.Remove(k);
         if (inAgwinterm) start.Environment["AGWINTERM_SESSION_ID"] = "pane-x";
         foreach (var (k, v) in env ?? new()) start.Environment[k] = v;
 
@@ -121,6 +121,23 @@ public class AgentBindScriptTests : IDisposable
     public void HeadlessClaudeReportsNothing(string entrypoint, string? attended)
         => Assert.Null(Run("claude", Event("abc", @"C:\w"),
             new() { ["CLAUDE_CODE_ENTRYPOINT"] = entrypoint, ["CLAUDE_CODE_SESSION_ATTENDED"] = attended }));
+
+    /// <summary>Devin 3000.11's SessionStart, as observed: no cwd, the session id is a word pair.</summary>
+    private const string DevinEvent = "{\"hook_event_name\":\"SessionStart\",\"source\":\"startup\",\"session_id\":\"holy-antler\"}";
+
+    [Fact]
+    public void DevinSessionIsReportedWithItsProjectDirectory()
+    {
+        var r = Run("devin", DevinEvent, new() { ["DEVIN_PROJECT_DIR"] = @"C:\src\it's" });
+        var args = r!.Request.GetProperty("args");
+        Assert.Equal("devin", args.GetProperty("agent").GetString());
+        Assert.Equal("holy-antler", args.GetProperty("resume").GetString());
+        Assert.Equal(@"C:\src\it's", args.GetProperty("cwd").GetString());
+    }
+
+    [Fact]
+    public void ClaudesHookRunByDevinReportsNothing()
+        => Assert.Null(Run("claude", DevinEvent, new() { ["DEVIN_PROJECT_DIR"] = @"C:\src\proj" }));
 
     [Fact]
     public void CodexExecReportsNothing() => Assert.Null(Run("codex", Event("01a0", @"C:\w", Rollout("exec"))));
