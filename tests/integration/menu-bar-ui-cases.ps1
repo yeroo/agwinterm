@@ -1,7 +1,8 @@
 ﻿# Menu bar (MenuBar.cs): the title bar's File / View / Navigate / Help, driven through UI Automation
 # and posted keys against hud-ui's private instance — never global input. Dot-sourced by hud-ui.ps1
 # (-Suite Menu): $hwnd, $job, Rpc, Check, Node, Shot and $artifact come from there, and the sandbox's
-# keymap.conf carries `map alt+h = toggle_sidebar` so the keymap-wins rule has something to win with.
+# keymap.conf carries `map alt+h = toggle_sidebar` (a bound Alt+letter runs its binding) and `leader = f9` with
+# `map leader alt+h = toggle_flag` (an Alt+letter leader follow-up). Alt+F / V / N stay unbound for #358.
 #
 # The UIA client sees what a screen reader sees: a MenuBar of MenuItems, the open menu's rows under
 # its label (disabled rows listed but not enabled, the chord as AcceleratorKey), and the keyboard
@@ -24,7 +25,15 @@ public static class MenuBarNative {
  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
  [StructLayout(LayoutKind.Sequential)] public struct RECT{public int left,top,right,bottom;}
+ [DllImport("user32.dll")] static extern IntPtr GetKeyboardLayout(uint t);
+ [DllImport("user32.dll")] static extern uint MapVirtualKeyExW(uint c,uint t,IntPtr l);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int ToUnicodeEx(uint vk,uint sc,byte[] ks,StringBuilder b,int n,uint f,IntPtr l);
+ // The character a key makes in the window thread's layout with no modifier down, as the app's win32-input-mode encoding computes it.
+ public static string KeyChar(IntPtr h,int vk){uint p;var l=GetKeyboardLayout(GetWindowThreadProcessId(h,out p));var b=new StringBuilder(8);int n=ToUnicodeEx((uint)vk,MapVirtualKeyExW((uint)vk,0,l),new byte[256],b,8,4,l);return n>=1?b.ToString(0,1):"";}
  public static IntPtr[] Dialogs(uint pid){var found=new List<IntPtr>();EnumWindows((h,p)=>{uint n;GetWindowThreadProcessId(h,out n);if(n==pid&&IsWindowVisible(h)){var cls=new StringBuilder(256);GetClassNameW(h,cls,256);if(cls.ToString()=="#32770")found.Add(h);}return true;},IntPtr.Zero);return found.ToArray();}
+ [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+ // The modifiers held on the REAL keyboard (read only): the app's chord checks read Ctrl / Shift from GetKeyState, which a desktop user typing during the run can set.
+ public static string HeldMods(){var m=new List<string>();if(GetAsyncKeyState(0x10)<0)m.Add("shift");if(GetAsyncKeyState(0x11)<0)m.Add("ctrl");if(GetAsyncKeyState(0x12)<0)m.Add("alt");return m.Count>0?string.Join("+",m):"none";}
  public static IntPtr[] Popups(uint pid){var found=new List<IntPtr>();EnumWindows((h,p)=>{uint n;GetWindowThreadProcessId(h,out n);if(n==pid&&IsWindowVisible(h)){var cls=new StringBuilder(256);GetClassNameW(h,cls,256);if(cls.ToString()=="agwinterm-menu")found.Add(h);}return true;},IntPtr.Zero);return found.ToArray();}
 }
 '@ }
@@ -39,7 +48,7 @@ function Row([string]$title,[string]$name){ $l=BarLabel $title; if($null-eq $l){
 function Invoke-Element($e){ ($e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke() }
 function PostKey([uint32]$msg,[int]$vk,[long]$lParam){ [void][MenuBarNative]::PostMessageW($hwnd,$msg,[IntPtr]$vk,[IntPtr]$lParam) }
 $WM_KEYDOWN=0x100;$WM_KEYUP=0x101;$WM_SYSKEYDOWN=0x104;$WM_SYSKEYUP=0x105
-$VK_MENU=0x12;$VK_ESCAPE=0x1B;$VK_RETURN=0x0D;$VK_RIGHT=0x27
+$VK_MENU=0x12;$VK_ESCAPE=0x1B;$VK_RETURN=0x0D;$VK_RIGHT=0x27;$VK_DOWN=0x28
 function AltTap { PostKey $WM_SYSKEYDOWN $VK_MENU 0x00380001; PostKey $WM_SYSKEYUP $VK_MENU 0xC0380001 }
 function Key([int]$vk){ PostKey $WM_KEYDOWN $vk 0x00000001; PostKey $WM_KEYUP $vk 0xC0000001 }
 function AltKey([int]$vk){ PostKey $WM_SYSKEYDOWN $vk 0x20000001; PostKey $WM_SYSKEYUP $vk 0xE0000001 }
@@ -145,24 +154,109 @@ Start-Sleep -Milliseconds 400
 $paneText=[string](Rpc 'session.text' @{})   # the ACTIVE pane: New Session above made a second one
 Check 'and its character does not reach the pane' (-not ($paneText-match '>q')) "tail=$($paneText.Trim() -replace '\s+',' ' | ForEach-Object { $_.Substring([Math]::Max(0,$_.Length-80)) })"
 
-# ---- Mnemonics: Alt+V opens View directly; Alt+H is bound in keymap.conf, so the keymap wins.
-AltKey 0x56
-Check 'Alt+V opens the View menu directly' (MenuWait {$null-ne (Row 'View' 'Increase Font Size')})
+# ---- Alt+letter is the pane program's (#358: Claude Code pastes an image on Alt+V), not a menu mnemonic: with the
+# bar shown, the pane focused (a plain cmd prompt: not the alternate screen, no mouse reporting) and no menu up,
+# Alt+V / Alt+F / Alt+N and the WM_SYSCHAR TranslateMessage queues for each reach the pane, and no menu opens.
+# cmd under ConPTY (win32-input-mode) echoes the key's character exactly once — in the instance's keyboard layout,
+# which can change mid-run (the input language is global), so it is asked of the layout when the key is posted
+# and again when the line is read, never assumed to be the Latin letter.
+function PaneLine { ((([string](Rpc 'session.text' @{})).TrimEnd() -split '\r?\n')[-1]).TrimEnd() }
+function Appended([string]$before,[int]$vk,[string]$posted){ $after=PaneLine; $chars=@($posted,[MenuBarNative]::KeyChar($hwnd,$vk))|Where-Object {$_}; if($chars){ @($chars|Where-Object { $after-ceq $before+$_ }).Count-gt 0 } else { $after.Length-eq $before.Length+1 -and $after.StartsWith($before) -and $after[-1]-match '\S' } }
+function AnyMenuOpen { @('File','View','Navigate','Help'|Where-Object { @(Rows $_).Count-gt 0 -or (Focused $_) }).Count-gt 0 -or @([MenuBarNative]::Popups($job.Pid)).Count-gt 0 }
+function AltLetter([int]$vk,[int]$sc){   # Alt+letter with the WM_SYSCHAR TranslateMessage would queue; returns the layout's character
+    $ch=[MenuBarNative]::KeyChar($hwnd,$vk); $code=if($ch){[int][char]$ch}else{$vk+0x20}; $l=0x20000001 -bor ($sc -shl 16)
+    PostKey $WM_SYSKEYDOWN $vk $l; PostKey 0x106 $code $l; PostKey $WM_SYSKEYUP $vk ($l -bor 0xC0000000); $ch
+}
+function AltV { AltLetter 0x56 0x2F }
+foreach($k in @(@{n='V';vk=0x56;sc=0x2F},@{n='F';vk=0x46;sc=0x21},@{n='N';vk=0x4E;sc=0x31})){
+    $lineBefore=PaneLine
+    $ch=AltLetter $k.vk $k.sc; $held=[MenuBarNative]::HeldMods()   # the real modifiers as the key is posted
+    Start-Sleep -Milliseconds 400
+    Check "Alt+$($k.n) with the pane focused opens no menu (#358)" (-not (AnyMenuOpen)) "rows=$(@('File','View','Navigate','Help'|ForEach-Object { "$_=$(@(Rows $_).Count)" }) -join ',') popups=$(@([MenuBarNative]::Popups($job.Pid)).Count)"
+    Check "and Alt+$($k.n) reaches the pane: its character lands on the prompt line once (#358)" (MenuWait {Appended $lineBefore $k.vk $ch}) "char='$ch' now='$([MenuBarNative]::KeyChar($hwnd,$k.vk))' held=$held before='$lineBefore' after='$(PaneLine)'"
+    if(AnyMenuOpen){ Key $VK_ESCAPE; Key $VK_ESCAPE; [void](MenuWait {-not (AnyMenuOpen)}) }   # leave the cases below a closed bar either way
+}
+
+# ---- Mnemonics: with the bar focused (Alt tap) V opens View; Alt+letter switches an open menu; Alt+H is bound in
+# keymap.conf, so the keymap wins.
+AltTap
+Check 'bar focused for the mnemonic case' (MenuWait {Focused 'File'})
+Key 0x56
+Check 'Alt tap then V opens the View menu' (MenuWait {$null-ne (Row 'View' 'Increase Font Size')})
 Check 'a rebound action shows its keymap chord as the accelerator' ((Row 'View' 'Hide Sidebar').Current.AcceleratorKey-eq 'Alt+H') "acc=$((Row 'View' 'Hide Sidebar').Current.AcceleratorKey)"
 AltTap
 Check 'Alt while a menu is open closes it and leaves the bar' (MenuWait {@(Rows 'View').Count-eq 0 -and -not (Focused 'View') -and -not (Focused 'File')})
 AltKey 0x66
 Start-Sleep -Milliseconds 400
 Check 'Alt+Numpad6 is not Alt+F: no menu opens' (@(Rows 'File').Count-eq 0 -and @([MenuBarNative]::Popups($job.Pid)).Count-eq 0)
-AltKey 0x56
-Check 'View opens again' (MenuWait {$null-ne (Row 'View' 'Increase Font Size')})
+AltTap; Key $VK_RIGHT; Key $VK_DOWN
+Check 'View opens again (Alt tap, Right, Down)' (MenuWait {$null-ne (Row 'View' 'Increase Font Size')})
+AltKey 0x4E
+Check 'Alt+N while View is open switches the dropdown to Navigate' (MenuWait {@(Rows 'Navigate').Count-gt 0 -and @(Rows 'View').Count-eq 0})
 Key $VK_ESCAPE; Key $VK_ESCAPE
-Check 'the View menu is closed again' (MenuWait {@(Rows 'View').Count-eq 0 -and -not (Focused 'View')})
+Check 'the menu is closed again' (MenuWait {@(Rows 'Navigate').Count-eq 0 -and -not (Focused 'Navigate')})
 $sidebarBefore=[string](Rpc 'sidebar' @{op='state'} -NoTarget)
 AltKey 0x48
 Check 'Alt+H runs the keymap''s binding (toggle_sidebar), not the Help menu' ((MenuWait {([string](Rpc 'sidebar' @{op='state'} -NoTarget))-ne $sidebarBefore}) -and @(Rows 'Help').Count-eq 0) "before=$sidebarBefore"
 AltKey 0x48
 Check 'and toggles it back' (MenuWait {([string](Rpc 'sidebar' @{op='state'} -NoTarget))-eq $sidebarBefore})
+# F10 (a system key: WM_SYSKEYDOWN without the Alt context bit) focuses the bar at a plain prompt, and V then opens View.
+PostKey $WM_SYSKEYDOWN 0x79 0x00440001; PostKey $WM_SYSKEYUP 0x79 0xC0440001
+Check 'F10 focuses the bar' (MenuWait {Focused 'File'})
+Key 0x56
+Check 'F10 then V opens the View menu' (MenuWait {$null-ne (Row 'View' 'Increase Font Size')})
+Key $VK_ESCAPE; Key $VK_ESCAPE
+Check 'and Esc, Esc closes it and leaves the bar' (MenuWait {-not (AnyMenuOpen)})
+# A leader follow-up on an Alt+letter (keymap.conf: `leader = f9`, `map leader alt+h = toggle_flag`) runs the
+# leader's binding: not the Help menu, not the pane, and not the plain alt+h binding (toggle_sidebar).
+function FlaggedCount { @((Rpc 'tree').workspaces|ForEach-Object sessions|Where-Object flagged).Count }
+$lineBefore=PaneLine; $flaggedBefore=FlaggedCount
+Key 0x78; [void](AltLetter 0x48 0x23)
+Check 'leader then Alt+H runs the leader binding (toggle_flag)' (MenuWait {(FlaggedCount)-ne $flaggedBefore}) "flagged before=$flaggedBefore now=$(FlaggedCount)"
+Check 'and not the plain Alt+H binding, no menu, nothing in the pane' (([string](Rpc 'sidebar' @{op='state'} -NoTarget))-eq $sidebarBefore -and -not (AnyMenuOpen) -and (PaneLine)-ceq $lineBefore) "sidebar=$(Rpc 'sidebar' @{op='state'} -NoTarget) before='$lineBefore' after='$(PaneLine)'"
+Key 0x78; [void](AltLetter 0x48 0x23)
+Check 'leader then Alt+H toggles the flag back' (MenuWait {(FlaggedCount)-eq $flaggedBefore})
+
+# ---- Outside the terminal Alt+letter is still a mnemonic: the F6 sidebar zone and the dashboard swallow every other
+# key, so there Alt+V opens View, and nothing reaches the pane. UIA tells the zone apart: a sidebar session row has the
+# keyboard focus, the terminal does not. The dashboard opens through the control API (Ctrl+Shift+D reads Ctrl and
+# Shift from GetKeyState, which posted input does not set).
+function ZoneFocused { $list=$menuRoot.FindFirst([System.Windows.Automation.TreeScope]::Children,(Prop 'Name' 'Sessions')); $null-ne $list -and @($list.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)|Where-Object { $_.Current.HasKeyboardFocus }).Count-gt 0 }
+function TerminalFocused { $t=$menuRoot.FindFirst([System.Windows.Automation.TreeScope]::Children,(Prop 'ControlType' ([System.Windows.Automation.ControlType]::Document))); $null-ne $t -and $t.Current.HasKeyboardFocus }   # its Name is the screen text
+Check 'the terminal has the keyboard before F6' (TerminalFocused)
+$lineBefore=PaneLine
+Key 0x75   # F6
+Check 'F6 moves the keyboard into the sidebar zone' (MenuWait {(ZoneFocused) -and -not (TerminalFocused)})
+[void](AltV); $held=[MenuBarNative]::HeldMods()
+Check 'Alt+V in the sidebar zone opens the View menu' (MenuWait {$null-ne (Row 'View' 'Increase Font Size')}) "held=$held after='$(PaneLine)'"
+Key $VK_ESCAPE
+Check 'Esc closes it and keeps View focused' ((MenuWait {@(Rows 'View').Count-eq 0}) -and (Focused 'View'))
+Key $VK_ESCAPE
+Check 'a second Esc leaves the bar and the sidebar zone keeps the keyboard' ((MenuWait {-not (AnyMenuOpen)}) -and (ZoneFocused) -and -not (TerminalFocused))
+Key 0x75   # F6
+Check 'F6 gives the keyboard back to the terminal' (MenuWait {(TerminalFocused) -and -not (ZoneFocused)})
+Check 'nothing of the sidebar-zone case reached the pane' ((PaneLine)-ceq $lineBefore) "before='$lineBefore' after='$(PaneLine)'"
+$null=Rpc 'dashboard' @{} -NoTarget
+$null=Rpc 'tree'   # FIFO with the posted verb: the dashboard is up before the key below
+[void](AltV); $held=[MenuBarNative]::HeldMods()
+$opened=MenuWait {$null-ne (Row 'View' 'Increase Font Size')}
+Check 'Alt+V over the dashboard opens the View menu' $opened "held=$held after='$(PaneLine)'"
+if($opened){ Key $VK_ESCAPE; Key $VK_ESCAPE; Check 'Esc, Esc closes it over the dashboard' (MenuWait {-not (AnyMenuOpen)}) }
+Check 'nothing of the dashboard case reached the pane' ((PaneLine)-ceq $lineBefore) "before='$lineBefore' after='$(PaneLine)'"
+$null=Rpc 'dashboard' @{close=$true} -NoTarget   # not Esc: with the dashboard down it would reach the pane and clear the line
+$null=Rpc 'tree'
+$lineBefore=PaneLine
+$ch=AltV; $held=[MenuBarNative]::HeldMods()
+Check 'with the dashboard closed Alt+V reaches the pane again and opens no menu' ((MenuWait {Appended $lineBefore 0x56 $ch}) -and -not (AnyMenuOpen)) "char='$ch' held=$held before='$lineBefore' after='$(PaneLine)'"
+# The find bar swallows every key too; it opens through session.search (Ctrl+F reads Ctrl from GetKeyState).
+$lineBefore=PaneLine
+$findStatus=[string](Rpc 'session.search' @{query='MENU-FIND-PROBE'})
+[void](AltV); $held=[MenuBarNative]::HeldMods()
+$opened=MenuWait {$null-ne (Row 'View' 'Increase Font Size')}
+Check 'Alt+V in the find bar opens the View menu' $opened "held=$held find='$findStatus' after='$(PaneLine)'"
+if($opened){ Key $VK_ESCAPE; Key $VK_ESCAPE; Check 'Esc, Esc closes it over the find bar' (MenuWait {-not (AnyMenuOpen)}) }
+Check 'nothing of the find-bar case reached the pane' ((PaneLine)-ceq $lineBefore) "before='$lineBefore' after='$(PaneLine)'"
+$null=Rpc 'session.search' @{action='close'}   # not Esc, for the reason the dashboard closes through the API
 
 # ---- A row that runs a modal loop: Help ▸ About (a MessageBox) pumps the queued WM_CHAR of the Enter that ran it
 # while the menu is already closed; the char is the menu's and must not reach the pane. Keyboard all the way:
@@ -203,7 +297,13 @@ Check 'show-menu-bar = false removes the MenuBar element' (MenuWait {$null-eq (M
 AltTap
 Start-Sleep -Milliseconds 300
 PostKey $WM_KEYDOWN 0x58 0x002D0001; PostKey 0x102 0x78 0x002D0001; PostKey $WM_KEYUP 0x58 0xC02D0001   # x
-Check 'with the bar hidden an Alt tap takes no keys: the next key reaches the pane' (MenuWait {([string](Rpc 'session.text' @{}))-match '>\S*x'}) "tail=$(([string](Rpc 'session.text' @{})).Trim() -replace '\s+',' ' | ForEach-Object { $_.Substring([Math]::Max(0,$_.Length-80)) })"   # \S*: the Alt+Numpad6 case above left the pane its Alt+6 (ESC 6), as a real one would
+$xChars='['+[regex]::Escape('x'+[MenuBarNative]::KeyChar($hwnd,0x58))+']'   # the layout's character for the key, as the #358 cases above ask it
+Check 'with the bar hidden an Alt tap takes no keys: the next key reaches the pane' (MenuWait {([string](Rpc 'session.text' @{}))-match ('>\S*'+$xChars)}) "now='$([MenuBarNative]::KeyChar($hwnd,0x58))' tail=$(([string](Rpc 'session.text' @{})).Trim() -replace '\s+',' ' | ForEach-Object { $_.Substring([Math]::Max(0,$_.Length-80)) })"   # \S*: the Alt+Numpad6 case above left the pane its Alt+6 (ESC 6), as a real one would
+# The control for #358: with no bar Alt+V takes the same pane path the bar-shown case above expects.
+$lineBefore=PaneLine
+$ch=AltV
+Check 'with the bar hidden Alt+V reaches the pane: its character lands on the prompt line once' (MenuWait {Appended $lineBefore 0x56 $ch}) "char='$ch' now='$([MenuBarNative]::KeyChar($hwnd,0x56))' before='$lineBefore' after='$(PaneLine)'"
+Check 'and opens no menu' (-not (AnyMenuOpen))
 $null=Rpc 'config.set' @{key='show-menu-bar';value='true'} -NoTarget
 Check 'show-menu-bar = true brings it back' (MenuWait {$null-ne (MenuBar)})
 Check 'config get reads the key' (([string](Rpc 'config.get' @{key='show-menu-bar'} -NoTarget))-match 'true')
