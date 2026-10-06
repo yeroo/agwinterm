@@ -141,7 +141,9 @@ public sealed class HudOwnedJob {
           ('command [send] QuickProbe = echo {AGW_PANE}>"'+(Join-Path $artifact 'keymap-send.txt')+'"'))|Add-Content (Join-Path $appDir 'keymap.conf')
     }
     if($Suite-eq 'Menu'){
-        'map alt+h = toggle_sidebar'|Add-Content (Join-Path $appDir 'keymap.conf')   # a bound Alt+letter must win over the Help mnemonic
+        # A bound Alt+letter runs its binding, and the same chord as a leader follow-up runs the leader's
+        # (on H: binding F, V or N would take them from the #358 cases, which need them unbound).
+        @('map alt+h = toggle_sidebar','leader = f9','map leader alt+h = toggle_flag')|Add-Content (Join-Path $appDir 'keymap.conf')
     }
     if($Suite-eq 'Navigation'){
         @('map f5 | f7 = next_workspace','map f6 = next_workspace',

@@ -1300,7 +1300,7 @@ internal partial class Program
         // F10 focuses the menu bar when nothing bound it — a keymap chord or the leader on F10 was
         // dispatched above and never reaches here — and when the pane is not a full-screen program:
         // one on the alternate screen or reporting the mouse (mc, htop, far, nano) gets its F10, as
-        // it does in Windows Terminal; the Alt tap and Alt+letter still reach the bar there.
+        // it does in Windows Terminal; the Alt tap still reaches the bar there.
         if (vk == 0x79 /* F10 */ && !ctrl && !alt && !shift && MenuBarUsable
             && ActiveSurface()?.S.Emulator is not ({ IsAltScreen: true } or { MouseReporting: true }))
         { FocusMenuBar(0); return true; }

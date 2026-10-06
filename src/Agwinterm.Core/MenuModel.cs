@@ -18,7 +18,8 @@ public sealed record MenuItemDef(string Id, string Label, string? Action = null,
     public static readonly MenuItemDef Separator = new("-", "-");
 }
 
-/// <summary>A top-level menu: its title, the Alt+letter that opens it, and its rows.</summary>
+/// <summary>A top-level menu: its title, the letter that opens it (alone from the focused bar,
+/// with Alt anywhere but the terminal), and its rows.</summary>
 public sealed record MenuDef(string Title, char Mnemonic, IReadOnlyList<MenuItemDef> Items);
 
 /// <summary>
