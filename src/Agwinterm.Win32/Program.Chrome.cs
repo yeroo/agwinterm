@@ -1360,11 +1360,15 @@ internal partial class Program
     private void AdjustClientRect(IntPtr hwnd, IntPtr lParam)
     {
         // When maximized, inset by the frame so content isn't pushed off-screen / under the taskbar.
+        // Windows hangs a maximized window past the monitor by the frame at the WINDOW's DPI; measured
+        // at any other DPI the inset misses it, and a strip of DWM caption shows along the top.
         if (IsZoomed(hwnd))
         {
             var rc = Marshal.PtrToStructure<RECT>(lParam);
-            int fx = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
-            int fy = GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            uint dpi = GetDpiForWindow(hwnd);
+            int pad = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+            int fx = GetSystemMetricsForDpi(SM_CXFRAME, dpi) + pad;
+            int fy = GetSystemMetricsForDpi(SM_CYFRAME, dpi) + pad;
             rc.left += fx; rc.right -= fx; rc.top += fy; rc.bottom -= fy;
             Marshal.StructureToPtr(rc, lParam, false);
         }

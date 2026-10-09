@@ -402,8 +402,10 @@ internal static class Win32
     [DllImport("user32.dll")]
     public static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
 
+    /// <summary>A metric at the given DPI. Plain GetSystemMetrics answers at the SYSTEM DPI (the primary
+    /// monitor's at login) under PER_MONITOR_AWARE_V2, which is wrong for a window on any other monitor.</summary>
     [DllImport("user32.dll")]
-    public static extern int GetSystemMetrics(int nIndex);
+    public static extern int GetSystemMetricsForDpi(int nIndex, uint dpi);
 
     [DllImport("user32.dll")]
     public static extern bool IsZoomed(IntPtr hWnd);
