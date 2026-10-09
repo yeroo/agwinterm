@@ -60,7 +60,7 @@ internal partial class Program
             "F1            this help (including while full-screen terminal apps run)",
             "Alt or F10    menu bar (File  View  Navigate  Help): arrows move, Enter opens, Esc leaves",
             "              (a full-screen program keeps its F10; the Alt tap still reaches the bar)",
-            "Alt+F/V/N/H   open a menu directly (a keymap chord on the same keys wins)",
+            "Alt, F/V/N/H  open a menu (in the terminal Alt+letter goes to the program in the pane)",
             "Esc           close overlays (help, settings, palettes, search)",
             "",
             "KEY BINDINGS (effective — keymap.conf applied)",

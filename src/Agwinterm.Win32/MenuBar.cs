@@ -13,10 +13,11 @@ namespace Agwinterm.Win32;
 /// (<see cref="MenuModel"/>) as a row of labels after the sidebar toggle, each dropping the themed
 /// popup of Menu.cs. On macOS agterm's menus are the system bar; on Windows the equivalent surface
 /// is the title bar this app already draws, so the bar lives there and takes the Windows keyboard
-/// model: a lone Alt tap or F10 focuses it (←/→ move, ↓/Enter open, Esc leaves), Alt+F / V / N / H
-/// open a menu directly, and inside an open menu ←/→ switch menus. A keymap.conf binding on an
-/// Alt+letter chord wins over the mnemonic — <see cref="MenuBarMnemonic"/> checks the bindings and
-/// a pending leader before it opens anything — so a shell that wants Alt+F keeps it by binding it.
+/// model: a lone Alt tap or F10 focuses it (←/→ move, ↓/Enter open, F / V / N / H open that menu,
+/// Esc leaves), inside an open menu ←/→ or Alt+letter switch menus, and from the sidebar zone, the
+/// dashboard or the find bar Alt+letter opens a menu directly. From the terminal Alt+letter is not
+/// a mnemonic: it goes to the pane (Claude Code pastes an image on Alt+V) or to its keymap.conf
+/// binding — <see cref="MenuBarMnemonic"/> decides.
 ///
 /// <para>Every row shows its EFFECTIVE shortcut (a rebind shows the rebind), a row whose enablement
 /// term is false is dim and inert, and a state row's label follows the state (Hide/Show Sidebar).
@@ -170,13 +171,17 @@ internal partial class Program
         }
     }
 
-    /// <summary>Alt+letter with the context bit set (a real or a posted WM_SYSKEYDOWN): open that
-    /// menu — unless the chord is the user's: bound in keymap.conf, the leader chord itself, a leader
-    /// follow-up, or any key while a leader sequence is pending. Then this returns false and the
-    /// ordinary dispatch runs. Called from the window procedure, where the lParam context bit is,
-    /// rather than from OnKeyDown, whose Alt comes from GetKeyState and is blind to posted input.</summary>
+    /// <summary>Alt+letter with the context bit set (a real or a posted WM_SYSKEYDOWN) while the
+    /// terminal does not have the keyboard — the sidebar zone (F6), the dashboard or the find bar:
+    /// open that menu, unless the chord is the user's: bound in keymap.conf, the leader chord itself,
+    /// a leader follow-up, or any key while a leader sequence is pending. From the terminal Alt+letter
+    /// belongs to the program in the pane (#358: Claude Code pastes an image on Alt+V), so this returns
+    /// false there and the ordinary dispatch runs. Called from the window procedure, where the lParam
+    /// context bit is, rather than from OnKeyDown, whose Alt comes from GetKeyState and is blind to
+    /// posted input.</summary>
     private bool MenuBarMnemonic(int vk)
     {
+        if (!_chromeFocus && !_dashboardOpen && !_searchActive) return false;
         if (!MenuBarUsable || KeyDown(VK_CONTROL) || KeyDown(VK_SHIFT) || _leaderPending) return false;
         int menu = MnemonicMenu(vk);
         if (menu < 0) return false;

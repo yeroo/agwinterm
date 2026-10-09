@@ -130,11 +130,13 @@ Window** (the window library, a check mark on the open ones) and **File ▸ Open
 sessions and workspaces).
 
 It takes the Windows keyboard model: a lone **Alt** tap or **F10** focuses the bar (←/→ move, ↓ or
-Enter opens, Esc leaves), **Alt+F / Alt+V / Alt+N / Alt+H** open a menu directly, and inside an open
-menu ←/→ switch menus. A `keymap.conf` binding on an Alt+letter chord wins over the mnemonic, so a
-shell that wants Alt+F keeps it by binding it. The bar is a UIA menu bar, so a screen reader reads
-and runs it. `show-menu-bar = false` in `agwinterm.conf` (or `agwintermctl config set show-menu-bar
-false`) removes it; the hidden toolbar mode shows no chrome and so no bar.
+Enter opens, **F / V / N / H** open that menu, Esc leaves), and inside an open menu ←/→ or
+**Alt+F / Alt+V / Alt+N / Alt+H** switch menus. From the terminal, Alt+letter goes to the program in
+the pane (Claude Code pastes an image on Alt+V), so **Alt, V** rather than Alt+V opens View; from the
+session list (F6), the dashboard or the find bar Alt+F / Alt+V / Alt+N / Alt+H open a menu directly
+unless `keymap.conf` binds them. The bar is a UIA menu bar, so a screen reader reads and runs it. `show-menu-bar = false` in `agwinterm.conf` (or
+`agwintermctl config set show-menu-bar false`) removes it; the hidden toolbar mode shows no chrome
+and so no bar.
 
 agterm's items that have no agwinterm counterpart are left out rather than invented: Edit / Reload
 Hooks, Toggle Terminal Zoom, Reset Live Sessions, and the focus-set items (Add Workspace to Focus,
@@ -151,7 +153,7 @@ Toggle Workspace Filter, Clear Focus — agwinterm's workspace focus is one work
 | `Ctrl+Tab` | MRU session switcher |
 | `Ctrl+D` | Split pane · `` Ctrl+` `` quick terminal · `Ctrl+J` scratch |
 | `Ctrl+Shift+P` | Action palette |
-| `Alt` (tap) / `F10` | Menu bar · `Alt+F` `Alt+V` `Alt+N` `Alt+H` open a menu |
+| `Alt` (tap) / `F10` | Menu bar · then `F` `V` `N` `H` open a menu |
 | `F11` | Fullscreen |
 
 Most built-in actions can be rebound in `keymap.conf` (see `F1` for the live, effective list). Some
