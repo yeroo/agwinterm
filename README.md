@@ -105,6 +105,7 @@ The same interface covers windows, splits, overlays, dashboards, HUDs, notificat
 - [Launching a session command](docs/session-commands.md): `session new --command`, direct mode, `--wait`.
 - [Workspace navigation](docs/navigation.md), [quick terminal](docs/quick-terminal.md), [session HUD](docs/session-hud.md), [native picker](docs/native-picker.md).
 - [Default terminal](docs/defterm-testing.md): how the console handoff is exercised.
+- [Local UI tests](docs/sandbox-ui-tests.md): run the same suites directly on the Windows desktop or in optional Windows Sandbox.
 - [agterm parity](docs/agterm-parity.md) and [agliteterm parity](docs/lite-parity.md): where both products stand.
 - [CONTRIBUTING.md](CONTRIBUTING.md): building from source, dev builds side by side with the release, the contract with agliteterm.
 

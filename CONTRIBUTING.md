@@ -50,7 +50,18 @@ Build and the unit tests must be green before you send a PR. `Agwinterm.Core` tr
 
 `tests/integration/*.ps1` drive a real window: the control host (`win32-control.ps1`), and the `hud-ui.ps1` suites (`-Suite Hud|Quick|Navigation|Picker|Accessibility|Command|Menu`) for the HUD, the quick terminal, sidebar navigation, the native picker, UI Automation, session commands and the menu bar. CI runs all of them except `Accessibility` on every PR, and they are the evidence a UI change is judged on, so a change that touches UI behaviour adds or extends a case there.
 
-They run under **PowerShell 7** (`pwsh -NoProfile -File ...`), never Windows PowerShell 5.1. Each one starts a private instance (`--app-id` and `--pipe` with throwaway names, `--no-restore`) so your own sessions, config and clipboard are never touched, and drives it only by posting messages to that instance's own windows: no `keybd_event`, no `SendInput`, no global mouse. Keep to that when you add a case. On a machine without the maintainer's suite-token helper the runners refuse to start unless `$env:CI = 'true'` is set, which is the intended way to run them on your own desktop.
+They run under **PowerShell 7** (`pwsh -NoProfile -File ...`), never Windows PowerShell 5.1. Each one starts a private instance (`--app-id` and `--pipe` with throwaway names, `--no-restore`) and drives it only by posting messages to that instance's own windows: no `keybd_event`, no `SendInput`, no global mouse. Keep to that when you add a case. Private instance data does not isolate a window from real desktop mouse and focus events.
+
+**Direct desktop and Windows Sandbox are equally supported local UI test modes.** After `dotnet build Agwinterm.slnx -c Release`, choose either:
+
+| Mode | Command | Desktop interaction |
+|---|---|---|
+| Direct Windows desktop | `pwsh -NoProfile -File tests/integration/hud-ui.ps1 -Suite Navigation -Strict` | Keep the test desktop free of mouse and focus changes. |
+| Windows Sandbox | `pwsh -NoProfile -File tests/integration/sandbox-ui.ps1 -Suite Navigation` | Continue working on the host; leave the guest desktop untouched. |
+
+Both modes run the same suites and assertions using the standard Release outputs. The direct runner requires `-TokenOwner` (or `AGWINTERM_TEST_OWNER`) when the maintainer's suite-token helper is installed; without that helper it requires `CI=true` in the test process. The optional Sandbox wrapper sets this only inside the guest. See [local UI testing](docs/sandbox-ui-tests.md) for prerequisites, direct-run commands, and results. Core/Pty unit tests and the wrapper's fixture checks do not require Sandbox.
+
+**CI is unchanged:** its existing Windows jobs run the same suites directly on the runner desktop, without Windows Sandbox.
 
 `tests/conformance/control-api.json` is the control-API contract shared with [agliteterm](https://github.com/yeroo/agliteterm); `tests/conformance/conformance.ps1` runs it. `qa/*.md` are behaviour cases written for a person (or an agent) to execute against a live build; `qa/product.md` says how.
 
