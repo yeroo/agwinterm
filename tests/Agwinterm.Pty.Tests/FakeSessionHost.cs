@@ -168,7 +168,7 @@ internal sealed class FakeSessionHost : ISessionHost
         public string LastResult = OverlayPanes.NoResult;
         public bool Open => Term is not null;
     }
-    internal sealed class Ws { public string Id = "", Name = ""; public bool Collapsed; public List<Sess> Sessions = new(); }
+    internal sealed class Ws { public string Id = "", Name = ""; public bool Collapsed; public string? DefaultDir; public List<Sess> Sessions = new(); }
 
     internal readonly List<Ws> Workspaces = new();
     internal Ws ActiveWs;
@@ -324,7 +324,7 @@ internal sealed class FakeSessionHost : ISessionHost
                 CapturedCommands: s.PaneIds.Select(id => s.Captured.TryGetValue(id, out var c) ? c : "").ToList(),   // the slot, "" = none, parallel to PaneIds
                 Axis: s.Axis,
                 PaneOverlays: s.PaneOverlayWords(), Hud: s.Hud, ForegroundShells: s.ForegroundShells);
-        }).ToList(), Collapsed: w.Collapsed)).ToList();
+        }).ToList(), Collapsed: w.Collapsed, DefaultDir: w.DefaultDir)).ToList();
 
     public WindowStateSnapshot WindowState() =>
         new(SidebarVisible, Fullscreen: false, Maximized: false, QuickVisible, ActiveWs.Name, ActiveSess?.Name);
@@ -372,11 +372,17 @@ internal sealed class FakeSessionHost : ISessionHost
         }
         else if (!string.IsNullOrEmpty(caller) && FindPaneById(caller) is { } callerPane) w = WorkspaceOf(callerPane.s);
         else w = ActiveWs;   // no caller, or a stale one: not refused
+        string? effectiveCwd = cwd;
+        if (string.IsNullOrEmpty(effectiveCwd) && !string.IsNullOrWhiteSpace(w.DefaultDir) && Directory.Exists(w.DefaultDir))
+            effectiveCwd = w.DefaultDir;
+        LastNewSessionCwd = effectiveCwd;
         var s = new Sess { Id = "s" + (++_idSeq + 100), Name = string.IsNullOrEmpty(name) ? $"session {w.Sessions.Count + 1}" : name }.Seed();
         w.Sessions.Add(s);
         if (!noSelect) { ActiveSess = s; ActiveWs = w; }
         return s.Id;
     }
+
+    internal string? LastNewSessionCwd { get; private set; }
 
     public string DuplicateSession(string? target)
     {
@@ -448,7 +454,22 @@ internal sealed class FakeSessionHost : ISessionHost
         if (ReferenceEquals(ActiveSess, s)) ActiveSess = Workspaces.SelectMany(x => x.Sessions).FirstOrDefault();
         return true;
     }
-    public string NewWorkspace(string? name) { var w = new Ws { Id = "w" + (++_idSeq + 100), Name = string.IsNullOrEmpty(name) ? $"workspace {Workspaces.Count + 1}" : name }; Workspaces.Add(w); return w.Id; }
+    public string NewWorkspace(string? name, string? defaultDir = null)
+    {
+        var w = new Ws { Id = "w" + (++_idSeq + 100), Name = string.IsNullOrEmpty(name) ? $"workspace {Workspaces.Count + 1}" : name };
+        if (!string.IsNullOrEmpty(defaultDir)) w.DefaultDir = WorkspaceDefaultDirs.NormalizeSet(defaultDir);
+        Workspaces.Add(w);
+        return w.Id;
+    }
+
+    public string WorkspaceDefaultDir(string? target, string? dir)
+    {
+        var w = string.IsNullOrEmpty(target) || target == "active" ? ActiveWs : FindWs(target);
+        if (w is null) return ISessionHost.RefusePrefix + WorkspaceDefaultDirs.NoWorkspace;
+        if (string.IsNullOrEmpty(dir)) w.DefaultDir = null;
+        else w.DefaultDir = WorkspaceDefaultDirs.NormalizeSet(dir);
+        return WorkspaceDefaultDirs.Reply(w.Id, w.DefaultDir);
+    }
     public string ProfilesList() => "default";
     public string ProfilesReload() => "1 profile loaded";
     public bool SetFontSize(string? target, string op) => FindSes(target) is not null;   // the app: Find, then FindControlPane — pane-capable overall

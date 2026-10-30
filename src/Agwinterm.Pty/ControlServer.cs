@@ -280,7 +280,14 @@ public sealed class ControlServer : IDisposable
                 case "profiles.reload": return Ok(host.ProfilesReload());
                 case "session.select": return host.SelectSession(target ?? "active") ? Ok("selected") : Err("session not found");
                 case "session.close": return host.CloseSession(target ?? "active") ? Ok("closed") : Err("session not found");
-                case "workspace.new": return Ok(host.NewWorkspace(GetString(args, "name")));
+                case "workspace.new":
+                    {
+                        string? wsDefault = GetString(args, WorkspaceDefaultDirs.Key) ?? GetString(args, "default-dir");
+                        if (wsDefault is not null && WorkspaceDefaultDirs.ValidateSet(wsDefault) is { } wsDefErr) return Err(wsDefErr);
+                        string? normalized = wsDefault is null ? null : WorkspaceDefaultDirs.NormalizeSet(wsDefault);
+                        return Ok(host.NewWorkspace(GetString(args, "name"), normalized));
+                    }
+                case "workspace.default-dir": return HandleWorkspaceDefaultDir(host, target, args);
                 case "font": return host.SetFontSize(target, GetString(args, "op") ?? "") ? Ok("font") : Err("session not found");
                 case "dashboard": return host.Dashboard(GetBool(args, "close"), GetString(args, "ids"), GetInt(args, "font-size", 0)) ? Ok("dashboard") : Err("dashboard unavailable");
 
@@ -509,8 +516,9 @@ public sealed class ControlServer : IDisposable
             sb.Append("{\"id\":").Append(JsonSerializer.Serialize(ws.Id))
               .Append(",\"name\":").Append(JsonSerializer.Serialize(ws.Name))
               .Append(",\"active\":").Append(ws.Active ? "true" : "false")
-              .Append(",\"collapsed\":").Append(ws.Collapsed ? "true" : "false")
-              .Append(",\"sessions\":[");
+              .Append(",\"collapsed\":").Append(ws.Collapsed ? "true" : "false");
+            if (ws.DefaultDir is not null) sb.Append(",\"").Append(WorkspaceDefaultDirs.Key).Append("\":").Append(JsonSerializer.Serialize(ws.DefaultDir));
+            sb.Append(",\"sessions\":[");
             for (int i = 0; i < ws.Sessions.Count; i++)
             {
                 var n = ws.Sessions[i];
@@ -778,6 +786,24 @@ public sealed class ControlServer : IDisposable
             context = text;
         }
         string reply = host.SessionContext(target, context);
+        return reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+            ? Err(reply[ISessionHost.RefusePrefix.Length..])
+            : OkRaw(reply);
+    }
+
+    private static string HandleWorkspaceDefaultDir(ISessionHost host, string? target, JsonElement args)
+    {
+        string? raw = GetString(args, WorkspaceDefaultDirs.Key) ?? GetString(args, "dir");
+        bool clear = GetBool(args, "clear");
+        if (clear && raw is not null) return Err(WorkspaceDefaultDirs.TextAndClear);
+        string? dir = null;
+        if (!clear)
+        {
+            if (raw is null || raw.Length == 0) return Err(WorkspaceDefaultDirs.Blank);
+            if (WorkspaceDefaultDirs.ValidateSet(raw) is { } refusal) return Err(refusal);
+            dir = WorkspaceDefaultDirs.NormalizeSet(raw);
+        }
+        string reply = host.WorkspaceDefaultDir(target, dir);
         return reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
             ? Err(reply[ISessionHost.RefusePrefix.Length..])
             : OkRaw(reply);

@@ -25,7 +25,7 @@ public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentS
     IReadOnlyList<string?>? ForegroundShells = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
-public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions, bool Collapsed = false);
+public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions, bool Collapsed = false, string? DefaultDir = null);
 
 /// <summary>Where a <c>session.restore</c> call landed: the pane the target resolved to and the session
 /// that owns it, so the reply can name both — a split has several panes and the caller cannot otherwise
@@ -136,8 +136,11 @@ public interface ISessionHost
     bool SelectSession(string target);
     bool CloseSession(string target);
 
-    /// <summary>Create a workspace; returns its id.</summary>
-    string NewWorkspace(string? name);
+    /// <summary>Create a workspace; returns its id. Optional <paramref name="defaultDir"/> is normalized and stored when valid.</summary>
+    string NewWorkspace(string? name, string? defaultDir = null);
+
+    /// <summary><c>workspace.default-dir</c>: set (<paramref name="dir"/> non-empty), or clear (<paramref name="dir"/> null/empty).</summary>
+    string WorkspaceDefaultDir(string? target, string? dir) => RefusePrefix + "workspace default directory is unavailable in this host";
 
     /// <summary>Adjust a session's font zoom: op = "inc" | "dec" | "reset". Returns false if the target isn't found.</summary>
     bool SetFontSize(string? target, string op);
@@ -654,7 +657,8 @@ public sealed class SingleSessionHost : ISessionHost
     public string ProfilesReload() => "0 profiles loaded";
     public bool SelectSession(string target) => true;
     public bool CloseSession(string target) => false;
-    public string NewWorkspace(string? name) => "ws";
+    public string NewWorkspace(string? name, string? defaultDir = null) => "ws";
+    public string WorkspaceDefaultDir(string? target, string? dir) => ISessionHost.RefusePrefix + WorkspaceDefaultDirs.NoWorkspace;
     public bool SetFontSize(string? target, string op) => false; // no per-session font zoom in the single-session host
     public bool Dashboard(bool close, string? ids, int fontSize) => false; // no dashboard in the single-session host
 

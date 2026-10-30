@@ -248,6 +248,8 @@ try {
         (-not (Test-Path -LiteralPath $envAppDir)) "--app-id was ignored; state went to $envAppDir"
     if (-not $appDataAdopted) { throw 'isolated instance did not seed its dedicated app-data directory' }
 
+    . (Join-Path $PSScriptRoot 'workspace-default-dir-cases.ps1')
+
     # Reproduce the collision from the review: the initial pane shares the session id; a hidden
     # scratch id begins with that id. Once the initial side of a split exits, only the exact session
     # and the scratch prefix remain. Exact session resolution must win.

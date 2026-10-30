@@ -448,4 +448,24 @@ public class RestoreStateTests
         Assert.Equal(PreP3File, RestoreState.Serialize(st));
         AssertEveryOtherFieldIntact(st);
     }
+
+    [Fact]
+    public void WorkspaceDefaultDir_RoundTrips_AndOmitsWhenNull()
+    {
+        var st = Load(PreP3File);
+        st.Workspaces[0].DefaultDir = @"C:\repo\agwinterm";
+        string json = RestoreState.Serialize(st);
+        Assert.Contains("\"DefaultDir\"", json);
+        var back = Load(json);
+        Assert.Equal(@"C:\repo\agwinterm", back.Workspaces[0].DefaultDir);
+        back.Workspaces[0].DefaultDir = null;
+        Assert.DoesNotContain("DefaultDir", RestoreState.Serialize(back));
+    }
+
+    [Fact]
+    public void PreP3File_WithoutDefaultDir_Loads()
+    {
+        var st = Load(PreP3File);
+        Assert.Null(st.Workspaces[0].DefaultDir);
+    }
 }

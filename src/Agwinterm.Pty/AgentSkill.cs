@@ -133,7 +133,7 @@ public static class AgentSkill
         - `agwintermctl session go next|prev|first|last|next-attention|prev-attention` — move the active session
         - `agwintermctl session move --to up|down|top|bottom`     — reorder within its workspace
         - `agwintermctl session move <workspace-id>`             — relocate to another workspace
-        - `agwintermctl workspace new [name]` / `workspace rename <name> [--target WS]` / `workspace select [--target WS]` / `workspace move --to <dir> [--target WS]` / `workspace delete [--target WS]`
+        - `agwintermctl workspace new [name] [--default-dir DIR]` / `workspace default-dir set <path>|clear [--target WS]` / `workspace rename <name> [--target WS]` / `workspace select [--target WS]` / `workspace move --to <dir> [--target WS]` / `workspace delete [--target WS]`
         - `agwintermctl workspace go next|prev [--window ID]` (also `--to`, alias `previous`) wraps visible workspaces, including collapsed ones; refuses flagged mode, no other destination, quick windows and explicit `--target`.
           An empty destination becomes current without closing the selected terminal. New-session explicit workspace/caller placement still wins over this fallback.
           Tree `foregroundShells` (pane-order, null unknown) and primary/split aliases are conservative Windows shell hints, never idle-prompt or input-safety proof.

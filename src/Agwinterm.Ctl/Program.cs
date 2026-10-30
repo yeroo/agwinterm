@@ -98,7 +98,22 @@ switch (area)
                 cmd = "workspace.new";
                 if (Opt("name") is { } wsname) cargs["name"] = wsname;
                 else if (rest.Count > 0) cargs["name"] = rest[0];
+                if (Opt("default-dir") is { } wsdd) cargs["default-dir"] = wsdd;
                 target = null;
+                break;
+            case "default-dir":
+                if (rest.Count > 0 && rest[0] == "clear")
+                {
+                    cmd = "workspace.default-dir";
+                    cargs["clear"] = true;
+                }
+                else if (rest.Count > 0 && rest[0] == "set")
+                {
+                    if (rest.Count < 2) { Console.Error.WriteLine("workspace default-dir set needs a path"); return 2; }
+                    cmd = "workspace.default-dir";
+                    cargs["defaultDir"] = string.Join(' ', rest.Skip(1));
+                }
+                else { Console.Error.WriteLine("workspace default-dir needs set <path> or clear"); return 2; }
                 break;
             case "rename":
                 cmd = "workspace.rename";

@@ -409,6 +409,39 @@ internal partial class Program
         catch (Exception ex) { ShowToast("elevated launch failed: " + ex.Message); }
     }
 
+    /// <summary>Resolve spawn cwd: explicit, then workspace default when the path exists, then global new-session-dir mode.</summary>
+    private string? ResolveNewSessionCwd(Workspace ws, string? explicitCwd)
+    {
+        if (!string.IsNullOrEmpty(explicitCwd)) return explicitCwd;
+        if (!string.IsNullOrWhiteSpace(ws.DefaultDir) && Directory.Exists(ws.DefaultDir)) return ws.DefaultDir;
+        string? want = _config.NewSessionDirMode switch
+        {
+            "current" => _active is not null ? CurrentDirOf(_active) : null,
+            "custom" => _config.NewSessionDir,
+            _ /*home*/ => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        };
+        if (!string.IsNullOrWhiteSpace(want) && Directory.Exists(want)) return want;
+        return null;
+    }
+
+    /// <summary>Set or clear <see cref="Workspace.DefaultDir"/>. <paramref name="path"/> null/empty clears; otherwise path must exist (normalized full path).</summary>
+    private bool TrySetWorkspaceDefaultDir(Workspace ws, string? path, out string? refuse)
+    {
+        refuse = null;
+        if (string.IsNullOrEmpty(path))
+        {
+            ws.DefaultDir = null;
+            return true;
+        }
+        if (WorkspaceDefaultDirs.ValidateSet(path) is { } err)
+        {
+            refuse = err;
+            return false;
+        }
+        ws.DefaultDir = WorkspaceDefaultDirs.NormalizeSet(path);
+        return true;
+    }
+
     /// <summary>Create a session with its first pane. <paramref name="paneId"/> is pane 0's id; null = the
     /// session id, which is what every caller but restore passes (a <c>session new</c> mints pane 0 =
     /// session id). Restore passes the SAVED pane-0 id, because after a <c>session swap</c> the pane that
@@ -428,17 +461,7 @@ internal partial class Program
             return _active ?? ws.Sessions.FirstOrDefault() ?? CreateSession(id, name, cwd, ws, makeActive, fontSize, command, interactive, extraEnv, null);
         }
         float fs = fontSize is > 0 ? fontSize.Value : (float)_config.FontSize;
-        // No explicit cwd → resolve by the new-session-directory mode (home | current | custom).
-        if (string.IsNullOrEmpty(cwd))
-        {
-            string? want = _config.NewSessionDirMode switch
-            {
-                "current" => _active is not null ? CurrentDirOf(_active) : null,
-                "custom" => _config.NewSessionDir,
-                _ /*home*/ => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            };
-            if (!string.IsNullOrWhiteSpace(want) && Directory.Exists(want)) cwd = want;
-        }
+        cwd = ResolveNewSessionCwd(ws, cwd);
         int ordinal;
         lock (_workspaces) ordinal = ws.Sessions.Count + 1;
         if (name is null && handoff is { Title.Length: > 0 } ht) name = ht.Title;   // label handoff sessions with the app's title
@@ -1560,7 +1583,7 @@ internal partial class Program
         string SessionId = "", long Seq = 0, string? Context = null);
     /// <summary>A recently-closed workspace (its name + all its sessions), so it can be reopened whole.
     /// WorkspaceId is the original id, reused on reopen to keep it stable across close→reopen.</summary>
-    private sealed record ClosedWorkspace(string Name, IReadOnlyList<ClosedSession> Sessions, long Seq, string WorkspaceId = "");
+    private sealed record ClosedWorkspace(string Name, IReadOnlyList<ClosedSession> Sessions, long Seq, string WorkspaceId = "", string? DefaultDir = null);
     private readonly List<ClosedSession> _closedSessions = new();
     private readonly List<ClosedWorkspace> _closedWorkspaces = new();
     private const int MaxClosedSessions = 25;
@@ -1592,7 +1615,7 @@ internal partial class Program
         {
             if (sessions.Count == 0) return;
             var items = sessions.Select(CaptureClosedSessionData).ToList();
-            _closedWorkspaces.Add(new ClosedWorkspace(ws.Name, items, ++_closeSeq, ws.Id));
+            _closedWorkspaces.Add(new ClosedWorkspace(ws.Name, items, ++_closeSeq, ws.Id, ws.DefaultDir));
             if (_closedWorkspaces.Count > MaxClosedSessions) _closedWorkspaces.RemoveAt(0);
         }
         catch { }
@@ -1665,6 +1688,7 @@ internal partial class Program
     {
         _closedWorkspaces.Remove(c);
         var ws = CreateWorkspace(StableWorkspaceId(c.WorkspaceId), c.Name);
+        ws.DefaultDir = c.DefaultDir;
         Ses? first = null;
         foreach (var cs in c.Sessions)
         {

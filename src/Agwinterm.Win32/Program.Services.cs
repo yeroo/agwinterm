@@ -1623,9 +1623,9 @@ internal partial class Program
         {
             // Snapshot rows under the workspaces lock, then read each cwd (which locks the
             // session) OUTSIDE that lock to keep lock ordering consistent.
-            List<(string id, string name, bool expanded, List<Ses> sessions)> rows;
+            List<(string id, string name, bool expanded, string? defaultDir, List<Ses> sessions)> rows;
             lock (_workspaces)
-                rows = _workspaces.Select(w => (w.Id, w.Name, w.Expanded, w.Sessions.ToList())).ToList();
+                rows = _workspaces.Select(w => (w.Id, w.Name, w.Expanded, w.DefaultDir, w.Sessions.ToList())).ToList();
             string? activeId = _active?.Id;
 
             if (captureCommands && _config.RestoreCommands && !CaptureCommandsIntoPanes(rows.SelectMany(r => r.sessions)))
@@ -1641,9 +1641,9 @@ internal partial class Program
                 Mru = _mru.ToList(),   // Ctrl+Tab recency order survives relaunch
             };
             CaptureGeometry(st);
-            foreach (var (id, name, expanded, sessions) in rows)
+            foreach (var (id, name, expanded, defaultDir, sessions) in rows)
             {
-                var wss = new WorkspaceState { Id = id, Name = name, Expanded = expanded };
+                var wss = new WorkspaceState { Id = id, Name = name, Expanded = expanded, DefaultDir = defaultDir };
                 foreach (var s in sessions)
                 {
                     var ss = new SessionState
@@ -1789,6 +1789,7 @@ internal partial class Program
                 // Recreate every saved workspace, including empty ones (agterm keeps empty workspaces).
                 // StableWorkspaceId folds any duplicate id already restored this pass onto a fresh one.
                 var ws = CreateWorkspace(StableWorkspaceId(w.Id), w.Name);
+                ws.DefaultDir = string.IsNullOrWhiteSpace(w.DefaultDir) ? null : w.DefaultDir;
                 foreach (var s in w.Sessions ?? new List<SessionState>())
                 {
                     // Back-compat: a pre-splits session has no Panes — synthesize one from its Cwd/FontSize.

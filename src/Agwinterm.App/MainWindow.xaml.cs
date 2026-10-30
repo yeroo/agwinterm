@@ -531,12 +531,15 @@ public sealed partial class MainWindow : Window, ISessionHost
         return true;
     }
 
-    public string NewWorkspace(string? name)
+    public string NewWorkspace(string? name, string? defaultDir = null)
     {
         string id = Guid.NewGuid().ToString();
         DispatcherQueue.TryEnqueue(() => CreateWorkspace(id, name));
         return id;
     }
+
+    public string WorkspaceDefaultDir(string? target, string? dir) =>
+        ISessionHost.RefusePrefix + WorkspaceDefaultDirs.NoWorkspace;
 
     private void UpdateTitle()
     {

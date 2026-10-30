@@ -420,6 +420,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public required string Name;
         public readonly List<Ses> Sessions = new();
         public bool Expanded = true;
+        public string? DefaultDir;
     }
 
     /// <summary>One overlay slot (P5): the ONE type behind the session-wide slot (<see cref="Ses.Overlay"/>,

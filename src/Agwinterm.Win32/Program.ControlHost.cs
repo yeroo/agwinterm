@@ -217,7 +217,7 @@ internal partial class Program
                                              .Select(t => OverlayPanes.Word(t.i)).ToList(), Hud: s.Hud,
                         ForegroundShells: s.Panes.Select(p => p.S.HasExited ? null : shells.GetValueOrDefault(p)).ToList());
                 }).ToList()
-            , Collapsed: !w.Expanded)).ToList();
+            , Collapsed: !w.Expanded, DefaultDir: w.DefaultDir)).ToList();
     }
 
     // Read-back snapshot: plain field reads + a Win32 query, safe from the pipe thread (worst case slightly stale).
@@ -384,11 +384,37 @@ internal partial class Program
         return true;
     }
 
-    public string NewWorkspace(string? name)
+    public string NewWorkspace(string? name, string? defaultDir = null)
     {
         string id = Guid.NewGuid().ToString();
-        PostVerb(() => CreateWorkspace(id, name));
+        PostVerb(() =>
+        {
+            var ws = CreateWorkspace(id, name);
+            if (!string.IsNullOrEmpty(defaultDir))
+            {
+                if (TrySetWorkspaceDefaultDir(ws, defaultDir, out _))
+                {
+                    SaveState();
+                    EmitEvent("tree");
+                }
+            }
+        });
         return id;
+    }
+
+    public string WorkspaceDefaultDir(string? target, string? dir)
+    {
+        return InvokeOnUiQueued(() =>
+        {
+            var ws = string.IsNullOrEmpty(target) || target == "active" ? ActiveWorkspace() : FindWs(target);
+            if (ws is null) return ISessionHost.RefusePrefix + WorkspaceDefaultDirs.NoWorkspace;
+            if (!TrySetWorkspaceDefaultDir(ws, dir, out string? refuse))
+                return ISessionHost.RefusePrefix + refuse!;
+            RequestRedraw();
+            SaveState();
+            EmitEvent("tree");
+            return WorkspaceDefaultDirs.Reply(ws.Id, ws.DefaultDir);
+        });
     }
 
     public bool SetFontSize(string? target, string op)

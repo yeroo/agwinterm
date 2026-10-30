@@ -547,6 +547,19 @@
       "settle": 2
     },
     {
+      "verb": "workspace.default-dir",
+      "args": [
+        "workspace",
+        "default-dir",
+        "set",
+        "{cwd}",
+        "--target",
+        "{ws}"
+      ],
+      "result": "object",
+      "settle": 1
+    },
+    {
       "verb": "workspace.rename",
       "args": [
         "workspace",

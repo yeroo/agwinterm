@@ -70,7 +70,8 @@ $env:AGWINTERM_WINDOW_ID = $null
 
 $contract = Get-Content $Spec -Raw | ConvertFrom-Json
 $pipe = 'conform'
-$vars = @{}
+# Built-in placeholders for steps that need a real directory (workspace.default-dir set).
+$vars = @{ cwd = (Resolve-Path -LiteralPath $PSScriptRoot).Path }
 $checked = 0
 
 # Substitute {captured} values into an argument list.
