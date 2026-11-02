@@ -64,6 +64,23 @@ public class SixelTests
         Assert.True(pl.ImageId < 0);   // sixel-generated id
     }
 
+    [Theory]
+    [InlineData("+q4D73")]   // XTGETTCAP "Ms" (neovim at startup): "D" after the 'q' is valid sixel data
+    [InlineData("$qm")]      // DECRQSS SGR
+    public void Decode_RejectsDcsWithIntermediatesBeforeQ(string payload)
+    {
+        Assert.Null(Sixel.Decode(Encoding.ASCII.GetBytes(payload)));
+    }
+
+    [Fact]
+    public void Emulator_XtgettcapQuery_PlacesNoImageAndKeepsTheCursor()
+    {
+        var t = new TerminalEmulator(40, 10);
+        t.Feed(Encoding.UTF8.GetBytes("\x1b[H\x1bP+q4D73\x1b\\"));
+        Assert.Empty(t.Placements);
+        Assert.Equal((0, 0), (t.CursorRow, t.CursorCol));
+    }
+
     private static byte[] ToDcs(string sixelBody)
         => Encoding.ASCII.GetBytes("0;0;0q" + sixelBody);   // params + 'q' + body (as DcsDispatch receives)
 }
