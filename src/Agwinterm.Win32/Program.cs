@@ -211,6 +211,7 @@ internal partial class Program : ISessionHost, IWindowHost
     private Ses? _toastTarget;   // when the toast is a notification banner: click it to jump to this session
     private Rect _toastRect;     // last-drawn banner rect (for click-to-jump hit-testing)
     private bool _trayAdded;     // whether the Shell_NotifyIcon tray icon has been created (for OS balloons)
+    private IntPtr _hIconTray;   // app icon at the tray's small-icon size (falls back to IDI_APPLICATION)
 
     // Terminal text selection drag + multi-click (word/line) tracking.
     private bool _selecting;       // left-drag selecting text in the content region
@@ -719,6 +720,13 @@ internal partial class Program : ISessionHost, IWindowHost
             {
                 ExtractIconExW(exe, 0, out hIconBig, out hIconSm, 1);
             }
+            // Tray icon at the small-icon size for the current DPI (16px is blurry at 125%+).
+            if (System.IO.File.Exists(icoPath))
+            {
+                int trayPx = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForWindow(_hwnd));
+                _hIconTray = LoadImageW(IntPtr.Zero, icoPath, IMAGE_ICON, trayPx, trayPx, LR_LOADFROMFILE);
+            }
+            if (_hIconTray == IntPtr.Zero) _hIconTray = hIconSm;
             if (hIconBig != IntPtr.Zero) SendMessageW(_hwnd, WM_SETICON, (IntPtr)ICON_BIG, hIconBig);
             if (hIconSm != IntPtr.Zero) SendMessageW(_hwnd, WM_SETICON, (IntPtr)ICON_SMALL, hIconSm);
         }
