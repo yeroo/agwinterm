@@ -196,7 +196,7 @@ internal partial class Program
                 hWnd = _hwnd,
                 uID = 1,
                 uFlags = NIF_INFO | (_trayAdded ? 0u : (NIF_ICON | NIF_TIP)),
-                hIcon = _trayAdded ? IntPtr.Zero : LoadIconW(IntPtr.Zero, (IntPtr)32512), // IDI_APPLICATION
+                hIcon = _trayAdded ? IntPtr.Zero : (_hIconTray != IntPtr.Zero ? _hIconTray : LoadIconW(IntPtr.Zero, (IntPtr)32512)), // app icon, else IDI_APPLICATION
                 szTip = AppName,
                 szInfoTitle = string.IsNullOrEmpty(title) ? AppName : title,
                 szInfo = body.Length == 0 ? " " : body,
