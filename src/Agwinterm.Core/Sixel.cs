@@ -17,8 +17,14 @@ public static class Sixel
     public static (int Width, int Height, byte[] Rgba)? Decode(byte[] dcs)
     {
         // The DCS payload is "P1;P2;P3 q <sixel-data>". Skip params up to and including 'q'.
+        // Only digits and ';' may precede it: a sixel DCS has no intermediates, so XTGETTCAP
+        // ("+q4D73") and DECRQSS ("$qm") are not images, though their tails are valid sixel data.
         int i = 0;
-        while (i < dcs.Length && dcs[i] != (byte)'q') i++;
+        while (i < dcs.Length && dcs[i] != (byte)'q')
+        {
+            if (dcs[i] != (byte)';' && (dcs[i] < (byte)'0' || dcs[i] > (byte)'9')) return null;
+            i++;
+        }
         if (i >= dcs.Length) return null;   // no sixel introducer
         i++;
 

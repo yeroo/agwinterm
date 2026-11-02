@@ -16,8 +16,13 @@ const MAX_DECODE_WORK: usize = MAX_CANVAS_PIXELS;
 
 pub fn decode(dcs: &[u8]) -> Option<Decoded> {
     // The DCS payload is "P1;P2;P3 q <sixel-data>". Skip params up to and including 'q'.
+    // Only digits and ';' may precede it: a sixel DCS has no intermediates, so XTGETTCAP
+    // ("+q4D73") and DECRQSS ("$qm") are not images, though their tails are valid sixel data.
     let mut i = 0usize;
     while i < dcs.len() && dcs[i] != b'q' {
+        if dcs[i] != b';' && !dcs[i].is_ascii_digit() {
+            return None;
+        }
         i += 1;
     }
     if i >= dcs.len() {
@@ -315,6 +320,8 @@ mod tests {
     #[test]
     fn not_sixel() {
         assert!(decode(b"$q????").is_none()); // 'q' present but every sixel has zero bits
+        assert!(decode(b"+q4D73").is_none()); // XTGETTCAP: "D" is valid sixel data, '+' is not a param
+        assert!(decode(b"$qm").is_none()); // DECRQSS SGR
         assert!(decode(b"no-introducer-at-all!").is_none());
         assert!(decode(b"").is_none());
     }
