@@ -63,7 +63,8 @@ function ShotWindow([IntPtr]$h,[string]$name){
 }
 
 $expectedFile=@('New Window','Open Window','Rename Window…','Delete Window','New Workspace','Rename Workspace','Delete Workspace',
-    'New Session','Open Directory…','Open Recent','Reopen Last Closed Item','Rename Session','Duplicate Session','Reveal in Explorer',
+    'New Session','Open Directory…','Open Recent','Reopen Last Closed Item','Rename Session','Duplicate Session',
+    'Set Session Link…','Open Session Link','Clear Session Link','Reveal in Explorer',
     'Close Session','Reopen Closed Item','Clear Status','Edit Keymap…','Reload Keymap','Edit agwinterm.conf…','Reload Config')
 
 # ---- The bar itself, through UIA.
@@ -84,6 +85,10 @@ Check 'Open Recent is disabled with nothing closed' ($null-ne (Row 'File' 'Open 
 Check 'New Session is enabled' ((Row 'File' 'New Session').Current.IsEnabled)
 Check 'New Session shows its default chord as the accelerator' ((Row 'File' 'New Session').Current.AcceleratorKey-eq 'Ctrl+Shift+T') "acc=$((Row 'File' 'New Session').Current.AcceleratorKey)"
 Check 'a row without a chord has no accelerator' ([string]::IsNullOrEmpty((Row 'File' 'Open Directory…').Current.AcceleratorKey))
+Check 'Set Session Link… is enabled with a session' ((Row 'File' 'Set Session Link…').Current.IsEnabled)
+Check 'Open Session Link is listed but disabled without a link' ($null-ne (Row 'File' 'Open Session Link') -and -not (Row 'File' 'Open Session Link').Current.IsEnabled)
+Check 'Clear Session Link is listed but disabled without a link' ($null-ne (Row 'File' 'Clear Session Link') -and -not (Row 'File' 'Clear Session Link').Current.IsEnabled)
+Check 'Open Session Link shows its default chord' ((Row 'File' 'Open Session Link').Current.AcceleratorKey-eq 'Ctrl+Shift+L') "acc=$((Row 'File' 'Open Session Link').Current.AcceleratorKey)"
 $popups=@([MenuBarNative]::Popups($job.Pid))
 Check 'the dropdown is a real popup window of the owned process' ($popups.Count-eq 1) "popups=$($popups.Count)"
 if($popups.Count-eq 1){ ShotWindow $popups[0] 'file-menu' }
@@ -126,6 +131,18 @@ $before=@((Rpc 'tree').workspaces|ForEach-Object sessions).Count
 Invoke-Element (Row 'File' 'New Session')
 Check 'Invoke on New Session creates a session and closes the menu' ((MenuWait {@((Rpc 'tree').workspaces|ForEach-Object sessions).Count-eq $before+1}) -and (MenuWait {@(Rows 'File').Count-eq 0}))
 Check 'the popup window is gone with the menu' (MenuWait {@([MenuBarNative]::Popups($job.Pid)).Count-eq 0})
+
+# ---- Session link rows follow the active session's link (the `link` term). Open Session Link is not
+# invoked: it would launch the browser. Clear Session Link is, and the tree reads the clear back.
+function ActiveLink { foreach($s in @((Rpc 'tree').workspaces|ForEach-Object sessions)){ if($s.active){ return $s.link } }; $null }
+[void](Rpc 'session.link' @{link='https://example.com/issues/1'})
+Check 'session.link sets the active session''s link' ((ActiveLink)-eq 'https://example.com/issues/1') "link=$(ActiveLink)"
+Invoke-Element (BarLabel 'File')
+Check 'File opens again for the link rows' (MenuWait {@(Rows 'File').Count-gt 0})
+Check 'Open Session Link is enabled once the session has a link' ((Row 'File' 'Open Session Link').Current.IsEnabled)
+Check 'Clear Session Link is enabled once the session has a link' ((Row 'File' 'Clear Session Link').Current.IsEnabled)
+Invoke-Element (Row 'File' 'Clear Session Link')
+Check 'Invoke on Clear Session Link clears it and closes the menu' ((MenuWait {$null-eq (ActiveLink)}) -and (MenuWait {@(Rows 'File').Count-eq 0})) "link=$(ActiveLink)"
 
 # ---- The keyboard: a lone Alt tap focuses the bar; arrows move; Enter opens; Esc leaves one level at a time.
 AltTap
