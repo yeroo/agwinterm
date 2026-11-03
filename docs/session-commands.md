@@ -29,8 +29,8 @@ requires a nonempty command. A command cannot be combined with `--profile`.
 Invalid command options are refused before creating a workspace or session. If a valid
 command cannot start (for example, its executable is missing), the returned session
 keeps a diagnostic pane with no process accepting input. When a successfully started
-process exits, its session shows the exit code and `Press Enter to close the session.`;
-press Enter in that tab to close it. This also applies to direct-mode programs and
+process exits, its single-pane session remains visible and shows the exit code and
+`Press Enter to close the session.`; press Enter in that tab to close it. This also applies to direct-mode programs and
 PowerShell commands that exit their shell. A command that returns to a live
 PowerShell prompt has not ended the session. To match Lite's
 host protocol, each launch is limited to a 259-byte UTF-8 executable name, 16
