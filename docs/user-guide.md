@@ -86,11 +86,11 @@
     PROMPT_COMMAND="__agw_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
   fi
   ```
-- When a **normal profile / login-shell** tab’s process exits, its exit code appears in the session's
+- When a **session** tab’s process exits, its exit code appears in the session's
   accessible name and unread badge tooltip. A background exit sends an `ok` notification for code 0 or
-  `attention` for a non-zero code. The exited shell remains visible; tabs started with
-  `session new --command` are unchanged.
-- Exited profile/login shells print `Press Enter to close the session.` in the terminal. Enter closes
+  `attention` for a non-zero code. The exited process remains visible, including tabs started with
+  `session new --command` (both PowerShell and direct mode).
+- Exited sessions print `Press Enter to close the session.` in the terminal. Enter closes
   that tab without the generic close-confirmation dialog; manual closes still follow
   `confirm-close-session`.
 
