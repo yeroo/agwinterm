@@ -15,7 +15,8 @@ namespace Agwinterm.Pty;
 /// %APPDATA%/devin/config.json (JSONC, rewritten as JSON):
 ///   UserPromptSubmit -> active, PostToolUse -> active, PermissionRequest -> blocked, Stop -> completed.
 /// All three also get a SessionStart hook that binds the pane to the live session id, so a restart
-/// resumes that session in any shell (<see cref="AgentBindScript"/>, #316).
+/// resumes that session in any shell (<see cref="AgentBindScript"/>, #316). Claude alone also gets a
+/// SessionEnd hook that unbinds the pane when the user ends the conversation (<see cref="AgentUnbindScript"/>, #368).
 /// The wrappers no-op (exit 0) outside agwinterm and never fail a turn.
 /// </summary>
 public static class AgentHooks
@@ -30,6 +31,7 @@ public static class AgentHooks
     public static string CodexHooksPath => Path.Combine(Home, ".codex", "hooks.json");
     public static string DevinConfigPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "devin", "config.json");
     public static string AgentBindPath => Path.Combine(LocalAppData, "agwinterm", "agwinterm-agent-bind.ps1");
+    public static string AgentUnbindPath => Path.Combine(LocalAppData, "agwinterm", "agwinterm-agent-unbind.ps1");
 
     /// <summary>SessionStart handler for every agent: argv[0] is the agent, the event JSON (session_id,
     /// cwd; Devin sends no cwd, DEVIN_PROJECT_DIR stands in) arrives on stdin. It reports the id, the cwd and its own PID with <c>session.bind</c>; agwinterm
@@ -70,6 +72,42 @@ public static class AgentHooks
           # Wait (bounded) for the reply: agwinterm snapshots the process tree from this PID before it
           # answers, so the hook must still be alive when it does.
           $null = (New-Object System.IO.StreamReader($c)).ReadLineAsync().Wait(3000)
+          $c.Dispose()
+        } catch { }
+        exit 0
+        """;
+
+    /// <summary>Claude's SessionEnd handler: argv[0] is the agent, the event JSON (session_id, reason) arrives
+    /// on stdin. Only <c>prompt_input_exit</c>, the user ending the conversation (<c>/exit</c>, Ctrl+C twice,
+    /// Ctrl+D), is reported with <c>session.ended</c>; agwinterm then drops the pane's resume binding if it
+    /// names that session. It is a verb of its own, not a form of <c>session.bind</c>: a host that predates
+    /// it answers <c>unknown command</c>, where <c>session.bind</c> would take the request for a relaunch
+    /// line and overwrite the pane's resume line. Every other reason leaves the binding: <c>clear</c> and <c>resume</c>
+    /// hand over to another session, and <c>other</c> is what a closed pane, a killed pty-host or a nested
+    /// <c>claude -p</c> reports. Claude only: Codex's SessionEnd reason is always <c>other</c> and it also fires
+    /// on idle, and Devin's reasons are undocumented, so neither can tell a user's exit from anything else.</summary>
+    public const string AgentUnbindScript =
+        """
+        param([string]$Agent)
+        # agwinterm SessionEnd hook: the user ended the conversation, so stop resuming it on restart. No-op outside agwinterm.
+        if (-not $env:AGWINTERM_SESSION_ID) { exit 0 }
+        $o = $null
+        try { $o = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::UTF8).ReadToEnd() | ConvertFrom-Json } catch { }
+        if (-not $o -or -not $o.session_id -or "$($o.reason)" -cne 'prompt_input_exit') { exit 0 }
+        # The same two guards as the SessionStart hook: Devin also runs Claude's hooks, and a nested `claude -p`
+        # inherits AGWINTERM_SESSION_ID.
+        if ($env:DEVIN_PROJECT_DIR) { exit 0 }
+        if (($env:CLAUDE_CODE_ENTRYPOINT -and $env:CLAUDE_CODE_ENTRYPOINT -ne 'cli') -or $env:CLAUDE_CODE_SESSION_ATTENDED -eq '0') { exit 0 }
+        $req = @{ cmd = 'session.ended'; target = $env:AGWINTERM_SESSION_ID; args = @{ agent = $Agent; session = "$($o.session_id)" } } | ConvertTo-Json -Compress
+        $pipe = if ($env:AGWINTERM_PIPE) { $env:AGWINTERM_PIPE } else { 'agwinterm' }
+        try {
+          $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe, [System.IO.Pipes.PipeDirection]::InOut)
+          $c.Connect(1000)
+          $w = New-Object System.IO.StreamWriter($c); $w.AutoFlush = $true
+          $w.WriteLine($req)
+          # Wait (bounded) for the reply, so agwinterm has accepted the request before the hook exits: Claude
+          # kills a SessionEnd hook at its timeout. Startup and the two waits fit the 5 s the hook entry allows.
+          $null = (New-Object System.IO.StreamReader($c)).ReadLineAsync().Wait(2000)
           $c.Dispose()
         } catch { }
         exit 0
@@ -188,13 +226,15 @@ public static class AgentHooks
 
     /// <summary>
     /// Merge the status hooks into an existing settings.json string (or null/empty for a new file), and
-    /// the SessionStart binding hook when <paramref name="bindScript"/> is given.
+    /// the SessionStart binding hook when <paramref name="bindScript"/> is given, and the SessionEnd unbinding
+    /// hook when <paramref name="unbindScript"/> is (with a 5 s timeout: Claude gives SessionEnd 1.5 s by
+    /// default, and powershell's startup alone can use most of that).
     /// Returns the merged JSON, or null if the existing content is non-empty but malformed
     /// (we refuse to clobber a hand-maintained file). Idempotent: entries already referencing
     /// the wrapper are not duplicated.
     /// </summary>
-    public static string? MergeClaudeSettings(string? existing, string wrapper, string? bindScript = null)
-        => MergeBind(MergeHooks(existing, wrapper, Hooks), bindScript, "claude");
+    public static string? MergeClaudeSettings(string? existing, string wrapper, string? bindScript = null, string? unbindScript = null)
+        => MergeUnbind(MergeBind(MergeHooks(existing, wrapper, Hooks), bindScript, "claude"), unbindScript);
 
     /// <summary>
     /// Merge the Codex status hooks (and the SessionStart binding hook when <paramref name="bindScript"/>
@@ -207,11 +247,15 @@ public static class AgentHooks
     public static string? MergeDevinConfig(string? existing, string wrapper, string? bindScript = null)
         => MergeBind(MergeHooks(existing, wrapper, DevinHooks, allowJsonComments: true), bindScript, "devin");
 
+    private static string? MergeUnbind(string? merged, string? unbindScript)
+        => merged is null || unbindScript is null ? merged
+            : MergeHooks(merged, unbindScript, new[] { ("SessionEnd", (string?)null, "claude") }, timeoutSeconds: 5);
+
     private static string? MergeBind(string? merged, string? bindScript, string agent)
         => merged is null || bindScript is null ? merged : MergeHooks(merged, bindScript, new[] { ("SessionStart", (string?)null, agent) });
 
     private static string? MergeHooks(string? existing, string wrapper, (string Event, string? Matcher, string State)[] table,
-        bool allowJsonComments = false)
+        bool allowJsonComments = false, int? timeoutSeconds = null)
     {
         JsonObject root;
         if (string.IsNullOrWhiteSpace(existing))
@@ -256,6 +300,7 @@ public static class AgentHooks
                     ["command"] = Command(wrapper, state),
                 }),
             };
+            if (timeoutSeconds is int timeout) entry["hooks"]![0]!["timeout"] = timeout;
             if (matcher is not null) entry["matcher"] = matcher;
             arr.Add(entry);
         }
@@ -320,9 +365,11 @@ public static class AgentHooks
         File.WriteAllText(WrapperPath, WrapperScript);
         // The SessionStart binding script is shared by every agent (argv[0] names the agent).
         File.WriteAllText(AgentBindPath, AgentBindScript);
+        // The SessionEnd unbinding script is Claude's alone (see AgentUnbindScript for why).
+        File.WriteAllText(AgentUnbindPath, AgentUnbindScript);
 
         string? existing = File.Exists(ClaudeSettingsPath) ? File.ReadAllText(ClaudeSettingsPath) : null;
-        string? merged = MergeClaudeSettings(existing, WrapperPath, AgentBindPath);
+        string? merged = MergeClaudeSettings(existing, WrapperPath, AgentBindPath, AgentUnbindPath);
         if (merged is null)
             lines.Add("Claude: refused — ~/.claude/settings.json exists but isn't valid JSON; left untouched");
         else

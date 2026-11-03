@@ -1265,28 +1265,32 @@ internal partial class Program
         var hit = FindPaneById(target!);
         if (hit is null) return false;
         string? val = SessionOperations.Binding(agent);
-        Interlocked.Increment(ref hit.Value.pane.BindSeq);   // supersedes a SessionStart binding still resolving
-        PostVerb(() => { hit.Value.pane.AgentResume = val; SaveState(); });
+        hit.Value.pane.Bind.Supersede();   // a SessionStart binding still resolving no longer applies
+        // The generation moves again with the assignment: an end report accepted between the two must not
+        // clear the line that is written here.
+        PostVerb(() => { hit.Value.pane.Bind.Advance(); hit.Value.pane.AgentResume = val; SaveState(); });
         return true;
     }
 
     // SessionStart binding (#316). The Toolhelp walk from the hook's PID runs here, before the reply,
     // because the hook exits as soon as it is answered. The command lines (a CIM query, ~1 s) are read
     // after it, off the pipe thread: the agent and the shell outlive the hook. The outcome, bound or
-    // ignored with the reason, is a `bind` event.
+    // ignored with the reason, is a `bind` event. The binding is published (AgentBindState.Begin) before
+    // the walk and lands (Land) only if no other write superseded it; a session reported ended meanwhile
+    // makes it an unbind instead of a store.
     public bool SessionBindResume(string? target, string agent, string sessionId, string? cwd, int hookPid)
     {
         if (string.IsNullOrEmpty(target)) return false;
         var hit = FindPaneById(target!);
         if (hit is null) return false;
         var pane = hit.Value.pane;
-        int seq = Interlocked.Increment(ref pane.BindSeq);
+        var pending = pane.Bind.Begin(agent, sessionId);   // published before the walk, on this thread
         var chain = SnapshotAncestry(hookPid);
         int? shellPid = pane.S.ChildProcessId;
         var shell = Agwinterm.Pty.AgentResume.ClassifyShell(ResolveProfile(hit.Value.ses?.ProfileName)?.Command ?? "powershell.exe");
         _ = Task.Run(() =>
         {
-            string outcome;
+            string? outcome;   // null: the posted write reports its own
             try
             {
                 if (chain is null || shellPid is not int sp) outcome = "ignored: the process tree could not be read";
@@ -1303,18 +1307,82 @@ internal partial class Program
                             Agwinterm.Pty.AgentResume.ResumeFlags(agent, cmdline));
                         Post(() =>
                         {
-                            if (Volatile.Read(ref pane.BindSeq) != seq) return;   // a later bind won
-                            pane.AgentResume = relaunch;
-                            SaveState();
+                            switch (pane.Bind.Land(pending))
+                            {
+                                case Agwinterm.Pty.AgentResume.BindLanding.Superseded:   // a later bind won
+                                    EmitEvent("bind", pane.Id, "superseded: " + relaunch);
+                                    break;
+                                case Agwinterm.Pty.AgentResume.BindLanding.Unbind:   // it ended while it resolved
+                                    ClearAgentBinding(pane);
+                                    EmitEvent("bind", pane.Id, "unbound: " + relaunch + " (the session ended while it was resolving)");
+                                    break;
+                                default:
+                                    pane.AgentResume = relaunch;
+                                    SaveState();
+                                    EmitEvent("bind", pane.Id, "bound: " + relaunch);
+                                    break;
+                            }
                         });
-                        outcome = "bound: " + relaunch;
+                        outcome = null;
                     }
                 }
             }
             catch (Exception ex) { outcome = "ignored: " + ex.Message; }
+            if (outcome is null) return;
+            pane.Bind.Abandon(pending);
             EmitEvent("bind", pane.Id, outcome);
         });
         return true;
+    }
+
+    // SessionEnd unbinding (#368): the user ended the session, so drop the binding that would reopen it.
+    // AgentBindState decides, in two steps. Accepted here, on the pipe thread: the report of a restart the
+    // app drives itself (Ctrl+C) is told apart by the pane's single-use token, and a SessionStart binding
+    // still resolving for the same session is marked, together with the generation of the pane's line.
+    // In the UI-thread hop: the line is cleared only if it is still that generation and resumes the session,
+    // so a report that runs late never touches a line written after it was accepted. A marked binding
+    // lands as an unbind (SessionBindResume) instead of storing.
+    public bool SessionUnbindEnded(string? target, string agent, string sessionId)
+    {
+        if (string.IsNullOrEmpty(target)) return false;
+        var hit = FindPaneById(target!);
+        if (hit is null) return false;
+        var pane = hit.Value.pane;
+        var ticket = pane.Bind.AcceptEnded(agent, sessionId, Environment.TickCount64);
+        if (ticket.Restart)
+        {
+            EmitEvent("bind", pane.Id, "kept: the pane's agent is being restarted");
+            return true;
+        }
+        PostVerb(() =>
+        {
+            string? line = pane.AgentResume;
+            switch (pane.Bind.TryUnbind(ticket, line))
+            {
+                case Agwinterm.Pty.AgentBindState.UnbindResult.Cleared:
+                    ClearAgentBinding(pane);
+                    EmitEvent("bind", pane.Id, "unbound: " + line);
+                    break;
+                case Agwinterm.Pty.AgentBindState.UnbindResult.Stale:
+                    EmitEvent("bind", pane.Id, "kept: the line was written after the report was accepted");
+                    break;
+                default:
+                    EmitEvent("bind", pane.Id, ticket.MarkedPending
+                        ? "pending: its binding is dropped once confirmed as the pane's own agent"
+                        : $"kept: {(string.IsNullOrEmpty(line) ? "no binding" : line)} does not resume {sessionId}");
+                    break;
+            }
+        });
+        return true;
+    }
+
+    // Drop a pane's resume binding and save (AgentBindState has counted it). A restore-commands capture of
+    // claude would replay the same session after it is gone, so it goes with it. UI thread.
+    private void ClearAgentBinding(Pane pane)
+    {
+        pane.AgentResume = null;
+        if (Agwinterm.Pty.AgentResume.IsClaudeCommand(pane.CapturedCommand)) pane.CapturedCommand = null;
+        SaveState();
     }
 
     // Pin (or clear, command = null) a restore command on a specific pane (agterm #271). Persisted so
@@ -1385,25 +1453,25 @@ internal partial class Program
     // The restore-commands toggle gates the REPLAY, not the capture — reported as replayOnRestore.
     public RestoreCaptureResult RestoreCapture(string? target)
     {
-        var snap = new List<(Pane pane, Ses ses, int pid)>();
+        var snap = new List<(Pane pane, Ses ses, int pid, int unbinds)>();
         if (string.IsNullOrEmpty(target))
         {
             lock (_workspaces)
                 foreach (var s in _workspaces.SelectMany(w => w.Sessions))
-                    foreach (var p in s.Panes) snap.Add((p, s, p.S.ChildProcessId ?? 0));
+                    foreach (var p in s.Panes) snap.Add((p, s, p.S.ChildProcessId ?? 0, p.Bind.Unbinds));
         }
         else if (target == "active")
         {
             Ses? a = _active;
             if (a is null) return RestoreCaptureResult.Refuse(RestoreCaptureReply.UnknownTarget(target));
-            lock (_workspaces) { var p = a.ActivePane; snap.Add((p, a, p.S.ChildProcessId ?? 0)); }
+            lock (_workspaces) { var p = a.ActivePane; snap.Add((p, a, p.S.ChildProcessId ?? 0, p.Bind.Unbinds)); }
         }
         else
         {
             var hit = FindControlPane(target);   // session.restore's resolver: exact pane, exact session, pane prefix, session prefix / name
             if (hit is null) return RestoreCaptureResult.Refuse(RestoreCaptureReply.UnknownTarget(target));
             if (hit.Value.cover || hit.Value.ses is null) return RestoreCaptureResult.Refuse(RestoreCaptureReply.CoverPane(hit.Value.pane.Id));
-            snap.Add((hit.Value.pane, hit.Value.ses, hit.Value.pane.S.ChildProcessId ?? 0));
+            snap.Add((hit.Value.pane, hit.Value.ses, hit.Value.pane.S.ChildProcessId ?? 0, hit.Value.pane.Bind.Unbinds));
         }
 
         if (!TryCaptureForegroundCommands(snap.Select(x => x.pid).Where(pid => pid > 0), timeoutMs: 15000, out var byPid))
@@ -1413,10 +1481,13 @@ internal partial class Program
         {
             var landed = new List<CapturedPane>(snap.Count);
             lock (_workspaces)
-                foreach (var (pane, ses, pid) in snap)
+                foreach (var (pane, ses, pid, unbinds) in snap)
                 {
                     if (!_workspaces.Contains(ses.Ws) || !ses.Ws.Sessions.Contains(ses) || !ses.Panes.Contains(pane)) continue;   // closed since the snapshot
-                    pane.CapturedCommand = pid > 0 && byPid.TryGetValue(pid, out var cmd) ? cmd : null;
+                    // The processes were read before an unbind (#368) cleared the pane's claude command: writing
+                    // that read now would bring the command back, so the slot keeps what the unbind left.
+                    if (!pane.Bind.UnbindsSince(unbinds))
+                        pane.CapturedCommand = pid > 0 && byPid.TryGetValue(pid, out var cmd) ? cmd : null;
                     landed.Add(new CapturedPane(pane.Id, ses.Id, pane.CapturedCommand));
                 }
             // The snapshot is built here, on the UI thread, where the tree is, and STAMPED here, so

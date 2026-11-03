@@ -173,6 +173,58 @@ public static class AgentResume
     }
 
     /// <summary>
+    /// Whether <paramref name="line"/>, a stored relaunch line, resumes exactly session <paramref name="id"/>
+    /// of <paramref name="agent"/>: the run <see cref="Compose"/> ends every line with, matched by whole
+    /// tokens (<c>abc</c> is not <c>abcd</c>), in any shell's form. A line that names no session (a legacy
+    /// <c>claude</c>, flags alone, <c>echo claude --resume abc</c>) never matches, so an unbind cannot clear
+    /// what it did not bind.
+    ///
+    /// <para>The directory prefix is the agent's own text, so the run is taken from the end: its last head
+    /// (<c>claude --resume</c>, <c>codex resume</c>, <c>devin --resume</c>), which must follow the prefix's
+    /// separator (<c>&amp;&amp;</c>, or a token ending in <c>;</c>, as PowerShell's quoted directory does) or start
+    /// the line, and be followed by the id and then only flags and their values. What stands before that
+    /// separator is not looked at, so a pinned <c>npm test; claude --resume abc</c> matches too.</para>
+    /// </summary>
+    public static bool ResumesSession(string? line, string agent, string id)
+        => IsValidSessionId(id) && ResumedSession(line, agent) == id;
+
+    /// <summary>The session id <paramref name="line"/> resumes, by the rules of <see cref="ResumesSession"/>;
+    /// null when it names none.</summary>
+    public static string? ResumedSession(string? line, string agent)
+    {
+        if (string.IsNullOrWhiteSpace(line) || !IsKnownAgent(agent)) return null;
+        string verb = agent == "codex" ? "resume" : "--resume";
+        var tokens = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        int head = tokens.Length - 3;
+        while (head >= 0 && !(tokens[head] == agent && tokens[head + 1] == verb)) head--;
+        if (head < 0) return null;
+        if (head > 0 && tokens[head - 1] != "&&" && !tokens[head - 1].EndsWith(';')) return null;
+        return IsValidSessionId(tokens[head + 2]) && tokens.Skip(head + 3).All(t => FlagValueRe.IsMatch(t)) ? tokens[head + 2] : null;
+    }
+
+    /// <summary>Whether a captured foreground command line (what <c>restore-commands</c> would replay) starts
+    /// Claude Code: its executable by name (a path, quoted or not, with or without <c>.exe</c>), or node
+    /// running the npm package, the same recognition the SessionStart binding uses (<see cref="AgentOf"/>).</summary>
+    public static bool IsClaudeCommand(string? commandLine)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine)) return false;
+        var args = SplitCommandLine(commandLine.Trim());
+        if (args.Count == 0) return false;
+        string exe = Path.GetFileName(args[0]);
+        if (!exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) exe += ".exe";
+        return AgentOf(new ProcRow(0, 0, exe, commandLine)) == "claude";
+    }
+
+    public enum BindLanding { Store, Superseded, Unbind }
+
+    /// <summary>Where a SessionStart binding that the process-tree walk has accepted lands: a later write
+    /// that came first wins; otherwise a session reported ended while it resolved (<paramref name="ended"/>) is
+    /// not stored and the pane is unbound, else the line is stored. A binding the walk refuses never gets
+    /// here: the pane's line stays as it was. <see cref="AgentBindState.Land"/> is the caller.</summary>
+    public static BindLanding LandBind(bool superseded, bool ended)
+        => superseded ? BindLanding.Superseded : ended ? BindLanding.Unbind : BindLanding.Store;
+
+    /// <summary>
     /// <paramref name="value"/> as the inside of a PowerShell single-quoted string. PowerShell ends such a
     /// string at any of five characters, not only the ASCII apostrophe: U+0027, U+2018, U+2019, U+201A and
     /// U+201B (its own <c>CodeGeneration.EscapeSingleQuotedStringContent</c> doubles all five). Doubling only

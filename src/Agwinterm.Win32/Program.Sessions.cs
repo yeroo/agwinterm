@@ -1138,8 +1138,10 @@ internal partial class Program
             string cmd = id is null
                 ? "claude --dangerously-skip-permissions"
                 : $"claude --resume {id} --dangerously-skip-permissions";
-            Post(() => { pane.AgentResume = cmd; SaveState(); });   // future restarts stay YOLO
-            await QuitClaudeAndRelaunch(pane, cmd);
+            // The session being quit, read before the replacement line is posted over it.
+            string? quitting = Agwinterm.Pty.AgentResume.ResumedSession(pane.AgentResume, "claude") ?? id;
+            Post(() => { pane.Bind.Supersede(); pane.AgentResume = cmd; SaveState(); });   // future restarts stay YOLO
+            await QuitClaudeAndRelaunch(pane, cmd, quitting);
         });
         return "restarting Claude in YOLO mode";
     }
@@ -1147,9 +1149,15 @@ internal partial class Program
     /// <summary>Quit the Claude running in a pane and type <paramref name="cmd"/> into the freed shell.
     /// Sends Ctrl+C twice (= Claude's exit), then WAITS for the foreground child to actually be gone —
     /// a fixed delay raced Claude's exit on slow machines and the relaunch landed in Claude's own
-    /// prompt instead of the shell. Polling is capped so a hung/ignoring process can't stall forever.</summary>
-    private async Task QuitClaudeAndRelaunch(Pane pane, string cmd)
+    /// prompt instead of the shell. Polling is capped so a hung/ignoring process can't stall forever.
+    /// The pane's binding is the caller's <paramref name="cmd"/> all along, but Claude's SessionEnd hook
+    /// reports the Ctrl+C quit as the user ending the session: the pane's restart token is armed with
+    /// <paramref name="quitting"/>, the id of the session being quit (null if unknown), so that one report is
+    /// refused (#368). The relaunch resumes the same id, so the token is single-use, expires, and is spent
+    /// when the replacement's SessionStart arrives; the relaunched Claude's own exit unbinds as usual.</summary>
+    private async Task QuitClaudeAndRelaunch(Pane pane, string cmd, string? quitting)
     {
+        int restart = pane.Bind.ArmRestart(quitting, Environment.TickCount64, 60_000);
         try { pane.S.Write(new byte[] { 0x03 }); } catch { }
         await Task.Delay(350);
         try { pane.S.Write(new byte[] { 0x03 }); } catch { }
@@ -1166,6 +1174,7 @@ internal partial class Program
         if (!sawIdle) await Task.Delay(1200);           // old behavior when we couldn't confirm the exit
         await Task.Delay(300);                          // let the shell repaint its prompt and start reading input
         try { pane.S.Write(System.Text.Encoding.UTF8.GetBytes(cmd + "\r")); } catch { }
+        pane.Bind.RelaunchTyped(restart);
     }
 
     /// <summary>One background version check ("be aware when a new Claude Code ships"): compare the
@@ -1288,8 +1297,9 @@ internal partial class Program
             if (!System.Text.RegularExpressions.Regex.IsMatch(running, @"(?i)\bclaude\b")) continue;
             string cmd = p.AgentResume ?? DeriveClaudeRelaunch(p, running);
             var pane = p;
-            Post(() => { pane.AgentResume = cmd; SaveState(); });
-            _ = QuitClaudeAndRelaunch(pane, cmd);
+            string? quitting = Agwinterm.Pty.AgentResume.ResumedSession(p.AgentResume, "claude") ?? Agwinterm.Pty.AgentResume.ResumedSession(cmd, "claude");
+            Post(() => { pane.Bind.Supersede(); pane.AgentResume = cmd; SaveState(); });
+            _ = QuitClaudeAndRelaunch(pane, cmd, quitting);
             n++;
         }
         return n;
@@ -1342,6 +1352,7 @@ internal partial class Program
             if (!strong.ContainsKey(p)) claimed.Add(id);
             // Store the full resume command; the restore path types it verbatim and the claude wrapper (or the
             // real CLI) honors --resume, so the exact conversation comes back on every relaunch.
+            p.Bind.Supersede();
             p.AgentResume = "claude --resume " + id;
             adopted++;
         }

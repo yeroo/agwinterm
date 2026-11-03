@@ -231,6 +231,127 @@ public class AgentResumeTests
             Compose(ShellKind.PowerShell, "devin", "holy-antler", null, new[] { "--permission-mode", "dangerous" }));
     }
 
+    private static readonly string[] Cwds =
+    {
+        "", @"C:\src\proj", @"C:\Program Files\my proj", @"C:\src\it's",
+        @"C:\x; claude --resume other", @"C:\x && codex resume other",   // the directory is the agent's text: it can say anything
+    };
+
+    [Theory]
+    [InlineData(ShellKind.PowerShell)]
+    [InlineData(ShellKind.Bash)]
+    [InlineData(ShellKind.Cmd)]
+    [InlineData(ShellKind.Other)]   // wsl and anything custom: the resume alone
+    public void ResumesSessionMatchesEveryLineComposeEmits(ShellKind shell)
+    {
+        foreach (string agent in Agents)
+        {
+            string id = agent == "devin" ? "holy-antler" : "01a0ce4b-7125-7dd1-b5a1-a99d8f14402c";
+            string running = agent switch
+            {
+                "codex" => CodexExe + " --sandbox read-only --dangerously-bypass-approvals-and-sandbox",
+                "devin" => DevinExe + " --permission-mode dangerous --sandbox",
+                _ => ClaudeExe + " --permission-mode plan --dangerously-skip-permissions",
+            };
+            foreach (var flags in new[] { Array.Empty<string>(), ResumeFlags(agent, running).ToArray() })
+                foreach (string cwd in Cwds)
+                {
+                    string line = Compose(shell, agent, id, cwd, flags);
+                    Assert.True(ResumesSession(line, agent, id), line);
+                    Assert.False(ResumesSession(line, agent, id + "d"), line);        // a whole token, not a prefix
+                    Assert.False(ResumesSession(line, agent, id[..^1]), line);
+                    Assert.False(ResumesSession(line, agent, "other"), line);
+                    Assert.False(ResumesSession(line, Agents.First(a => a != agent), id), line);   // another agent's session
+                }
+        }
+    }
+
+    [Theory]
+    [InlineData("claude --resume abcd", "abc")]
+    [InlineData("claude --resume abc", "abcd")]
+    [InlineData("claude --resume abc-def --dangerously-skip-permissions", "abc")]
+    [InlineData("claude --resume ABC", "abc")]
+    [InlineData("codex resume 01a0 -s workspace-write", "01a")]
+    public void ResumesSessionComparesWholeTokens(string line, string id)
+        => Assert.False(ResumesSession(line, line.StartsWith("codex", StringComparison.Ordinal) ? "codex" : "claude", id));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("claude")]                                    // the launcher wrapper's legacy bindings
+    [InlineData("claude --dangerously-skip-permissions")]
+    [InlineData("claude --resume")]
+    [InlineData("codex resume")]
+    [InlineData("echo claude --resume abc")]                  // pinned text that merely mentions a session
+    [InlineData("npm test; claude --resume abc \"fix it\"")]
+    [InlineData("claude --resume abc && rm -rf x")]
+    [InlineData("claude -r abc")]
+    public void ResumesSessionNeverMatchesALineThatNamesNoSession(string? line)
+        => Assert.False(ResumesSession(line, "claude", "abc"));
+
+    [Theory]
+    [InlineData("gemini", "abc")]
+    [InlineData("claude", "a b")]
+    [InlineData("claude", "")]
+    public void ResumesSessionRefusesWhatCouldNotHaveBeenBound(string agent, string id)
+        => Assert.False(ResumesSession($"{agent} --resume {id}", agent, id));
+
+    [Fact]
+    public void ResumesSessionDoesNotLookAtWhatStandsBeforeTheSeparator()
+    {
+        // Pinned text that ends in a session's resume run is taken for that session's binding: the prefix is
+        // the agent's own directory in every line agwinterm writes, so it is not inspected.
+        Assert.True(ResumesSession("npm test; claude --resume abc", "claude", "abc"));
+        Assert.True(ResumesSession("make && claude --resume abc --dangerously-skip-permissions", "claude", "abc"));
+    }
+
+    [Theory]
+    [InlineData(false, false, BindLanding.Store)]
+    [InlineData(false, true, BindLanding.Unbind)]    // ended while resolving, and the walk accepted it: do not store
+    [InlineData(true, false, BindLanding.Superseded)]
+    [InlineData(true, true, BindLanding.Superseded)]  // a later bind owns the pane now; the older session's end is not its
+    public void ABindingLandsByWhetherALaterOneWonAndWhetherItsSessionEnded(bool superseded, bool ended, BindLanding expected)
+        => Assert.Equal(expected, LandBind(superseded, ended));
+
+    [Theory]
+    [InlineData("claude --resume abc", "abc")]
+    [InlineData("cd '/c/x y' && claude --resume abc --dangerously-skip-permissions", "abc")]
+    [InlineData("Set-Location -LiteralPath 'C:\\a b'; claude --resume 36145f11-e132 --permission-mode plan", "36145f11-e132")]
+    [InlineData("claude", null)]
+    [InlineData("claude --dangerously-skip-permissions", null)]
+    [InlineData("echo claude --resume abc", null)]
+    [InlineData(null, null)]
+    public void ResumedSessionNamesTheIdTheLineResumes(string? line, string? expected)
+        => Assert.Equal(expected, ResumedSession(line, "claude"));
+
+    [Theory]
+    [InlineData(@"""C:\Users\x y\.local\bin\claude.exe"" --resume abc", true)]            // a quoted path with spaces
+    [InlineData(@"C:\Users\u\.local\bin\claude.exe --dangerously-skip-permissions", true)]
+    [InlineData(@"""C:\Program Files\nodejs\node.exe"" C:\Users\u\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js --resume abc", true)]   // npm
+    [InlineData("claude", true)]
+    [InlineData("claude --resume abc", true)]
+    [InlineData("CLAUDE.EXE", true)]
+    [InlineData("npm test", false)]
+    [InlineData("claude-helper --serve", false)]
+    [InlineData(@"""C:\Program Files\Git\bin\git.exe"" status", false)]
+    [InlineData(@"""C:\Program Files\nodejs\node.exe"" server.js", false)]
+    [InlineData(@"""C:\Users\u\bin\codex.exe"" resume abc", false)]
+    [InlineData("python claude.py", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void ACapturedCommandIsClaudeByTheBindingsOwnRecognition(string? commandLine, bool expected)
+        => Assert.Equal(expected, IsClaudeCommand(commandLine));
+
+    [Fact]
+    public void ResumesSessionTakesTheLegacyLinesThatNameTheSession()
+    {
+        // What RestartClaudeYolo and the adopt verb stored.
+        const string id = "36145f11-e132-4691-ab98-ae5c4445c46b";
+        Assert.True(ResumesSession($"claude --resume {id} --dangerously-skip-permissions", "claude", id));
+        Assert.True(ResumesSession($"claude --resume {id}", "claude", id));
+    }
+
     [Theory]
     [InlineData("\u2018")]
     [InlineData("\u2019")]

@@ -175,6 +175,59 @@ public class AgentHooksTests
         Assert.Null(JsonNode.Parse(AgentHooks.MergeDevinConfig(null, Wrapper)!)!["hooks"]!["SessionStart"]);
     }
 
+    private const string UnbindScript = @"C:\Users\x\AppData\Local\agwinterm\agwinterm-agent-unbind.ps1";
+
+    [Fact]
+    public void ClaudeGetsOneSessionEndUnbindWithAFiveSecondTimeout()
+    {
+        string once = AgentHooks.MergeClaudeSettings(null, Wrapper, BindScript, UnbindScript)!;
+        string twice = AgentHooks.MergeClaudeSettings(once, Wrapper, BindScript, UnbindScript)!;
+        Assert.Equal(once, twice);   // idempotent across re-installs
+        var end = JsonNode.Parse(twice)!["hooks"]!["SessionEnd"]!.AsArray();
+        Assert.Single(end);
+        var handler = end[0]!["hooks"]![0]!;
+        Assert.Equal("command", handler["type"]!.GetValue<string>());
+        Assert.EndsWith($"\"{UnbindScript}\" claude", handler["command"]!.GetValue<string>());
+        Assert.Equal(5, handler["timeout"]!.GetValue<int>());   // the default 1.5 s is less than powershell's startup can use
+    }
+
+    [Fact]
+    public void OnlyTheUnbindEntryCarriesATimeoutAndTheOthersAreUnchanged()
+    {
+        string existing = "{\"model\":\"opus\",\"hooks\":{\"SessionEnd\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo bye\"}]}]}}";
+        string without = AgentHooks.MergeClaudeSettings(existing, Wrapper, BindScript)!;
+        var with = JsonNode.Parse(AgentHooks.MergeClaudeSettings(existing, Wrapper, BindScript, UnbindScript)!)!.AsObject();
+        var withHooks = with["hooks"]!.AsObject();
+        var withoutHooks = JsonNode.Parse(without)!["hooks"]!.AsObject();
+        foreach (var (evt, entries) in withoutHooks)
+        {
+            if (evt == "SessionEnd") continue;
+            Assert.Equal(entries!.ToJsonString(), withHooks[evt]!.ToJsonString());   // byte-identical entries
+        }
+        Assert.Equal("opus", with["model"]!.GetValue<string>());
+        // The user's SessionEnd entry stays first and untouched; ours is appended once.
+        var end = withHooks["SessionEnd"]!.AsArray();
+        Assert.Equal(2, end.Count);
+        Assert.Equal("{\"hooks\":[{\"type\":\"command\",\"command\":\"echo bye\"}]}", end[0]!.ToJsonString());
+        var timeouts = withHooks.SelectMany(kv => kv.Value!.AsArray()).SelectMany(e => e!["hooks"]!.AsArray()).Count(h => h!["timeout"] is not null);
+        Assert.Equal(1, timeouts);
+    }
+
+    [Fact]
+    public void WithoutAnUnbindScriptNoSessionEndIsAdded()
+    {
+        Assert.Null(JsonNode.Parse(AgentHooks.MergeClaudeSettings(null, Wrapper, BindScript)!)!["hooks"]!["SessionEnd"]);
+        Assert.Null(AgentHooks.MergeClaudeSettings("{ not valid json", Wrapper, BindScript, UnbindScript));
+    }
+
+    [Fact]
+    public void CodexAndDevinGetNoSessionEnd()
+    {
+        // Codex's SessionEnd reason is always `other` (and fires on idle), Devin's reasons are undocumented.
+        Assert.Null(JsonNode.Parse(AgentHooks.MergeCodexHooks(null, CodexScript, BindScript)!)!["hooks"]!["SessionEnd"]);
+        Assert.Null(JsonNode.Parse(AgentHooks.MergeDevinConfig(null, Wrapper, BindScript)!)!["hooks"]!["SessionEnd"]);
+    }
+
     [Fact]
     public void WrapperScript_RoutesStatusToItsOwnPane()
     {

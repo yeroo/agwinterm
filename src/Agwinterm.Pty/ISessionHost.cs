@@ -534,6 +534,14 @@ public interface ISessionHost
     /// <paramref name="sessionId"/>. Returns false if the target pane isn't found; the tree check and the
     /// write happen after the reply, and their outcome is a <c>bind</c> event.</summary>
     bool SessionBindResume(string? target, string agent, string sessionId, string? cwd, int hookPid);
+    /// <summary>The user ended <paramref name="sessionId"/> of <paramref name="agent"/> in the target pane
+    /// (<c>session.ended</c>, Claude's SessionEnd hook, #368): drop the pane's binding if it resumes that
+    /// session, so the next restart does not reopen a conversation the user closed. A SessionStart binding
+    /// for it still resolving is marked, and unbinds the pane when it completes instead of storing. The
+    /// report acts only on what existed when it was accepted. The server has validated both arguments.
+    /// Returns false if the target pane isn't found; the comparison and the write happen after the reply,
+    /// and their outcome is a <c>bind</c> event.</summary>
+    bool SessionUnbindEnded(string? target, string agent, string sessionId);
     /// <summary>Pin a restore command on a pane, re-run every restart (agterm #271); <paramref name="command"/>
     /// null clears. The server has already refused an empty / "active" target and folded ""/"none" into
     /// null. Resolves <paramref name="target"/> the way every other content verb does (exact pane, exact
@@ -714,6 +722,7 @@ public sealed class SingleSessionHost : ISessionHost
     public bool SessionFlag(string? target, string op) => false;
     public bool SessionBind(string? target, string agent) => false;
     public bool SessionBindResume(string? target, string agent, string sessionId, string? cwd, int hookPid) => false;
+    public bool SessionUnbindEnded(string? target, string agent, string sessionId) => false;
     public RestorePinTarget? SessionRestore(string target, string? command) => null;
     public RestoreCaptureResult RestoreCapture(string? target) =>
         string.IsNullOrEmpty(target) || target == "active"

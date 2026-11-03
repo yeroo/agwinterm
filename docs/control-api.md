@@ -240,6 +240,48 @@ for the reply because the walk starts at its own process.
   refused and binds nothing.
 - `session.bind` with `agent` alone keeps its old meaning: that string is the relaunch command, and
   `none` clears it.
+- The `bind` event is `bound: <the stored line>` once the line is stored, or `superseded: <line>` when a
+  later bind, or the session's end (`session.ended`), came first and it was dropped.
+
+## `session.ended` from a SessionEnd hook
+
+`{"cmd":"session.ended","target":"<pane>","args":{"agent":"claude","session":"<session id>"}}` reports
+that the user ended that session, so the next restart does not reopen a conversation they closed.
+Claude's `SessionEnd` hook sends it for the reason `prompt_input_exit` (`/exit`, Ctrl+C twice, Ctrl+D)
+and for no other (`clear`, `resume`, `logout` and `other`, which is what a closed pane or a killed
+pty-host reports, send nothing). Only Claude has the hook: Codex's reason is always `other` and it also
+fires when idle, and Devin's reasons are undocumented. `install hooks` adds it with a 5 s timeout
+(Claude's default for `SessionEnd` is 1.5 s). An install that predates it has to run
+`agwintermctl install hooks` once more; nothing adds it automatically.
+
+The reply `unbinding` means the report was well formed and the pane exists; the rest happens after it.
+
+- The pane's resume line is cleared if it resumes exactly that session (a whole token: `abc` is not
+  `abcd`). Any other line (another session, a legacy `claude`, pinned text) is kept. A captured
+  foreground command that starts Claude (the executable by name, or node running the npm package) is
+  cleared with it, so `restore-commands` does not replay the session.
+- The report acts only on what existed when it was accepted: a line written after that (a restart, the
+  update flow, adopt, a newer binding, a `claude --resume` of the same id you started meanwhile) is left
+  alone, even if the report is processed late.
+- If a SessionStart binding for that session is still resolving, the report marks it, whatever the line
+  is. Once agwinterm has confirmed it is the pane's own agent, the binding is not stored and the pane is
+  unbound; if it proves to be a nested run, the pane's line stays. The line is cleared independently,
+  when it resumes the ended session.
+- A restart agwinterm drives itself (*Restart Claude in YOLO mode*, *Update Claude Code*) quits Claude
+  with Ctrl+C and keeps the binding: the one report for the session being quit, within 60 s, is
+  refused. The replacement Claude resumes the same id; its SessionStart ends that allowance, so its own
+  exit unbinds as usual.
+- The outcome is a `bind` event in `events`: `unbound: <the cleared line>`, `pending: <why>` while a
+  binding is still resolving, or `kept: <why>`.
+- An unknown agent or a session id that is not 1-128 letters, digits, `-` or `_` is refused and
+  changes nothing.
+- A host that predates the verb answers `unknown command` and changes nothing. It is full-app only:
+  it is not in `tests/conformance/control-api.json`, so agliteterm need not implement it.
+
+Known limits:
+
+- With `restore-commands = true`, a capture taken while an ended Claude is still exiting can record its command.
+- An npm/node Claude that runs `/clear` and exits before its command line is read can leave the pre-clear session bound.
 
 ## `restore capture`
 

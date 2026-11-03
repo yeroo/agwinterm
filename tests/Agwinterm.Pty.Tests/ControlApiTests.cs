@@ -230,6 +230,63 @@ public class ControlApiTests
     }
 
     [Fact]
+    public void SessionEnded_ReachesTheHost()
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "session.ended", new { agent = "claude", session = "36145f11-e132-4691-ab98-ae5c4445c46b" }, target: "s1");
+        Assert.True(Ok(r));
+        Assert.Equal("unbinding", r.GetProperty("result").GetString());
+        Assert.Equal(("claude", "36145f11-e132-4691-ab98-ae5c4445c46b"), host.LastUnbindEnded);
+        Assert.Null(host.LastBindResume);
+    }
+
+    [Fact]
+    public void SessionBind_KnowsNothingOfAnEndedReport()
+    {
+        // session.bind has no `ended`: agent alone is a relaunch line, which is what a host that predates
+        // session.ended would make of the report, and why it is a verb of its own.
+        var (server, host) = New();
+        var r = Dispatch(server, "session.bind", new { agent = "claude", session = "abc" }, target: "s1");
+        Assert.True(Ok(r));
+        Assert.Equal("bound", r.GetProperty("result").GetString());
+        Assert.Null(host.LastUnbindEnded);
+    }
+
+    [Theory]
+    [InlineData("gemini", "abc")]   // not an agent the host knows how to resume
+    [InlineData("claude", "a b")]   // an id that cannot be a session's
+    [InlineData("claude", "")]
+    [InlineData("claude", "x;rm")]
+    public void SessionEnded_Malformed_ChangesNothing(string agent, string id)
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "session.ended", new { agent, session = id }, target: "s1");
+        Assert.False(Ok(r));
+        Assert.EndsWith("Nothing changed.", r.GetProperty("error").GetString());
+        Assert.Null(host.LastUnbindEnded);
+    }
+
+    [Fact]
+    public void SessionEnded_ThatIsNotAString_ChangesNothing()
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "session.ended", new { agent = "claude", session = 5 }, target: "s1");
+        Assert.False(Ok(r));
+        Assert.EndsWith("Nothing changed.", r.GetProperty("error").GetString());
+        Assert.Null(host.LastUnbindEnded);
+    }
+
+    [Fact]
+    public void SessionEnded_ForUnknownTarget_Fails()
+    {
+        var (server, host) = New();
+        var r = Dispatch(server, "session.ended", new { agent = "claude", session = "abc" }, target: "nope");
+        Assert.False(Ok(r));
+        Assert.Contains("session not found", r.GetProperty("error").GetString());
+        Assert.Null(host.LastUnbindEnded);
+    }
+
+    [Fact]
     public void SessionBind_UnknownTarget_Fails()
     {
         var (server, _) = New();
