@@ -412,6 +412,7 @@ public sealed class ControlServer : IDisposable
                 case "session.flag":
                     return host.SessionFlag(target, GetString(args, "op") ?? "toggle") ? Ok("flag") : Err("session not found");
                 case "session.bind": return HandleSessionBind(host, target, args);
+                case "session.ended": return HandleSessionEnded(host, target, args);
                 case "session.restore": return HandleSessionRestore(host, target, args);
                 // OkRaw, not Ok: Events() already returns JSON. Ok() would serialize it AGAIN, so
                 // .result arrived as a STRING of JSON and a caller had to parse it a second time —
@@ -828,6 +829,22 @@ public sealed class ControlServer : IDisposable
         if (pid <= 0)
             return Err("session.bind resume: pid (the hook's process id) is required, it is how the pane's own agent is told from a nested one. Nothing bound.");
         return host.SessionBindResume(target, agent, id!, GetString(args, "cwd"), pid) ? Ok("binding") : Err("session not found");
+    }
+
+    /// <summary><c>session.ended</c> (#368): Claude's SessionEnd hook reports that the user ended
+    /// <c>session</c>, so the host drops the pane's binding if it resumes that one. A verb of its own so a
+    /// host that predates it refuses with "unknown command" instead of reading the report as a relaunch
+    /// line (<c>session.bind</c> with <c>agent</c> alone). <c>agent</c> and <c>session</c> are validated as
+    /// for a SessionStart report; a malformed one changes nothing.</summary>
+    private static string HandleSessionEnded(ISessionHost host, string? target, JsonElement args)
+    {
+        string? agent = GetString(args, "agent");
+        string? id = GetString(args, "session");
+        if (!AgentResume.IsKnownAgent(agent))
+            return Err($"session.ended: agent must be one of {string.Join(", ", AgentResume.Agents)}, not '{agent}'. Nothing changed.");
+        if (!AgentResume.IsValidSessionId(id))
+            return Err("session.ended: the session id must be 1-128 letters, digits, '-' or '_'. Nothing changed.");
+        return host.SessionUnbindEnded(target, agent!, id!) ? Ok("unbinding") : Err("session not found");
     }
 
     /// <summary>

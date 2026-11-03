@@ -26,7 +26,10 @@
   agwinterm types that line into each bound pane and the conversation comes back. A `claude -p`,
   `codex exec` or `devin -p` an agent runs from its own tool shell does not rebind the pane, nor does a
   `devin -p` run in the pane itself. Codex runs a new hook only after you trust it
-  once in Codex's `/hooks`, and Codex fires it on a session's first turn. For PowerShell the installer
+  once in Codex's `/hooks`, and Codex fires it on a session's first turn. Claude alone also gets a
+  `SessionEnd` hook: a conversation you end with `/exit`, Ctrl+C twice or Ctrl+D is normally unbound, so
+  it does not reopen on the next restart (closing the pane, `/clear` and `/resume` leave the binding).
+  An install that predates the hook gets it by running `agwintermctl install hooks` once more. For PowerShell the installer
   also adds a transparent `claude` wrapper (active only inside agwinterm) that starts a fresh pane's
   session under the pane id. Already had Claude running before installing this? Run
   `agwintermctl claude adopt` (or palette → *Make Claude Sessions Resumable*) once to bind your

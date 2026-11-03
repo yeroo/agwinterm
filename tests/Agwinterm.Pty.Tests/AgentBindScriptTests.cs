@@ -10,18 +10,22 @@ namespace Agwinterm.Pty.Tests;
 /// <see cref="AgentHooks.AgentBindScript"/> run for real under powershell.exe, as the agents run their
 /// SessionStart hooks: the agent in argv, the event JSON on stdin, the report on a named pipe this fake
 /// server answers. The host walks the process tree from the reported PID before it replies, so the script
-/// must still be running when its request arrives and must wait for the answer (#316).
+/// must still be running when its request arrives and must wait for the answer (#316). The SessionEnd
+/// script, <see cref="AgentHooks.AgentUnbindScript"/>, is run through the same harness (#368).
 /// </summary>
 public class AgentBindScriptTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "agwinterm-agent-bind-" + Guid.NewGuid().ToString("N"));
     private readonly string _script;
+    private readonly string _unbindScript;
 
     public AgentBindScriptTests()
     {
         Directory.CreateDirectory(_dir);
         _script = Path.Combine(_dir, "agwinterm-agent-bind.ps1");
         File.WriteAllText(_script, AgentHooks.AgentBindScript);
+        _unbindScript = Path.Combine(_dir, "agwinterm-agent-unbind.ps1");
+        File.WriteAllText(_unbindScript, AgentHooks.AgentUnbindScript);
     }
 
     public void Dispose()
@@ -47,7 +51,7 @@ public class AgentBindScriptTests : IDisposable
     private sealed record Report(JsonElement Request, bool HookAliveWhenReceived, int HookPid);
 
     /// <summary>Run the script; return what it sent (null when it sent nothing).</summary>
-    private Report? Run(string agent, string stdin, Dictionary<string, string?>? env = null, bool inAgwinterm = true)
+    private Report? Run(string agent, string stdin, Dictionary<string, string?>? env = null, bool inAgwinterm = true, string? script = null)
     {
         string pipeName = "agwinterm-test-bind-" + Guid.NewGuid().ToString("N");
         using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
@@ -71,7 +75,7 @@ public class AgentBindScriptTests : IDisposable
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
         };
-        foreach (string a in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", _script, agent }) start.ArgumentList.Add(a);
+        foreach (string a in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script ?? _script, agent }) start.ArgumentList.Add(a);
         start.Environment["AGWINTERM_PIPE"] = pipeName;
         foreach (var k in new[] { "AGWINTERM_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ATTENDED", "DEVIN_PROJECT_DIR" }) start.Environment.Remove(k);
         if (inAgwinterm) start.Environment["AGWINTERM_SESSION_ID"] = "pane-x";
@@ -144,4 +148,76 @@ public class AgentBindScriptTests : IDisposable
 
     [Fact]
     public void OutsideAgwintermReportsNothing() => Assert.Null(Run("claude", Event("abc", @"C:\w"), inAgwinterm: false));
+
+    private static string EndEvent(string? sessionId, string? reason)
+    {
+        var o = new Dictionary<string, object?> { ["cwd"] = @"C:\w", ["transcript_path"] = @"C:\w\transcript.jsonl", ["hook_event_name"] = "SessionEnd" };
+        if (sessionId is not null) o["session_id"] = sessionId;
+        if (reason is not null) o["reason"] = reason;
+        return JsonSerializer.Serialize(o);
+    }
+
+    private static readonly Dictionary<string, string?> Tui = new() { ["CLAUDE_CODE_ENTRYPOINT"] = "cli", ["CLAUDE_CODE_SESSION_ATTENDED"] = "1" };
+
+    private Report? RunUnbind(string stdin, Dictionary<string, string?>? env = null, bool inAgwinterm = true)
+        => Run("claude", stdin, env ?? Tui, inAgwinterm, _unbindScript);
+
+    [Fact]
+    public void UserExitReportsTheEndedSessionAndWaitsForTheReply()
+    {
+        var r = RunUnbind(EndEvent("36145f11-e132-4691-ab98-ae5c4445c46b", "prompt_input_exit"));
+        Assert.NotNull(r);
+        // Its own verb: a host that predates it answers "unknown command", where session.bind would take
+        // `agent` alone for a relaunch line and store it over the pane's resume line.
+        Assert.Equal("session.ended", r!.Request.GetProperty("cmd").GetString());
+        Assert.Equal("pane-x", r.Request.GetProperty("target").GetString());
+        var args = r.Request.GetProperty("args");
+        Assert.Equal("claude", args.GetProperty("agent").GetString());
+        Assert.Equal("36145f11-e132-4691-ab98-ae5c4445c46b", args.GetProperty("session").GetString());
+        Assert.False(args.TryGetProperty("resume", out _));
+        Assert.True(r.HookAliveWhenReceived, "the hook exited before agwinterm had answered");
+    }
+
+    [Theory]
+    [InlineData("clear")]
+    [InlineData("resume")]
+    [InlineData("logout")]
+    [InlineData("other")]
+    [InlineData("Prompt_Input_Exit")]
+    [InlineData("prompt_input_exit ")]
+    [InlineData(null)]
+    public void AnyOtherReasonReportsNothing(string? reason) => Assert.Null(RunUnbind(EndEvent("abc", reason)));
+
+    [Fact]
+    public void AnEventWithoutASessionIdReportsNothing() => Assert.Null(RunUnbind(EndEvent(null, "prompt_input_exit")));
+
+    [Theory]
+    [InlineData("sdk-cli", "0")]
+    [InlineData("cli", "0")]
+    [InlineData("sdk-cli", null)]
+    public void HeadlessClaudeUnbindsNothing(string entrypoint, string? attended)
+        => Assert.Null(RunUnbind(EndEvent("abc", "prompt_input_exit"),
+            new() { ["CLAUDE_CODE_ENTRYPOINT"] = entrypoint, ["CLAUDE_CODE_SESSION_ATTENDED"] = attended }));
+
+    [Fact]
+    public void ClaudesEndHookRunByDevinReportsNothing()
+        => Assert.Null(RunUnbind(EndEvent("abc", "prompt_input_exit"), new() { ["DEVIN_PROJECT_DIR"] = @"C:\src\proj" }));
+
+    [Fact]
+    public void OutsideAgwintermUnbindsNothing() => Assert.Null(RunUnbind(EndEvent("abc", "prompt_input_exit"), inAgwinterm: false));
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("not json")]
+    [InlineData("{\"reason\":\"prompt_input_exit\"")]
+    public void MalformedEventExitsQuietly(string stdin) => Assert.Null(RunUnbind(stdin));
+
+    [Fact]
+    public void TheSessionIdIsJsonEscapedNotSpliced()
+    {
+        string id = "a\"},\"cmd\":\"session.close\",\"x\":{\"y\":\"b";
+        var r = RunUnbind(EndEvent(id, "prompt_input_exit"));
+        Assert.Equal("session.ended", r!.Request.GetProperty("cmd").GetString());
+        Assert.Equal(id, r.Request.GetProperty("args").GetProperty("session").GetString());
+    }
 }
