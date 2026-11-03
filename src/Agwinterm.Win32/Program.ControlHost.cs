@@ -215,7 +215,8 @@ internal partial class Program
                         // construction. Empty = the server omits the key.
                         PaneOverlays: s.Panes.Select((p, i) => (p, i)).Where(t => t.p.Overlay.Term is not null)
                                              .Select(t => OverlayPanes.Word(t.i)).ToList(), Hud: s.Hud,
-                        ForegroundShells: s.Panes.Select(p => p.S.HasExited ? null : shells.GetValueOrDefault(p)).ToList());
+                        ForegroundShells: s.Panes.Select(p => p.S.HasExited ? null : shells.GetValueOrDefault(p)).ToList(),
+                        Link: s.Link);
                 }).ToList()
             , Collapsed: !w.Expanded, DefaultDir: w.DefaultDir)).ToList();
     }
@@ -520,6 +521,34 @@ internal partial class Program
             ses.Context = context;
             RequestRedraw(); SaveState();
             return SessionContexts.Reply(ses.Id, ses.Context);
+        });
+    }
+
+    // session.link: session.context's resolution and threading (the FIFO queued hop, the session resolved
+    // inside it, the reply read back off the session after the write). The server has already
+    // normalized and validated the URL.
+    public string SessionLink(string? target, string? link)
+    {
+        return InvokeOnUiQueued(() =>
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null) return ISessionHost.RefusePrefix + SessionLinks.NoSession;
+            ses.Link = link;
+            RequestRedraw(); SaveState();
+            return SessionLinks.Reply(ses.Id, ses.Link);
+        });
+    }
+
+    // session.link.open: the same hop; the browser is launched from the UI thread, as the hot-key does.
+    public string SessionLinkOpen(string? target)
+    {
+        return InvokeOnUiQueued(() =>
+        {
+            var ses = FindSesForTarget(target);
+            if (ses is null) return ISessionHost.RefusePrefix + SessionLinks.NoSession;
+            if (ses.Link is null) return ISessionHost.RefusePrefix + SessionLinks.NoLink;
+            OpenLink(ses.Link);
+            return SessionLinks.Reply(ses.Id, ses.Link, opened: true);
         });
     }
 

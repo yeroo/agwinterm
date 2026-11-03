@@ -52,6 +52,7 @@ agwintermctl session restore "npm run dev" --target <pane>   # re-run on every r
 agwintermctl restore capture                 # capture every pane's running command into its restore slot NOW, not only at quit
 agwintermctl session rename api              # the custom name in the sidebar and title bar
 agwintermctl session context "reviewing PR 226, left pane is the diff"   # one line of what the session is FOR; survives a restart
+agwintermctl session link https://github.com/acme/repo/pull/226   # the URL the session is about; Ctrl+Shift+L opens it
 agwintermctl dashboard build test deploy     # grid overview of chosen sessions
 agwintermctl theme set "Tokyo Night"         # retint the whole window
 agwintermctl window new --name scratchpad    # open a second window
@@ -278,6 +279,26 @@ session node, so an agent that sets it when it starts a task leaves a note every
 
 `session rename <name>` is its neighbour: the short custom name, same target resolution, and the two
 survive each other (renaming does not clear the context).
+
+## `session link`
+
+`session link <url>` gives a session the **one URL it is about**: the tracker issue it works on or the
+pull request it reviews, in any tracker. The sidebar draws a link glyph left of the name; a click on
+the glyph, `Ctrl+Shift+L` (`open_session_link` in `keymap.conf`) or `session link --open` opens it in
+the default browser. It survives a restart and an undo-close, and `tree --json` carries it as `link`
+on the session node (absent when none).
+
+- Only an absolute `http://` or `https://` URL is accepted, because the link is handed to the shell to
+  open. Whitespace, a control character or more than 2048 characters is refused; there is no
+  issue-key shorthand.
+- One link per session: setting it again replaces it, `--clear` removes it.
+- `session new --link <url>` sets it on a new session; a bad URL is refused before anything is created.
+  An app older than this feature ignores `--link` and still creates the session (the `session link`
+  verbs are refused there as unknown), so a script that relies on it should check the serving app
+  version first.
+- The reply `{session, link}` is the value **in effect** after the write. `--open` replies
+  `{session, link, opened}` and is refused for a session without a link.
+- Custom commands get it as the `{AGW_LINK}` token and `$AGW_LINK` (empty when none).
 
 ## `session split` and `session swap`
 

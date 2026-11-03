@@ -13,7 +13,8 @@ namespace Agwinterm.Pty;
 /// the session's split orientation, one of <see cref="SplitAxes"/>' words (null = vertical), emitted
 /// by the tree only while the session is split (P4); <see cref="PaneOverlays"/> is the open PANE
 /// overlay slots as <see cref="OverlayPanes"/>' words in pane order (empty = none; the tree omits the
-/// key), independent of <see cref="Overlay"/>, the session-wide slot (P5). New optional fields go
+/// key), independent of <see cref="Overlay"/>, the session-wide slot (P5); <see cref="Link"/> is the
+/// session's <c>session link</c> URL (null = none; the tree omits the key). New optional fields go
 /// at the END: both hosts and <see cref="SingleSessionHost"/> construct this positionally.</summary>
 public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentStatus Status,
     bool Overlay = false, int Notifications = 0, bool Flagged = false, bool Background = false,
@@ -22,7 +23,7 @@ public sealed record SessionSnapshot(string Id, string Name, bool Active, AgentS
     IReadOnlyList<string>? RestoreCommands = null, long StatusChangedAt = 0,
     string? Context = null, IReadOnlyList<string>? CapturedCommands = null,
     string? Axis = null, IReadOnlyList<string>? PaneOverlays = null, HudSpec? Hud = null,
-    IReadOnlyList<string?>? ForegroundShells = null);
+    IReadOnlyList<string?>? ForegroundShells = null, string? Link = null);
 
 /// <summary>A workspace (with its sessions) for the control-API tree.</summary>
 public sealed record WorkspaceSnapshot(string Id, string Name, bool Active, IReadOnlyList<SessionSnapshot> Sessions, bool Collapsed = false, string? DefaultDir = null);
@@ -213,6 +214,25 @@ public interface ISessionHost
     /// the hop so a session closed between the request and the write is refused, not written to.</para>
     /// </summary>
     string SessionContext(string? target, string? context);
+
+    /// <summary>
+    /// <c>session.link</c>: set (or, with <paramref name="link"/> null, clear) a session's link — the
+    /// one http(s) URL the session is about, opened in the browser by <c>open_session_link</c> or the
+    /// sidebar's link glyph, carried in <c>tree</c> as <c>link</c> and persisted. The server has already
+    /// normalized and validated the URL through <see cref="SessionLinks"/>.
+    /// <para><b>Resolution and threading</b> are <see cref="SessionContext"/>'s.</para>
+    /// <para><b>Returns</b> <see cref="SessionLinks.Reply"/> — <c>{"session":id,"link":url|null}</c> —
+    /// or <see cref="ISessionHost.RefusePrefix"/> + <see cref="SessionLinks.NoSession"/>.</para>
+    /// </summary>
+    string SessionLink(string? target, string? link);
+
+    /// <summary>
+    /// <c>session.link.open</c>: open the session's link in the default browser. Resolution and threading
+    /// are <see cref="SessionContext"/>'s. Returns <see cref="SessionLinks.Reply"/> with <c>opened</c>, or
+    /// <see cref="ISessionHost.RefusePrefix"/> + <see cref="SessionLinks.NoSession"/> /
+    /// <see cref="SessionLinks.NoLink"/>.
+    /// </summary>
+    string SessionLinkOpen(string? target);
 
     /// <summary>Clear a session's unseen-notification badge without visiting it (headless "seen").</summary>
     bool SessionSeen(string? target);
@@ -670,6 +690,8 @@ public sealed class SingleSessionHost : ISessionHost
     // nothing to rename, and says so with the wording every host uses for "no session".
     public string SessionRename(string? target, string name) => ISessionHost.RefusePrefix + SessionNames.NoSession;
     public string SessionContext(string? target, string? context) => ISessionHost.RefusePrefix + SessionContexts.NoSession;
+    public string SessionLink(string? target, string? link) => ISessionHost.RefusePrefix + SessionLinks.NoSession;
+    public string SessionLinkOpen(string? target) => ISessionHost.RefusePrefix + SessionLinks.NoSession;
     public bool SessionSeen(string? target) => false;
     public string SidebarState() => $"visible tree {SidebarWidths.Default}";
     public SidebarWidthSnapshot SidebarWidth(int? set) => new(SidebarWidths.Default, true);

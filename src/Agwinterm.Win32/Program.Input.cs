@@ -169,6 +169,8 @@ internal partial class Program
             case "reset_font_size": ChangeFontSize(0); break;
             case "install_shell_integration": InstallShellIntegration(); break;
             case "toggle_flag": if (_active is not null) FlagOp(_active, "toggle"); break;
+            case "open_session_link": if (_active is not null) OpenSessionLink(_active); break;
+            case "set_session_link": if (_active is not null) StartSidebarLinkEdit(_active); break;
             case "toggle_flagged_view": ToggleFlaggedView(); break;
             case "focus_workspace": WorkspaceFocusOp("toggle"); break;
             case "next_workspace": NavigateWorkspace("next"); break;
@@ -308,6 +310,7 @@ internal partial class Program
             ["AGW_PANE_ID"] = surface?.Id ?? ses?.ActivePane.Id ?? "",
             ["AGW_PANE"] = paneName,
             ["AGW_APP"] = CtlPath(),
+            ["AGW_LINK"] = ses?.Link ?? "",
         };
     }
 

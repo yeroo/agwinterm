@@ -25,7 +25,7 @@ public class MenuModelTests
             "New Window", "Open Window", "Rename Window…", "Delete Window", "-",
             "New Workspace", "Rename Workspace", "Delete Workspace", "-",
             "New Session", "Open Directory…", "Open Recent", "Reopen Last Closed Item", "Rename Session",
-            "Duplicate Session", "Reveal in Explorer", "Close Session", "Reopen Closed Item", "Clear Status", "-",
+            "Duplicate Session", "Set Session Link…", "Open Session Link", "Clear Session Link", "Reveal in Explorer", "Close Session", "Reopen Closed Item", "Clear Status", "-",
             "Edit Keymap…", "Reload Keymap", "Edit agwinterm.conf…", "Reload Config",
         }, MenuModel.Menus[0].Items.Select(i => i.Label));
     }

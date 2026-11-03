@@ -50,7 +50,7 @@ internal partial class Program
     private void DrawSidebar(ID2D1HwndRenderTarget rt, ID2D1SolidColorBrush brush)
     {
         _sidebarRows.Clear();
-        _sidebarNames.Clear();
+        _sidebarNames.Clear(); _sidebarLinks.Clear();
         _footerButtons.Clear();
         if (_sidebarW <= 0) return;
 
@@ -176,13 +176,24 @@ internal partial class Program
             brush.Color = new Color4(0.96f, 0.76f, 0.26f, 1f); // amber flag
             rt.DrawText("", _iconSmall, new Rect(6f, y, 18f, rowH), brush);
         }
-        // Elevated (admin) sessions carry a ⚡ before the name (mixed elevated/non-elevated windows).
         float nameX = 26f;
+        // Session link: a blue link glyph in the flag's slot, or right after the flag when both are set.
+        // Clicking it opens the link; hovering shows the URL.
+        if (s.Link is { } link)
+        {
+            float lx = s.Flagged ? 23f : 6f, lw = s.Flagged ? 16f : 18f;
+            brush.Color = new Color4(0.43f, 0.66f, 1f, 1f); // link blue
+            rt.DrawText(GlyphLink, _iconSmall, new Rect(lx, y, lw, rowH), brush);
+            _sidebarLinks.Add(new(s, lx, y, lw, rowH));
+            _sidebarNames.Add(new(s, link, lx, y, lw, rowH));
+            if (s.Flagged) nameX = 40f;
+        }
+        // Elevated (admin) sessions carry a ⚡ before the name (mixed elevated/non-elevated windows).
         if (s.Elevated)
         {
             brush.Color = new Color4(0.98f, 0.82f, 0.25f, 1f); // gold lightning
-            rt.DrawText("⚡", _uiSmall, new Rect(23f, y, 16f, rowH), brush);
-            nameX = 40f;
+            rt.DrawText("⚡", _uiSmall, new Rect(nameX - 3f, y, 16f, rowH), brush);
+            nameX += 14f;
         }
         int? exitCode = s.Panes.Count == 1 ? s.ActivePane.ProfileExitCode : null;
         int unread = UnreadOf(s);
@@ -309,7 +320,15 @@ internal partial class Program
                     CreateSession(Guid.NewGuid().ToString(), null, null, ws, true);
                 else { lock (_workspaces) ws.Expanded = !ws.Expanded; RequestRedraw(); SaveState(); }
             }
-            else if (!isWs && item is Ses s) SidebarSelectClick(s, KeyDown(VK_CONTROL), KeyDown(VK_SHIFT));
+            else if (!isWs && item is Ses s)
+            {
+                bool ctrl = KeyDown(VK_CONTROL), shift = KeyDown(VK_SHIFT);
+                // A plain click on the link glyph opens the link and leaves the selection alone.
+                if (!ctrl && !shift && s.Link is not null &&
+                    _sidebarLinks.Any(h => ReferenceEquals(h.Ses, s) && mx >= h.X && mx < h.X + h.Width && my >= h.Y && my < h.Y + h.Height))
+                { OpenSessionLink(s); return; }
+                SidebarSelectClick(s, ctrl, shift);
+            }
             return;
         }
     }
@@ -357,12 +376,20 @@ internal partial class Program
     private void StartRename(object item)
     {
         if (item is not (Ses or Workspace)) return; // e.g. the "show all" focus banner isn't renamable
+        StartRowEdit(item, item, item is Ses s ? s.Name : ((Workspace)item).Name);
+    }
+
+    /// <summary>The inline field over a sidebar row: <paramref name="row"/> is the row it covers,
+    /// <paramref name="editing"/> what <see cref="CommitRename"/> commits to (the row itself for a rename,
+    /// a <see cref="LinkEdit"/> for a session link), <paramref name="text"/> the initial, all-selected text.</summary>
+    private void StartRowEdit(object row, object editing, string text)
+    {
         if (_editHwnd != IntPtr.Zero) CommitRename();
-        bool isWs = item is Workspace;
+        bool isWs = row is Workspace;
         float ry0 = -1, ry1 = -1;
-        foreach (var (y0, y1, _, it) in _sidebarRows) if (ReferenceEquals(it, item)) { ry0 = y0; ry1 = y1; break; }
+        foreach (var (y0, y1, _, it) in _sidebarRows) if (ReferenceEquals(it, row)) { ry0 = y0; ry1 = y1; break; }
         if (ry0 < 0) { RequestRedraw(); return; } // row not currently visible
-        string name = item is Ses s ? s.Name : ((Workspace)item).Name;
+        string name = text;
         EnsureEditGdi();
         // Fill the whole row (matches the highlight band); a left text-margin puts the text exactly
         // where the row name is drawn, so nothing shifts when editing starts.
@@ -379,7 +406,7 @@ internal partial class Program
         SetFocus(_editHwnd);
         _editProc = EditProc; // keep alive
         _editOrigProc = SetWindowLongPtrW(_editHwnd, GWLP_WNDPROC, Marshal.GetFunctionPointerForDelegate(_editProc));
-        _editing = item;
+        _editing = editing;
         RequestRedraw();
     }
 
@@ -405,10 +432,11 @@ internal partial class Program
         if (_editHwnd == IntPtr.Zero) return;
         var h = _editHwnd; var item = _editing;
         _editHwnd = IntPtr.Zero; _editing = null; // clear first: EN_KILLFOCUS during destroy is then a no-op
-        var sb = new StringBuilder(256);
-        GetWindowTextW(h, sb, 256);
+        var sb = new StringBuilder(Agwinterm.Pty.SessionLinks.MaxLength + 2);
+        GetWindowTextW(h, sb, sb.Capacity);
         string name = sb.ToString().Trim();
-        if (name.Length > 0)
+        if (item is LinkEdit le) CommitLinkEdit(le.Ses, sb.ToString());   // blank = clear; validated there
+        else if (name.Length > 0)
         {
             if (item is Ses s) { s.Name = name; s.CustomName = name; } // CustomName drives the title bar
             else if (item is Workspace w) w.Name = name;
@@ -472,6 +500,12 @@ internal partial class Program
             A("Duplicate Session", "", () => DuplicateSession(ses));   // same cwd + profile (#234)
             A("Rename", "F2", () => StartRename(ses));
             A(ses.Flagged ? "Unflag Session" : "Flag Session", "", () => FlagOp(ses, "toggle"));
+            A(ses.Link is null ? "Set Link…" : "Edit Link…", ChordHintFor("set_session_link"), () => StartSidebarLinkEdit(ses));
+            if (ses.Link is not null)
+            {
+                A("Open Link", ChordHintFor("open_session_link"), () => OpenSessionLink(ses));
+                A("Clear Link", "", () => SetSessionLink(ses, null));
+            }
             List<Workspace> targets;
             lock (_workspaces) targets = _workspaces.Where(w => !ReferenceEquals(w, ses.Ws)).ToList();
             foreach (var t in targets) A($"Move to — {t.Name}", "", () => MoveSession(ses, t));
@@ -631,7 +665,7 @@ internal partial class Program
     private void InvalidateSessionSelectors()
     {
         CloseDashboard(); ClosePalette(); CloseMenuWindow();
-        _sidebarRows.Clear(); _sidebarNames.Clear();
+        _sidebarRows.Clear(); _sidebarNames.Clear(); _sidebarLinks.Clear();
         DismissHoverTip(); ClearLinkHover();
     }
 
@@ -866,7 +900,8 @@ internal partial class Program
                         {
                             Label = sx.Name,
                             Secondary = secondary,
-                            Search = ctx.Length > 0 ? $"{sx.Name} {ctx} {sx.Ws.Name} {cwd}" : $"{sx.Name} {sx.Ws.Name} {cwd}",
+                            // The link is searchable too, so a query for an issue key or a PR number finds the session.
+                            Search = (ctx.Length > 0 ? $"{sx.Name} {ctx} {sx.Ws.Name} {cwd}" : $"{sx.Name} {sx.Ws.Name} {cwd}") + (sx.Link is { } sl ? " " + sl : ""),
                             Dot = AggStatus(sx),
                             Run = () => { lock (_workspaces) sx.Ws.Expanded = true; SetActive(sx); },
                         });
@@ -908,6 +943,19 @@ internal partial class Program
                     A(stacked ? "Focus Bottom Pane" : "Focus Right Pane", "Ctrl+Alt+Right", () => FocusPane(1));
                     A("Delete Active Workspace", "", DeleteCurrentWorkspace);
                     A("Flag / Unflag Session", "Ctrl+Shift+F", () => { if (_active is not null) FlagOp(_active, "toggle"); });
+                    if (_active is { } linkSes)
+                    {
+                        A(linkSes.Link is null ? "Set Session Link…" : "Edit Session Link…", ChordHintFor("set_session_link"), () => StartSidebarLinkEdit(linkSes));
+                        if (linkSes.Link is not null)
+                        {
+                            _palAll.Add(new PalItem
+                            {
+                                Label = "Open Session Link", Hint = ChordHintFor("open_session_link"), Secondary = linkSes.Link,
+                                Search = "open session link url browser " + linkSes.Link, Run = () => OpenSessionLink(linkSes),
+                            });
+                            A("Clear Session Link", "", () => SetSessionLink(linkSes, null));
+                        }
+                    }
                     A("Show Flagged / All Sessions", "", ToggleFlaggedView);
                     A("Focus Workspace", "", () => WorkspaceFocusOp("toggle"));
                     A("Next Workspace", "", () => NavigateWorkspace("next"));
@@ -1503,6 +1551,9 @@ internal partial class Program
     private const int TipTimer = 12;      // WM_TIMER id: show the tip after a hover dwell
     private string? _tipText;             // visible tooltip text (null = none)
     private sealed record SidebarNameHit(object Owner, string Text, float X, float Y, float Width, float Height);
+    /// <summary>A session link glyph's box this frame (rebuilt with <see cref="_sidebarNames"/>).</summary>
+    private sealed record SidebarLinkHit(Ses Ses, float X, float Y, float Width, float Height);
+    private readonly List<SidebarLinkHit> _sidebarLinks = new();
     private readonly List<SidebarNameHit> _sidebarNames = new();
     private SidebarNameHit? _sidebarTip;
 

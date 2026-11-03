@@ -75,6 +75,14 @@ public sealed class SessionState
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Axis { get; set; }
+    /// <summary>
+    /// The session's link (<c>session link</c>), null = none. Written only when set, at the END of the
+    /// class for <see cref="Axis"/>'s reason: a session without a link saves exactly the bytes a build
+    /// without links saves. Read back through <see cref="RestoreState.LoadLink"/>: the rules are
+    /// <see cref="SessionLinks"/>'.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Link { get; set; }
 }
 public sealed class WorkspaceState
 {
@@ -133,6 +141,12 @@ public static class RestoreState
     /// </summary>
     public static string? LoadContext(string? stored) =>
         stored is not null && SessionContexts.TryNormalize(stored, out var text, out _) ? text : null;
+
+    /// <summary>The link to put on a restored session for a stored <see cref="SessionState.Link"/>: the
+    /// normalized value when it passes <see cref="SessionLinks"/>' rules, else null — a hand-edited
+    /// <c>file:</c> or <c>javascript:</c> value is dropped on load, never handed to the shell.</summary>
+    public static string? LoadLink(string? stored) =>
+        stored is not null && SessionLinks.TryNormalize(stored, out var text, out _) ? text : null;
 
     /// <summary>
     /// The axis to put on a restored SPLIT session for a stored <see cref="SessionState.Axis"/>: the word

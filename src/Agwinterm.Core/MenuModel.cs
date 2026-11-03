@@ -39,7 +39,8 @@ public sealed record MenuDef(string Title, char Mnemonic, IReadOnlyList<MenuItem
 /// <c>tree</c> (the sidebar in tree mode), <c>flags</c> (flagged mode, or a flagged session to
 /// show), <c>anyflag</c> (a flagged session), <c>split</c> (the active session has two panes),
 /// <c>status</c> (the active session's agent status is not idle), <c>sessions</c> (at least two
-/// sessions), <c>attention</c> (a session with a non-idle status).</para>
+/// sessions), <c>attention</c> (a session with a non-idle status), <c>link</c> (the active session has a
+/// <c>session link</c>).</para>
 /// </summary>
 public static class MenuModel
 {
@@ -62,6 +63,9 @@ public static class MenuModel
             new MenuItemDef("reopen_recent", "Reopen Last Closed Item", "reopen_session", Term: "closed"),
             new MenuItemDef("rename_session", "Rename Session", "rename_session", Term: "session"),
             new MenuItemDef("duplicate_session", "Duplicate Session", "duplicate_session", Term: "session"),
+            new MenuItemDef("set_session_link", "Set Session Link…", "set_session_link", Term: "session"),
+            new MenuItemDef("open_session_link", "Open Session Link", "open_session_link", Term: "link"),
+            new MenuItemDef("clear_session_link", "Clear Session Link", Term: "link"),
             new MenuItemDef("reveal", "Reveal in Explorer", Term: "session"),
             new MenuItemDef("close_session", "Close Session", "close_pane", Term: "session"),
             new MenuItemDef("reopen_closed", "Reopen Closed Item", Term: "closed"),

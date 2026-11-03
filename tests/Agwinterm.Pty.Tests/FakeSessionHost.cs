@@ -24,6 +24,10 @@ internal sealed class FakeSessionHost : ISessionHost
         /// <summary>session.context — what the app keeps in Ses.Context. Read back through the tree,
         /// so a test asserts a set the way a caller does and a refusal the way it must: unchanged.</summary>
         public string? Context;
+        /// <summary>session.link: what the app keeps in Ses.Link.</summary>
+        public string? Link;
+        /// <summary>The links <c>session.link.open</c> handed to the browser, in order.</summary>
+        public List<string> Opened = new();
         public HudSpec? Hud;
         public List<string?>? ForegroundShells;
         public int Notifications, PaneCount = 1, FocusedPane, OverlaySize;
@@ -323,7 +327,7 @@ internal sealed class FakeSessionHost : ISessionHost
                 Context: s.Context,
                 CapturedCommands: s.PaneIds.Select(id => s.Captured.TryGetValue(id, out var c) ? c : "").ToList(),   // the slot, "" = none, parallel to PaneIds
                 Axis: s.Axis,
-                PaneOverlays: s.PaneOverlayWords(), Hud: s.Hud, ForegroundShells: s.ForegroundShells);
+                PaneOverlays: s.PaneOverlayWords(), Hud: s.Hud, ForegroundShells: s.ForegroundShells, Link: s.Link);
         }).ToList(), Collapsed: w.Collapsed, DefaultDir: w.DefaultDir)).ToList();
 
     public WindowStateSnapshot WindowState() =>
@@ -519,6 +523,23 @@ internal sealed class FakeSessionHost : ISessionHost
         if (context is not null && SessionContexts.Validate(context) is { } bad) throw new ArgumentException("the server should have refused this: " + bad, nameof(context));   // the fake's tripwire, as SidebarWidth's
         s.Context = context;
         return SessionContexts.Reply(s.Id, s.Context);
+    }
+    // session.link: the resolution, reply and tripwire of SessionContext.
+    public string SessionLink(string? target, string? link)
+    {
+        var s = FindSes(target);
+        if (s is null) return ISessionHost.RefusePrefix + SessionLinks.NoSession;
+        if (link is not null && SessionLinks.Validate(link) is { } bad) throw new ArgumentException("the server should have refused this: " + bad, nameof(link));
+        s.Link = link;
+        return SessionLinks.Reply(s.Id, s.Link);
+    }
+    public string SessionLinkOpen(string? target)
+    {
+        var s = FindSes(target);
+        if (s is null) return ISessionHost.RefusePrefix + SessionLinks.NoSession;
+        if (s.Link is null) return ISessionHost.RefusePrefix + SessionLinks.NoLink;
+        s.Opened.Add(s.Link);
+        return SessionLinks.Reply(s.Id, s.Link, opened: true);
     }
     public bool SessionSeen(string? target) { var s = FindSes(target); if (s is null) return false; s.Notifications = 0; return true; }
     public string SidebarState() => $"{(SidebarVisible ? "visible" : "hidden")} tree {SidebarW}";
