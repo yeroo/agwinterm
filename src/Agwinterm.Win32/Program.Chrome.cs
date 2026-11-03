@@ -184,7 +184,7 @@ internal partial class Program
             rt.DrawText("⚡", _uiSmall, new Rect(23f, y, 16f, rowH), brush);
             nameX = 40f;
         }
-        int? exitCode = s.Panes.Count == 1 ? s.ActivePane.ProfileExitCode : null;
+        int? exitCode = s.Panes.Count == 1 ? s.ActivePane.SessionExitCode : null;
         int unread = UnreadOf(s);
         string? badgeText = unread > 0 && _config.NotificationBadges ? (unread > 99 ? "99+" : unread.ToString()) : null;
         float badgeWidth = badgeText is null ? 0f : MeasureText(badgeText, _uiSmall) + 10f;

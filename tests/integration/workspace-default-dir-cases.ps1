@@ -17,20 +17,19 @@ function WsDefault-TreeWorkspace([string]$id) {
 function WsDefault-WaitText([string]$sessionId, [string]$needle, [int]$tries = 60) {
     for ($i = 0; $i -lt $tries; $i++) {
         $t = Invoke-Ctl @('session', 'text', '--target', $sessionId)
-        if ($t.ok -and [string]$t.result -like "*$needle*") { return [string]$t.result }
+        if ($t.ok -and (([string]$t.result -replace '[\r\n]', '').Contains($needle))) { return [string]$t.result }
         Start-Sleep -Milliseconds 200
     }
     return $null
 }
 
 function WsDefault-TextReportsCwd([string]$text, [string]$expectedDir) {
-    if ([string]::IsNullOrEmpty($text) -or $text -notmatch 'CWD=') { return $false }
+    if ([string]::IsNullOrEmpty($text)) { return $false }
     try {
-        # Terminal line-wrap can break a long path across rows; compare after removing newlines.
+        # Ignore terminal wrapping and exclude exit/status messages after the path.
         $flat = ($text -replace '[\r\n]', '')
-        $idx = $flat.IndexOf('CWD=', [StringComparison]::Ordinal)
-        if ($idx -lt 0) { return $false }
-        $reported = [IO.Path]::GetFullPath($flat.Substring($idx + 4).Trim())
+        if ($flat -notmatch 'CWD_BEGIN=(.*?)=CWD_END') { return $false }
+        $reported = [IO.Path]::GetFullPath($Matches[1])
         $want = [IO.Path]::GetFullPath($expectedDir)
         return $reported.Equals($want, [StringComparison]::OrdinalIgnoreCase)
     } catch { return $false }
@@ -81,11 +80,11 @@ try {
     $hasDefaultKey = $null -ne $nodeCleared -and $nodeCleared.PSObject.Properties.Name -contains 'defaultDir'
     Check 'tree omits defaultDir after clear' ($null -ne $nodeCleared -and -not $hasDefaultKey)
 
-    $cmd = 'cmd.exe /d /c cd && echo CWD=%CD%'
+    $cmd = 'cmd.exe /d /c cd && echo CWD_BEGIN=%CD%=CWD_END'
     $newSes = Invoke-Ctl @('session', 'new', '--workspace', $wsNew, '--no-select', '--command-mode', 'direct', '--command', $cmd)
     Check 'session new in workspace with default-dir succeeds' $newSes.ok
     $sesDefault = [string]$newSes.result
-    $text = WsDefault-WaitText $sesDefault 'CWD='
+    $text = WsDefault-WaitText $sesDefault '=CWD_END'
     Check 'new session spawns in workspace default directory' (WsDefault-TextReportsCwd $text $wsDefaultRootFull) $text
 
     $otherDir = Join-Path $testAppDir 'workspace-default-dir-explicit'
@@ -96,7 +95,7 @@ try {
         '--command-mode', 'direct', '--command', $cmd)
     Check 'session new with explicit cwd succeeds' $newSes2.ok
     $sesExplicit = [string]$newSes2.result
-    $text2 = WsDefault-WaitText $sesExplicit 'CWD='
+    $text2 = WsDefault-WaitText $sesExplicit '=CWD_END'
     Check 'explicit cwd overrides workspace default' (WsDefault-TextReportsCwd $text2 $otherFull) $text2
 }
 finally {

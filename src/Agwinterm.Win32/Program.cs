@@ -354,8 +354,7 @@ internal partial class Program : ISessionHost, IWindowHost
         public int Unread;         // unread desktop-notification count (OSC 9/777 / notify) since last visit
         public NotificationCategory UnreadCategory; // highest priority among unread notifications
         public bool ReadOnly;      // block keyboard input to this pane (protect a running agent from stray keys)
-        public bool ProfileShell; // profile/login shell, not a session new --command pane
-        public int? ProfileExitCode; // ended profile shell; independent of agent status
+        public int? SessionExitCode; // ended session process; independent of agent status
         public bool AwaitingExitAck; // hold prompt is visible; Enter may close this session
         // Text selection (absolute line index: [0..HistoryCount) history, then the live grid rows).
         public bool HasSel;
@@ -1031,7 +1030,7 @@ internal partial class Program : ISessionHost, IWindowHost
             {
                 Kind = Uia.NodeKind.Session,
                 Index = s.UiaIdentity,
-                Name = s.Panes.Count == 1 && s.ActivePane.ProfileExitCode is int exitCode
+                Name = s.Panes.Count == 1 && s.ActivePane.SessionExitCode is int exitCode
                     ? $"{s.Name}, session ended (exit {exitCode})" : s.Name,
                 Parent = list,
                 Focused = _chromeFocus && ReferenceEquals(_focusRow, s),

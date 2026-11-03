@@ -79,8 +79,7 @@ internal partial class Program
         // re-syncs the mirrors, and an ADOPTED session's reader thread is already feeding by now.
         lock (session.SyncRoot) session.Emulator.ScrollbackMax = _config.Scrollback;
         var pane = new Pane { Id = paneId, S = session, StartCwd = cwd, FontSize = fontSize,
-            FontZoomed = fontSize != (float)_config.FontSize,
-            ProfileShell = sessionCommand is null && handoff is null && string.IsNullOrWhiteSpace(command) };
+            FontZoomed = fontSize != (float)_config.FontSize };
         // New output snaps this pane back to the live bottom when the buffer ACTUALLY scrolled (a line
         // pushed into history) — not on every repaint. TUIs like Claude Code redraw in place without
         // scrolling, so a mouse selection survives those frames. #copy-selection
@@ -120,7 +119,7 @@ internal partial class Program
         session.Exited += code => Post(() =>
         {
             OnPaneProcessExited(pane);   // split survivor promotion (agterm #121)
-            NotifyProfileShellExit(pane, code);
+            NotifySessionExit(pane, code);
             TryEnterExitHold(pane);
         });
         var env = new Dictionary<string, string>
@@ -1537,14 +1536,14 @@ internal partial class Program
         ClosePane(ses, p);
     }
 
-    /// <summary>Report the exit of a lone profile/login shell without changing its visible buffer.</summary>
-    private void NotifyProfileShellExit(Pane pane, int exitCode)
+    /// <summary>Report the exit of a lone session process without changing its visible buffer.</summary>
+    private void NotifySessionExit(Pane pane, int exitCode)
     {
-        if (!pane.ProfileShell || pane.ProfileExitCode is not null || !pane.S.HasExited) return;
+        if (pane.SessionExitCode is not null || !pane.S.HasExited) return;
         Ses? ses;
         lock (_workspaces) ses = _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Panes.Contains(pane));
         if (ses is null || ses.Panes.Count != 1) return;
-        pane.ProfileExitCode = exitCode;
+        pane.SessionExitCode = exitCode;
         RequestRedraw();
         EmitEvent("tree");
         if (!ReferenceEquals(pane, ActiveSurface()) || !_windowActive)
@@ -1552,10 +1551,10 @@ internal partial class Program
                 exitCode == 0 ? NotificationCategory.Ok : NotificationCategory.Attention);
     }
 
-    /// <summary>Leave a visible exit prompt in a lone profile shell's scrollback.</summary>
+    /// <summary>Leave a visible exit prompt in a lone session's scrollback.</summary>
     private void TryEnterExitHold(Pane pane)
     {
-        if (pane.ProfileExitCode is not int exitCode || pane.AwaitingExitAck) return;
+        if (pane.SessionExitCode is not int exitCode || pane.AwaitingExitAck) return;
         Ses? ses;
         lock (_workspaces) ses = _workspaces.SelectMany(w => w.Sessions).FirstOrDefault(s => s.Panes.Contains(pane));
         if (ses is null || ses.Panes.Count != 1) return;
@@ -1564,6 +1563,8 @@ internal partial class Program
         lock (pane.S.SyncRoot) pane.S.Emulator.Feed(System.Text.Encoding.UTF8.GetBytes(msg));
         RequestRedraw();
     }
+
+    private bool _exitHoldAteChar;
 
     /// <summary>Enter on an exit-hold pane closes the tab without <see cref="ConfirmCloseOk"/>.</summary>
     private bool TryCloseExitHoldOnEnter()

@@ -1188,7 +1188,7 @@ internal partial class Program
         // A --wait overlay whose program has exited hangs around; any key dismisses it — the cover,
         // else the focused pane's own overlay (P5).
         if (CloseExitedOverlayOnKey()) return true;
-        if (vk == VK_RETURN && TryCloseExitHoldOnEnter()) return true;
+        if (vk == VK_RETURN && TryCloseExitHoldOnEnter()) { _exitHoldAteChar = true; return true; }
 
         // Escape during an MRU walk cancels back to where the walk began.
         if (_mruWalking && vk == VK_ESCAPE) { MruCancel(); return true; }
