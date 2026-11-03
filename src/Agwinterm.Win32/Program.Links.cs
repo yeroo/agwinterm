@@ -5,7 +5,7 @@ namespace Agwinterm.Win32;
 
 /// <summary>
 /// The session link (<see cref="SessionLinks"/> holds the rules): set from the sidebar's context
-/// menu, File ▸ Set Session Link…, the Command Palette or <c>session link</c>; opened by
+/// menu, File ▸ Session Link ▸ Set Session Link…, the Command Palette or <c>session link</c>; opened by
 /// <c>open_session_link</c> (Ctrl+Shift+L), the link glyph left of the session's name, or
 /// <c>session link --open</c>.
 /// </summary>

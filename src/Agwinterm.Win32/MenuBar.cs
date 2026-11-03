@@ -320,6 +320,15 @@ internal partial class Program
                 list.Add(MenuSeparator());
                 list.Add(new PalItem { Label = "Clear Menu", Search = "Clear Menu", Run = () => { _closedSessions.Clear(); _closedWorkspaces.Clear(); } });
                 break;
+            case MenuFlyout.SessionLink:
+                // The active session's link: Open and Clear follow the `link` term, like any row.
+                list.Add(new PalItem { Label = "Set Session Link…", Search = "Set Session Link", Hint = ChordHintFor("set_session_link"),
+                    Enabled = () => MenuTermOk("session"), Run = () => RunMenuCommand("set_session_link") });
+                list.Add(new PalItem { Label = "Open Session Link", Search = "Open Session Link", Hint = ChordHintFor("open_session_link"),
+                    Enabled = () => MenuTermOk("link"), Run = () => RunMenuCommand("open_session_link") });
+                list.Add(new PalItem { Label = "Clear Session Link", Search = "Clear Session Link",
+                    Enabled = () => MenuTermOk("link"), Run = () => RunMenuCommand("clear_session_link") });
+                break;
         }
         return list;
     }

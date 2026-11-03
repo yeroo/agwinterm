@@ -6,8 +6,8 @@
   unread badges (green `ok`, yellow `normal`, red `attention` or untyped; colors can be changed in Settings → Notifications), **multi-select with Ctrl/Shift+click** for batch flag / move / close, and reopen
   closed sessions *and workspaces* with `Ctrl+Shift+R`. See [workspace navigation](navigation.md).
 - **Session link**: give a session the URL of the tracker issue or pull request it is about (any
-  tracker, a full `http(s)` URL) from the row's context menu (**Set Link…**), **File ▸ Set Session
-  Link…**, the action palette or `agwintermctl session link <url>`. The row shows a link glyph left of
+  tracker, a full `http(s)` URL) from the row's context menu (**Set Link…**), **File ▸ Session
+  Link ▸ Set Session Link…**, the action palette or `agwintermctl session link <url>`. The row shows a link glyph left of
   the name (after the flag when both are set); click it, press `Ctrl+Shift+L` or run
   `agwintermctl session link --open` to open the URL in your browser. Hovering the glyph shows the
   URL, `Ctrl+P` finds a session by it, and custom commands get it as `{AGW_LINK}`. The inline field

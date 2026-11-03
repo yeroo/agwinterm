@@ -1,7 +1,7 @@
 namespace Agwinterm.Core;
 
 /// <summary>A flyout a menu row opens instead of running something.</summary>
-public enum MenuFlyout { None, OpenWindow, OpenRecent }
+public enum MenuFlyout { None, OpenWindow, OpenRecent, SessionLink }
 
 /// <summary>
 /// One row of a menu, as data. <paramref name="Id"/> is what the host maps to behaviour ("-" is a
@@ -63,9 +63,9 @@ public static class MenuModel
             new MenuItemDef("reopen_recent", "Reopen Last Closed Item", "reopen_session", Term: "closed"),
             new MenuItemDef("rename_session", "Rename Session", "rename_session", Term: "session"),
             new MenuItemDef("duplicate_session", "Duplicate Session", "duplicate_session", Term: "session"),
-            new MenuItemDef("set_session_link", "Set Session Link…", "set_session_link", Term: "session"),
-            new MenuItemDef("open_session_link", "Open Session Link", "open_session_link", Term: "link"),
-            new MenuItemDef("clear_session_link", "Clear Session Link", Term: "link"),
+            // One row with a flyout (Set… / Open / Clear), not three: File is already the tallest
+            // menu, and three more rows no longer fit a 768 px screen (CI's runner).
+            new MenuItemDef("session_link", "Session Link", Term: "session", Flyout: MenuFlyout.SessionLink),
             new MenuItemDef("reveal", "Reveal in Explorer", Term: "session"),
             new MenuItemDef("close_session", "Close Session", "close_pane", Term: "session"),
             new MenuItemDef("reopen_closed", "Reopen Closed Item", Term: "closed"),
