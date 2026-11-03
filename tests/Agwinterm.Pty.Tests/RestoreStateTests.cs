@@ -284,6 +284,33 @@ public class RestoreStateTests
         AssertEveryOtherFieldIntact(st);
     }
 
+    // ---- session link: written only when set, validated on load ----
+
+    [Fact]
+    public void NullLink_WritesNoKey_AndASetOneRoundTrips()
+    {
+        var st = Tree();
+        Assert.Equal(PreP3File, RestoreState.Serialize(st));   // no link = the bytes a build without links writes
+        st.Workspaces[0].Sessions[0].Link = "https://github.com/acme/repo/pull/7";
+        string json = RestoreState.Serialize(st);
+        Assert.Contains("\"Link\": \"https://github.com/acme/repo/pull/7\"", json);
+        Assert.Equal("https://github.com/acme/repo/pull/7", Load(json).Workspaces[0].Sessions[0].Link);
+        Assert.Equal(json, RestoreState.Serialize(Load(json)));
+    }
+
+    [Theory]
+    [InlineData("https://jira.example.com/browse/PROJ-1", "https://jira.example.com/browse/PROJ-1")]
+    [InlineData("  https://example.com/x  ", "https://example.com/x")]
+    [InlineData("file:///C:/Windows/System32/calc.exe", null)]   // never handed to the shell from a hand-edited file
+    [InlineData("javascript:alert(1)", null)]
+    [InlineData("https://example.com/a b", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void LoadLink_DropsWhatTheVerbWouldRefuse(string? stored, string? expected)
+    {
+        Assert.Equal(expected, RestoreState.LoadLink(stored));
+    }
+
     // ---- P4: the split axis (docs/plans/completed/2026-09-06-p4-splits.md, task 3) ----
     //
     // SessionState.Axis is the LAST key of a session, written only when the session is split AND

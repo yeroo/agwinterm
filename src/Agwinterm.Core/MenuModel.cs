@@ -1,7 +1,7 @@
 namespace Agwinterm.Core;
 
 /// <summary>A flyout a menu row opens instead of running something.</summary>
-public enum MenuFlyout { None, OpenWindow, OpenRecent }
+public enum MenuFlyout { None, OpenWindow, OpenRecent, SessionLink }
 
 /// <summary>
 /// One row of a menu, as data. <paramref name="Id"/> is what the host maps to behaviour ("-" is a
@@ -39,7 +39,8 @@ public sealed record MenuDef(string Title, char Mnemonic, IReadOnlyList<MenuItem
 /// <c>tree</c> (the sidebar in tree mode), <c>flags</c> (flagged mode, or a flagged session to
 /// show), <c>anyflag</c> (a flagged session), <c>split</c> (the active session has two panes),
 /// <c>status</c> (the active session's agent status is not idle), <c>sessions</c> (at least two
-/// sessions), <c>attention</c> (a session with a non-idle status).</para>
+/// sessions), <c>attention</c> (a session with a non-idle status), <c>link</c> (the active session has a
+/// <c>session link</c>).</para>
 /// </summary>
 public static class MenuModel
 {
@@ -62,6 +63,9 @@ public static class MenuModel
             new MenuItemDef("reopen_recent", "Reopen Last Closed Item", "reopen_session", Term: "closed"),
             new MenuItemDef("rename_session", "Rename Session", "rename_session", Term: "session"),
             new MenuItemDef("duplicate_session", "Duplicate Session", "duplicate_session", Term: "session"),
+            // One row with a flyout (Set… / Open / Clear), not three: File is already the tallest
+            // menu, and three more rows no longer fit a 768 px screen (CI's runner).
+            new MenuItemDef("session_link", "Session Link", Term: "session", Flyout: MenuFlyout.SessionLink),
             new MenuItemDef("reveal", "Reveal in Explorer", Term: "session"),
             new MenuItemDef("close_session", "Close Session", "close_pane", Term: "session"),
             new MenuItemDef("reopen_closed", "Reopen Closed Item", Term: "closed"),

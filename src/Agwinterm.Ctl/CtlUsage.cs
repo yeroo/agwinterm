@@ -25,7 +25,7 @@ public static class CtlUsage
           agwintermctl ping
           agwintermctl version [--json]                  (the CLI that ran + the app serving the pipe)
           agwintermctl tree [--json]
-          agwintermctl session new [--command "PowerShell code"] [--command-mode powershell|direct] [--cwd DIR] [--name NAME] [--workspace ID|--workspace-name NAME [--create-workspace]] [--no-select]
+          agwintermctl session new [--command "PowerShell code"] [--command-mode powershell|direct] [--cwd DIR] [--name NAME] [--workspace ID|--workspace-name NAME [--create-workspace]] [--link URL] [--no-select]
               (no workspace given = the workspace of the pane running this CLI; the active one only when there is none)
                                                          (an unknown workspace is refused, never swapped for the active one)
           agwintermctl session select <target>
@@ -59,6 +59,13 @@ public static class CtlUsage
           agwintermctl session context --clear [--target ID]      (remove it; text beside --clear is refused)
           agwintermctl session context --stdin [--target ID]      (text = stdin, one trailing newline dropped; an
               embedded newline is then refused — the context is one line)
+          agwintermctl session link <url> [--target ID]  (the one http(s) URL the session is about - a tracker issue, a
+              pull request; shown as a link glyph left of the name, opened by Ctrl+Shift+L or a click on the glyph, read
+              back in `tree --json` as link; survives a restart. Not http/https, whitespace, a control character or more
+              than 2048 characters is refused; replies {session,link})
+          agwintermctl session link --clear [--target ID]   (remove it; a URL beside --clear is refused)
+          agwintermctl session link --open [--target ID]    (open it in the default browser; a session without a link
+              is refused; replies {session,link,opened})
           agwintermctl session seen [--target ID]        (clear the unseen-notification badge)
           agwintermctl notify <body...> [--title TITLE] [--category ok|normal|attention] [--target ID]
               (untyped notifications default to attention; badge priority: attention > normal > ok)

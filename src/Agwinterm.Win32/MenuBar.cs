@@ -320,6 +320,15 @@ internal partial class Program
                 list.Add(MenuSeparator());
                 list.Add(new PalItem { Label = "Clear Menu", Search = "Clear Menu", Run = () => { _closedSessions.Clear(); _closedWorkspaces.Clear(); } });
                 break;
+            case MenuFlyout.SessionLink:
+                // The active session's link: Open and Clear follow the `link` term, like any row.
+                list.Add(new PalItem { Label = "Set Session Link…", Search = "Set Session Link", Hint = ChordHintFor("set_session_link"),
+                    Enabled = () => MenuTermOk("session"), Run = () => RunMenuCommand("set_session_link") });
+                list.Add(new PalItem { Label = "Open Session Link", Search = "Open Session Link", Hint = ChordHintFor("open_session_link"),
+                    Enabled = () => MenuTermOk("link"), Run = () => RunMenuCommand("open_session_link") });
+                list.Add(new PalItem { Label = "Clear Session Link", Search = "Clear Session Link",
+                    Enabled = () => MenuTermOk("link"), Run = () => RunMenuCommand("clear_session_link") });
+                break;
         }
         return list;
     }
@@ -378,6 +387,7 @@ internal partial class Program
             case "status": return _active is { } a && AggStatus(a) != AgentStatus.Idle;
             case "sessions": return AllSessions().Count > 1;
             case "attention": return AllSessions().Any(s => AggStatus(s) != AgentStatus.Idle);
+            case "link": return _active is { Link: not null };
             default: return true;
         }
     }
@@ -398,6 +408,9 @@ internal partial class Program
             case "new_session": CreateSession(Guid.NewGuid().ToString(), null, null, ActiveWorkspace(), true); break;
             case "open_directory": { var d = PickFolder(); if (d is not null) CreateSession(Guid.NewGuid().ToString(), null, d, ActiveWorkspace(), true); break; }
             case "reopen_recent": case "reopen_closed": ReopenMostRecent(); break;
+            case "set_session_link": if (_active is not null) StartSidebarLinkEdit(_active); break;
+            case "open_session_link": if (_active is not null) OpenSessionLink(_active); break;
+            case "clear_session_link": if (_active is not null) SetSessionLink(_active, null); break;
             case "rename_session": if (_active is not null) StartSidebarRename(_active); break;
             case "duplicate_session": DuplicateSession(_active); break;
             case "reveal": RevealActiveInExplorer(); break;
@@ -468,12 +481,19 @@ internal partial class Program
     /// <summary>File ▸ Rename Window…: the sidebar's inline rename field, over the title text.</summary>
     private void StartWindowRename()
     {
+        if (_titleTextRect.Width <= 0) { if (_editHwnd != IntPtr.Zero) CommitRename(); ShowToast("no title bar to rename in"); return; }
+        StartTitleEdit(WindowRenameMarker, WinName);
+    }
+
+    /// <summary>The inline field over the title text; <paramref name="editing"/> is what
+    /// <see cref="CommitRename"/> commits to. The caller checks that the title bar has a text rect.</summary>
+    private void StartTitleEdit(object editing, string text)
+    {
         if (_editHwnd != IntPtr.Zero) CommitRename();
-        if (_titleTextRect.Width <= 0) { ShowToast("no title bar to rename in"); return; }
         EnsureEditGdi();
         int ex = ToDevice(_titleTextRect.X), ey = ToDevice(_titleTextRect.Y + 6), ew = ToDevice(Math.Max(160f, _titleTextRect.Width)),
             eh = ToDevice(TitleBarH - 12f), margin = ToDevice(6);
-        _editHwnd = CreateWindowExW(0, "EDIT", WinName, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        _editHwnd = CreateWindowExW(0, "EDIT", text, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
             ex, ey, ew, eh, _hwnd, (IntPtr)EDIT_ID, GetModuleHandleW(null), IntPtr.Zero);
         if (_editHwnd == IntPtr.Zero) return;
         SendMessageW(_editHwnd, WM_SETFONT, _editFont, (IntPtr)1);
@@ -482,7 +502,7 @@ internal partial class Program
         SetFocus(_editHwnd);
         _editProc = EditProc;
         _editOrigProc = SetWindowLongPtrW(_editHwnd, GWLP_WNDPROC, System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(_editProc));
-        _editing = WindowRenameMarker;
+        _editing = editing;
         RequestRedraw();
     }
 

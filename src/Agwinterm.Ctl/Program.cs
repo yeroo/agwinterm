@@ -198,6 +198,8 @@ switch (area)
                 if (Opt("workspace-name") is { } wsn) cargs["workspace-name"] = wsn;
                 if (options.ContainsKey("create-workspace")) cargs["create-workspace"] = true;
                 if (Opt("profile") is { } prof) cargs["profile"] = prof;
+                if (bareLast.Contains("link")) { Console.Error.WriteLine("session new: --link needs a URL"); return 2; }
+                if (Opt("link") is { } newLink) cargs[Agwinterm.Pty.SessionLinks.Key] = newLink;
                 if (options.ContainsKey("no-select")) cargs["no-select"] = true;   // create in background, keep focus
                 if (options.ContainsKey("wait")) cargs["wait"] = true;             // PowerShell keeps its interactive prompt; direct mode refuses this flag
                 // Who is asking: the pane this CLI runs in, the same AGWINTERM_SESSION_ID every other
@@ -242,6 +244,22 @@ switch (area)
                 }
                 if (rest.Count == 0) { Console.Error.WriteLine("session context needs text, --clear or --stdin"); return 2; }
                 cargs[Agwinterm.Pty.SessionContexts.Key] = string.Join(' ', rest);
+                break;
+            }
+            case "link": // session link <url> | --clear | --open  [--target ID]
+            {
+                // One action per call, refused client-side otherwise (nothing is sent). The URL rules
+                // (http/https only, no whitespace, the ceiling) are the server's — SessionLinks.
+                bool clearFlag = options.ContainsKey("clear"), openFlag = options.ContainsKey("open");
+                // The splitter hands ANY flag the next bare word: `--open https://x` would hide the URL.
+                bool swallowedWord = valued.Any(k => !Agwinterm.Ctl.FrameShmCli.GlobalValuedOptions.Contains(k, StringComparer.OrdinalIgnoreCase));
+                if (clearFlag && openFlag) { Console.Error.WriteLine("session link: --clear and --open cannot be combined; nothing was sent"); return 2; }
+                if ((clearFlag || openFlag) && (rest.Count > 0 || swallowedWord))
+                { Console.Error.WriteLine($"session link: --{(clearFlag ? "clear" : "open")} cannot be combined with a URL; nothing was sent"); return 2; }
+                if (clearFlag) { cargs["clear"] = true; break; }
+                if (openFlag) { cmd = "session.link.open"; break; }
+                if (rest.Count != 1) { Console.Error.WriteLine(rest.Count == 0 ? "session link needs a URL, --clear or --open" : "session link takes one URL (quote it if it holds spaces; it will then be refused, a URL has none)"); return 2; }
+                cargs[Agwinterm.Pty.SessionLinks.Key] = rest[0];
                 break;
             }
             // session metrics [<pane-id>] — cell size + pixel box of a pane, for sizing an

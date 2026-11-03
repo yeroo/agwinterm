@@ -71,7 +71,8 @@ public static class AgentSkill
           from a live one beside it, and no verb reports the stamp per pane. Always present, even
           for an idle session that never set one)
         - `agwintermctl events [--since CURSOR] [--limit N]`      — poll the event log (status/notification/session/tree changes); returns {cursor, events:[{seq,type,session,info}]}. Pass the returned cursor as --since next poll.
-        - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "PowerShell code"] [--command-mode powershell|direct] [--profile NAME] [--no-select] [--wait]`
+        - `agwintermctl session new [--name N] [--cwd DIR] [--workspace ID|--workspace-name NAME [--create-workspace]] [--command "PowerShell code"] [--command-mode powershell|direct] [--profile NAME] [--link URL] [--no-select] [--wait]`
+          `--link URL` sets the new session's link (see `session link`); a bad URL is refused before anything is created.
           `--no-select` creates the session in the background without stealing focus or changing the current selection.
           `--command` runs PowerShell code and leaves an interactive prompt. `--wait` is accepted in this mode; the prompt stays open either way.
           — create a session (prints its id). `--command-mode direct` launches executable + arguments using Windows quoting, with no added shell; it refuses `--wait`. An exited standalone pane remains visible without an interactive prompt. Profile/login-shell tabs show an in-terminal exit hold and close when you press Enter.
@@ -116,6 +117,17 @@ public static class AgentSkill
           `--stdin` takes the text from stdin the way `session type --stdin` does (one trailing newline dropped, an
           embedded one then refused). Replies `{session, context}` with the value IN EFFECT after the write, read off the
           session; the target resolves as `session rename` does (a scratch/overlay cover id lands on the session under it).
+        - `agwintermctl session link <url> [--target ID]` — the ONE http(s) URL the session is about: the tracker issue it
+          works on (Jira, GitHub, Linear, …) or the pull request it reviews. The sidebar draws a link glyph left of the
+          name; a click on it, Ctrl+Shift+L or `session link --open` opens it in the user's browser, and the session
+          palette (Ctrl+P) finds the session by it. **When you start work on an issue or a PR review, set the link to its
+          URL** (with the context for the one-line "what"), so the user can jump to it; replace it when the task moves to
+          another issue or PR. Only a full absolute `http://` / `https://` URL is accepted — no issue-key shorthand,
+          whitespace, control characters or more than 2048 characters. One link per session: setting it again replaces
+          it, `--clear` removes it (a URL beside `--clear` is refused). It survives a restart and `session reopen`;
+          `tree --json` reads it back as `link` on the session node (absent when none). Replies `{session, link}`;
+          `--open` replies `{session, link, opened}` and is refused for a session without a link. The target resolves as
+          `session context` does. Custom commands get it as `{AGW_LINK}` / `$AGW_LINK`.
         - `agwintermctl session seen [--target ID]` — clear a session's unseen-notification badge headlessly
         - `agwintermctl session output [--target ID]` — the LAST COMPLETED command's output (FTCS marks;
           pwsh sessions emit them automatically) — cleaner than parsing `session text` yourself
@@ -390,7 +402,8 @@ public static class AgentSkill
         - List them: `agwintermctl command list`         — tab-separated `label  mode  chord  text`.
         - `{AGW_*}` tokens are expanded in the text AND passed as `$AGW_*` env vars to the launched process:
           `{AGW_SESSION}` (name) · `{AGW_SESSION_ID}` · `{AGW_WORKSPACE}` · `{AGW_CWD}` (active pane cwd) ·
-          `{AGW_PANE_ID}` · `{AGW_APP}` (path to agwintermctl, for callbacks). Unknown `{AGW_*}` → empty.
+          `{AGW_PANE_ID}` · `{AGW_APP}` (path to agwintermctl, for callbacks) · `{AGW_LINK}` (the session's link, empty
+          when none). Unknown `{AGW_*}` → empty.
         - Leader chords (tmux-style): `leader = ctrl+k`, then `map leader b = command:Build`. Press the leader,
           then the follow-up key. Drive/observe it with `agwintermctl command leader state|begin|cancel|key:<chord>`.
 

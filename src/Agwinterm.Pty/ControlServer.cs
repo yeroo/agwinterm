@@ -268,12 +268,20 @@ public sealed class ControlServer : IDisposable
                     string? commandMode = GetString(args, "command-mode");
                     if (!SessionCommand.TryCreate(GetString(args, "command"), commandMode, GetBool(args, "wait"),
                         GetString(args, "profile"), out _, out var commandError)) return Err(commandError);
+                    // --link is validated before anything is created, so a bad URL leaves no session behind.
+                    string? newLink = null;
+                    if (GetString(args, SessionLinks.Key) is { } rawLink)
+                    {
+                        if (!SessionLinks.TryNormalize(rawLink, out string linkText, out string? linkRefusal)) return Err(linkRefusal!.Replace("Nothing changed.", "Nothing created."));
+                        newLink = linkText;
+                    }
                     string created = host.NewSession(GetString(args, "name"), GetString(args, "cwd"), workspace,
                         GetString(args, "command"), workspaceName, GetBool(args, "create-workspace"), GetString(args, "profile"), GetBool(args, "no-select"), GetBool(args, "wait"),
                         caller: GetString(args, "caller"), commandMode: commandMode);
-                    return created.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
-                        ? Err(created[ISessionHost.RefusePrefix.Length..])
-                        : Ok(created);
+                    if (created.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal))
+                        return Err(created[ISessionHost.RefusePrefix.Length..]);
+                    if (newLink is not null) host.SessionLink(created, newLink);   // the reply stays the id: tree reads the link back
+                    return Ok(created);
                 }
                 case "session.duplicate": return Ok(host.DuplicateSession(target));
                 case "profiles.list": return Ok(host.ProfilesList());
@@ -300,6 +308,8 @@ public sealed class ControlServer : IDisposable
                         ? Ok("moved") : Err("not found");
                 case "session.rename": return HandleSessionRename(host, target, args);
                 case "session.context": return HandleSessionContext(host, target, args);
+                case "session.link": return HandleSessionLink(host, target, args);
+                case "session.link.open": return HostReplyRaw(host.SessionLinkOpen(target));
                 case "session.hud.open": case "session.hud.update": case "session.hud.close":
                     {
                         string action = cmd[12..];
@@ -549,6 +559,8 @@ public sealed class ControlServer : IDisposable
                 // context: the session.context read-back, emitted only when one is set — absent is
                 // "none", the same spelling the flags above use for "no" (P3).
                 if (n.Context is not null) sb.Append(",\"").Append(SessionContexts.Key).Append("\":").Append(JsonSerializer.Serialize(n.Context));
+                // link: the session.link read-back, emitted only when one is set.
+                if (n.Link is not null) sb.Append(",\"").Append(SessionLinks.Key).Append("\":").Append(JsonSerializer.Serialize(n.Link));
                 AppendPaneMap(sb, "restoreCommands", n.RestoreCommands, n.PaneIds);
                 // capturedCommands: the restore.capture read-back, same spelling — emitted only when
                 // any pane's slot holds a capture (P3).
@@ -790,6 +802,32 @@ public sealed class ControlServer : IDisposable
             ? Err(reply[ISessionHost.RefusePrefix.Length..])
             : OkRaw(reply);
     }
+
+    /// <summary>
+    /// session.link: set or clear a session's link and reply with the value IN EFFECT
+    /// (<c>{session, link}</c>, OkRaw) — the read-back is <c>tree</c>'s <c>link</c>. Every refusal of
+    /// the VALUE happens here, through <see cref="SessionLinks"/>, before the host is reached: a URL
+    /// beside <c>clear</c>, blank, whitespace or a control character, over-length, not http(s).
+    /// </summary>
+    private static string HandleSessionLink(ISessionHost host, string? target, JsonElement args)
+    {
+        string? raw = GetString(args, SessionLinks.Key);
+        bool clear = GetBool(args, "clear");
+        if (clear && raw is not null) return Err(SessionLinks.TextAndClear);
+        string? link = null;
+        if (!clear)
+        {
+            if (!SessionLinks.TryNormalize(raw, out string text, out string? refusal)) return Err(refusal!);
+            link = text;
+        }
+        return HostReplyRaw(host.SessionLink(target, link));
+    }
+
+    /// <summary><see cref="HostReply"/> for a host that answers with a JSON object (OkRaw).</summary>
+    private static string HostReplyRaw(string reply) =>
+        reply.StartsWith(ISessionHost.RefusePrefix, StringComparison.Ordinal)
+            ? Err(reply[ISessionHost.RefusePrefix.Length..])
+            : OkRaw(reply);
 
     private static string HandleWorkspaceDefaultDir(ISessionHost host, string? target, JsonElement args)
     {

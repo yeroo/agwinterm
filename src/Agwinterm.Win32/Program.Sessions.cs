@@ -1577,10 +1577,10 @@ internal partial class Program
 
     /// <summary>A recently-closed session's restorable identity (IDE "reopen closed" / browser Ctrl+Shift+T).
     /// SessionId is the original id, reused on reopen so control-API/agent references stay stable.
-    /// Context is the session.context text (P3) — it rides here so `session reopen` brings it back.</summary>
+    /// Context is the session.context text (P3) and Link the session.link URL — they ride here so `session reopen` brings them back.</summary>
     private sealed record ClosedSession(string? CustomName, string? ProfileName, string Cwd,
         string WorkspaceId, string WorkspaceName, bool Flagged, string Display, string Name,
-        string SessionId = "", long Seq = 0, string? Context = null);
+        string SessionId = "", long Seq = 0, string? Context = null, string? Link = null);
     /// <summary>A recently-closed workspace (its name + all its sessions), so it can be reopened whole.
     /// WorkspaceId is the original id, reused on reopen to keep it stable across close→reopen.</summary>
     private sealed record ClosedWorkspace(string Name, IReadOnlyList<ClosedSession> Sessions, long Seq, string WorkspaceId = "", string? DefaultDir = null);
@@ -1598,7 +1598,7 @@ internal partial class Program
         string display = !string.IsNullOrEmpty(ses.CustomName) ? ses.CustomName!
             : (!string.IsNullOrEmpty(cwd) ? Path.GetFileName(cwd.TrimEnd('\\', '/')) : ses.Name);
         if (string.IsNullOrEmpty(display)) display = ses.Name;
-        return new ClosedSession(ses.CustomName, ses.ProfileName, cwd, ses.Ws.Id, ses.Ws.Name, ses.Flagged, display, ses.Name, ses.Id, ++_closeSeq, ses.Context);
+        return new ClosedSession(ses.CustomName, ses.ProfileName, cwd, ses.Ws.Id, ses.Ws.Name, ses.Flagged, display, ses.Name, ses.Id, ++_closeSeq, ses.Context, ses.Link);
     }
 
     /// <summary>Remember a session's identity so it can be reopened after it's closed.</summary>
@@ -1679,6 +1679,7 @@ internal partial class Program
         else if (!string.IsNullOrEmpty(c.Name)) ses.Name = c.Name;   // restore the original label
         if (c.Flagged) ses.Flagged = true;
         ses.Context = c.Context;   // session.context comes back with the session (P3)
+        ses.Link = c.Link;         // and so does session.link
         RequestRedraw();
         SaveState();
     }
@@ -1698,6 +1699,7 @@ internal partial class Program
             else if (!string.IsNullOrEmpty(cs.Name)) ses.Name = cs.Name;
             if (cs.Flagged) ses.Flagged = true;
             ses.Context = cs.Context;   // session.context comes back with the session (P3)
+            ses.Link = cs.Link;
             first ??= ses;
         }
         if (first is not null) SetActive(first);
@@ -1735,7 +1737,7 @@ internal partial class Program
         if (_selAnchorId == ses.Id) _selAnchorId = null;
         if (ReferenceEquals(_focusRow, ses)) _focusRow = null;
         if (ReferenceEquals(_toastTarget, ses)) _toastTarget = null;
-        if (ReferenceEquals(_editing, ses)) CancelRename();
+        if (ReferenceEquals(_editing, ses) || _editing is LinkEdit { Ses: var linked } && ReferenceEquals(linked, ses)) CancelRename();
         bool ownsSelection = _selPane is { } selected &&
             (ses.Panes.Any(p => ReferenceEquals(p, selected) || ReferenceEquals(p.Overlay.Term, selected)) ||
              ReferenceEquals(ses.Scratch, selected) || ReferenceEquals(ses.Overlay.Term, selected));

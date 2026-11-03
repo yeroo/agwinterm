@@ -25,7 +25,7 @@ public class MenuModelTests
             "New Window", "Open Window", "Rename Window…", "Delete Window", "-",
             "New Workspace", "Rename Workspace", "Delete Workspace", "-",
             "New Session", "Open Directory…", "Open Recent", "Reopen Last Closed Item", "Rename Session",
-            "Duplicate Session", "Reveal in Explorer", "Close Session", "Reopen Closed Item", "Clear Status", "-",
+            "Duplicate Session", "Session Link", "Reveal in Explorer", "Close Session", "Reopen Closed Item", "Clear Status", "-",
             "Edit Keymap…", "Reload Keymap", "Edit agwinterm.conf…", "Reload Config",
         }, MenuModel.Menus[0].Items.Select(i => i.Label));
     }
@@ -78,6 +78,7 @@ public class MenuModelTests
             Assert.NotEqual(item.Label, item.AltLabel);
         Assert.Equal(MenuFlyout.OpenWindow, MenuModel.Menus[0].Items.Single(i => i.Id == "open_window").Flyout);
         Assert.Equal(MenuFlyout.OpenRecent, MenuModel.Menus[0].Items.Single(i => i.Id == "open_recent").Flyout);
+        Assert.Equal(MenuFlyout.SessionLink, MenuModel.Menus[0].Items.Single(i => i.Id == "session_link").Flyout);
     }
 
     [Theory]

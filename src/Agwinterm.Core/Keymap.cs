@@ -55,6 +55,7 @@ public static class Keymap
         ("ctrl+shift+down", "next_prompt"),
         ("ctrl+shift+m", "mark_mode"),
         ("ctrl+shift+r", "reopen_session"),
+        ("ctrl+shift+l", "open_session_link"),
     });
 
     private static readonly FrozenSet<string> ValidActions = new[] {
@@ -74,6 +75,7 @@ public static class Keymap
         "toggle_flag", "toggle_flagged_view", "focus_workspace",
         "select_all", "copy_selection", "paste",
         "new_window", "close_window", "switch_window",
+        "open_session_link", "set_session_link",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     public const string StarterText =
@@ -101,13 +103,15 @@ public static class Keymap
         #
         # tokens (expanded in <text>) + matching $AGW_* env vars given to the process:
         #   {AGW_SESSION} {AGW_SESSION_ID} {AGW_WORKSPACE} {AGW_CWD} {AGW_PANE_ID} {AGW_PANE} {AGW_APP}
+        #   {AGW_LINK} (the session's link; empty when it has none)
         #   ({AGW_PANE} = the surface the command fired from: left / right / scratch / overlay / quick)
         #
         # actions: new_session new_workspace close_session next_session previous_session
         #          toggle_sidebar rename_session delete_workspace session_palette
         #          action_palette attention_list custom_palette next_attention
         #          previous_attention reload_keymap toggle_flag focus_workspace
-        #          select_all copy_selection paste close_cover
+        #          select_all copy_selection paste close_cover open_session_link
+        #          set_session_link
         #
         # Examples (uncomment to use):
         # map escape = close_cover        # Esc hides the quick/scratch/overlay cover (falls through otherwise)
@@ -120,6 +124,7 @@ public static class Keymap
         # command Greet = echo hello from {AGW_SESSION}
         # command [new] Log = echo running in {AGW_CWD}
         # command [detached] Docs = start https://example.com
+        # command [new] Review = claude "review {AGW_LINK}"
         # leader = ctrl+k
         # map leader g = command:Greet
         """;

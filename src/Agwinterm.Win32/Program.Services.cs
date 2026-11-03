@@ -1657,7 +1657,8 @@ internal partial class Program
                         Flagged = s.Flagged,
                         BgFile = s.BgPath is null ? null : Path.GetFileName(s.BgPath),
                         BgOpacity = s.BgOpacity,
-                        BgMode = s.BgMode
+                        BgMode = s.BgMode,
+                        Link = s.Link,   // null = no key written
                     };
                     List<Pane> panes;
                     lock (_workspaces) panes = s.Panes.ToList();
@@ -1874,6 +1875,7 @@ internal partial class Program
                             }
                     ses.Flagged = s.Flagged;
                     ses.CustomName = string.IsNullOrWhiteSpace(s.CustomName) ? null : s.CustomName;
+                    ses.Link = RestoreState.LoadLink(s.Link);   // validated like the context: a non-http(s) value is dropped
                     ses.Context = RestoreState.LoadContext(s.Context); // validated, not trusted: an out-of-rules value is dropped, not shown
                     if (!string.IsNullOrEmpty(s.BgFile)) // restore the watermark if its copied file still exists
                     {

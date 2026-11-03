@@ -5,6 +5,13 @@
 - **Workspaces → sessions → panes** in a custom-drawn sidebar: drag-reorder, rename, flag, focus,
   unread badges (green `ok`, yellow `normal`, red `attention` or untyped; colors can be changed in Settings → Notifications), **multi-select with Ctrl/Shift+click** for batch flag / move / close, and reopen
   closed sessions *and workspaces* with `Ctrl+Shift+R`. See [workspace navigation](navigation.md).
+- **Session link**: give a session the URL of the tracker issue or pull request it is about (any
+  tracker, a full `http(s)` URL) from the row's context menu (**Set Link…**), **File ▸ Session
+  Link ▸ Set Session Link…**, the action palette or `agwintermctl session link <url>`. The row shows a link glyph left of
+  the name (after the flag when both are set); click it, press `Ctrl+Shift+L` or run
+  `agwintermctl session link --open` to open the URL in your browser. Hovering the glyph shows the
+  URL, `Ctrl+P` finds a session by it, and custom commands get it as `{AGW_LINK}`. The inline field
+  starts with the clipboard when it holds a link; an empty field clears it.
 - **Dashboard** (`Ctrl+Shift+D`): a grid of **live** session previews — arrow-navigate, Enter or
   double-click to jump in; or drive it with `agwintermctl dashboard <ids>`.
 - **Agent status** per session (idle / active / blocked / completed) as a colored dot and a title-bar
@@ -150,6 +157,7 @@ Toggle Workspace Filter, Clear Focus — agwinterm's workspace focus is one work
 | `F6` | Move focus terminal ⇄ session list |
 | `Ctrl+Shift+D` | Dashboard — grid of live sessions |
 | `Ctrl+Shift+T` / `Ctrl+Shift+R` | New session / reopen closed |
+| `Ctrl+Shift+L` | Open the session's link in the browser |
 | `Ctrl+Tab` | MRU session switcher |
 | `Ctrl+D` | Split pane · `` Ctrl+` `` quick terminal · `Ctrl+J` scratch |
 | `Ctrl+Shift+P` | Action palette |
