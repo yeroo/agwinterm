@@ -907,6 +907,10 @@ internal partial class Program
             p.SelAncLine = line; p.SelAncCol = col;   // its anchor is gone: start again from here
             StampSel(p);
         }
+        // A mouse-move that has not left the pressed cell is still a click. Windows posts
+        // WM_MOUSEMOVE without any real motion (after SetCapture, on activation), and treating it
+        // as a drag selected the clicked character on every plain click.
+        if (!_selMoved && line == p.SelAncLine && col == p.SelAncCol) return;
         p.SelFocLine = line; p.SelFocCol = col; p.HasSel = true; _selMoved = true;
     }
 
